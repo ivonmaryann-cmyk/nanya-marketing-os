@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}转码规则管理 | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('main.transcode') }}">返回营销自动化转码</a>
+  <span>营销自动化转码 / 规则管理</span>
+</div>
+
+<section class="hero">
+  <div>
+    <div class="panel-tag">当前生效版本</div>
+    <h1>{{ active_rule_version }}</h1>
+    <p>转码规则由 {{ sheets|length }} 张表组成。管理员可以只上传发生变化的表，未上传的表会沿用当前版本，保存后合成为新的完整规则版本。</p>
+  </div>
+  <div class="hero-note">
+    <div>当前文件</div>
+    <strong>{{ rule_path }}</strong>
+  </div>
+</section>
+
+<section class="card">
+  <h2>客户特殊需求结构化</h2>
+  <p>把客户特殊需求原文解析成结构化规则草稿，保存后先作为规则资产沉淀，不影响当前转码执行。</p>
+  <a class="feature-action" href="{{ url_for('main.admin_transcode_special_rules') }}">客户特殊需求结构化助手</a>
+</section>
+
+<section class="card">
+  <h2>上传新版转码规则</h2>
+  <form method="post" enctype="multipart/form-data" class="form-grid">
+    {% for sheet in sheets %}
+    <label>
+      <span>{{ sheet }}</span>
+      <input type="file" name="sheet_{{ loop.index0 }}" accept=".xlsx,.xls,.xlsm">
+    </label>
+    {% endfor %}
+    <label>
+      <span>更新备注</span>
+      <input type="text" name="remark" placeholder="例如：更新胶系代码或特殊需求">
+    </label>
+    <label>
+      <span>管理员密码</span>
+      <input type="password" name="admin_password" required>
+    </label>
+    <button type="submit">保存并生效</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>最近转码规则版本</h2>
+  <table class="table">
+    <thead>
+      <tr><th>版本</th><th>更新时间</th><th>更新人</th><th>更新表</th><th>备注</th></tr>
+    </thead>
+    <tbody>
+      {% for item in rule_history %}
+      <tr>
+        <td>{{ item.version }}</td>
+        <td>{{ item.updated_at }}</td>
+        <td>{{ item.updated_by }}</td>
+        <td>{{ item.updated_sheets or item.rule_file or '-' }}</td>
+        <td>{{ item.remark }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5">暂无转码规则版本记录。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

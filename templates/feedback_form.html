@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}提交反馈 | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+<section class="hero">
+  <div>
+    <div class="panel-tag">反馈中心</div>
+    <h1>
+      {% if kind == 'calculation' %}计算报错{% elif kind == 'suggestion' %}功能及交互建议{% else %}开发需求申请{% endif %}
+    </h1>
+    <p>请尽量填写可复现的信息，方便后续定位和优化。</p>
+  </div>
+</section>
+
+<section class="card narrow">
+  <form method="post" class="form-grid">
+    {% if kind in ['calculation', 'suggestion'] %}
+    <label>
+      <span>所属功能</span>
+      <select name="feature">
+        <option value="">请选择</option>
+        <option value="fangzheng">方正价格计算</option>
+        <option value="transcode">营销自动化转码</option>
+        <option value="shennan">深南价格计算</option>
+      </select>
+    </label>
+    {% endif %}
+
+    {% if kind == 'calculation' %}
+    <label>
+      <span>物料描述</span>
+      <input type="text" name="material_desc" placeholder='例如：NY2170 0.1(不含铜)1/1 FR-4 82*49上海南亚无水印TG170' required>
+    </label>
+    <label>
+      <span>系统计算结果值</span>
+      <input type="text" name="system_result" required>
+    </label>
+    <label>
+      <span>实际值</span>
+      <input type="text" name="expected_result" required>
+    </label>
+    <label>
+      <span>补充说明</span>
+      <textarea name="content" rows="4"></textarea>
+    </label>
+    {% elif kind == 'suggestion' %}
+    <label>
+      <span>建议内容</span>
+      <textarea name="content" rows="9" required placeholder="请描述使用中遇到的问题、报错或交互不便。"></textarea>
+    </label>
+    {% else %}
+    <label>
+      <span>功能需求描述</span>
+      <textarea name="content" rows="6" required></textarea>
+    </label>
+    <label>
+      <span>人工情况下占用日均工作量时长</span>
+      <input type="text" name="daily_workload" placeholder="例如：每天 1 小时 / 每周 3 小时" required>
+    </label>
+    <label>
+      <span>人工情况下出错概率</span>
+      <select name="error_probability" required>
+        <option value="低">低</option>
+        <option value="中">中</option>
+        <option value="高">高</option>
+      </select>
+    </label>
+    <label>
+      <span>需求紧急程度</span>
+      <select name="urgency" required>
+        <option value="中">中</option>
+        <option value="高">高</option>
+        <option value="极高">极高</option>
+      </select>
+    </label>
+    {% endif %}
+    <button type="submit">提交反馈</button>
+  </form>
+</section>
+{% endblock %}

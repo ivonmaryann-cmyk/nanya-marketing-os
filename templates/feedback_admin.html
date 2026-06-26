@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}反馈管理 | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+<section class="hero">
+  <div>
+    <div class="panel-tag">管理员</div>
+    <h1>反馈管理</h1>
+    <p>查看全部反馈，更新处理状态并填写管理员备注。</p>
+  </div>
+</section>
+
+{% if feedback_list is none %}
+<section class="card narrow">
+  <form method="post" class="form-grid">
+    <label>
+      <span>管理员密码</span>
+      <input type="password" name="admin_password" required>
+    </label>
+    <button type="submit">进入反馈管理</button>
+  </form>
+</section>
+{% else %}
+<section class="card">
+  <table class="table">
+    <thead>
+      <tr><th>ID</th><th>工号</th><th>类型</th><th>功能</th><th>内容</th><th>状态</th><th>处理</th></tr>
+    </thead>
+    <tbody>
+      {% for item in feedback_list %}
+      <tr>
+        <td>#{{ item.id }}</td>
+        <td>{{ item.employee_id }}</td>
+        <td>{{ item.feedback_type }}</td>
+        <td>{{ feature_labels.get(item.feature, item.feature or '-') }}</td>
+        <td>
+          {% if item.feedback_type == 'calculation' %}
+          物料：{{ item.material_desc }}<br>系统：{{ item.system_result }} / 实际：{{ item.expected_result }}<br>{{ item.content or '' }}
+          {% elif item.feedback_type == 'requirement' %}
+          {{ item.content }}<br>工作量：{{ item.daily_workload }}；出错概率：{{ item.error_probability }}；紧急：{{ item.urgency }}
+          {% else %}
+          {{ item.content }}
+          {% endif %}
+        </td>
+        <td><span class="status">{{ item.status }}</span></td>
+        <td>
+          <form method="post" class="inline-form">
+            <input type="hidden" name="feedback_id" value="{{ item.id }}">
+            <input type="password" name="admin_password" placeholder="管理员密码" required>
+            <select name="status">
+              {% for status in ['待处理', '处理中', '已解决', '已关闭'] %}
+              <option value="{{ status }}" {% if item.status == status %}selected{% endif %}>{{ status }}</option>
+              {% endfor %}
+            </select>
+            <input type="text" name="admin_note" value="{{ item.admin_note or '' }}" placeholder="处理备注">
+            <button type="submit">保存</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7">暂无反馈。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+{% endblock %}

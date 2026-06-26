@@ -1,0 +1,42 @@
+# Runtime data: never commit local or production state.
+/storage/
+
+# Python cache and local virtual environments.
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Local server logs and generated runtime output.
+*.log
+*.out
+*.err
+local_server_*latest.log
+server_stdout.log
+server_stderr.log
+workplan_server_*.log
+
+# Local backups and temporary merge artifacts.
+*.bak
+*.bak_*
+*.bak-*
+*.tmp
+*.temp
+~$*
+
+# OS/editor metadata.
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Release bundles kept outside source control.
+/nanya_platform_*.zip
+/nanya_platform_*.tar.gz
+/shennan_in_transit_package_*.zip
+/bomin_price_fix_package_*.zip
+/fangzheng_pp_roll_fix_package_*.zip
+/order_reprice_feature_pack_*.zip
+/price_calculation_module_*.zip

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="NANYA monochrome logo mark">
+  <rect width="128" height="128" rx="30" fill="#F4F7FE"/>
+  <path d="M22 77c0-17.3 14-31.4 31.4-31.4 9.8 0 16.9 4.3 24.1 12.1L106 88"
+        fill="none" stroke="#1737B8" stroke-width="20" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M106 51c0 17.3-14 31.4-31.4 31.4-9.8 0-16.9-4.3-24.1-12.1L22 40"
+        fill="none" stroke="#43B8F5" stroke-width="20" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M39 85 61.5 42 89 85" fill="none" stroke="#151F5B" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

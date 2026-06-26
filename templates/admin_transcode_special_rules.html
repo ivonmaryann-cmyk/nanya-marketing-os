@@ -1,0 +1,459 @@
+{% extends "base.html" %}
+{% block title %}客户特殊规则工作台 | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+{% set key_headers = ['启用', '是否参与转码', '待确认', '规则状态', '执行策略', '规则大类', '匹配来源字段', '关键词条件', '排除关键词', '适用胶系', '铜厚条件', '覆盖胶系代码', '覆盖厚度代码', '覆盖铜厚代码', '覆盖尺寸代码', '覆盖胶水类别', '覆盖铜箔类型', '覆盖基板级别', '覆盖总芯厚', '覆盖结构码', '目标动作类型', '目标动作内容', '规则解释'] %}
+<style>
+  .workbench-tabs { display: grid; gap: 14px; }
+  .compact-hero { padding: 18px 22px; }
+  .compact-hero h1 { font-size: 30px; margin-bottom: 6px; }
+  .compact-hero p { margin: 0; }
+  .compact-hero .hero-note small { display: block; max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .top-workbench-grid { display: grid; grid-template-columns: minmax(260px, .8fr) minmax(420px, 1.2fr); gap: 14px; align-items: start; }
+  .top-combined-card { padding-top: 13px; }
+  .combined-head { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 10px; }
+  .combined-head h2 { margin: 0; }
+  .result-head { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; margin-bottom: 10px; }
+  .result-head h2 { margin: 0 0 5px; }
+  .top-pane { border: 1px solid #dbe3ef; border-radius: 8px; padding: 12px; background: #f8fafc; }
+  .top-pane h3 { margin: 0 0 8px; font-size: 16px; }
+  .compact-card { padding: 14px 16px; }
+  .compact-card h2 { margin: 0 0 8px; font-size: 18px; }
+  .compact-form-grid { display: grid; grid-template-columns: repeat(4, minmax(118px, 1fr)); gap: 8px; }
+  .compact-form-grid label { gap: 4px; }
+  .compact-form-grid input,
+  .compact-form-grid select { min-height: 34px; padding-top: 7px; padding-bottom: 7px; }
+  .compact-form-grid textarea { min-height: 92px; padding-top: 8px; padding-bottom: 8px; }
+  .compact-form-grid textarea { resize: vertical; }
+  .parse-form-grid { grid-template-columns: repeat(2, minmax(160px, 1fr)); }
+  .search-inline { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
+  .rule-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .rule-metrics { display: grid; grid-template-columns: repeat(4, minmax(95px, 1fr)); gap: 7px; margin: 8px 0 10px; }
+  .result-metrics { min-width: 420px; margin: 0; }
+  .rule-metric { border: 1px solid rgba(15, 23, 42, .1); border-radius: 8px; padding: 8px 10px; background: #f8fafc; }
+  .rule-metric span { display: block; color: #64748b; font-size: 12px; }
+  .rule-metric strong { display: block; font-size: 19px; margin-top: 1px; }
+  .view-section-title { margin: 10px 0 8px; font-size: 17px; }
+  .compact-card .view-section-title { margin: 10px 0 8px; font-size: 17px; }
+  .code-grid { display: grid; grid-template-columns: repeat(3, minmax(150px, 1fr)); gap: 7px; margin: 8px 0 12px; }
+  .code-cell { border: 1px solid #dbe3ef; border-radius: 8px; padding: 8px; min-height: 86px; background: #f8fafc; }
+  .code-cell.active { background: #ecfdf5; border-color: #86efac; }
+  .code-cell h3 { margin: 0 0 5px; font-size: 13px; }
+  .code-empty { color: #94a3b8; font-size: 12px; }
+  .rule-pill { display: block; margin-top: 4px; padding: 5px 6px; border-radius: 6px; background: rgba(255,255,255,.78); color: #0f172a; font-size: 12px; line-height: 1.28; }
+  .rule-pill-button { width: 100%; border: 1px solid rgba(15, 23, 42, .08); text-align: left; cursor: pointer; font: inherit; }
+  .rule-pill-button:hover { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37, 99, 235, .08); }
+  .source-grid { display: grid; grid-template-columns: repeat(2, minmax(240px, 1fr)); gap: 8px; margin: 8px 0 12px; }
+  .source-card { border: 1px solid #dbe3ef; border-radius: 8px; padding: 9px 10px; background: #fff; }
+  .source-card p { margin: 5px 0 0; color: #0f172a; line-height: 1.42; }
+  .source-meta { color: #64748b; font-size: 12px; }
+  .search-source-panel { margin: 10px 0 12px; }
+  .search-source-panel .source-grid { max-height: 310px; overflow: auto; padding-right: 4px; }
+  .switch-card { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: end; }
+  .switch-status { border-radius: 8px; padding: 8px 10px; background: #eff6ff; color: #1d4ed8; font-weight: 700; }
+  .switch-status.off { background: #f8fafc; color: #64748b; }
+  .import-progress-panel { margin: 12px 0; padding: 12px; border: 1px solid #dbe3ef; border-radius: 8px; background: #f8fafc; }
+  .import-progress-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; align-items: center; }
+  .action-grid { display: grid; grid-template-columns: repeat(3, minmax(170px, 1fr)); gap: 7px; }
+  .action-card, .manual-card, .edit-card { border: 1px solid #dbe3ef; border-radius: 8px; padding: 9px; background: #fff; }
+  .manual-card { background: #fff7ed; border-color: #fed7aa; }
+  .action-card h3, .manual-card h3, .edit-card h3 { margin: 0 0 6px; font-size: 14px; }
+  .rule-editor-grid { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 12px; }
+  .rule-editor-grid label { display: grid; gap: 5px; color: #475569; font-size: 13px; }
+  .rule-editor-grid input, .rule-editor-grid select, .rule-editor-grid textarea { width: 100%; }
+  .download-grid { display: flex; flex-wrap: wrap; gap: 10px; }
+  .muted-note { color: #64748b; font-size: 12px; }
+  .secondary-panel { margin-top: 18px; padding: 18px; border: 1px solid #dbe3ef; border-radius: 8px; background: #f8fafc; }
+  .secondary-panel[hidden], .rule-editor-card[hidden] { display: none; }
+  .secondary-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 14px; }
+  .overview-list { display: grid; grid-template-columns: repeat(3, minmax(200px, 1fr)); gap: 12px; }
+  .overview-item { width: 100%; border: 1px solid #dbe3ef; border-radius: 8px; padding: 12px; background: #fff; text-align: left; cursor: pointer; }
+  .overview-item:hover { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37, 99, 235, .08); }
+  .editor-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+  @media (max-width: 980px) {
+    .top-workbench-grid, .compact-form-grid, .parse-form-grid, .search-inline, .code-grid, .action-grid, .rule-metrics, .overview-list, .source-grid, .switch-card { grid-template-columns: 1fr; }
+    .result-head, .combined-head { display: grid; }
+    .result-metrics { min-width: 0; }
+    .rule-editor-grid { grid-template-columns: 1fr; }
+  }
+</style>
+
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('main.admin_transcode_rules') }}">返回转码规则管理</a>
+  <span>转码规则管理 / 客户特殊规则工作台</span>
+</div>
+
+<section class="hero compact-hero">
+  <div>
+    <div class="panel-tag">规则查询 · 结构化解析 · 导出</div>
+    <h1>客户特殊规则工作台</h1>
+    <p>按客户查询已有特殊规则，也可以粘贴流水账特殊需求生成结构化草稿。人看九宫格，机器读底层规则表。</p>
+  </div>
+  <div class="hero-note">
+    <div>当前规则总数</div>
+    <strong>{{ rule_count }}</strong>
+    <small>{{ rule_path }}</small>
+  </div>
+</section>
+
+<div class="workbench-tabs">
+  <section class="card compact-card">
+    <div class="switch-card">
+      <div>
+        <h2>结构化规则转码开关</h2>
+        <p class="muted-note">
+          开启后，转码会调用本页沉淀的结构化客户特殊规则；关闭时继续使用原规则管理中的客户特殊需求 Excel 逻辑。
+        </p>
+      </div>
+      <form method="post" class="rule-toolbar">
+        <label>
+          <span>当前状态</span>
+          <select name="structured_rules_enabled">
+            <option value="off" {% if not structured_rules_enabled %}selected{% endif %}>关闭：使用旧客户特殊需求 Excel</option>
+            <option value="on" {% if structured_rules_enabled %}selected{% endif %}>开启：使用结构化特殊规则</option>
+          </select>
+        </label>
+        <label>
+          <span>管理员密码</span>
+          <input type="password" name="admin_password" required>
+        </label>
+        <button type="submit" name="action" value="toggle_structured_rules">保存开关</button>
+        <span class="switch-status {% if not structured_rules_enabled %}off{% endif %}">
+          {{ '已开启' if structured_rules_enabled else '已关闭' }}
+        </span>
+      </form>
+    </div>
+  </section>
+
+  <section class="card compact-card top-combined-card">
+    <div class="combined-head">
+      <h2>客户规则查询与解析</h2>
+      <span class="muted-note">查询已有规则，或粘贴新需求生成结构化草稿。</span>
+    </div>
+    <div class="top-workbench-grid">
+      <div class="top-pane">
+        <h3>查询客户规则</h3>
+        <form method="post" class="search-inline">
+          <label>
+            <span>客户代码 / 客户简称 / 关键词</span>
+            <input type="text" name="search_query" value="{{ form_values.search_query }}" placeholder="例如：105007、湖奥士康、汽车板、NY2140L">
+          </label>
+          <button type="submit" name="action" value="search">搜索规则</button>
+        </form>
+      </div>
+
+      <div class="top-pane">
+        <h3>新增/解析规则</h3>
+        <form method="post" class="compact-form-grid parse-form-grid">
+          <input type="hidden" name="material_type" value="全部">
+          <input type="hidden" name="source_line" value="">
+          <label>
+            <span>客户代码</span>
+            <input type="text" name="customer_code" value="{{ form_values.customer_code }}" placeholder="例如：105007">
+          </label>
+          <label>
+            <span>客户简称</span>
+            <input type="text" name="customer_name" value="{{ form_values.customer_name }}" placeholder="例如：湖奥士康">
+          </label>
+          <label style="grid-column: 1 / -1;">
+            <span>特殊需求文本</span>
+            <textarea name="requirement_text" rows="4" placeholder="粘贴客户特殊需求原文">{{ form_values.requirement_text }}</textarea>
+          </label>
+          <button type="submit" name="action" value="parse">结构化解析</button>
+        </form>
+      </div>
+    </div>
+  </section>
+
+  {% if search_view %}
+  <section class="card compact-card">
+    <div class="result-head">
+      <div>
+        <h2>客户规则查询结果</h2>
+        <p class="muted-note">当前按“{{ form_values.search_query }}”查询到 {{ search_view.counts.total }} 条规则。</p>
+      </div>
+      <div class="rule-metrics result-metrics">
+        <div class="rule-metric"><span>查询结果</span><strong>{{ search_view.counts.total }}</strong></div>
+        <div class="rule-metric"><span>参与转码</span><strong>{{ search_view.counts.transcode }}</strong></div>
+        <div class="rule-metric"><span>仅保存</span><strong>{{ search_view.counts.non_transcode }}</strong></div>
+        <div class="rule-metric"><span>人工确认</span><strong>{{ search_view.counts.manual }}</strong></div>
+      </div>
+    </div>
+    {% if search_view.source_items %}
+    <div class="search-source-panel">
+      <h2 class="view-section-title">原始特殊要求</h2>
+      <div class="source-grid">
+        {% for item in search_view.source_items %}
+        <div class="source-card">
+          <div class="source-meta">
+            {{ item['客户代码'] }}{% if item['客户简称'] %} / {{ item['客户简称'] }}{% endif %}
+            {% if item['来源行号'] %} · {{ item['来源行号'] }}{% endif %}
+          </div>
+          <p>{{ item['原始特殊需求'] }}</p>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+    {% set active_view = search_view %}
+    {% set show_source_items = false %}
+    {% include "partials/transcode_special_rule_view.html" with context %}
+  </section>
+  {% endif %}
+
+  {% if drafts and draft_view %}
+  <section class="card compact-card">
+    <h2>解析结果审核</h2>
+    <p class="muted-note">
+      本次解析 {{ draft_view.counts.total }} 条规则，其中 {{ draft_view.counts.transcode }} 条会影响转码。
+      {% if has_existing_customer %}该客户已有规则，保存时请选择追加或替换。{% else %}该客户当前无已有规则，可作为新增客户规则保存。{% endif %}
+    </p>
+    <form method="post" id="special-rule-draft-form">
+      <input type="hidden" name="draft_count" value="{{ drafts|length }}">
+      {% set active_view = draft_view %}
+      {% set editable_view = true %}
+      {% include "partials/transcode_special_rule_view.html" %}
+
+      <div class="rule-toolbar" style="margin-top: 12px;">
+        <button type="button" class="feature-action js-open-overview">规则卡片编辑总览</button>
+        <span class="muted-note">点击九宫格、非编码动作或人工确认中的规则卡片，可进入单条规则编辑。</span>
+      </div>
+
+      <section id="rule-editor-panel" class="secondary-panel" hidden>
+        <div class="secondary-head">
+          <div>
+            <h2 id="rule-editor-title">规则详情编辑</h2>
+            <p class="muted-note">这里只编辑当前选中的一条规则。</p>
+          </div>
+          <button type="button" class="ghost-button js-close-secondary">返回解析结果</button>
+        </div>
+        {% for row in drafts %}
+        {% set row_index = loop.index0 %}
+        <div class="edit-card rule-editor-card" data-rule-editor-index="{{ row_index }}" hidden>
+          <h3>#{{ loop.index }} {{ row.get('规则大类', '规则') }}</h3>
+          <p class="muted-note">{{ row.get('目标动作内容') or row.get('规则解释') or row.get('原始特殊需求') }}</p>
+          <label><input type="checkbox" name="draft_{{ row_index }}_delete"> 删除本条</label>
+          <div class="rule-editor-grid">
+            {% for header in key_headers %}
+            <label>
+              <span>{{ header }}</span>
+              {% if header in ['启用', '是否参与转码', '待确认'] %}
+              <select name="draft_{{ row_index }}_{{ headers.index(header) }}">
+                <option value="是" {% if row.get(header, '') == '是' %}selected{% endif %}>是</option>
+                <option value="否" {% if row.get(header, '') == '否' %}selected{% endif %}>否</option>
+              </select>
+              {% elif header in ['规则解释', '目标动作内容'] %}
+              <textarea name="draft_{{ row_index }}_{{ headers.index(header) }}" rows="3">{{ row.get(header, '') }}</textarea>
+              {% else %}
+              <input type="text" name="draft_{{ row_index }}_{{ headers.index(header) }}" value="{{ row.get(header, '') }}">
+              {% endif %}
+            </label>
+            {% endfor %}
+          </div>
+          {% for header in headers %}
+            {% if header not in key_headers %}
+            <input type="hidden" name="draft_{{ row_index }}_{{ loop.index0 }}" value="{{ row.get(header, '') }}">
+            {% endif %}
+          {% endfor %}
+        </div>
+        {% endfor %}
+      </section>
+
+      <section id="rule-overview-panel" class="secondary-panel" hidden>
+        <div class="secondary-head">
+          <div>
+            <h2>规则卡片编辑总览</h2>
+            <p class="muted-note">总览当前解析出的全部规则。点击任意卡片进入对应的单条编辑。</p>
+          </div>
+          <button type="button" class="ghost-button js-close-secondary">返回解析结果</button>
+        </div>
+        <div class="overview-list">
+          {% for row in drafts %}
+          {% set row_index = loop.index0 %}
+          <button type="button" class="overview-item js-open-rule" data-rule-index="{{ row_index }}">
+            <strong>#{{ loop.index }} {{ row.get('规则大类', '规则') }}</strong>
+            <br><span>{{ row.get('目标动作内容') or row.get('规则解释') or row.get('原始特殊需求') }}</span>
+            <br><small>{{ row.get('是否参与转码') }} / {{ row.get('执行策略') }} / 待确认={{ row.get('待确认') }}</small>
+          </button>
+          {% endfor %}
+        </div>
+      </section>
+
+      <div class="compact-form-grid" style="margin-top: 14px;">
+        <label>
+          <span>保存方式</span>
+          <select name="import_mode">
+            <option value="新增" {% if not has_existing_customer %}selected{% endif %}>新增客户规则</option>
+            <option value="追加" {% if has_existing_customer %}selected{% endif %}>追加规则</option>
+            <option value="替换">替换该客户全部规则</option>
+          </select>
+        </label>
+        <label>
+          <span>管理员密码</span>
+          <input type="password" name="admin_password" required>
+        </label>
+        <button type="submit" name="action" value="save">保存结构化规则</button>
+      </div>
+    </form>
+  </section>
+  {% endif %}
+
+  <section class="card compact-card">
+    <h2>批量导入与导出</h2>
+    <p class="muted-note">批量导入会读取客户特殊要求 Excel，按客户代码覆盖旧结构化规则；原文件会保留为最近一次导入原件。</p>
+    <form method="post" enctype="multipart/form-data" class="compact-form-grid" style="margin-bottom: 12px;">
+      <label style="grid-column: span 2;">
+        <span>客户特殊要求 Excel</span>
+        <input type="file" name="bulk_rule_file" accept=".xlsx,.xlsm">
+      </label>
+      <label>
+        <span>管理员密码</span>
+        <input type="password" name="admin_password">
+      </label>
+      <button type="submit" name="action" value="bulk_import">批量导入并覆盖</button>
+    </form>
+    {% if active_import_job %}
+    <div class="import-progress-panel" id="special-import-live-panel" data-job-id="{{ active_import_job.id }}">
+      <div class="progress-meta">
+        <div>
+          <span>当前导入任务</span>
+          <strong>#{{ active_import_job.id }} {{ active_import_job.source_filename }}</strong>
+        </div>
+        <div>
+          <span>状态</span>
+          <strong id="special-import-status">{{ active_import_job.status }}</strong>
+        </div>
+      </div>
+      <div class="progress-stats">
+        <div><span>进度</span><strong id="special-import-progress">{{ active_import_job.current_row }}/{{ active_import_job.total_rows }}</strong></div>
+        <div><span>保存规则</span><strong id="special-import-success">{{ active_import_job.success_count }}</strong></div>
+        <div><span>失败</span><strong id="special-import-fail">{{ active_import_job.fail_count }}</strong></div>
+        <div><span>跳过</span><strong id="special-import-skip">{{ active_import_job.skip_count }}</strong></div>
+      </div>
+      <div class="progress-bar">
+        <div id="special-import-bar"></div>
+      </div>
+      <pre id="special-import-log" class="live-log">{{ active_import_job.log_text or '任务已创建，等待处理日志...' }}</pre>
+      <div class="import-progress-actions">
+        {% if active_import_job.status in ['queued', 'running'] %}
+        <form method="post" action="{{ url_for('main.cancel_job', job_id=active_import_job.id) }}" class="job-cancel-form">
+          <button type="submit" class="danger-button">停止任务</button>
+        </form>
+        {% endif %}
+        <a class="secondary-link" href="{{ url_for('main.download', job_id=active_import_job.id, kind='input') }}">下载本次原文件</a>
+        <span id="special-import-download" class="{% if active_import_job.status != 'completed' %}hidden{% endif %}">
+          <a class="primary-link" href="{{ url_for('main.download', job_id=active_import_job.id, kind='result') }}">下载本次解析后规则包</a>
+        </span>
+      </div>
+    </div>
+    {% endif %}
+    <p class="muted-note">
+      {% if special_rule_settings.latest_import_time %}
+      最近导入：{{ special_rule_settings.latest_original_filename }} / {{ special_rule_settings.latest_import_time }}
+      {% else %}
+      暂无批量导入原文件。
+      {% endif %}
+    </p>
+    <div class="download-grid">
+      <a class="feature-action" href="{{ url_for('main.export_transcode_special_rules', export_type='original') }}">下载最近导入原文件</a>
+      <a class="feature-action" href="{{ url_for('main.export_transcode_special_rules', export_type='full') }}">下载完整规则包</a>
+      <a class="feature-action" href="{{ url_for('main.export_transcode_special_rules', export_type='structured') }}">下载结构化规则总表</a>
+      <a class="feature-action" href="{{ url_for('main.export_transcode_special_rules', export_type='customer_summary') }}">下载客户汇总视图</a>
+      <a class="feature-action" href="{{ url_for('main.export_transcode_special_rules', export_type='transcode') }}">下载参与转码规则</a>
+      <a class="feature-action" href="{{ url_for('main.export_transcode_special_rules', export_type='manual') }}">下载人工确认清单</a>
+    </div>
+  </section>
+</div>
+<script>
+  (function () {
+    const editorPanel = document.getElementById('rule-editor-panel');
+    const overviewPanel = document.getElementById('rule-overview-panel');
+    const editorTitle = document.getElementById('rule-editor-title');
+    const editorCards = Array.from(document.querySelectorAll('.rule-editor-card'));
+
+    function hideSecondaryPanels() {
+      if (editorPanel) editorPanel.hidden = true;
+      if (overviewPanel) overviewPanel.hidden = true;
+      editorCards.forEach(card => { card.hidden = true; });
+    }
+
+    function openRule(index) {
+      if (!editorPanel) return;
+      hideSecondaryPanels();
+      const card = document.querySelector(`.rule-editor-card[data-rule-editor-index="${index}"]`);
+      if (!card) return;
+      card.hidden = false;
+      editorPanel.hidden = false;
+      if (editorTitle) editorTitle.textContent = `规则详情编辑 #${Number(index) + 1}`;
+      editorPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function openOverview() {
+      if (!overviewPanel) return;
+      hideSecondaryPanels();
+      overviewPanel.hidden = false;
+      overviewPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    document.addEventListener('click', function (event) {
+      const openButton = event.target.closest('.js-open-rule');
+      if (openButton) {
+        openRule(openButton.dataset.ruleIndex);
+        return;
+      }
+      if (event.target.closest('.js-open-overview')) {
+        openOverview();
+        return;
+      }
+      if (event.target.closest('.js-close-secondary')) {
+        hideSecondaryPanels();
+      }
+    });
+  })();
+</script>
+{% if active_import_job %}
+<script>
+  (function () {
+    const panel = document.getElementById("special-import-live-panel");
+    if (!panel) return;
+    const jobId = panel.dataset.jobId;
+    const statusEl = document.getElementById("special-import-status");
+    const progressEl = document.getElementById("special-import-progress");
+    const successEl = document.getElementById("special-import-success");
+    const failEl = document.getElementById("special-import-fail");
+    const skipEl = document.getElementById("special-import-skip");
+    const barEl = document.getElementById("special-import-bar");
+    const logEl = document.getElementById("special-import-log");
+    const downloadEl = document.getElementById("special-import-download");
+
+    function render(data) {
+      statusEl.textContent = data.status;
+      progressEl.textContent = `${data.current_row}/${data.total_rows}`;
+      successEl.textContent = data.success_count;
+      failEl.textContent = data.fail_count;
+      skipEl.textContent = data.skip_count;
+      logEl.textContent = data.log_text || "任务已创建，等待处理日志...";
+      logEl.scrollTop = logEl.scrollHeight;
+      const percent = data.total_rows ? Math.min(100, Math.round(data.current_row * 100 / data.total_rows)) : 0;
+      barEl.style.width = `${percent}%`;
+      if (data.status === "completed") {
+        downloadEl.classList.remove("hidden");
+      }
+    }
+
+    function poll() {
+      fetch(`/api/jobs/${jobId}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data.error) return;
+          render(data);
+          if (data.status === "queued" || data.status === "running") {
+            setTimeout(poll, 1200);
+          }
+        })
+        .catch(() => setTimeout(poll, 2500));
+    }
+    poll();
+  })();
+</script>
+{% endif %}
+{% endblock %}

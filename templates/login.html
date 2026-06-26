@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}登录 | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+<section class="login-hero">
+  <article class="login-card wide">
+    <div class="panel-tag">营销自动化工具</div>
+    <h1>{{ platform_name }}</h1>
+    <div class="login-version">{{ platform_version }}</div>
+    <p class="login-lead">使用工号登录。首次登录初始密码为工号，登录后需要立即修改为个人密码。</p>
+    <form method="post" id="login-form" class="login-form">
+      <label>
+        <span>工号</span>
+        <input type="text" name="employee_id" id="employee-id" autocomplete="username" required>
+      </label>
+      <label>
+        <span>密码</span>
+        <input type="password" name="password" id="password" autocomplete="current-password" required>
+      </label>
+      <button type="submit">登录</button>
+    </form>
+    <div class="login-note">
+      <strong>账户安全说明</strong>
+      <span>员工只能查看自己的计算和转码历史。忘记密码请联系管理员重置为初始密码。</span>
+    </div>
+  </article>
+</section>
+<script>
+  const employeeInput = document.getElementById("employee-id");
+  const passwordInput = document.getElementById("password");
+  const remembered = localStorage.getItem("nanya_employee_id");
+  if (remembered) employeeInput.value = remembered;
+  document.getElementById("login-form").addEventListener("submit", () => {
+    localStorage.setItem("nanya_employee_id", employeeInput.value);
+  });
+</script>
+{% endblock %}

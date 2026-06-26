@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}反馈意见 | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+<section class="hero">
+  <div>
+    <div class="panel-tag">反馈中心</div>
+    <h1>反馈意见</h1>
+    <p>提交计算报错、交互建议或新的自动化开发需求。普通用户只能查看自己的反馈记录。</p>
+  </div>
+  <div class="hero-note">
+    <div>管理员</div>
+    <a href="{{ url_for('main.admin_feedback') }}">进入反馈管理</a>
+  </div>
+</section>
+
+<section class="feature-grid">
+  <article class="feature-card">
+    <div class="feature-top"><h2>计算报错</h2><span class="badge stage-badge stage-beta">Beta / 已上线</span></div>
+    <p>使用 Beta 或已上线版本时，如果系统计算出值但和真实值不同，请提交复核。</p>
+    <a class="feature-action" href="{{ url_for('main.feedback_form', kind='calculation') }}">提交报错</a>
+  </article>
+  <article class="feature-card">
+    <div class="feature-top"><h2>功能及交互建议</h2><span class="badge">建议</span></div>
+    <p>提交使用中遇到的报错、交互不便或功能体验问题。</p>
+    <a class="feature-action" href="{{ url_for('main.feedback_form', kind='suggestion') }}">提交建议</a>
+  </article>
+  <article class="feature-card">
+    <div class="feature-top"><h2>开发需求申请</h2><span class="badge stage-badge stage-test">需求</span></div>
+    <p>提交新的自动化工具需求，并说明人工工作量、出错概率和紧急程度。</p>
+    <a class="feature-action" href="{{ url_for('main.feedback_form', kind='requirement') }}">提交需求</a>
+  </article>
+</section>
+
+<section class="card">
+  <h2>我的反馈记录</h2>
+  <table class="table">
+    <thead>
+      <tr><th>ID</th><th>类型</th><th>所属功能</th><th>状态</th><th>创建时间</th><th>管理员备注</th></tr>
+    </thead>
+    <tbody>
+      {% for item in feedback_list %}
+      <tr>
+        <td>#{{ item.id }}</td>
+        <td>{{ item.feedback_type }}</td>
+        <td>{{ feature_labels.get(item.feature, item.feature or '-') }}</td>
+        <td><span class="status">{{ item.status }}</span></td>
+        <td>{{ item.created_at }}</td>
+        <td>{{ item.admin_note or '-' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6">还没有反馈记录。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

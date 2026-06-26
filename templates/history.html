@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}历史记录 | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="section-head">
+    <h1>历史记录</h1>
+    <a href="{{ url_for('main.dashboard') }}">返回功能中心</a>
+  </div>
+
+  <form method="get" class="filter-row">
+    <label>
+      <span>开始日期</span>
+      <input type="date" name="start_date" value="{{ start_date or '' }}">
+    </label>
+    <label>
+      <span>结束日期</span>
+      <input type="date" name="end_date" value="{{ end_date or '' }}">
+    </label>
+    <button type="submit">筛选</button>
+  </form>
+
+  <table class="table">
+    <thead>
+      <tr>
+        <th>时间</th>
+        <th>客户</th>
+        <th>功能类型</th>
+        <th>状态</th>
+        <th>总记录数</th>
+        <th>异常数 / 未匹配数</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for job in jobs %}
+      <tr>
+        <td>{{ job.created_at }}</td>
+        <td>{{ job.customer_label or '-' }}</td>
+        <td>
+          <strong>{{ job.function_type or job.feature_label }}</strong>
+          <div class="muted-small">#{{ job.id }} {{ job.source_filename }}</div>
+        </td>
+        <td><span class="status {{ job.status }}">{{ job.status }}</span></td>
+        <td>{{ job.display_total }}</td>
+        <td>{{ job.display_issue_count }}</td>
+        <td class="actions">
+          <a href="{{ url_for('main.job_detail', job_id=job.id) }}">查看结果</a>
+          {% if job.status == 'completed' %}
+          <a href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载文件</a>
+          {% endif %}
+          <form method="post" action="{{ url_for('main.delete_history', job_id=job.id) }}">
+            <button type="submit" class="link-button">删除</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7">没有符合条件的记录。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

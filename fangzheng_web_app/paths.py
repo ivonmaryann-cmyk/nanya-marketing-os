@@ -1,0 +1,45 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+
+PACKAGE_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = PACKAGE_DIR.parent
+ENGINE_DIR = PACKAGE_DIR
+DEFAULT_RULES_DIR = PACKAGE_DIR / "default_rules"
+DEFAULT_PRICE_PKL = ENGINE_DIR / "data_price.pkl"
+DEFAULT_ACCOUNT_PKL = ENGINE_DIR / "data_account.pkl"
+
+STORAGE_DIR = PROJECT_DIR / "storage"
+RULES_DIR = STORAGE_DIR / "rules"
+RULES_VERSIONS_DIR = RULES_DIR / "versions"
+TRANSCODE_RULES_DIR = RULES_DIR / "transcode"
+TRANSCODE_RULES_VERSIONS_DIR = TRANSCODE_RULES_DIR / "versions"
+SHENNAN_RULES_DIR = RULES_DIR / "shennan"
+SHENNAN_RULES_VERSIONS_DIR = SHENNAN_RULES_DIR / "versions"
+HUSHI_RULES_DIR = RULES_DIR / "hushi"
+HUSHI_RULES_VERSIONS_DIR = HUSHI_RULES_DIR / "versions"
+BOMIN_RULES_DIR = RULES_DIR / "bomin"
+BOMIN_RULES_VERSIONS_DIR = BOMIN_RULES_DIR / "versions"
+PRICE_CALCULATION_RULES_DIR = RULES_DIR / "price_calculation"
+JOBS_DIR = STORAGE_DIR / "jobs"
+DATABASE_PATH = STORAGE_DIR / "app.db"
+
+
+def ensure_storage_dirs() -> None:
+    for path in [
+        STORAGE_DIR,
+        RULES_DIR,
+        RULES_VERSIONS_DIR,
+        TRANSCODE_RULES_DIR,
+        TRANSCODE_RULES_VERSIONS_DIR,
+        SHENNAN_RULES_DIR,
+        SHENNAN_RULES_VERSIONS_DIR,
+        HUSHI_RULES_DIR,
+        HUSHI_RULES_VERSIONS_DIR,
+        BOMIN_RULES_DIR,
+        BOMIN_RULES_VERSIONS_DIR,
+        PRICE_CALCULATION_RULES_DIR,
+        JOBS_DIR,
+    ]:
+        path.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,309 @@
+from __future__ import annotations
+
+import json
+import shutil
+from datetime import datetime
+from pathlib import Path
+
+from werkzeug.datastructures import FileStorage
+from werkzeug.utils import secure_filename
+
+from .db import get_setting, set_setting
+from .excel_utils import excel_format, load_workbook_compat, normalized_xlsx_source
+from .paths import DEFAULT_RULES_DIR, PRICE_CALCULATION_RULES_DIR
+from .price_calculation_customers import PRICE_CALCULATION_CUSTOMERS, enabled_price_customer
+
+
+PRICE_RULE_FILENAME = "price_rules.xlsx"
+TEST_DATA_FILENAME = "test_data.xlsx"
+ALLOWED_RULE_EXTENSIONS = {".xlsx", ".xls", ".xlsm"}
+JINGWANG_QUOTE_VARIANTS = {"new": "新报价单", "old": "旧报价单"}
+
+
+def normalize_price_quote_variant(customer_key: str, quote_variant: str | None = None) -> str:
+    if customer_key != "jingwang":
+        return ""
+    variant = (quote_variant or "new").strip().lower()
+    return variant if variant in JINGWANG_QUOTE_VARIANTS else "new"
+
+
+def _customer_dir(customer_key: str, quote_variant: str | None = None) -> Path:
+    variant = normalize_price_quote_variant(customer_key, quote_variant)
+    if customer_key == "jingwang" and variant == "old":
+        return PRICE_CALCULATION_RULES_DIR / customer_key / variant
+    return PRICE_CALCULATION_RULES_DIR / customer_key
+
+
+def _versions_dir(customer_key: str, quote_variant: str | None = None) -> Path:
+    return _customer_dir(customer_key, quote_variant) / "versions"
+
+
+def _active_key(customer_key: str, quote_variant: str | None = None) -> str:
+    variant = normalize_price_quote_variant(customer_key, quote_variant)
+    return f"active_price_rule_version:{customer_key}:{variant}" if variant == "old" else f"active_price_rule_version:{customer_key}"
+
+
+def _history_key(customer_key: str, quote_variant: str | None = None) -> str:
+    variant = normalize_price_quote_variant(customer_key, quote_variant)
+    return f"price_rule_history:{customer_key}:{variant}" if variant == "old" else f"price_rule_history:{customer_key}"
+
+
+def _read_history(customer_key: str, quote_variant: str | None = None) -> list[dict]:
+    raw = get_setting(_history_key(customer_key, quote_variant), "[]") or "[]"
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, list) else []
+    except json.JSONDecodeError:
+        return []
+
+
+def _write_history(customer_key: str, history: list[dict], quote_variant: str | None = None) -> None:
+    set_setting(_history_key(customer_key, quote_variant), json.dumps(history[:50], ensure_ascii=False))
+
+
+def get_price_rule_history(customer_key: str, quote_variant: str | None = None) -> list[dict]:
+    enabled_price_customer(customer_key)
+    return _read_history(customer_key, quote_variant)
+
+
+def append_price_rule_history(customer_key: str, entry: dict, quote_variant: str | None = None) -> None:
+    history = _read_history(customer_key, quote_variant)
+    history.insert(0, entry)
+    _write_history(customer_key, history, quote_variant)
+
+
+def get_price_rule_version_dir(customer_key: str, version: str | None = None, quote_variant: str | None = None) -> Path:
+    enabled_price_customer(customer_key)
+    rule_version = version or (get_setting(_active_key(customer_key, quote_variant), "") or "")
+    return _versions_dir(customer_key, quote_variant) / rule_version
+
+
+def get_price_rule_file_path(customer_key: str, version: str | None = None, quote_variant: str | None = None) -> Path:
+    return get_price_rule_version_dir(customer_key, version, quote_variant) / PRICE_RULE_FILENAME
+
+
+def get_price_test_data_file_path(customer_key: str, version: str | None = None, quote_variant: str | None = None) -> Path:
+    return get_price_rule_version_dir(customer_key, version, quote_variant) / TEST_DATA_FILENAME
+
+
+def get_active_price_rule_version(customer_key: str, quote_variant: str | None = None) -> str:
+    enabled_price_customer(customer_key)
+    version = get_setting(_active_key(customer_key, quote_variant), "") or ""
+    if version and get_price_rule_file_path(customer_key, version, quote_variant).exists():
+        return version
+    return ensure_default_price_rule_version(customer_key, quote_variant)
+
+
+def ensure_default_price_rule_versions() -> None:
+    for customer in PRICE_CALCULATION_CUSTOMERS:
+        if customer.get("enabled"):
+            ensure_default_price_rule_version(customer["key"])
+
+
+def ensure_default_price_rule_version(customer_key: str, quote_variant: str | None = None) -> str:
+    customer = enabled_price_customer(customer_key)
+    variant = normalize_price_quote_variant(customer_key, quote_variant)
+    active_version = get_setting(_active_key(customer_key, variant), "") or ""
+    if active_version and get_price_rule_file_path(customer_key, active_version, variant).exists():
+        return active_version
+    if customer_key == "jingwang" and variant == "old":
+        return ""
+
+    packaged_dir = DEFAULT_RULES_DIR / "price_calculation"
+    seed_map = {
+        "jingwang": (packaged_dir / "jingwang" / "new" / PRICE_RULE_FILENAME, packaged_dir / "jingwang" / "new" / TEST_DATA_FILENAME),
+        "plin": (packaged_dir / "plin" / PRICE_RULE_FILENAME, packaged_dir / "plin" / TEST_DATA_FILENAME),
+        "hanyu": (packaged_dir / "hanyu" / PRICE_RULE_FILENAME, packaged_dir / "hanyu" / TEST_DATA_FILENAME),
+        "wutong": (packaged_dir / "wutong" / PRICE_RULE_FILENAME, packaged_dir / "wutong" / TEST_DATA_FILENAME),
+        "eaton": (packaged_dir / "eaton" / PRICE_RULE_FILENAME, packaged_dir / "eaton" / TEST_DATA_FILENAME),
+        "taixing": (packaged_dir / "taixing" / PRICE_RULE_FILENAME, packaged_dir / "taixing" / TEST_DATA_FILENAME),
+        "aoshikang": (packaged_dir / "aoshikang" / PRICE_RULE_FILENAME, packaged_dir / "aoshikang" / TEST_DATA_FILENAME),
+    }
+    seed_files = seed_map.get(customer_key)
+    if not seed_files:
+        return ""
+
+    seed_price = seed_files[0] if isinstance(seed_files[0], Path) else DEFAULT_RULES_DIR / seed_files[0]
+    seed_test = seed_files[1] if isinstance(seed_files[1], Path) else DEFAULT_RULES_DIR / seed_files[1]
+    if not seed_price.exists():
+        return ""
+
+    version_prefix = f"{customer_key}_{variant}_bootstrap" if variant else f"{customer_key}_bootstrap"
+    version = datetime.now().strftime(f"{version_prefix}_%Y%m%d_%H%M%S")
+    version_dir = _versions_dir(customer_key, variant) / version
+    version_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(seed_price, version_dir / PRICE_RULE_FILENAME)
+    if seed_test.exists():
+        _copy_excel_as_xlsx(seed_test, version_dir / TEST_DATA_FILENAME)
+    validate_price_rule_files(customer_key, version_dir / PRICE_RULE_FILENAME, version_dir / TEST_DATA_FILENAME)
+
+    set_setting(_active_key(customer_key, variant), version)
+    append_price_rule_history(
+        customer_key,
+        {
+            "version": version,
+            "customer_key": customer_key,
+            "customer_label": customer["label"],
+            "quote_variant": variant,
+            "quote_variant_label": JINGWANG_QUOTE_VARIANTS.get(variant, ""),
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "updated_by": "system",
+            "remark": f"由内置{customer['label']}报价表和测试数据初始化",
+            "rule_file": seed_price.name,
+            "test_file": seed_test.name,
+        },
+        variant,
+    )
+    return version
+
+
+def save_new_price_rule_version(
+    customer_key: str,
+    rule_file: FileStorage,
+    test_file: FileStorage | None = None,
+    *,
+    updated_by: str,
+    remark: str,
+    quote_variant: str | None = None,
+) -> str:
+    customer = enabled_price_customer(customer_key)
+    variant = normalize_price_quote_variant(customer_key, quote_variant)
+    rule_name = secure_filename(rule_file.filename or PRICE_RULE_FILENAME) or PRICE_RULE_FILENAME
+    if Path(rule_name).suffix.lower() not in ALLOWED_RULE_EXTENSIONS:
+        raise ValueError("报价表仅支持 .xlsx / .xls / .xlsm 文件")
+    test_name = ""
+    if test_file and test_file.filename:
+        test_name = secure_filename(test_file.filename or TEST_DATA_FILENAME) or TEST_DATA_FILENAME
+        if Path(test_name).suffix.lower() not in ALLOWED_RULE_EXTENSIONS:
+            raise ValueError("测试数据仅支持 .xlsx / .xls / .xlsm 文件")
+
+    version_prefix = f"{customer_key}_{variant}_rules" if variant else f"{customer_key}_rules"
+    version = datetime.now().strftime(f"{version_prefix}_%Y%m%d_%H%M%S")
+    version_dir = _versions_dir(customer_key, variant) / version
+    version_dir.mkdir(parents=True, exist_ok=True)
+
+    uploaded_rule = version_dir / rule_name
+    rule_file.save(uploaded_rule)
+
+    _copy_price_rule(uploaded_rule, version_dir / PRICE_RULE_FILENAME)
+    if test_file and test_file.filename:
+        uploaded_test = version_dir / test_name
+        test_file.save(uploaded_test)
+        _copy_excel_as_xlsx(uploaded_test, version_dir / TEST_DATA_FILENAME)
+    else:
+        test_name = _copy_existing_test_data(customer_key, version_dir / TEST_DATA_FILENAME, variant)
+    validate_price_rule_files(customer_key, version_dir / PRICE_RULE_FILENAME, version_dir / TEST_DATA_FILENAME)
+
+    set_setting(_active_key(customer_key, variant), version)
+    append_price_rule_history(
+        customer_key,
+        {
+            "version": version,
+            "customer_key": customer_key,
+            "customer_label": customer["label"],
+            "quote_variant": variant,
+            "quote_variant_label": JINGWANG_QUOTE_VARIANTS.get(variant, ""),
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "updated_by": updated_by,
+            "remark": remark or f"网页上传{customer['label']}价格计算规则",
+            "rule_file": rule_file.filename or rule_name,
+            "test_file": test_name,
+        },
+        variant,
+    )
+    return version
+
+
+def validate_price_rule_files(customer_key: str, rule_path: str | Path, test_data_path: str | Path | None = None) -> None:
+    enabled_price_customer(customer_key)
+    detected = excel_format(rule_path)
+    if detected not in {"xlsx_zip", "xls_ole"}:
+        raise ValueError("报价表必须是 .xlsx / .xls / .xlsm 格式")
+    if customer_key == "plin":
+        load_workbook_compat(rule_path, data_only=True)
+        _validate_plin_rule_file(rule_path)
+        return
+    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang"}:
+        load_workbook_compat(rule_path, data_only=True)
+        return
+    if customer_key == "jingwang" and detected == "xls_ole":
+        load_workbook_compat(rule_path, data_only=True)
+    if not test_data_path or not Path(test_data_path).exists():
+        return
+    workbook = load_workbook_compat(test_data_path, data_only=False)
+    found_spec = False
+    for ws in workbook.worksheets:
+        headers = [str(cell.value).strip() if cell.value is not None else "" for cell in ws[1]]
+        if "客户规格" in headers:
+            found_spec = True
+            break
+    if not found_spec:
+        raise ValueError("测试数据缺少“客户规格”列")
+
+
+def _validate_plin_rule_file(rule_path: str | Path) -> None:
+    workbook = load_workbook_compat(rule_path, data_only=True)
+    has_ccl = has_pp = False
+    for ws in workbook.worksheets:
+        title = ws.title.upper()
+        for row_idx in range(1, min(ws.max_row, 30) + 1):
+            headers = {str(cell.value).strip() for cell in ws[row_idx] if cell.value is not None}
+            if {"产品类别", "厚度mm", "铜厚", "铜箔类型", "组合叠构"}.issubset(headers):
+                has_ccl = True
+            if {"Products", "Glass type", "Resin Content", "Length (m)", "Per M"}.issubset(headers):
+                has_pp = True
+        if title.endswith("PP") or "PP" in title:
+            has_pp = has_pp or False
+        if "基板" in ws.title:
+            has_ccl = has_ccl or False
+    if not has_ccl or not has_pp:
+        raise ValueError("普林报价表必须包含可识别的基板 Sheet 和 PP Sheet")
+
+
+def _copy_existing_test_data(customer_key: str, target: Path, quote_variant: str | None = None) -> str:
+    candidates: list[Path] = []
+    active_version = get_setting(_active_key(customer_key, quote_variant), "") or ""
+    if active_version:
+        candidates.append(_versions_dir(customer_key, quote_variant) / active_version / TEST_DATA_FILENAME)
+    packaged_dir = DEFAULT_RULES_DIR / "price_calculation"
+    default_test_map = {
+        "jingwang": packaged_dir / "jingwang" / "new" / TEST_DATA_FILENAME,
+        "plin": packaged_dir / "plin" / TEST_DATA_FILENAME,
+        "hanyu": packaged_dir / "hanyu" / TEST_DATA_FILENAME,
+        "wutong": packaged_dir / "wutong" / TEST_DATA_FILENAME,
+        "eaton": packaged_dir / "eaton" / TEST_DATA_FILENAME,
+        "taixing": packaged_dir / "taixing" / TEST_DATA_FILENAME,
+        "aoshikang": packaged_dir / "aoshikang" / TEST_DATA_FILENAME,
+    }
+    if customer_key in default_test_map:
+        default_test = default_test_map[customer_key]
+        candidates.append(default_test if isinstance(default_test, Path) else DEFAULT_RULES_DIR / default_test)
+
+    for source in candidates:
+        if not source.exists():
+            continue
+        if excel_format(source) == "xlsx_zip":
+            shutil.copy2(source, target)
+        else:
+            _copy_excel_as_xlsx(source, target)
+        return source.name
+    return ""
+
+
+def _copy_price_rule(source: Path, target: Path) -> None:
+    detected = excel_format(source)
+    if detected == "xlsx_zip":
+        shutil.copy2(source, target)
+        return
+    _copy_excel_as_xlsx(source, target)
+
+
+def _copy_excel_as_xlsx(source: Path, target: Path) -> None:
+    workbook = load_workbook_compat(source, data_only=False)
+    normalized = normalized_xlsx_source(source, workbook)
+    if normalized == target:
+        return
+    if normalized.suffix.lower() == ".xlsx":
+        shutil.copy2(normalized, target)
+    else:
+        workbook.save(target)

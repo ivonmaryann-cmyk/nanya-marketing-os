@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="NANYA flywheel logo mark">
+  <defs>
+    <linearGradient id="markBlue" x1="18" y1="103" x2="110" y2="25" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1737B8"/>
+      <stop offset=".52" stop-color="#2177D7"/>
+      <stop offset="1" stop-color="#43B8F5"/>
+    </linearGradient>
+    <linearGradient id="markYellow" x1="20" y1="17" x2="108" y2="111" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFE15A"/>
+      <stop offset=".58" stop-color="#F7C928"/>
+      <stop offset="1" stop-color="#E7A70F"/>
+    </linearGradient>
+    <filter id="shadow" x="-18%" y="-18%" width="136%" height="136%">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#151F5B" flood-opacity=".16"/>
+    </filter>
+  </defs>
+  <rect width="128" height="128" rx="30" fill="#FFFFFF"/>
+  <g filter="url(#shadow)">
+    <path d="M22 77c0-17.3 14-31.4 31.4-31.4 9.8 0 16.9 4.3 24.1 12.1L106 88"
+          fill="none" stroke="url(#markBlue)" stroke-width="20" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M106 51c0 17.3-14 31.4-31.4 31.4-9.8 0-16.9-4.3-24.1-12.1L22 40"
+          fill="none" stroke="url(#markYellow)" stroke-width="20" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M39 85 61.5 42 89 85" fill="none" stroke="#151F5B" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

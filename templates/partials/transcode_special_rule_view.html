@@ -1,0 +1,90 @@
+{% set view = active_view if active_view is defined else search_view %}
+{% if view %}
+<section>
+  {% if show_source_items|default(true) and view['source_items'] %}
+  <h2 class="view-section-title">原始特殊要求</h2>
+  <div class="source-grid">
+    {% for item in view['source_items'] %}
+    <div class="source-card">
+      <div class="source-meta">
+        {{ item['客户代码'] }}{% if item['客户简称'] %} / {{ item['客户简称'] }}{% endif %}
+        {% if item['来源行号'] %} · {{ item['来源行号'] }}{% endif %}
+      </div>
+      <p>{{ item['原始特殊需求'] }}</p>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <h2 class="view-section-title">编码结构影响</h2>
+  <div class="code-grid">
+    {% for cell in view['grid'] %}
+    <div class="code-cell {% if cell['items'] %}active{% endif %}">
+      <h3>{{ cell['label'] }}</h3>
+      {% if cell['items'] %}
+        {% for item in cell['items'] %}
+          {% if editable_view|default(false) %}
+          <button type="button" class="rule-pill rule-pill-button js-open-rule" data-rule-index="{{ item['index'] }}">
+            {{ item['summary'] }}
+            <br><small>#{{ item['index'] + 1 }} {{ item['status'] }}</small>
+          </button>
+          {% else %}
+          <span class="rule-pill">
+            {{ item['summary'] }}
+            <br><small>{{ item['status'] }}</small>
+          </span>
+          {% endif %}
+        {% endfor %}
+      {% else %}
+        <div class="code-empty">无特殊规则</div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+
+  <h2 class="view-section-title">非编码动作</h2>
+  {% if view['non_transcode_groups'] %}
+  <div class="action-grid">
+    {% for group in view['non_transcode_groups'] %}
+    <div class="action-card">
+      <h3>{{ group['label'] }}</h3>
+      {% for item in group['items'] %}
+        {% if editable_view|default(false) %}
+        <button type="button" class="rule-pill rule-pill-button js-open-rule" data-rule-index="{{ item['index'] }}">
+          {{ item['summary'] }}
+          <br><small>#{{ item['index'] + 1 }}</small>
+        </button>
+        {% else %}
+        <span class="rule-pill">{{ item['summary'] }}</span>
+        {% endif %}
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="muted-note">无仅保存不转码规则。</p>
+  {% endif %}
+
+  <h2 class="view-section-title">人工确认</h2>
+  {% if view['manual_items'] %}
+  <div class="action-grid">
+    {% for item in view['manual_items'] %}
+    <div class="manual-card">
+      <h3>待确认规则</h3>
+      {% if editable_view|default(false) %}
+      <button type="button" class="rule-pill rule-pill-button js-open-rule" data-rule-index="{{ item['index'] }}">
+        {{ item['summary'] }}
+        <br><small>#{{ item['index'] + 1 }} 待确认</small>
+      </button>
+      {% else %}
+      <p>{{ item['summary'] }}</p>
+      {% endif %}
+      <p class="muted-note">{{ item['rule'].get('原始特殊需求', '') }}</p>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="muted-note">无人工确认规则。</p>
+  {% endif %}
+</section>
+{% endif %}

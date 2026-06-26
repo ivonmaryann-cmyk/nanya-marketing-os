@@ -1,0 +1,387 @@
+{% extends "base.html" %}
+{% block title %}订单改价 | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('main.dashboard') }}">返回功能中心</a>
+  <span>功能中心 / 订单改价</span>
+</div>
+
+<section class="feature-hero order-reprice-hero">
+  <div class="hero-watermark feature-mark">REPRICE</div>
+  <div class="feature-hero-copy">
+    <div class="panel-tag">TEST WORKSPACE</div>
+    <h1>订单改价</h1>
+    <p>面向客户订单改价场景，支持客户明细与厂内明细匹配、430价格核对，以及客户改价结果与411厂内价格核对。每次选择一个功能上传 Excel，系统生成可下载的核对结果工作簿。</p>
+  </div>
+  <div class="feature-metrics">
+    <div>
+      <span>当前规则</span>
+      <strong>{{ active_rule_version }}</strong>
+    </div>
+    <div>
+      <span>客户</span>
+      <strong>可扩展配置</strong>
+    </div>
+    <div>
+      <span>输出结果</span>
+      <strong>单个结果工作簿</strong>
+    </div>
+  </div>
+</section>
+
+<section class="order-reprice-shell" data-active-mode="{{ active_job.order_reprice_mode if active_job else 'block1' }}">
+  <div class="work-column">
+    <article class="card task-card order-reprice-control">
+      <div class="section-head">
+        <div>
+          <div class="step-tag">客户选择</div>
+          <h2>改价与核对</h2>
+        </div>
+        <span class="rule-chip">胜宏当前可用</span>
+      </div>
+      <div class="customer-selector" role="list" aria-label="客户选择">
+        {% for customer in customers %}
+        <button type="button" class="customer-option {% if customer.enabled and loop.first %}active{% endif %}" data-customer="{{ customer.key }}" {% if not customer.enabled %}disabled{% endif %}>
+          <span>{{ customer.label }}</span>
+          <em>{{ "可用" if customer.enabled else "待接入" }}</em>
+        </button>
+        {% endfor %}
+      </div>
+
+      <div class="order-tabs" role="tablist" aria-label="订单改价功能">
+        {% for mode in customers[0].modes %}
+        <button type="button" class="order-tab" data-tab="{{ mode }}" role="tab">
+          {{ mode_meta[mode].tab }}
+        </button>
+        {% endfor %}
+      </div>
+    </article>
+
+    {% for mode in customers[0].modes %}
+    {% set meta = mode_meta[mode] %}
+    <article class="card task-card task-card-primary order-panel" data-panel="{{ mode }}" role="tabpanel">
+      <div class="task-card-title">
+        <div>
+          <div class="step-tag">{{ meta.tab }}</div>
+          <h2>{{ meta.title }}</h2>
+        </div>
+        <span class="rule-chip">{{ mode_labels[mode] }}</span>
+      </div>
+
+      <form method="post" action="{{ url_for('main.create_order_reprice_job_view') }}" enctype="multipart/form-data" class="form-grid order-reprice-form">
+        <input type="hidden" name="mode" value="{{ mode }}">
+        <input type="hidden" name="customer_key" value="shenghong">
+        <label class="upload-dropzone" data-upload-label data-file-label="客户明细">
+          <input type="file" name="customer_file" accept=".xlsx,.xls,.xlsm" required>
+          <span class="upload-icon">客户</span>
+          <strong>拖拽客户明细 Excel 到这里，或点击选择</strong>
+          <em>客户明细：未选择；{{ meta.customer_hint }}</em>
+        </label>
+        <label class="upload-dropzone" data-upload-label data-file-label="{{ meta.factory_label }}">
+          <input type="file" name="factory_file" accept=".xlsx,.xls,.xlsm" required>
+          <span class="upload-icon">{{ "411" if mode == "block3" else "430" }}</span>
+          <strong>拖拽{{ meta.factory_label }} Excel 到这里，或点击选择</strong>
+          <em>{{ meta.factory_label }}：未选择；{{ meta.factory_hint }}</em>
+        </label>
+        {% if mode == "block2" %}
+        <label class="upload-dropzone" data-upload-label data-file-label="报价单">
+          <input type="file" name="quote_files" accept=".xlsx,.xls,.xlsm" multiple required>
+          <span class="upload-icon">报价</span>
+          <strong>拖拽报价单到这里，或点击选择多个文件</strong>
+          <em>报价单：未选择；{{ meta.quote_hint }}</em>
+        </label>
+        {% endif %}
+        <button type="submit">{{ meta.button }}</button>
+      </form>
+
+      <div class="result-panel" data-result-panel="{{ mode }}">
+        <div class="section-head compact-head">
+          <div>
+            <div class="step-tag">结果统计</div>
+            <h2>{{ meta.tab }}结果</h2>
+          </div>
+          {% if active_job and active_job.order_reprice_mode == mode and active_job.status == 'completed' %}
+          <a class="primary-link compact" data-result-download href="{{ url_for('main.download', job_id=active_job.id, kind='result') }}">下载文件</a>
+          {% else %}
+          <a class="primary-link compact hidden" data-result-download href="#">下载文件</a>
+          {% endif %}
+        </div>
+        <div class="result-stats-grid" data-stats-grid="{{ mode }}">
+          {% if active_job and active_job.order_reprice_mode == mode and active_job.order_reprice_stats %}
+            {% for card in active_job.order_reprice_stats.cards %}
+            <div class="result-stat-card">
+              <span>{{ card.label }}</span>
+              <strong>{{ card.value }}</strong>
+            </div>
+            {% endfor %}
+          {% else %}
+          <div class="empty-result-card">任务完成后展示统计结果。</div>
+          {% endif %}
+        </div>
+      </div>
+    </article>
+    {% endfor %}
+
+    <article class="card task-card">
+      <div class="section-head">
+        <div>
+          <div class="step-tag">最近任务</div>
+          <h2>当前功能历史</h2>
+        </div>
+        <a href="{{ url_for('main.history') }}">查看全部</a>
+      </div>
+      <table class="table order-history-table">
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>客户</th>
+            <th>功能类型</th>
+            <th>状态</th>
+            <th>总记录数</th>
+            <th>异常/未匹配</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for job in jobs %}
+          <tr data-history-row data-mode="{{ job.order_reprice_mode }}">
+            <td>{{ job.created_at }}</td>
+            <td>{{ job.customer_label }}</td>
+            <td>{{ job.function_type }}</td>
+            <td><span class="status {{ job.status }}">{{ job.status }}</span></td>
+            <td>{{ job.display_total }}</td>
+            <td>{{ job.display_issue_count }}</td>
+            <td class="actions">
+              <a href="{{ url_for('main.job_detail', job_id=job.id) }}">查看结果</a>
+              {% if job.status == 'completed' %}
+              <a href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载文件</a>
+              {% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="7">还没有订单改价任务记录。</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </article>
+  </div>
+
+  <aside class="log-column">
+    <article class="card card-dark log-console order-log-console">
+      <div class="section-head">
+        <div>
+          <div class="console-tag">LIVE CONSOLE</div>
+          <h2>处理日志</h2>
+        </div>
+        {% if active_job %}
+        <a href="{{ url_for('main.job_detail', job_id=active_job.id) }}">详情</a>
+        {% endif %}
+      </div>
+      {% if active_job %}
+      <div id="live-panel" data-job-id="{{ active_job.id }}" data-mode="{{ active_job.order_reprice_mode }}">
+        <div class="progress-meta">
+          <div>
+            <span>当前任务</span>
+            <strong>#{{ active_job.id }} {{ active_job.function_type }}</strong>
+          </div>
+          <div>
+            <span>状态</span>
+            <strong id="live-status">{{ active_job.status }}</strong>
+          </div>
+        </div>
+        <div class="progress-stats">
+          <div><span>进度</span><strong id="live-progress">{{ active_job.current_row }}/{{ active_job.total_rows }}</strong></div>
+          <div><span>成功</span><strong id="live-success">{{ active_job.success_count }}</strong></div>
+          <div><span>失败</span><strong id="live-fail">{{ active_job.fail_count }}</strong></div>
+          <div><span>跳过</span><strong id="live-skip">{{ active_job.skip_count }}</strong></div>
+        </div>
+        <div class="progress-bar">
+          <div id="live-bar"></div>
+        </div>
+        <pre id="live-log" class="live-log">{{ active_job.log_text or '任务已创建，等待处理日志...' }}</pre>
+        {% if active_job.status in ['queued', 'running'] %}
+        <form method="post" action="{{ url_for('main.cancel_job', job_id=active_job.id) }}" class="job-cancel-form">
+          <button type="submit" class="danger-button">停止任务</button>
+        </form>
+        {% endif %}
+        <div id="live-download" class="{% if active_job.status != 'completed' %}hidden{% endif %}">
+          <div class="result-ready">
+            <a class="primary-link" href="{{ url_for('main.download', job_id=active_job.id, kind='result') }}">下载结果文件</a>
+          </div>
+        </div>
+      </div>
+      {% else %}
+      <div class="empty-log">还没有订单改价任务，上传 Excel 后这里会实时显示处理动态。</div>
+      {% endif %}
+    </article>
+  </aside>
+</section>
+
+<script>
+  const allowedExtensions = [".xlsx", ".xls", ".xlsm"];
+  const statLabels = {
+    block1: ["总记录数", "匹配成功数", "项次拆分匹配数", "未匹配数", "匹配成功率"],
+    block2: ["总记录数", "价格正确数", "价格异常数", "未匹配数", "异常率"],
+    block3: ["总记录数", "价格正确数", "价格错误数", "未匹配数"]
+  };
+
+  function preventFileOpen(event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  function fileListText(files) {
+    if (!files.length) return "未选择";
+    if (files.length === 1) return files[0].name;
+    return Array.from(files).map(file => file.name).join("、");
+  }
+
+  function setFiles(label, files) {
+    const input = label.querySelector("input[type=file]");
+    const title = label.querySelector("strong");
+    const meta = label.querySelector("em");
+    const fileLabel = label.dataset.fileLabel || "文件";
+    const valid = Array.from(files).every(file => allowedExtensions.some(ext => file.name.toLowerCase().endsWith(ext)));
+    if (!valid) {
+      title.textContent = "请选择 Excel 文件";
+      meta.textContent = `${fileLabel}：仅支持 .xlsx / .xls / .xlsm`;
+      label.classList.remove("has-file");
+      input.value = "";
+      return;
+    }
+    const transfer = new DataTransfer();
+    Array.from(files).forEach(file => transfer.items.add(file));
+    input.files = transfer.files;
+    title.textContent = input.multiple ? "已选择多个文件" : "文件已选择";
+    meta.textContent = `${fileLabel}：${fileListText(input.files)}`;
+    label.classList.add("has-file");
+  }
+
+  function activateMode(mode) {
+    document.querySelectorAll(".order-tab").forEach(tab => {
+      const active = tab.dataset.tab === mode;
+      tab.classList.toggle("active", active);
+      tab.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    document.querySelectorAll(".order-panel").forEach(panel => {
+      panel.classList.toggle("hidden", panel.dataset.panel !== mode);
+    });
+    document.querySelectorAll("[data-history-row]").forEach(row => {
+      row.classList.toggle("hidden", row.dataset.mode !== mode);
+    });
+  }
+
+  function renderStats(mode, cards) {
+    const grid = document.querySelector(`[data-stats-grid="${mode}"]`);
+    if (!grid) return;
+    const items = cards && cards.length ? cards : (statLabels[mode] || []).map(label => ({ label, value: "-" }));
+    grid.innerHTML = items.map(card => `
+      <div class="result-stat-card">
+        <span>${card.label}</span>
+        <strong>${card.value}</strong>
+      </div>
+    `).join("");
+  }
+
+  function setResultDownload(mode, jobId, visible) {
+    const panel = document.querySelector(`[data-result-panel="${mode}"]`);
+    const link = panel ? panel.querySelector("[data-result-download]") : null;
+    if (!link) return;
+    link.href = `/download/${jobId}/result`;
+    link.classList.toggle("hidden", !visible);
+  }
+
+  ["dragenter", "dragover", "dragleave", "drop"].forEach(eventName => {
+    window.addEventListener(eventName, preventFileOpen);
+  });
+
+  document.querySelectorAll("[data-upload-label]").forEach(label => {
+    const input = label.querySelector("input[type=file]");
+    ["dragenter", "dragover"].forEach(eventName => {
+      label.addEventListener(eventName, event => {
+        preventFileOpen(event);
+        label.classList.add("is-dragover");
+      });
+    });
+    ["dragleave", "drop"].forEach(eventName => {
+      label.addEventListener(eventName, event => {
+        preventFileOpen(event);
+        label.classList.remove("is-dragover");
+      });
+    });
+    label.addEventListener("drop", event => setFiles(label, event.dataTransfer.files));
+    input.addEventListener("change", () => setFiles(label, input.files));
+  });
+
+  document.querySelectorAll(".order-reprice-form").forEach(form => {
+    form.addEventListener("submit", event => {
+      const missing = Array.from(form.querySelectorAll("input[type=file][required]")).find(input => !input.files.length);
+      if (missing) {
+        event.preventDefault();
+        const label = missing.closest("[data-upload-label]");
+        const fileLabel = label.dataset.fileLabel || "文件";
+        label.querySelector("strong").textContent = "请先选择必需的 Excel 文件";
+        label.querySelector("em").textContent = `${fileLabel}：未选择`;
+        return;
+      }
+      const button = form.querySelector("button[type=submit]");
+      if (button.disabled) {
+        event.preventDefault();
+        return;
+      }
+      button.disabled = true;
+      button.textContent = "正在上传...";
+    });
+  });
+
+  document.querySelectorAll(".order-tab").forEach(tab => {
+    tab.addEventListener("click", () => activateMode(tab.dataset.tab));
+  });
+
+  const shell = document.querySelector(".order-reprice-shell");
+  activateMode(shell ? shell.dataset.activeMode : "block1");
+
+  const panel = document.getElementById("live-panel");
+  if (panel) {
+    const jobId = panel.dataset.jobId;
+    const mode = panel.dataset.mode || "block1";
+    const bar = document.getElementById("live-bar");
+    const statusEl = document.getElementById("live-status");
+    const progressEl = document.getElementById("live-progress");
+    const successEl = document.getElementById("live-success");
+    const failEl = document.getElementById("live-fail");
+    const skipEl = document.getElementById("live-skip");
+    const logEl = document.getElementById("live-log");
+    const downloadEl = document.getElementById("live-download");
+
+    async function refreshJob() {
+      const response = await fetch(`/api/jobs/${jobId}`);
+      if (!response.ok) return;
+      const job = await response.json();
+      const total = Number(job.total_rows || 0);
+      const current = Number(job.current_row || 0);
+      const percent = total ? Math.min(100, Math.round(current / total * 100)) : 0;
+      bar.style.width = `${percent}%`;
+      statusEl.textContent = job.status;
+      progressEl.textContent = `${current}/${total}`;
+      successEl.textContent = job.success_count || 0;
+      failEl.textContent = job.fail_count || 0;
+      skipEl.textContent = job.skip_count || 0;
+      logEl.textContent = job.log_text || "任务已创建，等待处理日志...";
+      logEl.scrollTop = logEl.scrollHeight;
+      if (job.order_reprice_stats && job.order_reprice_stats.cards) {
+        renderStats(mode, job.order_reprice_stats.cards);
+      }
+      if (job.status === "completed") {
+        downloadEl.classList.remove("hidden");
+        setResultDownload(mode, jobId, true);
+      }
+      if (["completed", "failed", "canceled"].includes(job.status)) {
+        clearInterval(timer);
+      }
+    }
+    const timer = setInterval(refreshJob, 1500);
+    refreshJob();
+  }
+</script>
+{% endblock %}

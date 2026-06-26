@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}任务详情 | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('main.history') }}">返回历史记录</a>
+  <span>历史记录 / 任务详情</span>
+</div>
+
+<section class="card">
+  <div class="section-head">
+    <div>
+      <div class="panel-tag">任务 #{{ job.id }}</div>
+      <h1>{{ job.source_filename }}</h1>
+    </div>
+    <a href="{{ url_for('main.history') }}">查看历史</a>
+  </div>
+
+  <div class="job-grid" id="job-panel">
+    <div><span>状态</span><strong id="job-status">{{ job.status }}</strong></div>
+    <div><span>规则版本</span><strong>{{ job.rule_version }}</strong></div>
+    <div><span>创建时间</span><strong>{{ job.created_at }}</strong></div>
+    <div><span>完成时间</span><strong id="job-completed">{{ job.completed_at or '-' }}</strong></div>
+    <div><span>成功/失败/跳过</span><strong id="job-counts">{{ job.success_count }}/{{ job.fail_count }}/{{ job.skip_count }}</strong></div>
+  </div>
+
+  <div id="download-box" class="{% if job.status != 'completed' %}hidden{% endif %}">
+    <a class="primary-link" href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载结果文件</a>
+  </div>
+
+  {% if job.status in ['queued', 'running'] %}
+  <form method="post" action="{{ url_for('main.cancel_job', job_id=job.id) }}" class="job-cancel-form">
+    <button type="submit" class="danger-button">停止任务</button>
+  </form>
+  {% endif %}
+
+  <pre id="job-error" class="error-box {% if not job.error_message %}hidden{% endif %}">{{ job.error_message or '' }}</pre>
+</section>
+
+<script>
+  const statusEl = document.getElementById("job-status");
+  const countsEl = document.getElementById("job-counts");
+  const completedEl = document.getElementById("job-completed");
+  const errorEl = document.getElementById("job-error");
+  const downloadBox = document.getElementById("download-box");
+
+  function refreshJob() {
+    fetch("{{ url_for('main.api_job_detail', job_id=job.id) }}")
+      .then(response => response.json())
+      .then(data => {
+        if (data.error) return;
+        statusEl.textContent = data.status;
+        countsEl.textContent = `${data.success_count}/${data.fail_count}/${data.skip_count}`;
+        completedEl.textContent = data.completed_at || "-";
+        if (data.status === "completed") {
+          downloadBox.classList.remove("hidden");
+        }
+        if (data.error_message) {
+          errorEl.textContent = data.error_message;
+          errorEl.classList.remove("hidden");
+        }
+        if (data.status === "running" || data.status === "queued") {
+          setTimeout(refreshJob, 2000);
+        }
+      });
+  }
+
+  if (statusEl.textContent === "running" || statusEl.textContent === "queued") {
+    setTimeout(refreshJob, 1000);
+  }
+</script>
+{% endblock %}

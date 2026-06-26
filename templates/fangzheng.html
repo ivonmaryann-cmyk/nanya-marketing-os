@@ -1,0 +1,286 @@
+{% extends "base.html" %}
+{% block title %}方正价格计算 | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('main.dashboard') }}">返回功能中心</a>
+  <span>功能中心 / 方正价格计算</span>
+</div>
+
+<section class="feature-hero">
+  <div class="hero-watermark feature-mark">FANGZHENG</div>
+  <div class="feature-hero-copy">
+    <div class="panel-tag">BETA WORKSPACE</div>
+    <h1>方正价格计算</h1>
+    <p>上传报价 Excel 后，系统自动识别业务 Sheet 和物料描述列，并用当前规则批量计算价格。右侧实时显示处理日志、命中情况和未命中原因。</p>
+    <div class="hero-actions">
+      <a class="feature-action" href="{{ url_for('main.admin_rules') }}">方正规则管理</a>
+      <a class="secondary-link" href="{{ url_for('main.rule_doc', feature='fangzheng') }}">计算规则说明</a>
+    </div>
+  </div>
+  <div class="feature-metrics">
+    <div>
+      <span>当前规则版本</span>
+      <strong>{{ active_rule_version }}</strong>
+    </div>
+    <div>
+      <span>输入识别</span>
+      <strong>自动识别 Sheet / 物料列</strong>
+    </div>
+    <div>
+      <span>输出方式</span>
+      <strong>保持 Excel 结果格式</strong>
+    </div>
+  </div>
+  <div class="single-quote-panel" id="single-quote-panel">
+    <form class="single-quote-form" id="single-quote-form" data-endpoint="{{ url_for('main.api_fangzheng_quote') }}" data-submit-text="计算单条价格" data-loading-meta="正在读取当前方正规则">
+      <label for="single-spec">
+        <span>单条客户规格</span>
+        <textarea id="single-spec" name="spec" rows="4" placeholder="粘贴一条客户规格，系统会按当前方正规则即时计算"></textarea>
+      </label>
+      <button type="submit" id="single-quote-submit">计算单条价格</button>
+    </form>
+    <div class="single-quote-result" id="single-quote-result" aria-live="polite">
+      <span>单条结果</span>
+      <strong id="single-quote-price">等待输入</strong>
+      <em id="single-quote-meta">结果会显示在这里</em>
+      <p id="single-quote-note">粘贴客户规格后点击计算，不会写入任务历史。</p>
+    </div>
+  </div>
+</section>
+
+<section class="split-layout">
+  <div class="work-column">
+    <article class="card task-card task-card-primary">
+      <div class="task-card-title">
+        <div>
+          <div class="step-tag">第一步</div>
+          <h2>上传 Excel 文件</h2>
+        </div>
+        <span class="rule-chip">支持 .xlsx / .xls / .xlsm</span>
+      </div>
+      <form method="post" action="{{ url_for('main.create_job_view') }}" enctype="multipart/form-data" class="form-grid" id="upload-form">
+        <label class="upload-dropzone" id="upload-dropzone" for="excel-file">
+          <input id="excel-file" type="file" name="excel_file" accept=".xlsx,.xls,.xlsm" required>
+          <span class="upload-icon">Excel</span>
+          <strong id="upload-title">拖拽 Excel 到这里，或点击选择文件</strong>
+          <em id="upload-filename">支持 .xlsx / .xls / .xlsm</em>
+        </label>
+        <button type="submit">开始计算</button>
+      </form>
+    </article>
+
+    <article class="card task-card">
+      <div class="section-head">
+        <div>
+          <div class="step-tag">第二步</div>
+          <h2>最近任务 / 该功能历史</h2>
+        </div>
+        <a href="{{ url_for('main.history') }}">查看全部</a>
+      </div>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>文件</th>
+            <th>状态</th>
+            <th>时间</th>
+            <th>结果</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for job in jobs %}
+          <tr>
+            <td>#{{ job.id }}</td>
+            <td><a href="{{ url_for('main.job_detail', job_id=job.id) }}">{{ job.source_filename }}</a></td>
+            <td><span class="status {{ job.status }}">{{ job.status }}</span></td>
+            <td>{{ job.created_at }}</td>
+            <td>
+              {% if job.status == 'completed' %}
+              <div class="result-actions">
+                <a class="primary-link compact" href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载结果</a>
+              </div>
+              {% else %}
+              -
+              {% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5">还没有计算记录。</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </article>
+  </div>
+
+  <aside class="log-column">
+    <article class="card card-dark log-console">
+      <div class="section-head">
+        <div>
+          <div class="console-tag">LIVE CONSOLE</div>
+          <h2>处理日志</h2>
+        </div>
+        {% if active_job %}
+        <a href="{{ url_for('main.job_detail', job_id=active_job.id) }}">详情</a>
+        {% endif %}
+      </div>
+      {% if active_job %}
+      <div id="live-panel" data-job-id="{{ active_job.id }}">
+        <div class="progress-meta">
+          <div>
+            <span>当前任务</span>
+            <strong>#{{ active_job.id }} {{ active_job.source_filename }}</strong>
+          </div>
+          <div>
+            <span>状态</span>
+            <strong id="live-status">{{ active_job.status }}</strong>
+          </div>
+        </div>
+        <div class="progress-stats">
+          <div><span>进度</span><strong id="live-progress">{{ active_job.current_row }}/{{ active_job.total_rows }}</strong></div>
+          <div><span>成功</span><strong id="live-success">{{ active_job.success_count }}</strong></div>
+          <div><span>失败</span><strong id="live-fail">{{ active_job.fail_count }}</strong></div>
+          <div><span>跳过</span><strong id="live-skip">{{ active_job.skip_count }}</strong></div>
+        </div>
+        <div class="progress-bar">
+          <div id="live-bar"></div>
+        </div>
+        <pre id="live-log" class="live-log">{{ active_job.log_text or '任务已创建，等待处理日志...' }}</pre>
+        {% if active_job.status in ['queued', 'running'] %}
+        <form method="post" action="{{ url_for('main.cancel_job', job_id=active_job.id) }}" class="job-cancel-form">
+          <button type="submit" class="danger-button">停止任务</button>
+        </form>
+        {% endif %}
+        <div id="live-download" class="{% if active_job.status != 'completed' %}hidden{% endif %}">
+          <div class="result-ready">
+            <a class="primary-link" href="{{ url_for('main.download', job_id=active_job.id, kind='result') }}">下载结果文件</a>
+          </div>
+        </div>
+      </div>
+      {% else %}
+      <div class="empty-log">还没有任务，上传 Excel 后这里会实时显示处理动态。</div>
+      {% endif %}
+    </article>
+  </aside>
+</section>
+
+<script src="{{ url_for('static', filename='single_quote.js') }}"></script>
+<script>
+  const uploadForm = document.getElementById("upload-form");
+  const dropzone = document.getElementById("upload-dropzone");
+  const fileInput = document.getElementById("excel-file");
+  const uploadTitle = document.getElementById("upload-title");
+  const uploadFilename = document.getElementById("upload-filename");
+  const uploadSubmit = uploadForm.querySelector('button[type="submit"]');
+  const allowedExtensions = [".xlsx", ".xls", ".xlsm"];
+
+  function preventFileOpen(event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  function setSelectedFile(file) {
+    if (!file) return;
+    const lowerName = file.name.toLowerCase();
+    const isExcel = allowedExtensions.some(ext => lowerName.endsWith(ext));
+    if (!isExcel) {
+      uploadTitle.textContent = "请选择 Excel 文件";
+      uploadFilename.textContent = "仅支持 .xlsx / .xls / .xlsm";
+      dropzone.classList.remove("has-file");
+      fileInput.value = "";
+      return;
+    }
+
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    fileInput.files = transfer.files;
+    uploadTitle.textContent = "文件已选择";
+    uploadFilename.textContent = file.name;
+    dropzone.classList.add("has-file");
+  }
+
+  ["dragenter", "dragover", "dragleave", "drop"].forEach(eventName => {
+    window.addEventListener(eventName, preventFileOpen);
+  });
+
+  ["dragenter", "dragover"].forEach(eventName => {
+    dropzone.addEventListener(eventName, event => {
+      preventFileOpen(event);
+      dropzone.classList.add("is-dragover");
+    });
+  });
+
+  ["dragleave", "drop"].forEach(eventName => {
+    dropzone.addEventListener(eventName, event => {
+      preventFileOpen(event);
+      dropzone.classList.remove("is-dragover");
+    });
+  });
+
+  dropzone.addEventListener("drop", event => {
+    setSelectedFile(event.dataTransfer.files[0]);
+  });
+
+  fileInput.addEventListener("change", () => {
+    setSelectedFile(fileInput.files[0]);
+  });
+
+  uploadForm.addEventListener("submit", event => {
+    if (!fileInput.files.length) {
+      event.preventDefault();
+      uploadTitle.textContent = "请先选择一个 Excel 文件";
+      uploadFilename.textContent = "拖拽到此处或点击选择";
+      return;
+    }
+    if (uploadSubmit.disabled) {
+      event.preventDefault();
+      return;
+    }
+    uploadSubmit.disabled = true;
+    uploadSubmit.textContent = "正在提交...";
+  });
+</script>
+
+{% if active_job %}
+<script>
+  const panel = document.getElementById("live-panel");
+  const jobId = panel.dataset.jobId;
+  const bar = document.getElementById("live-bar");
+  const statusEl = document.getElementById("live-status");
+  const progressEl = document.getElementById("live-progress");
+  const successEl = document.getElementById("live-success");
+  const failEl = document.getElementById("live-fail");
+  const skipEl = document.getElementById("live-skip");
+  const logEl = document.getElementById("live-log");
+  const downloadEl = document.getElementById("live-download");
+
+  function render(data) {
+    statusEl.textContent = data.status;
+    progressEl.textContent = `${data.current_row}/${data.total_rows}`;
+    successEl.textContent = data.success_count;
+    failEl.textContent = data.fail_count;
+    skipEl.textContent = data.skip_count;
+    logEl.textContent = data.log_text || "任务已创建，等待处理日志...";
+    logEl.scrollTop = logEl.scrollHeight;
+    const percent = data.total_rows ? Math.min(100, Math.round(data.current_row * 100 / data.total_rows)) : 0;
+    bar.style.width = `${percent}%`;
+    if (data.status === "completed") {
+      downloadEl.classList.remove("hidden");
+    }
+  }
+
+  function poll() {
+    fetch(`/api/jobs/${jobId}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.error) return;
+        render(data);
+        if (data.status === "queued" || data.status === "running") {
+          setTimeout(poll, 1200);
+        }
+      });
+  }
+
+  poll();
+</script>
+{% endif %}
+{% endblock %}

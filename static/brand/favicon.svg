@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="NANYA Marketing OS">
+  <defs>
+    <linearGradient id="nyBlue" x1="10" y1="54" x2="54" y2="10" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1737b8"/>
+      <stop offset="0.55" stop-color="#1d8be6"/>
+      <stop offset="1" stop-color="#63c7ff"/>
+    </linearGradient>
+    <linearGradient id="nyGold" x1="10" y1="8" x2="54" y2="56" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffd542"/>
+      <stop offset="0.55" stop-color="#f4b51c"/>
+      <stop offset="1" stop-color="#d79500"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="#f4f7fe"/>
+  <path d="M15 39c0-8.4 6.8-15.2 15.2-15.2 4.4 0 7.9 1.8 11.1 5l7.8 7.7"
+        fill="none" stroke="url(#nyBlue)" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M49 25c0 8.4-6.8 15.2-15.2 15.2-4.4 0-7.9-1.8-11.1-5l-7.8-7.7"
+        fill="none" stroke="url(#nyGold)" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M20 41 30.2 23 44 41" fill="none" stroke="#10235f" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity=".9"/>
+</svg>

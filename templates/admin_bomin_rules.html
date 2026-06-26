@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}博敏规则管理 | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('main.bomin') }}">返回博敏价格计算</a>
+  <span>博敏价格计算 / 规则管理</span>
+</div>
+
+<section class="hero">
+  <div>
+    <div class="panel-tag">当前生效版本</div>
+    <h1>{{ active_rule_version }}</h1>
+    <p>未上传新价格表时，系统使用内置博敏价格表；上传新 Excel 后，后续博敏计算会立即使用新版本。</p>
+  </div>
+  <div class="hero-note">
+    <div>当前文件</div>
+    <strong>{{ rule_path }}</strong>
+  </div>
+</section>
+
+<section class="card">
+  <h2>上传新版博敏价格表</h2>
+  <form method="post" enctype="multipart/form-data" class="form-grid">
+    <label>
+      <span>博敏价格表 Excel</span>
+      <input type="file" name="rule_file" accept=".xls,.xlsx,.xlsm" required>
+    </label>
+    <label>
+      <span>更新备注</span>
+      <input type="text" name="remark" placeholder="例如：2026年6月博敏最新价格表">
+    </label>
+    <label>
+      <span>管理员密码</span>
+      <input type="password" name="admin_password" required>
+    </label>
+    <button type="submit">保存并生效</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>最近博敏规则版本</h2>
+  <table class="table">
+    <thead>
+      <tr><th>版本</th><th>更新时间</th><th>更新人</th><th>文件</th><th>备注</th></tr>
+    </thead>
+    <tbody>
+      {% for item in rule_history %}
+      <tr>
+        <td>{{ item.version }}</td>
+        <td>{{ item.updated_at }}</td>
+        <td>{{ item.updated_by }}</td>
+        <td>{{ item.rule_file }}</td>
+        <td>{{ item.remark }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5">暂无博敏规则版本记录。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

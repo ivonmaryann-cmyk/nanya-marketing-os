@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}{{ doc.title }} | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+<div class="page-backbar">
+  {% if feature == 'transcode' %}
+  <a class="back-link" href="{{ url_for('main.transcode') }}">返回营销自动化转码</a>
+  <span>营销自动化转码 / 规则说明</span>
+  {% elif feature == 'shennan' %}
+  <a class="back-link" href="{{ url_for('main.shennan') }}">返回深南价格计算</a>
+  <span>深南价格计算 / 规则说明</span>
+  {% elif feature == 'hushi' %}
+  <a class="back-link" href="{{ url_for('main.hushi') }}">返回沪士价格计算</a>
+  <span>沪士价格计算 / 规则说明</span>
+  {% else %}
+  <a class="back-link" href="{{ url_for('main.fangzheng') }}">返回方正价格计算</a>
+  <span>方正价格计算 / 规则说明</span>
+  {% endif %}
+</div>
+
+<section class="hero">
+  <div>
+    <div class="panel-tag">规则说明</div>
+    <h1>{{ doc.title }}</h1>
+    <p>这里记录当前功能的主要计算逻辑、匹配逻辑和未命中规则。后续逻辑更新后同步维护。</p>
+  </div>
+</section>
+
+<section class="card">
+  <div class="doc-list">
+    {% for item in doc["items"] %}
+    <div class="doc-item">
+      <span>{{ loop.index }}</span>
+      <p>{{ item }}</p>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

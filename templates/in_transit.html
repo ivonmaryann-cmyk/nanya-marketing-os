@@ -1,0 +1,248 @@
+{% extends "base.html" %}
+{% block title %}在途核对 | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('main.dashboard') }}">返回功能中心</a>
+  <span>功能中心 / 在途核对</span>
+</div>
+
+<section class="feature-hero">
+  <div class="hero-watermark feature-mark">IN TRANSIT</div>
+  <div class="feature-hero-copy">
+    <div class="panel-tag">TEST WORKSPACE</div>
+    <h1>在途核对</h1>
+    <p>上传包含厂内明细和客户明细两张 Sheet 的 Excel，系统按客户单号、物料编码、项次和到货日期做一对一核对，并输出数量、品名、日期和待出货明细结果。</p>
+  </div>
+  <div class="feature-metrics">
+    <div>
+      <span>当前规则</span>
+      <strong>{{ active_rule_version }}</strong>
+    </div>
+    <div>
+      <span>输入文件</span>
+      <strong>单 Excel / 两张 Sheet</strong>
+    </div>
+    <div>
+      <span>输出结果</span>
+      <strong>四张核对 Sheet</strong>
+    </div>
+  </div>
+</section>
+
+<section class="split-layout">
+  <div class="work-column">
+    <article class="card task-card task-card-primary">
+      <div class="task-card-title">
+        <div>
+          <div class="step-tag">第一步</div>
+          <h2>上传一份 Excel 文件</h2>
+        </div>
+        <span class="rule-chip">支持 .xlsx / .xls / .xlsm</span>
+      </div>
+      <form method="post" action="{{ url_for('main.create_in_transit_job_view') }}" enctype="multipart/form-data" class="form-grid" id="upload-form">
+        <label class="upload-dropzone" id="in-transit-dropzone" for="in-transit-excel-file">
+          <input id="in-transit-excel-file" type="file" name="in_transit_excel_file" accept=".xlsx,.xls,.xlsm" required>
+          <span class="upload-icon">在途</span>
+          <strong id="in-transit-upload-title">拖拽在途核对 Excel 到这里，或点击选择文件</strong>
+          <em id="in-transit-upload-filename">需包含厂内明细和客户明细两张 Sheet</em>
+        </label>
+        <button type="submit">开始核对</button>
+      </form>
+    </article>
+
+    <article class="card task-card">
+      <div class="section-head">
+        <div>
+          <div class="step-tag">第二步</div>
+          <h2>最近任务 / 该功能历史</h2>
+        </div>
+        <a href="{{ url_for('main.history') }}">查看全部</a>
+      </div>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>文件</th>
+            <th>状态</th>
+            <th>时间</th>
+            <th>结果</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for job in jobs %}
+          <tr>
+            <td>#{{ job.id }}</td>
+            <td><a href="{{ url_for('main.job_detail', job_id=job.id) }}">{{ job.source_filename }}</a></td>
+            <td><span class="status {{ job.status }}">{{ job.status }}</span></td>
+            <td>{{ job.created_at }}</td>
+            <td>
+              {% if job.status == 'completed' %}
+              <a class="primary-link compact" href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载结果</a>
+              {% else %}
+              -
+              {% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5">还没有在途核对记录。</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </article>
+  </div>
+
+  <aside class="log-column">
+    <article class="card card-dark log-console">
+      <div class="section-head">
+        <div>
+          <div class="console-tag">LIVE CONSOLE</div>
+          <h2>处理日志</h2>
+        </div>
+        {% if active_job %}
+        <a href="{{ url_for('main.job_detail', job_id=active_job.id) }}">详情</a>
+        {% endif %}
+      </div>
+      {% if active_job %}
+      <div id="live-panel" data-job-id="{{ active_job.id }}">
+        <div class="progress-meta">
+          <div>
+            <span>当前任务</span>
+            <strong>#{{ active_job.id }} {{ active_job.source_filename }}</strong>
+          </div>
+          <div>
+            <span>状态</span>
+            <strong id="live-status">{{ active_job.status }}</strong>
+          </div>
+        </div>
+        <div class="progress-stats">
+          <div><span>进度</span><strong id="live-progress">{{ active_job.current_row }}/{{ active_job.total_rows }}</strong></div>
+          <div><span>成功</span><strong id="live-success">{{ active_job.success_count }}</strong></div>
+          <div><span>失败</span><strong id="live-fail">{{ active_job.fail_count }}</strong></div>
+          <div><span>跳过</span><strong id="live-skip">{{ active_job.skip_count }}</strong></div>
+        </div>
+        <div class="progress-bar">
+          <div id="live-bar"></div>
+        </div>
+        <pre id="live-log" class="live-log">{{ active_job.log_text or '任务已创建，等待处理日志...' }}</pre>
+        {% if active_job.status in ['queued', 'running'] %}
+        <form method="post" action="{{ url_for('main.cancel_job', job_id=active_job.id) }}" class="job-cancel-form">
+          <button type="submit" class="danger-button">停止任务</button>
+        </form>
+        {% endif %}
+        <div id="live-download" class="{% if active_job.status != 'completed' %}hidden{% endif %}">
+          <div class="result-ready">
+            <a class="primary-link" href="{{ url_for('main.download', job_id=active_job.id, kind='result') }}">下载结果文件</a>
+          </div>
+        </div>
+      </div>
+      {% else %}
+      <div class="empty-log">还没有在途核对任务，上传 Excel 后这里会实时显示处理动态。</div>
+      {% endif %}
+    </article>
+  </aside>
+</section>
+
+<script>
+  const uploadForm = document.getElementById("upload-form");
+  const allowedExtensions = [".xlsx", ".xls", ".xlsm"];
+  const uploadTargets = [
+    {
+      dropzone: document.getElementById("in-transit-dropzone"),
+      input: document.getElementById("in-transit-excel-file"),
+      title: document.getElementById("in-transit-upload-title"),
+      filename: document.getElementById("in-transit-upload-filename"),
+      emptyText: "请先选择在途核对 Excel"
+    }
+  ];
+
+  function preventFileOpen(event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  function setSelectedFile(target, file) {
+    if (!file) return;
+    const lowerName = file.name.toLowerCase();
+    const isExcel = allowedExtensions.some(ext => lowerName.endsWith(ext));
+    if (!isExcel) {
+      target.title.textContent = "请选择 Excel 文件";
+      target.filename.textContent = "仅支持 .xlsx / .xls / .xlsm";
+      target.dropzone.classList.remove("has-file");
+      target.input.value = "";
+      return;
+    }
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    target.input.files = transfer.files;
+    target.title.textContent = "文件已选择";
+    target.filename.textContent = file.name;
+    target.dropzone.classList.add("has-file");
+  }
+
+  ["dragenter", "dragover", "dragleave", "drop"].forEach(eventName => {
+    window.addEventListener(eventName, preventFileOpen);
+  });
+
+  uploadTargets.forEach(target => {
+    ["dragenter", "dragover"].forEach(eventName => {
+      target.dropzone.addEventListener(eventName, event => {
+        preventFileOpen(event);
+        target.dropzone.classList.add("is-dragover");
+      });
+    });
+    ["dragleave", "drop"].forEach(eventName => {
+      target.dropzone.addEventListener(eventName, event => {
+        preventFileOpen(event);
+        target.dropzone.classList.remove("is-dragover");
+      });
+    });
+    target.dropzone.addEventListener("drop", event => setSelectedFile(target, event.dataTransfer.files[0]));
+    target.input.addEventListener("change", () => setSelectedFile(target, target.input.files[0]));
+  });
+
+  uploadForm.addEventListener("submit", event => {
+    const missing = uploadTargets.find(target => !target.input.files.length);
+    if (missing) {
+      event.preventDefault();
+      missing.title.textContent = missing.emptyText;
+      missing.filename.textContent = "拖拽到此处或点击选择";
+    }
+  });
+
+  const livePanel = document.getElementById("live-panel");
+  if (livePanel) {
+    const jobId = livePanel.dataset.jobId;
+    const statusEl = document.getElementById("live-status");
+    const progressEl = document.getElementById("live-progress");
+    const successEl = document.getElementById("live-success");
+    const failEl = document.getElementById("live-fail");
+    const skipEl = document.getElementById("live-skip");
+    const logEl = document.getElementById("live-log");
+    const barEl = document.getElementById("live-bar");
+    const downloadEl = document.getElementById("live-download");
+
+    async function refreshJob() {
+      const response = await fetch(`/api/jobs/${jobId}`);
+      if (!response.ok) return;
+      const data = await response.json();
+      statusEl.textContent = data.status;
+      progressEl.textContent = `${data.current_row}/${data.total_rows}`;
+      successEl.textContent = data.success_count;
+      failEl.textContent = data.fail_count;
+      skipEl.textContent = data.skip_count;
+      logEl.textContent = data.log_text || "任务处理中...";
+      const total = Number(data.total_rows || 0);
+      const current = Number(data.current_row || 0);
+      barEl.style.width = total ? `${Math.min(100, Math.round(current / total * 100))}%` : "12%";
+      if (data.status === "completed") {
+        downloadEl.classList.remove("hidden");
+      }
+      if (["completed", "failed", "canceled"].includes(data.status)) {
+        clearInterval(timer);
+      }
+    }
+    const timer = setInterval(refreshJob, 1500);
+    refreshJob();
+  }
+</script>
+{% endblock %}

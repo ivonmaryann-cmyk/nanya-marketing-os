@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-label="NANYA Marketing OS logo">
+  <defs>
+    <linearGradient id="markBlue" x1="14" y1="78" x2="82" y2="18" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1737b8"/>
+      <stop offset=".45" stop-color="#1f73d6"/>
+      <stop offset="1" stop-color="#63c7ff"/>
+    </linearGradient>
+    <linearGradient id="markGold" x1="14" y1="14" x2="82" y2="82" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffdc4a"/>
+      <stop offset=".56" stop-color="#f4b51c"/>
+      <stop offset="1" stop-color="#d49200"/>
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="7" flood-color="#10235f" flood-opacity=".16"/>
+    </filter>
+  </defs>
+  <rect width="96" height="96" rx="24" fill="#ffffff"/>
+  <g filter="url(#softShadow)">
+    <path d="M18 58c0-12.9 10.4-23.4 23.3-23.4 6.8 0 12.2 2.8 17 7.7l12 11.8"
+          fill="none" stroke="url(#markBlue)" stroke-width="17" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M78 38c0 12.9-10.4 23.4-23.3 23.4-6.8 0-12.2-2.8-17-7.7l-12-11.8"
+          fill="none" stroke="url(#markGold)" stroke-width="17" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M29 62 44.4 35 66 62"
+          fill="none" stroke="#10235f" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

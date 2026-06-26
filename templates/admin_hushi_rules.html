@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}沪士规则管理 | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('main.hushi') }}">返回沪士价格计算</a>
+  <span>沪士价格计算 / 规则管理</span>
+</div>
+
+<section class="hero">
+  <div>
+    <div class="panel-tag">当前生效版本</div>
+    <h1>{{ active_rule_version }}</h1>
+    <p>沪士价格计算使用 ZIP 规则包维护。管理员把所有沪士报价 Excel 放进一个 ZIP 上传，系统会整体替换当前沪士报价规则目录。</p>
+  </div>
+  <div class="hero-note">
+    <div>当前规则文件数</div>
+    <strong>{{ rule_files|length }} 个报价 Excel</strong>
+  </div>
+</section>
+
+<section class="card">
+  <h2>上传新版沪士规则包</h2>
+  <form method="post" enctype="multipart/form-data" class="form-grid">
+    <label>
+      <span>沪士报价规则 ZIP 包</span>
+      <input type="file" name="rule_zip" accept=".zip" required>
+    </label>
+    <label>
+      <span>更新备注</span>
+      <input type="text" name="remark" placeholder="例如：更新 2026-05 沪士报价包">
+    </label>
+    <label>
+      <span>管理员密码</span>
+      <input type="password" name="admin_password" required>
+    </label>
+    <button type="submit">保存并生效</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>当前规则包文件</h2>
+  <table class="table">
+    <thead>
+      <tr><th>报价文件</th></tr>
+    </thead>
+    <tbody>
+      {% for filename in rule_files %}
+      <tr><td>{{ filename }}</td></tr>
+      {% else %}
+      <tr><td>暂无沪士报价文件，请上传 ZIP 规则包。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h2>最近沪士规则版本</h2>
+  <table class="table">
+    <thead>
+      <tr><th>版本</th><th>更新时间</th><th>更新人</th><th>文件</th><th>备注</th></tr>
+    </thead>
+    <tbody>
+      {% for item in rule_history %}
+      <tr>
+        <td>{{ item.version }}</td>
+        <td>{{ item.updated_at }}</td>
+        <td>{{ item.updated_by }}</td>
+        <td>{{ item.rule_file }}</td>
+        <td>{{ item.remark }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5">暂无沪士规则版本记录。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

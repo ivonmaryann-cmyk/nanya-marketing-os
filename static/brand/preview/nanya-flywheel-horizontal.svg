@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 128" role="img" aria-label="NANYA Marketing OS horizontal logo">
+  <defs>
+    <linearGradient id="hb" x1="18" y1="103" x2="110" y2="25" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1737B8"/>
+      <stop offset=".52" stop-color="#2177D7"/>
+      <stop offset="1" stop-color="#43B8F5"/>
+    </linearGradient>
+    <linearGradient id="hy" x1="20" y1="17" x2="108" y2="111" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFE15A"/>
+      <stop offset=".58" stop-color="#F7C928"/>
+      <stop offset="1" stop-color="#E7A70F"/>
+    </linearGradient>
+  </defs>
+  <rect width="520" height="128" rx="24" fill="#FFFFFF"/>
+  <g transform="translate(20 18)">
+    <path d="M16 58c0-13.1 10.6-23.8 23.8-23.8 7.4 0 12.8 3.3 18.3 9.2L80 66"
+          fill="none" stroke="url(#hb)" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M80 39c0 13.1-10.6 23.8-23.8 23.8-7.4 0-12.8-3.3-18.3-9.2L16 31"
+          fill="none" stroke="url(#hy)" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M29 64 46 32 67 64" fill="none" stroke="#151F5B" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="124" y="57" fill="#151F5B" font-family="Inter, Arial, sans-serif" font-size="30" font-weight="800" letter-spacing="0">NANYA MARKETING</text>
+  <text x="126" y="86" fill="#6676A8" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700" letter-spacing="3">OPERATING SYSTEM</text>
+</svg>

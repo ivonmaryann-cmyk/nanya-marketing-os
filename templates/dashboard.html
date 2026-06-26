@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block title %}功能中心 | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+{% set online_count = cards | selectattr("stage", "equalto", "online") | list | length %}
+{% set beta_count = cards | selectattr("stage", "equalto", "beta") | list | length %}
+{% set test_count = cards | selectattr("stage", "equalto", "test") | list | length %}
+{% set planned_count = cards | selectattr("stage", "equalto", "planned") | list | length %}
+
+<section class="dashboard-topbar">
+  <div>
+    <div class="dashboard-breadcrumb">首页 / 功能中心</div>
+    <h1>工作台总览</h1>
+    <p>{{ platform_name }} {{ platform_version }}</p>
+  </div>
+  <div class="dashboard-actions" aria-label="页面工具">
+    <div class="dashboard-status" aria-label="系统状态"><span></span>运行中</div>
+    <a class="secondary-link" href="{{ url_for('main.feedback_center') }}">提交反馈</a>
+  </div>
+</section>
+
+<section class="metric-strip" aria-label="平台指标">
+  <div class="metric-card">
+    <span class="metric-icon metric-icon-purple" aria-hidden="true">V</span>
+    <div>
+      <span>平台版本</span>
+      <strong>{{ platform_version }}</strong>
+    </div>
+  </div>
+  <div class="metric-card">
+    <span class="metric-icon metric-icon-blue" aria-hidden="true">M</span>
+    <div>
+      <span>当前模块</span>
+      <strong>{{ cards|length }}</strong>
+    </div>
+  </div>
+  <div class="metric-card">
+    <span class="metric-icon metric-icon-green" aria-hidden="true">B</span>
+    <div>
+      <span>Beta 模块</span>
+      <strong>{{ beta_count }}</strong>
+    </div>
+  </div>
+  <div class="metric-card">
+    <span class="metric-icon metric-icon-orange" aria-hidden="true">T</span>
+    <div>
+      <span>测试模块</span>
+      <strong>{{ test_count }}</strong>
+    </div>
+  </div>
+  <div class="metric-card">
+    <span class="metric-icon metric-icon-gray" aria-hidden="true">P</span>
+    <div>
+      <span>排期模块</span>
+      <strong>{{ planned_count }}</strong>
+    </div>
+  </div>
+</section>
+
+<section class="horizon-board">
+  <div class="command-hero horizon-main-panel">
+    <div class="command-copy">
+      <div class="panel-tag">NANYA MARKETING OS</div>
+      <h1>{{ platform_name }}</h1>
+      <p>把报价计算、需求转码和规则维护集中到同一套线上工作台。业务人员负责使用，规则管理员负责更新，系统负责把重复计算稳定跑完。</p>
+      <div class="hero-actions">
+        <a class="feature-action" href="#feature-board">查看功能</a>
+        <a class="secondary-link" href="{{ url_for('main.feedback_center') }}">提交反馈</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="command-panel horizon-side-panel" aria-label="平台运行信息">
+    <div class="panel-row">
+      <span class="panel-icon" aria-hidden="true">O</span>
+      <div>
+        <span>运行模式</span>
+        <strong>多人在线</strong>
+      </div>
+    </div>
+    <div class="panel-row">
+      <span class="panel-icon" aria-hidden="true">A</span>
+      <div>
+        <span>可进入功能</span>
+        <strong>{{ beta_count + test_count + online_count }} 个</strong>
+      </div>
+    </div>
+    <div class="panel-row">
+      <span class="panel-icon" aria-hidden="true">C</span>
+      <div>
+        <span>工作台类型</span>
+        <strong>关联逻辑运算</strong>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="stage-board status-legend" aria-label="功能状态说明">
+  <div class="legend-copy">
+    <strong>功能状态</strong>
+    <span>不同状态对应不同使用成熟度，正式使用前请关注卡片状态。</span>
+  </div>
+  <div class="legend-list">
+    {% for key, item in stage_meta.items() %}
+    <div class="stage-item">
+      <b class="stage-dot stage-{{ key }}"></b>
+      <strong>{{ item.label }}</strong>
+      <span>{{ item.desc }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="feature-grid feature-grid-premium" id="feature-board">
+  {% for card in cards %}
+  {% set stage = stage_meta[card.stage] %}
+  <article class="feature-card product-card premium-card {% if not card.route %}is-disabled{% endif %}">
+    <div class="feature-card-head">
+      <span class="badge stage-badge stage-{{ card.stage }}">{{ stage.label }}</span>
+      <span class="feature-code">模块 0{{ loop.index }}</span>
+    </div>
+    <div class="feature-card-body">
+      <h2>{{ card.title }}</h2>
+      <p>{{ card.desc }}</p>
+    </div>
+    <div class="feature-card-footer">
+      {% if card.route %}
+      <a class="feature-action" href="{{ url_for(card.route) }}">进入功能</a>
+      {% else %}
+      <span class="feature-placeholder">排期中</span>
+      {% endif %}
+    </div>
+  </article>
+  {% endfor %}
+</section>
+{% endblock %}

@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}价格计算规则管理 | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('main.price_calculation', customer_key=selected_customer) }}">返回价格计算</a>
+  <span>价格计算 / 规则管理</span>
+</div>
+
+<section class="hero">
+  <div>
+    <div class="panel-tag">当前生效版本</div>
+    <h1>{{ active_rule_version }}</h1>
+    <p>规则按客户隔离维护。先选择客户，再上传该客户的报价表；保存后只影响该客户的后续价格计算。</p>
+  </div>
+  <div class="hero-note">
+    <div>当前客户</div>
+    <strong>
+      {% for customer in customers %}{% if customer.key == selected_customer %}{{ customer.label }}{% endif %}{% endfor %}
+    </strong>
+  </div>
+</section>
+
+<section class="card task-card">
+  <div class="section-head">
+    <div>
+      <div class="step-tag">客户选择</div>
+      <h2>选择需要更新价格表的客户</h2>
+    </div>
+    <span class="rule-chip">规则按客户生效</span>
+  </div>
+  <div class="customer-selector" role="list" aria-label="客户选择">
+    {% for customer in customers %}
+    <button type="button" class="customer-option {% if customer.key == selected_customer %}active{% endif %}" data-customer="{{ customer.key }}" data-enabled="{{ '1' if customer.enabled else '0' }}" {% if not customer.enabled %}disabled{% endif %}>
+      <span>{{ customer.label }}</span>
+      <em>{{ "可用" if customer.enabled else "待接入" }}</em>
+    </button>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="card">
+  <h2>上传当前客户新版规则</h2>
+  <form method="post" enctype="multipart/form-data" class="form-grid">
+    <input type="hidden" name="customer_key" value="{{ selected_customer }}">
+    {% if selected_customer == "jingwang" %}
+    <label>
+      <span>景旺报价单类型</span>
+      <select name="quote_variant" id="admin-quote-variant" class="quote-variant-select">
+        {% for key, label in quote_variants.items() %}
+        <option value="{{ key }}" {% if key == selected_quote_variant %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    {% endif %}
+    <label>
+      <span>客户报价表 Excel</span>
+      <input type="file" name="rule_file" accept=".xls,.xlsx,.xlsm" required>
+    </label>
+    <label>
+      <span>更新备注</span>
+      <input type="text" name="remark" placeholder="例如：景旺2026年5月报价表第一版">
+    </label>
+    <label>
+      <span>管理员密码</span>
+      <input type="password" name="admin_password" required>
+    </label>
+    <button type="submit">保存并生效</button>
+  </form>
+</section>
+
+{% if regression %}
+<section class="card">
+  <h2>本次回归校验</h2>
+  <div class="result-stats-grid">
+    <div class="result-stat-card"><span>总行数</span><strong>{{ regression.total }}</strong></div>
+    <div class="result-stat-card"><span>通过</span><strong>{{ regression.passed }}</strong></div>
+    <div class="result-stat-card"><span>失败</span><strong>{{ regression.failed }}</strong></div>
+    <div class="result-stat-card"><span>允许例外</span><strong>{{ regression.allowed_exception }}</strong></div>
+  </div>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>当前客户最近规则版本</h2>
+  <table class="table">
+    <thead>
+      <tr><th>客户</th><th>版本</th><th>更新时间</th><th>更新人</th><th>报价表</th><th>备注</th></tr>
+    </thead>
+    <tbody>
+      {% for item in rule_history %}
+      <tr>
+        <td>{{ item.customer_label }}</td>
+        <td>{{ item.version }}</td>
+        <td>{{ item.updated_at }}</td>
+        <td>{{ item.updated_by }}</td>
+        <td>{{ item.rule_file }}</td>
+        <td>{{ item.remark }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6">当前客户暂无价格计算规则版本记录。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<script>
+  document.querySelectorAll(".customer-option").forEach(button => {
+    button.addEventListener("click", () => {
+      if (button.dataset.enabled !== "1") return;
+      window.location.href = `{{ url_for('main.admin_price_calculation_rules') }}?customer_key=${button.dataset.customer}`;
+    });
+  });
+  const adminQuoteVariant = document.getElementById("admin-quote-variant");
+  if (adminQuoteVariant) {
+    adminQuoteVariant.addEventListener("change", () => {
+      window.location.href = `{{ url_for('main.admin_price_calculation_rules') }}?customer_key={{ selected_customer }}&quote_variant=${adminQuoteVariant.value}`;
+    });
+  }
+</script>
+{% endblock %}

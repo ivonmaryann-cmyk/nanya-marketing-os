@@ -1,0 +1,451 @@
+{% extends "base.html" %}
+{% block title %}工作规划 | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+<section class="workplan-page">
+  <header class="dashboard-topbar workplan-topbar">
+    <div>
+      <div class="dashboard-breadcrumb">首页 / 工作规划</div>
+      <h1>工作规划</h1>
+      <p>按自定义任务类型管理个人私有待办，完成后自动进入归档。</p>
+    </div>
+    <div class="dashboard-actions" aria-label="页面工具">
+      <a class="secondary-link" href="{{ url_for('main.dashboard') }}">返回功能中心</a>
+      <a class="feature-action" href="{% if selected_category_id %}{{ url_for('main.work_planning', category_id=selected_category_id, group_by=group_by) }}{% else %}{{ url_for('main.work_planning', group_by=group_by) }}{% endif %}#new-task">新建任务</a>
+    </div>
+  </header>
+
+  <div class="workplan-layout">
+    <aside class="workplan-sidebar" aria-label="工作规划筛选">
+      <div class="workplan-nav-group">
+        <div class="workplan-sidebar-title">快捷筛选</div>
+        <a class="{% if view == 'all' and not selected_category_id %}active{% endif %}" href="{{ url_for('main.work_planning', group_by=group_by) }}">
+          <span>全部任务</span><b>{{ stats.active }}</b>
+        </a>
+        <a class="{% if view == 'today' %}active{% endif %}" href="{{ url_for('main.work_planning', view='today', group_by=group_by) }}">
+          <span>今天</span><b>{{ stats.today }}</b>
+        </a>
+        <a class="{% if view == 'overdue' %}active{% endif %}" href="{{ url_for('main.work_planning', view='overdue', group_by=group_by) }}">
+          <span>逾期</span><b>{{ stats.overdue }}</b>
+        </a>
+        <a class="{% if view == 'in_progress' %}active{% endif %}" href="{{ url_for('main.work_planning', view='in_progress', group_by=group_by) }}">
+          <span>进行中</span><b>{{ stats.in_progress }}</b>
+        </a>
+        <a class="{% if view == 'archived' %}active{% endif %}" href="{{ url_for('main.work_planning', view='archived', group_by=group_by) }}">
+          <span>已归档</span><b>{{ stats.archived }}</b>
+        </a>
+      </div>
+
+      <div class="workplan-nav-group">
+        <div class="workplan-sidebar-title">任务分类</div>
+        {% for category in categories %}
+        <a class="{% if selected_category_id == category.id %}active{% endif %}" href="{{ url_for('main.work_planning', category_id=category.id, group_by=group_by) }}">
+          <span>{{ category.name }}</span><b>{{ category.active_count or 0 }}</b>
+        </a>
+        {% endfor %}
+      </div>
+
+      <form method="post" action="{{ url_for('main.create_task_category_view') }}" class="workplan-category-form">
+        <label for="new-category">新增分类</label>
+        <div>
+          <input id="new-category" type="text" name="name" placeholder="输入分类名称">
+          <input type="text" name="short_label" placeholder="简称">
+          <button type="submit">添加</button>
+        </div>
+      </form>
+
+      <section class="workplan-backup-panel" aria-label="任务清单备份">
+        <div class="workplan-sidebar-title">清单备份</div>
+        {% if backup_status.exists %}
+        <p>最近保存：{{ backup_status.saved_at }}</p>
+        <p>{{ backup_status.category_count }} 个分类，{{ backup_status.task_count }} 项任务</p>
+        {% else %}
+        <p>还没有保存过任务清单。</p>
+        {% endif %}
+        <form method="post" action="{{ url_for('main.save_task_backup_view') }}">
+          <button type="submit">保存当前清单</button>
+        </form>
+        <form method="post" action="{{ url_for('main.restore_task_backup_view') }}">
+          <button type="submit" class="secondary-button" {% if not backup_status.exists %}disabled{% endif %}>恢复上次清单</button>
+        </form>
+        <small>{{ backup_status.path }}</small>
+      </section>
+
+      <details class="workplan-category-manager">
+        <summary>管理分类</summary>
+        {% for category in categories %}
+        <div class="category-manage-row">
+          <form method="post" action="{{ url_for('main.update_task_category_view', category_id=category.id) }}">
+            <input type="text" name="name" value="{{ category.name }}" aria-label="分类名称">
+            <input type="text" name="short_label" value="{{ category.short_label or '' }}" aria-label="分类简称" placeholder="简称">
+            <button type="submit">保存</button>
+          </form>
+          <form method="post" action="{{ url_for('main.delete_task_category_view', category_id=category.id) }}">
+            <button type="submit" class="danger-link">删除</button>
+          </form>
+        </div>
+        {% endfor %}
+      </details>
+    </aside>
+
+    <div class="workplan-resizer workplan-resizer-left" data-resizer="left" aria-hidden="true"></div>
+
+    <main class="workplan-main">
+      <div class="workplan-list-head">
+        <div>
+          <span>当前视图</span>
+          <h2>{{ view_title }}</h2>
+        </div>
+        <div class="workplan-toolbar" aria-label="任务视图设置">
+          <div class="segmented-control" aria-label="分组方式">
+            {% for key, item in group_meta.items() %}
+            <a class="{% if group_by == key %}active{% endif %}" href="{% if selected_category_id %}{{ url_for('main.work_planning', view=view, group_by=key, category_id=selected_category_id) }}{% else %}{{ url_for('main.work_planning', view=view, group_by=key) }}{% endif %}">按{{ item.label }}</a>
+            {% endfor %}
+          </div>
+          <div class="density-control" aria-label="任务密度">
+            <button type="button" data-density="comfortable">舒适</button>
+            <button type="button" data-density="standard">标准</button>
+            <button type="button" data-density="compact">紧凑</button>
+          </div>
+          {% if selected_category_id %}
+          <a class="secondary-link" href="{{ url_for('main.work_planning', group_by=group_by) }}">清除分类筛选</a>
+          {% endif %}
+        </div>
+      </div>
+
+      {% for group in grouped_tasks %}
+      <section class="task-group">
+        <header>
+          <div>
+            <h3>{{ group.group_label }}</h3>
+            <span>{{ group.tasks|length }} 项任务</span>
+          </div>
+        </header>
+        <div class="task-list" data-sort-scope="{{ 'priority' if group_by == 'priority' else 'category' }}" data-category-id="{{ group.category_id or '' }}" data-priority="{{ group.priority or '' }}">
+          {% for task in group.tasks %}
+          {% set due_overdue = task.due_date and task.due_date < today and not task.archived_at %}
+          {% set task_url = url_for('main.work_planning', view=view, group_by=group_by, task_id=task.id, category_id=selected_category_id) if selected_category_id else url_for('main.work_planning', view=view, group_by=group_by, task_id=task.id) %}
+          <article class="task-row {% if selected_task and selected_task.id == task.id %}selected{% endif %} {% if due_overdue %}is-overdue{% endif %}" data-task-id="{{ task.id }}" {% if group_by in ['category', 'priority'] and not task.archived_at %}draggable="true"{% endif %}>
+            {% if group_by in ['category', 'priority'] and not task.archived_at %}
+            <span class="task-drag-handle" aria-label="拖拽排序" title="拖拽排序"></span>
+            {% else %}
+            <span class="task-drag-handle is-disabled" aria-hidden="true"></span>
+            {% endif %}
+            {% if task.archived_at %}
+            <form method="post" action="{{ url_for('main.restore_personal_task_view', task_id=task.id) }}">
+              <button class="task-check is-done" type="submit" title="恢复任务">✓</button>
+            </form>
+            {% else %}
+            <form method="post" action="{{ url_for('main.archive_personal_task_view', task_id=task.id) }}">
+              <button class="task-check" type="submit" title="完成并归档"></button>
+            </form>
+            {% endif %}
+            <a class="task-row-body" href="{{ task_url }}">
+              <strong>{{ task.title }}</strong>
+              <span>{{ task.description or '暂无描述' }}</span>
+            </a>
+            <div class="task-row-meta">
+              {% if task.category_label %}
+              <span class="task-tag">{{ task.category_label }}</span>
+              {% endif %}
+              <span class="task-priority priority-{{ task.priority }}">{{ priority_meta.get(task.priority, priority_meta.normal).label }}</span>
+              <span class="task-progress progress-{{ task.progress }}">{{ progress_meta.get(task.progress, progress_meta.not_started).label }}</span>
+              <span class="task-date {% if due_overdue %}overdue{% endif %}">{{ task.due_date or '无截止日期' }}</span>
+            </div>
+          </article>
+          {% endfor %}
+        </div>
+      </section>
+      {% else %}
+      <section class="workplan-empty">
+        <h2>这个视图暂时没有任务</h2>
+        <p>可以从右侧新建任务，或切换到其它分类和筛选视图。</p>
+      </section>
+      {% endfor %}
+    </main>
+
+    <div class="workplan-resizer workplan-resizer-right" data-resizer="right" aria-hidden="true"></div>
+
+    <aside class="task-detail-panel" id="new-task" aria-label="任务详情">
+      {% if selected_task %}
+      <div class="task-detail-head">
+        <span>任务详情</span>
+        <h2>编辑任务</h2>
+      </div>
+      <form method="post" action="{{ url_for('main.update_personal_task_view', task_id=selected_task.id) }}" class="task-detail-form">
+        <label>
+          <span>任务标题</span>
+          <input type="text" name="title" value="{{ selected_task.title }}" required>
+        </label>
+        <label>
+          <span>任务分类</span>
+          <select name="category_id">
+            <option value="">未分类</option>
+            {% for category in categories %}
+            <option value="{{ category.id }}" {% if selected_task.category_id == category.id %}selected{% endif %}>{{ category.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <div class="task-form-grid">
+          <label>
+            <span>优先级</span>
+            <select name="priority">
+              {% for key, item in priority_meta.items() %}
+              <option value="{{ key }}" {% if selected_task.priority == key %}selected{% endif %}>{{ item.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            <span>进展</span>
+            <select name="progress">
+              {% for key, item in progress_meta.items() %}
+              {% if key != 'completed' %}
+              <option value="{{ key }}" {% if selected_task.progress == key %}selected{% endif %}>{{ item.label }}</option>
+              {% endif %}
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+        <label>
+          <span>截止日期</span>
+          <input type="date" name="due_date" value="{{ selected_task.due_date or '' }}">
+        </label>
+        <label>
+          <span>任务描述</span>
+          <textarea name="description" rows="8">{{ selected_task.description }}</textarea>
+        </label>
+        <div class="task-detail-actions">
+          <button type="submit">保存</button>
+        </div>
+      </form>
+      <div class="task-danger-zone">
+        {% if selected_task.archived_at %}
+        <form method="post" action="{{ url_for('main.restore_personal_task_view', task_id=selected_task.id) }}">
+          <button type="submit" class="secondary-button">恢复任务</button>
+        </form>
+        {% else %}
+        <form method="post" action="{{ url_for('main.archive_personal_task_view', task_id=selected_task.id) }}">
+          <button type="submit" class="secondary-button">完成归档</button>
+        </form>
+        {% endif %}
+        <form method="post" action="{{ url_for('main.delete_personal_task_view', task_id=selected_task.id) }}">
+          <button type="submit" class="danger-button">删除</button>
+        </form>
+      </div>
+      {% else %}
+      <div class="task-detail-head">
+        <span>快速创建</span>
+        <h2>新建任务</h2>
+      </div>
+      <form method="post" action="{{ url_for('main.create_personal_task_view') }}" class="task-detail-form">
+        <label>
+          <span>任务标题</span>
+          <input type="text" name="title" placeholder="输入待办事项" required>
+        </label>
+        <label>
+          <span>任务分类</span>
+          <select name="category_id">
+            <option value="">未分类</option>
+            {% for category in categories %}
+            <option value="{{ category.id }}" {% if selected_category_id == category.id %}selected{% endif %}>{{ category.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <div class="task-form-grid">
+          <label>
+            <span>优先级</span>
+            <select name="priority">
+              {% for key, item in priority_meta.items() %}
+              <option value="{{ key }}" {% if key == 'normal' %}selected{% endif %}>{{ item.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            <span>进展</span>
+            <select name="progress">
+              {% for key, item in progress_meta.items() %}
+              {% if key != 'completed' %}
+              <option value="{{ key }}" {% if key == 'not_started' %}selected{% endif %}>{{ item.label }}</option>
+              {% endif %}
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+        <label>
+          <span>截止日期</span>
+          <input type="date" name="due_date">
+        </label>
+        <label>
+          <span>任务描述</span>
+          <textarea name="description" rows="8" placeholder="补充背景、下一步动作或注意事项"></textarea>
+        </label>
+        <div class="task-detail-actions">
+          <button type="submit">新建任务</button>
+        </div>
+      </form>
+      {% endif %}
+    </aside>
+  </div>
+</section>
+<script>
+(() => {
+  const root = document.querySelector(".workplan-page");
+  const layout = document.querySelector(".workplan-layout");
+  const densityButtons = document.querySelectorAll("[data-density]");
+  const lists = document.querySelectorAll(".task-list");
+  let draggedRow = null;
+  let dragCandidate = null;
+
+  const storageKeys = {
+    density: "workPlanningDensity",
+    left: "workPlanningLeftWidth",
+    right: "workPlanningRightWidth"
+  };
+
+  const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+
+  const applyDensity = (density) => {
+    const nextDensity = ["comfortable", "standard", "compact"].includes(density) ? density : "standard";
+    root.classList.remove("density-comfortable", "density-standard", "density-compact");
+    root.classList.add(`density-${nextDensity}`);
+    densityButtons.forEach((button) => {
+      button.classList.toggle("active", button.dataset.density === nextDensity);
+    });
+    localStorage.setItem(storageKeys.density, nextDensity);
+  };
+
+  const applySavedWidths = () => {
+    if (!layout) {
+      return;
+    }
+    const left = Number(localStorage.getItem(storageKeys.left));
+    const right = Number(localStorage.getItem(storageKeys.right));
+    if (left) {
+      layout.style.setProperty("--workplan-left", `${clamp(left, 220, 360)}px`);
+    }
+    if (right) {
+      layout.style.setProperty("--workplan-right", `${clamp(right, 300, 520)}px`);
+    }
+  };
+
+  applyDensity(localStorage.getItem(storageKeys.density) || "standard");
+  applySavedWidths();
+
+  densityButtons.forEach((button) => {
+    button.addEventListener("click", () => applyDensity(button.dataset.density));
+  });
+
+  document.querySelectorAll(".workplan-resizer").forEach((resizer) => {
+    resizer.addEventListener("pointerdown", (event) => {
+      if (!layout || window.innerWidth <= 1480) {
+        return;
+      }
+      event.preventDefault();
+      resizer.setPointerCapture(event.pointerId);
+      resizer.classList.add("is-dragging");
+      const layoutBox = layout.getBoundingClientRect();
+      const startX = event.clientX;
+      const startLeft = parseFloat(getComputedStyle(layout).getPropertyValue("--workplan-left")) || 260;
+      const startRight = parseFloat(getComputedStyle(layout).getPropertyValue("--workplan-right")) || 380;
+
+      const move = (moveEvent) => {
+        if (resizer.dataset.resizer === "left") {
+          const nextLeft = clamp(startLeft + moveEvent.clientX - startX, 220, 360);
+          layout.style.setProperty("--workplan-left", `${nextLeft}px`);
+          localStorage.setItem(storageKeys.left, String(Math.round(nextLeft)));
+        } else {
+          const nextRight = clamp(startRight + startX - moveEvent.clientX, 300, 520);
+          const maxRight = Math.max(300, layoutBox.width - 220 - 380);
+          const safeRight = clamp(nextRight, 300, Math.min(520, maxRight));
+          layout.style.setProperty("--workplan-right", `${safeRight}px`);
+          localStorage.setItem(storageKeys.right, String(Math.round(safeRight)));
+        }
+      };
+
+      const up = () => {
+        resizer.classList.remove("is-dragging");
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+      };
+
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+    });
+  });
+
+  const saveOrder = (list) => {
+    const orderedIds = Array.from(list.querySelectorAll(".task-row[data-task-id]"))
+      .map((row) => Number(row.dataset.taskId))
+      .filter(Boolean);
+    fetch("{{ url_for('main.reorder_personal_tasks_view') }}", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        category_id: list.dataset.categoryId || null,
+        sort_scope: list.dataset.sortScope || "category",
+        priority: list.dataset.priority || null,
+        ordered_ids: orderedIds
+      })
+    }).catch(() => {});
+  };
+
+  const rowAfterPointer = (list, y) => {
+    const rows = [...list.querySelectorAll(".task-row:not(.dragging)")];
+    return rows.reduce((closest, row) => {
+      const box = row.getBoundingClientRect();
+      const offset = y - box.top - box.height / 2;
+      if (offset < 0 && offset > closest.offset) {
+        return {offset, row};
+      }
+      return closest;
+    }, {offset: Number.NEGATIVE_INFINITY, row: null}).row;
+  };
+
+  lists.forEach((list) => {
+    list.addEventListener("pointerdown", (event) => {
+      const handle = event.target.closest(".task-drag-handle");
+      dragCandidate = handle ? handle.closest(".task-row") : null;
+    });
+
+    list.addEventListener("dragstart", (event) => {
+      const row = event.target.closest(".task-row");
+      if (!row || row !== dragCandidate) {
+        event.preventDefault();
+        return;
+      }
+      draggedRow = row;
+      row.classList.add("dragging");
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", row.dataset.taskId || "");
+    });
+
+    list.addEventListener("dragover", (event) => {
+      if (!draggedRow || draggedRow.parentElement !== list) {
+        return;
+      }
+      event.preventDefault();
+      const afterRow = rowAfterPointer(list, event.clientY);
+      if (afterRow) {
+        list.insertBefore(draggedRow, afterRow);
+      } else {
+        list.appendChild(draggedRow);
+      }
+    });
+
+    list.addEventListener("dragend", () => {
+      if (!draggedRow) {
+        return;
+      }
+      const listToSave = draggedRow.parentElement;
+      draggedRow.classList.remove("dragging");
+      draggedRow = null;
+      dragCandidate = null;
+      saveOrder(listToSave);
+    });
+
+    list.addEventListener("pointerup", () => {
+      dragCandidate = null;
+    });
+  });
+})();
+</script>
+{% endblock %}
