@@ -87,29 +87,7 @@ def _add_normalized_thickness_aliases(price_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _add_shennan_model_aliases(price_df: pd.DataFrame) -> pd.DataFrame:
-    if "型号" not in price_df.columns or "CCL" not in price_df.columns:
-        return price_df
-    rows_to_add = []
-    key_columns = list(price_df.columns)
-    existing = {tuple(str(row[col]).strip() for col in key_columns) for _, row in price_df.iterrows()}
-    for _, row in price_df.iterrows():
-        product = str(row["CCL"]).strip()
-        if product not in {"CCL", "PP"}:
-            continue
-        raw_model = str(row["型号"]).strip()
-        for alias_model in _shennan_model_aliases(raw_model, product=product):
-            if not alias_model or alias_model == raw_model:
-                continue
-            alias = row.copy()
-            alias["型号"] = alias_model
-            key = tuple(str(alias[col]).strip() for col in key_columns)
-            if key in existing:
-                continue
-            rows_to_add.append(alias)
-            existing.add(key)
-    if not rows_to_add:
-        return price_df
-    return pd.concat([price_df, pd.DataFrame(rows_to_add)], ignore_index=True)
+    return price_df
 
 
 def queue_shennan_job(employee_id: str, uploaded_file, source_filename: str) -> int:
@@ -561,7 +539,7 @@ def _calculate_shennan_ccl(
         return None, "", f"深南CCL无法提取芯厚、铜厚、总厚、尺寸或叠构：{desc}", desc
 
     original_glue = parsed["glue"]
-    glue = _normalize_shennan_glue(original_glue, product="CCL")
+    glue = original_glue
     copper = _copper_from_shennan_token(parsed["copper_token"])
     if not copper:
         return None, "", f"深南CCL无法提取铜厚：{desc}", desc
@@ -573,7 +551,7 @@ def _calculate_shennan_ccl(
 
     selected = _select_shennan_ccl_row(
         price_df,
-        glue=glue,
+        glue=original_glue,
         thickness=parsed["thickness"],
         copper=copper,
         foil=foil,
@@ -581,12 +559,10 @@ def _calculate_shennan_ccl(
     )
     laminate_pattern = requested_laminate.replace("x", "*")
     calc_desc = (
-        f"{glue} {parsed['thickness']}mm {copper} ({foil}) "
+        f"{original_glue} {parsed['thickness']}mm {copper} ({foil}) "
         f"({laminate_pattern}) {_size_for_engine(parsed['size'], ccl_standard=True)}"
     )
     notes = []
-    if glue != original_glue:
-        notes.append(f"深南CCL型号别名：{original_glue}→{glue}")
     notes.append(
         f"深南厚度规则：只用芯厚{parsed['core_thickness']}mm查价，总厚{parsed['total_thickness']}mm不参与匹配"
     )
@@ -598,10 +574,13 @@ def _calculate_shennan_ccl(
 
     laminate = selected["laminate"]
     laminate_pattern = laminate.replace("x", "*")
+    matched_glue = selected["glue"]
     calc_desc = (
-        f"{glue} {selected['thickness']}mm {selected['copper']} ({selected['foil']}) "
+        f"{matched_glue} {selected['thickness']}mm {selected['copper']} ({selected['foil']}) "
         f"({laminate_pattern}) {_size_for_engine(parsed['size'], ccl_standard=True)}"
     )
+    if _clean_shennan_model_text(matched_glue) != _clean_shennan_model_text(original_glue):
+        notes.append(f"深南CCL型号等价兜底：{original_glue}→{matched_glue}")
     if selected["thickness_note"]:
         notes.append(selected["thickness_note"])
 
@@ -624,7 +603,7 @@ def _calculate_shennan_ccl(
 
     surcharge = _calculate_ccl_surcharge_for_context(
         parsed,
-        glue,
+        matched_glue,
         selected,
         surcharge_rules,
         size_ctx,
@@ -732,7 +711,7 @@ def _normalize_shennan_ccl(desc: str, price_df: pd.DataFrame) -> tuple[str, str]
         return desc, ""
 
     original_glue = parsed["glue"]
-    glue = _normalize_shennan_glue(original_glue, product="CCL")
+    glue = original_glue
     copper = _copper_from_shennan_token(parsed["copper_token"])
     if not copper:
         return desc, ""
@@ -741,7 +720,7 @@ def _normalize_shennan_ccl(desc: str, price_df: pd.DataFrame) -> tuple[str, str]
     requested_laminate = _laminate_from_structure(parsed["structure"])
     selected = _select_shennan_ccl_row(
         price_df,
-        glue=glue,
+        glue=original_glue,
         thickness=parsed["thickness"],
         copper=copper,
         foil=foil,
@@ -752,20 +731,19 @@ def _normalize_shennan_ccl(desc: str, price_df: pd.DataFrame) -> tuple[str, str]
             return desc, ""
         laminate_pattern = requested_laminate.replace("x", "*")
         calc_desc = (
-            f"{glue} {parsed['thickness']}mm {copper} ({foil}) "
+            f"{original_glue} {parsed['thickness']}mm {copper} ({foil}) "
             f"({laminate_pattern}) {_size_for_engine(parsed['size'], ccl_standard=True)}"
         )
         notes = []
-        if glue != original_glue:
-            notes.append(f"深南CCL型号别名：{original_glue}→{glue}")
         notes.append("深南CCL已完成厚度/铜厚/叠构解析，但报价表未找到可用厚度档")
         return calc_desc, " | ".join(notes)
 
     laminate = selected["laminate"]
     laminate_pattern = laminate.replace("x", "*")
+    matched_glue = selected["glue"]
     notes = []
-    if glue != original_glue:
-        notes.append(f"深南CCL型号别名：{original_glue}→{glue}")
+    if _clean_shennan_model_text(matched_glue) != _clean_shennan_model_text(original_glue):
+        notes.append(f"深南CCL型号等价兜底：{original_glue}→{matched_glue}")
     notes.append(
         f"深南厚度规则：只用芯厚{parsed['core_thickness']}mm查价，总厚{parsed['total_thickness']}mm不参与匹配"
     )
@@ -774,7 +752,7 @@ def _normalize_shennan_ccl(desc: str, price_df: pd.DataFrame) -> tuple[str, str]
     if requested_laminate and laminate != requested_laminate:
         notes.append(f"叠构按报价表匹配：{requested_laminate}→{laminate}")
     calc_desc = (
-        f"{glue} {selected['thickness']}mm {selected['copper']} ({selected['foil']}) "
+        f"{matched_glue} {selected['thickness']}mm {selected['copper']} ({selected['foil']}) "
         f"({laminate_pattern}) {_size_for_engine(parsed['size'], ccl_standard=True)}"
     )
     return calc_desc, " | ".join(notes)
@@ -898,9 +876,15 @@ def _equivalent_shennan_base_models(canonical_base: str) -> set[str]:
 
 
 def _filter_shennan_model_rows(rows: pd.DataFrame, glue: str, *, product: str) -> pd.DataFrame:
-    model_key = _canonical_shennan_model(glue, product=product)
-    model_values = rows["型号"].astype(str).map(lambda value: _canonical_shennan_model(value, product=product))
-    return rows[model_values == model_key].copy()
+    return _filter_shennan_exact_model_rows(rows, glue)
+
+
+def _filter_shennan_exact_model_rows(rows: pd.DataFrame, glue: str) -> pd.DataFrame:
+    if rows.empty or "型号" not in rows.columns:
+        return rows.iloc[0:0].copy()
+    requested_clean = _clean_shennan_model_text(glue)
+    model_values = rows["型号"].astype(str).map(_clean_shennan_model_text)
+    return rows[model_values == requested_clean].copy()
 
 
 def _select_display_glue(rows: pd.DataFrame, requested_glue: str, *, product: str) -> str:
@@ -1041,21 +1025,9 @@ def _resolve_pp_glue(price_df: pd.DataFrame, glue: str, glass: str, rc: int) -> 
         candidates = _filter_pp_candidates(pp_rows, candidate_glue, glass)
         return _match_rc_rows(candidates, rc)
 
-    aliased = _normalize_shennan_glue(glue, product="PP")
-    if aliased != glue:
-        matched = matched_rows(aliased)
-        if not matched.empty:
-            return _select_display_glue(matched, glue, product="PP")
     matched = matched_rows(glue)
     if not matched.empty:
         return _select_display_glue(matched, glue, product="PP")
-    if glue.endswith("P"):
-        stripped = glue[:-1]
-        matched = matched_rows(stripped)
-        if not matched.empty:
-            return _select_display_glue(matched, glue, product="PP")
-    if aliased != glue:
-        return aliased
     return glue
 
 

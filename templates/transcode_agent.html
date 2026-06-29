@@ -1,0 +1,312 @@
+{% extends "base.html" %}
+{% block title %}营销转码Agent | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('main.dashboard') }}">返回功能中心</a>
+  <span>功能中心 / 营销转码Agent</span>
+</div>
+
+<section class="hero">
+  <div>
+    <div class="panel-tag">可信转码</div>
+    <h1>营销转码Agent</h1>
+    <p>先生成候选编码，再按字段证据链和置信度评分决定是否正式出码。低置信结果只进入待确认，不写制造编码。</p>
+  </div>
+  <div class="hero-note">
+    <div>当前规则</div>
+    <strong>基础：{{ active_rule_version }}</strong>
+    <em>Agent：{{ active_agent_rule_version }} / {{ agent_rule_count }} 条机器规则</em>
+  </div>
+</section>
+
+<section class="feature-tools">
+  <a class="feature-action" href="{{ url_for('main.admin_transcode_agent_rules') }}">Agent规则管理</a>
+  <a class="secondary-link" href="{{ url_for('main.rule_doc', feature='transcode_agent') }}">Agent规则说明</a>
+  <a class="secondary-link" href="{{ url_for('main.transcode') }}">旧版转码</a>
+</section>
+
+<section class="agent-quote-panel" id="agent-quote-panel">
+  <form class="agent-quote-form" id="agent-quote-form" data-endpoint="{{ url_for('main.api_transcode_agent_quote') }}">
+    <div class="agent-form-row">
+      <label>
+        <span>客户代码</span>
+        <input type="text" name="customer_code" placeholder="例如：105007">
+      </label>
+      <label>
+        <span>客户简称</span>
+        <input type="text" name="customer" placeholder="例如：湖奥士康">
+      </label>
+    </div>
+    <label>
+      <span>单条客户规格</span>
+      <textarea name="spec" rows="3" placeholder="粘贴一条 CCL 客户规格"></textarea>
+    </label>
+    <label>
+      <span>备注/整行上下文</span>
+      <textarea name="order_text" rows="2" placeholder="可选：订单备注、客户物料描述、特殊关键词"></textarea>
+    </label>
+    <button type="submit" id="agent-quote-submit">诊断单条转码</button>
+  </form>
+  <div class="agent-quote-result" id="agent-quote-result" aria-live="polite">
+    <div class="agent-result-head">
+      <span id="agent-result-status">等待输入</span>
+      <strong id="agent-result-code">-</strong>
+    </div>
+    <p id="agent-result-note">单条诊断会显示候选编码、置信度和字段证据，不写入任务历史。</p>
+    <div class="agent-evidence-grid" id="agent-evidence-grid"></div>
+  </div>
+</section>
+
+<section class="split-layout">
+  <div class="work-column">
+    <article class="card">
+      <div class="step-tag">第一步</div>
+      <h2>上传转码需求 Excel</h2>
+      <form method="post" action="{{ url_for('main.create_transcode_agent_job_view') }}" enctype="multipart/form-data" class="form-grid" id="agent-upload-form">
+        <label class="upload-dropzone" id="agent-upload-dropzone" for="agent-excel-file">
+          <input id="agent-excel-file" type="file" name="excel_file" accept=".xlsx,.xls,.xlsm" required>
+          <span class="upload-icon">Agent</span>
+          <strong id="agent-upload-title">拖拽 Excel 到这里，或点击选择文件</strong>
+          <em id="agent-upload-filename">结果列只写高置信制造码；待确认和未识别不会写候选码</em>
+        </label>
+        <button type="submit">开始Agent转码</button>
+      </form>
+    </article>
+
+    <article class="card">
+      <div class="step-tag">第二步</div>
+      <div class="section-head">
+        <h2>最近任务 / 该功能历史</h2>
+        <a href="{{ url_for('main.history') }}">查看全部</a>
+      </div>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>文件</th>
+            <th>状态</th>
+            <th>时间</th>
+            <th>结果</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for job in jobs %}
+          <tr>
+            <td>#{{ job.id }}</td>
+            <td><a href="{{ url_for('main.job_detail', job_id=job.id) }}">{{ job.source_filename }}</a></td>
+            <td><span class="status {{ job.status }}">{{ job.status }}</span></td>
+            <td>{{ job.created_at }}</td>
+            <td>
+              {% if job.status == 'completed' %}
+              <div class="result-actions">
+                <a class="primary-link compact" href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载结果</a>
+              </div>
+              {% else %}
+              -
+              {% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5">还没有Agent转码记录。</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </article>
+  </div>
+
+  <aside class="log-column">
+    <article class="card card-dark">
+      <div class="section-head">
+        <h2>处理日志</h2>
+        {% if active_job %}
+        <a href="{{ url_for('main.job_detail', job_id=active_job.id) }}">详情</a>
+        {% endif %}
+      </div>
+      {% if active_job %}
+      <div id="live-panel" data-job-id="{{ active_job.id }}">
+        <div class="progress-meta">
+          <div>
+            <span>当前任务</span>
+            <strong>#{{ active_job.id }} {{ active_job.source_filename }}</strong>
+          </div>
+          <div>
+            <span>状态</span>
+            <strong id="live-status">{{ active_job.status }}</strong>
+          </div>
+        </div>
+        <div class="progress-stats">
+          <div><span>进度</span><strong id="live-progress">{{ active_job.current_row }}/{{ active_job.total_rows }}</strong></div>
+          <div><span>成功</span><strong id="live-success">{{ active_job.success_count }}</strong></div>
+          <div><span>失败/待确认</span><strong id="live-fail">{{ active_job.fail_count }}</strong></div>
+          <div><span>跳过</span><strong id="live-skip">{{ active_job.skip_count }}</strong></div>
+        </div>
+        <div class="progress-bar">
+          <div id="live-bar"></div>
+        </div>
+        <pre id="live-log" class="live-log">{{ active_job.log_text or '任务已创建，等待处理日志...' }}</pre>
+        {% if active_job.status in ['queued', 'running'] %}
+        <form method="post" action="{{ url_for('main.cancel_job', job_id=active_job.id) }}" class="job-cancel-form">
+          <button type="submit" class="danger-button">停止任务</button>
+        </form>
+        {% endif %}
+        <div id="live-download" class="{% if active_job.status != 'completed' %}hidden{% endif %}">
+          <div class="result-ready">
+            <a class="primary-link" href="{{ url_for('main.download', job_id=active_job.id, kind='result') }}">下载结果文件</a>
+          </div>
+        </div>
+      </div>
+      {% else %}
+      <div class="empty-log">还没有Agent转码任务，上传 Excel 后这里会实时显示处理动态。</div>
+      {% endif %}
+    </article>
+  </aside>
+</section>
+
+<script>
+  const quoteForm = document.getElementById("agent-quote-form");
+  const quoteSubmit = document.getElementById("agent-quote-submit");
+  const resultBox = document.getElementById("agent-quote-result");
+  const statusEl = document.getElementById("agent-result-status");
+  const codeEl = document.getElementById("agent-result-code");
+  const noteEl = document.getElementById("agent-result-note");
+  const evidenceGrid = document.getElementById("agent-evidence-grid");
+
+  quoteForm.addEventListener("submit", event => {
+    event.preventDefault();
+    const payload = Object.fromEntries(new FormData(quoteForm).entries());
+    if (!payload.spec || !payload.spec.trim()) {
+      statusEl.textContent = "请输入客户规格";
+      codeEl.textContent = "-";
+      return;
+    }
+    quoteSubmit.disabled = true;
+    quoteSubmit.textContent = "诊断中...";
+    resultBox.className = "agent-quote-result is-loading";
+    fetch(quoteForm.dataset.endpoint, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload)
+    })
+      .then(res => res.json())
+      .then(data => {
+        resultBox.className = `agent-quote-result ${data.status === "成功" ? "is-success" : "is-warning"}`;
+        statusEl.textContent = `${data.status || "失败"} / 置信度 ${data.confidence ?? 0}`;
+        codeEl.textContent = data.result || data.candidate_code || "-";
+        noteEl.textContent = data.note || data.error || "";
+        evidenceGrid.innerHTML = "";
+        (data.field_evidence || []).forEach(item => {
+          const card = document.createElement("div");
+          card.className = `agent-evidence-card ${Number(item.score) >= 85 || !item.gate ? "ok" : "warn"}`;
+          card.innerHTML = `<strong>${item.field}</strong><span>${item.code || "-"}</span><em>${item.score} · ${item.hit_type}</em><p>${item.evidence || item.source || ""}</p>`;
+          evidenceGrid.appendChild(card);
+        });
+      })
+      .catch(error => {
+        resultBox.className = "agent-quote-result is-warning";
+        statusEl.textContent = "诊断失败";
+        codeEl.textContent = "-";
+        noteEl.textContent = error.message;
+      })
+      .finally(() => {
+        quoteSubmit.disabled = false;
+        quoteSubmit.textContent = "诊断单条转码";
+      });
+  });
+
+  const uploadForm = document.getElementById("agent-upload-form");
+  const dropzone = document.getElementById("agent-upload-dropzone");
+  const fileInput = document.getElementById("agent-excel-file");
+  const uploadTitle = document.getElementById("agent-upload-title");
+  const uploadFilename = document.getElementById("agent-upload-filename");
+  const uploadSubmit = uploadForm.querySelector('button[type="submit"]');
+  const allowedExtensions = [".xlsx", ".xls", ".xlsm"];
+
+  function preventFileOpen(event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  function setSelectedFile(file) {
+    if (!file) return;
+    const lowerName = file.name.toLowerCase();
+    if (!allowedExtensions.some(ext => lowerName.endsWith(ext))) {
+      uploadTitle.textContent = "请选择 Excel 文件";
+      uploadFilename.textContent = "仅支持 .xlsx / .xls / .xlsm";
+      dropzone.classList.remove("has-file");
+      fileInput.value = "";
+      return;
+    }
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    fileInput.files = transfer.files;
+    uploadTitle.textContent = "文件已选择";
+    uploadFilename.textContent = file.name;
+    dropzone.classList.add("has-file");
+  }
+
+  ["dragenter", "dragover", "dragleave", "drop"].forEach(eventName => window.addEventListener(eventName, preventFileOpen));
+  ["dragenter", "dragover"].forEach(eventName => dropzone.addEventListener(eventName, event => {
+    preventFileOpen(event);
+    dropzone.classList.add("is-dragover");
+  }));
+  ["dragleave", "drop"].forEach(eventName => dropzone.addEventListener(eventName, event => {
+    preventFileOpen(event);
+    dropzone.classList.remove("is-dragover");
+  }));
+  dropzone.addEventListener("drop", event => setSelectedFile(event.dataTransfer.files[0]));
+  fileInput.addEventListener("change", () => setSelectedFile(fileInput.files[0]));
+  uploadForm.addEventListener("submit", event => {
+    if (!fileInput.files.length) {
+      event.preventDefault();
+      uploadTitle.textContent = "请先选择一个 Excel 文件";
+      uploadFilename.textContent = "拖拽到此处或点击选择";
+      return;
+    }
+    uploadSubmit.disabled = true;
+    uploadSubmit.textContent = "正在提交...";
+  });
+</script>
+
+{% if active_job %}
+<script>
+  const panel = document.getElementById("live-panel");
+  const jobId = panel.dataset.jobId;
+  const bar = document.getElementById("live-bar");
+  const liveStatusEl = document.getElementById("live-status");
+  const progressEl = document.getElementById("live-progress");
+  const successEl = document.getElementById("live-success");
+  const failEl = document.getElementById("live-fail");
+  const skipEl = document.getElementById("live-skip");
+  const logEl = document.getElementById("live-log");
+  const downloadEl = document.getElementById("live-download");
+
+  function render(data) {
+    liveStatusEl.textContent = data.status;
+    progressEl.textContent = `${data.current_row}/${data.total_rows}`;
+    successEl.textContent = data.success_count;
+    failEl.textContent = data.fail_count;
+    skipEl.textContent = data.skip_count;
+    logEl.textContent = data.log_text || "任务已创建，等待处理日志...";
+    logEl.scrollTop = logEl.scrollHeight;
+    const percent = data.total_rows ? Math.min(100, Math.round(data.current_row * 100 / data.total_rows)) : 0;
+    bar.style.width = `${percent}%`;
+    if (data.status === "completed") {
+      downloadEl.classList.remove("hidden");
+    }
+  }
+
+  function poll() {
+    fetch(`/api/jobs/${jobId}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.error) return;
+        render(data);
+        if (data.status === "queued" || data.status === "running") {
+          setTimeout(poll, 1200);
+        }
+      });
+  }
+  poll();
+</script>
+{% endif %}
+{% endblock %}

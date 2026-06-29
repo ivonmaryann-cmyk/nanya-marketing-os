@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}营销转码Agent规则管理 | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('main.transcode_agent') }}">返回营销转码Agent</a>
+  <span>营销转码Agent / 规则管理</span>
+</div>
+
+<section class="hero">
+  <div>
+    <div class="panel-tag">Agent规则包</div>
+    <h1>营销转码Agent规则管理</h1>
+    <p>上传业务清洗后的客户特殊清单母表，系统会转换成独立的机器规则包。旧版转码和旧特殊规则工作台不读取这里的规则。</p>
+  </div>
+  <div class="hero-note">
+    <div>当前版本</div>
+    <strong>{{ active_rule_version }}</strong>
+    <em>{{ rule_count }} 条机器规则 / 基础转码 {{ base_rule_version }}</em>
+  </div>
+</section>
+
+<section class="split-layout">
+  <div class="work-column">
+    <article class="card">
+      <div class="step-tag">上传</div>
+      <h2>更新客户特殊清单母表</h2>
+      <form method="post" enctype="multipart/form-data" class="form-grid">
+        <label>
+          <span>客户特殊清单结构化 Excel</span>
+          <input type="file" name="agent_rule_file" accept=".xlsx,.xlsm" required>
+        </label>
+        <label>
+          <span>更新备注</span>
+          <input type="text" name="remark" placeholder="例如：628业务清洗版">
+        </label>
+        <label>
+          <span>管理员密码</span>
+          <input type="password" name="admin_password" required>
+        </label>
+        <button type="submit">上传并转换规则包</button>
+      </form>
+    </article>
+
+    <article class="card">
+      <div class="section-head">
+        <h2>规则版本历史</h2>
+        <span>最多保留最近 50 条</span>
+      </div>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>版本</th>
+            <th>更新时间</th>
+            <th>更新人</th>
+            <th>规则数</th>
+            <th>备注</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in rule_history %}
+          <tr>
+            <td>{{ item.version }}</td>
+            <td>{{ item.updated_at }}</td>
+            <td>{{ item.updated_by }}</td>
+            <td>{{ item.rule_count }}</td>
+            <td>{{ item.remark }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5">还没有上传过Agent规则包。</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </article>
+  </div>
+
+  <aside class="log-column">
+    <article class="card">
+      <div class="step-tag">下载</div>
+      <h2>规则包导出</h2>
+      <div class="rule-download-list">
+        <a class="feature-action" href="{{ url_for('main.export_transcode_agent_rule_package', export_type='machine') }}">下载机器规则表</a>
+        <a class="secondary-link" href="{{ url_for('main.export_transcode_agent_rule_package', export_type='original') }}">下载原始母表</a>
+        <a class="secondary-link" href="{{ url_for('main.export_transcode_agent_rule_package', export_type='full') }}">下载完整规则包</a>
+      </div>
+      <div class="admin-rule-note">
+        <strong>执行原则</strong>
+        <p>机器规则只作为营销转码Agent的客户特殊规则覆盖层。规则冲突或待确认规则不会强制出码。</p>
+      </div>
+    </article>
+  </aside>
+</section>
+{% endblock %}
