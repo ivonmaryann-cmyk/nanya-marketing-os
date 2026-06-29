@@ -33,6 +33,10 @@ def main(argv: list[str] | None = None) -> int:
             from .transcode_service import run_transcode_job
 
             run_transcode_job(job_id, employee_id)
+        elif feature == "transcode_agent":
+            from .transcode_agent_service import run_transcode_agent_job
+
+            run_transcode_agent_job(job_id, employee_id)
         elif feature == "shennan":
             from .shennan_service import run_shennan_job
 

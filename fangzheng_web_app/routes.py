@@ -93,6 +93,16 @@ from .transcode_rules import (
     get_transcode_rule_history,
     save_new_transcode_rule_version_from_sheets,
 )
+from .transcode_agent_rules import (
+    FEATURE_KEY as TRANSCODE_AGENT_FEATURE,
+    export_transcode_agent_rules,
+    get_active_transcode_agent_rule_version,
+    get_transcode_agent_rule_count,
+    get_transcode_agent_rule_file_path,
+    get_transcode_agent_rule_history,
+    save_new_transcode_agent_rule_version,
+)
+from .transcode_agent_service import calculate_transcode_agent_quote, queue_transcode_agent_job
 from .transcode_service import calculate_transcode_quote, queue_transcode_job
 from .transcode_special_import_service import FEATURE_NAME as SPECIAL_IMPORT_FEATURE, queue_transcode_special_import_job
 from .transcode_special_rules import (
@@ -138,6 +148,13 @@ FUNCTION_CARDS = [
         "title": "营销自动化转码",
         "desc": "上传转码需求 Excel，按当前规则自动生成内部编码并输出结果文件。",
         "route": "main.transcode",
+        "stage": "test",
+    },
+    {
+        "key": "transcode_agent",
+        "title": "营销转码Agent",
+        "desc": "按字段证据链和置信度评分进行可信转码，低置信结果自动拦截待确认。",
+        "route": "main.transcode_agent",
         "stage": "test",
     },
     {
@@ -194,6 +211,7 @@ FUNCTION_CARDS = [
 FEATURE_LABELS = {
     "fangzheng": "方正价格计算",
     "transcode": "营销自动化转码",
+    "transcode_agent": "营销转码Agent",
     "shennan": "深南价格计算",
     "bomin": "博敏价格计算",
     "hushi": "沪士价格计算",
@@ -651,6 +669,22 @@ def transcode():
         jobs=jobs,
         active_rule_version=get_active_transcode_rule_version(),
         active_job=_active_job_for("transcode", jobs),
+    )
+
+
+@bp.get("/features/transcode-agent")
+def transcode_agent():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    jobs = list_jobs(current_employee(), limit=20, feature=TRANSCODE_AGENT_FEATURE)
+    return render_template(
+        "transcode_agent.html",
+        jobs=jobs,
+        active_rule_version=get_active_transcode_rule_version(),
+        active_agent_rule_version=get_active_transcode_agent_rule_version() or "未上传Agent规则",
+        agent_rule_count=get_transcode_agent_rule_count(),
+        active_job=_active_job_for(TRANSCODE_AGENT_FEATURE, jobs),
     )
 
 
@@ -1153,6 +1187,28 @@ def create_transcode_job_view():
     return redirect(url_for("main.transcode", job_id=job_id))
 
 
+@bp.post("/transcode-agent/jobs")
+def create_transcode_agent_job_view():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    uploaded_file = request.files.get("excel_file")
+    if not uploaded_file or not uploaded_file.filename:
+        flash("请先上传 Excel 文件。", "error")
+        return redirect(url_for("main.transcode_agent"))
+    original_filename = (uploaded_file.filename or "").strip()
+    if not original_filename.lower().endswith((".xlsx", ".xlsm", ".xls")):
+        flash("营销转码Agent仅支持 .xlsx / .xlsm / .xls 文件。", "error")
+        return redirect(url_for("main.transcode_agent"))
+    active_job = get_active_job(current_employee(), TRANSCODE_AGENT_FEATURE)
+    if active_job:
+        flash("当前已有营销转码Agent任务正在处理，请先等待完成或停止后再上传。", "error")
+        return redirect(url_for("main.transcode_agent", job_id=active_job["id"]))
+    job_id = queue_transcode_agent_job(current_employee(), uploaded_file, original_filename)
+    flash("营销转码Agent任务已创建，系统正在处理。", "success")
+    return redirect(url_for("main.transcode_agent", job_id=job_id))
+
+
 @bp.post("/shennan/jobs")
 def create_shennan_job_view():
     redirect_resp = require_login()
@@ -1370,6 +1426,11 @@ def api_transcode_quote():
     return _api_quote_response(calculate_transcode_quote, allow_extra_fields=True)
 
 
+@bp.post("/api/transcode-agent/quote")
+def api_transcode_agent_quote():
+    return _api_quote_response(calculate_transcode_agent_quote, allow_extra_fields=True)
+
+
 @bp.post("/api/shennan/quote")
 def api_shennan_quote():
     return _api_quote_response(calculate_shennan_quote)
@@ -1429,6 +1490,7 @@ def cancel_job(job_id: int):
         feature_route = {
             "fangzheng": "main.fangzheng",
             "transcode": "main.transcode",
+            "transcode_agent": "main.transcode_agent",
             "shennan": "main.shennan",
             "bomin": "main.bomin",
             "hushi": "main.hushi",
@@ -1444,6 +1506,7 @@ def cancel_job(job_id: int):
     feature_route = {
         "fangzheng": "main.fangzheng",
         "transcode": "main.transcode",
+        "transcode_agent": "main.transcode_agent",
         "shennan": "main.shennan",
         "bomin": "main.bomin",
         "hushi": "main.hushi",
@@ -1555,6 +1618,66 @@ def admin_transcode_rules():
         rule_history=get_transcode_rule_history(),
         rule_path=get_transcode_rule_file_path().name,
         sheets=TRANSCODE_RULE_SHEETS,
+    )
+
+
+@bp.route("/admin/transcode-agent-rules", methods=["GET", "POST"])
+def admin_transcode_agent_rules():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    if request.method == "POST":
+        admin_password = request.form.get("admin_password", "")
+        remark = request.form.get("remark", "").strip()
+        rule_file = request.files.get("agent_rule_file")
+        if not verify_admin_password(admin_password):
+            flash("管理员密码错误。", "error")
+        elif not rule_file or not rule_file.filename:
+            flash("请上传客户特殊清单结构化 Excel 文件。", "error")
+        else:
+            try:
+                version = save_new_transcode_agent_rule_version(
+                    rule_file,
+                    updated_by=current_employee(),
+                    remark=remark,
+                )
+                flash(f"营销转码Agent规则已更新，当前生效版本：{version}", "success")
+                return redirect(url_for("main.admin_transcode_agent_rules"))
+            except Exception as exc:
+                flash(f"营销转码Agent规则更新失败：{exc}", "error")
+    return render_template(
+        "admin_transcode_agent_rules.html",
+        active_rule_version=get_active_transcode_agent_rule_version() or "未上传",
+        base_rule_version=get_active_transcode_rule_version(),
+        rule_history=get_transcode_agent_rule_history(),
+        rule_path=get_transcode_agent_rule_file_path().name,
+        rule_count=get_transcode_agent_rule_count(),
+    )
+
+
+@bp.route("/admin/transcode-agent-rules/export/<export_type>")
+def export_transcode_agent_rule_package(export_type: str):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    names = {
+        "full": "营销转码Agent完整规则包.xlsx",
+        "machine": "营销转码Agent机器规则.xlsx",
+        "original": "客户特殊清单原文件.xlsx",
+    }
+    if export_type not in names:
+        flash("未知导出类型。", "error")
+        return redirect(url_for("main.admin_transcode_agent_rules"))
+    try:
+        path = export_transcode_agent_rules(export_type)
+    except Exception as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("main.admin_transcode_agent_rules"))
+    return send_file(
+        path,
+        as_attachment=True,
+        download_name=names[export_type],
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
 
@@ -1982,6 +2105,16 @@ def rule_doc(feature: str):
                 "转码规则由胶系代码、胶系类别、编码规则、特殊需求、总芯厚转换、客户下单与胶系基板转换六张表组成。",
                 "结果写入每行最后一个有数据列之后的新列。",
                 "输出文件会新增转码说明 Sheet，记录命中情况和未识别原因。",
+            ],
+        },
+        "transcode_agent": {
+            "title": "营销转码Agent规则说明",
+            "items": [
+                "系统复用当前基础转码规则生成候选编码，再按Agent规则包进行客户特殊规则覆盖。",
+                "Agent结果列只写高置信制造码；中低置信结果只写待确认或未识别原因。",
+                "输出文件会新增字段证据链、待确认清单和规则命中汇总 Sheet。",
+                "客户特殊规则来源于业务清洗后的客户特殊清单母表，并转换为独立的Agent机器规则包。",
+                "首版仅覆盖CCL；PP/RC/%规格会跳过，不输出制造编码。",
             ],
         },
         "shennan": {
