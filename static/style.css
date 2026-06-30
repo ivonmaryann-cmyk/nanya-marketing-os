@@ -3994,8 +3994,9 @@ button:disabled {
     margin-right: -22px;
   }
 
-.single-quote-form button {
-  width: 100%;
+  .single-quote-form button {
+    width: 100%;
+  }
 }
 
 .agent-quote-panel {
@@ -4332,4 +4333,3 @@ button:disabled {
     flex: 1 1 140px;
   }
 }
-
