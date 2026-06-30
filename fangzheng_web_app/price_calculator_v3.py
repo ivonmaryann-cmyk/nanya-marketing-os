@@ -22,6 +22,7 @@ import os
 import shutil
 import math
 from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP
 import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment
 import warnings
@@ -52,6 +53,7 @@ ROLL_FIXED_WIDTH = 48
 ROLL_MM_DIVISOR = 0.0254
 FINAL_PRICE_DECIMALS = 2
 PP_ROLL_PRICE_COLUMNS = ('36"*48"', '40"*48"', '42"*48"')
+PP_ROLL_LENGTH_PATTERN = r'\d+(?:\.\d+)?\s*(?:M|\u7c73)\s*/\s*(?:ROLL|\u5377)'
 # 允许近似取价的最大板厚差异。例：0.140mm 只允许 0.130~0.150mm。
 MAX_THICKNESS_DELTA = 0.01
 # mil 转 mm 系数
@@ -76,7 +78,6 @@ CALCULATION_SHEET_NAME = '价格计算'
 RULE_SHEET_NAMES = {'方正价格', '基板对账', '基板对账表', '基板对照', '基板对照表', '计算说明', '规则说明'}
 DESCRIPTION_HEADER_KEYWORDS = ('物料描述', '物料', '品名', '规格', '描述', '产品描述')
 DESCRIPTION_HEADER_EXCLUDE_KEYWORDS = ('编码', '代码', '料号', '编号', 'PO', '数量', '单位', '交货期', '订单', '供应商')
-PP_LENGTH_HEADER_KEYWORDS = ('PP长度', 'PP長度', 'PP长', 'PP長', 'PP Length', 'PP长度M', 'PP长度米', '卷长', '卷料长度', '长度', '米数')
 DESCRIPTION_CONTENT_RE = re.compile(
     r'(?:\bPP\b|RC\s*\d+\s*%|\d+\.?\d*\s*mm|\d+\.?\d*"?\s*[*xX×]\s*\d+\.?\d*"?|M/Roll|HVLP|RTF|HTE|\d+\s*/\s*\d+|H\s*/\s*H)',
     re.IGNORECASE,
@@ -121,7 +122,8 @@ def ensure_dirs():
         os.makedirs(d, exist_ok=True)
 
 def round_price(value):
-    return round(float(value), FINAL_PRICE_DECIMALS)
+    quant = Decimal("1").scaleb(-FINAL_PRICE_DECIMALS)
+    return float(Decimal(str(value)).quantize(quant, rounding=ROUND_HALF_UP))
 
 def format_price(value):
     return f"{round_price(value):.{FINAL_PRICE_DECIMALS}f}"
@@ -281,50 +283,6 @@ def parse_rc_percent(text):
     match = re.search(r'RC\s*(\d+)\s*%', text, re.IGNORECASE)
     if match:
         return int(match.group(1))
-    return None
-
-def is_pp_description(text):
-    """判断物料描述是否走 PP 计算路径。"""
-    text = normalize_str(text)
-    if not text:
-        return False
-    if re.match(r'^PP\s+', text, re.IGNORECASE):
-        return True
-    return (
-        bool(re.search(r'RC\s*\d+\s*%', text, re.IGNORECASE))
-        and not bool(re.search(r'\d+\.?\d*\s*mm', text, re.IGNORECASE))
-        and not bool(re.search(r'\d+M/Roll', text, re.IGNORECASE))
-    )
-
-def parse_pp_length_from_desc(text):
-    """从 PP Roll 规格中提取长度，如 300M/Roll -> 300。"""
-    text = normalize_str(text)
-    match = re.search(r'\b(\d+\.?\d*)\s*M\s*/\s*Roll\b', text, re.IGNORECASE)
-    if match:
-        return float(match.group(1))
-    return None
-
-def parse_pp_length_value(value):
-    """从 Excel PP长度列单元格中提取长度数字。"""
-    if value is None or pd.isna(value):
-        return None
-    if isinstance(value, (int, float)) and not pd.isna(value):
-        return float(value)
-    text = normalize_str(value)
-    match = re.search(r'(\d+\.?\d*)', text)
-    if match:
-        return float(match.group(1))
-    return None
-
-def detect_pp_length_column_dataframe(df_calc):
-    """Return zero-based PP length column index, if present."""
-    for idx, col in enumerate(df_calc.columns):
-        name = normalize_str(col)
-        compact = re.sub(r'[\s_（）()]+', '', name, flags=re.IGNORECASE).lower()
-        if any(re.sub(r'[\s_（）()]+', '', key).lower() == compact for key in PP_LENGTH_HEADER_KEYWORDS):
-            return idx
-        if 'pp' in compact and ('长度' in compact or 'length' in compact):
-            return idx
     return None
 
 def size_to_code(w, h):
@@ -625,11 +583,31 @@ def query_pp_roll_price(df_price, glue, laminate_type, rc_percent):
     return pp_roll_price_from_row(row)
 
 
+def is_pp_roll_desc(desc):
+    """Return True for PP roll specs such as 49.5"*300M/Roll or 49.5" ... 300M/卷."""
+    return bool(re.search(PP_ROLL_LENGTH_PATTERN, normalize_str(desc), re.IGNORECASE))
+
+
+def extract_pp_roll_width(desc):
+    """Extract roll width in inch from supported PP roll specs."""
+    desc = normalize_str(desc)
+    joined_pattern = rf'(\d+\.?\d*)"?\s*[*脳xX×]\s*{PP_ROLL_LENGTH_PATTERN}'
+    match = re.search(joined_pattern, desc, re.IGNORECASE)
+    if match:
+        return float(match.group(1))
+
+    separated_pattern = rf'(\d+\.?\d*)\s*(?:"|IN|INCH|英寸)\s*.{{0,80}}?{PP_ROLL_LENGTH_PATTERN}'
+    match = re.search(separated_pattern, desc, re.IGNORECASE)
+    if match:
+        return float(match.group(1))
+    return None
+
+
 def _parse_pp_price_key(desc):
     """从 PP 规格中提取报价表匹配键。非 PP 返回空。"""
     desc = normalize_str(desc)
-    is_roll = bool(re.search(r'\d+M/Roll', desc, re.IGNORECASE))
     is_pp_prefix = bool(re.match(r'^PP\s+', desc, re.IGNORECASE))
+    is_roll = is_pp_roll_desc(desc)
     is_pp_implicit = (
         not is_pp_prefix
         and bool(re.search(r'RC\s*\d+\s*%', desc, re.IGNORECASE))
@@ -666,6 +644,12 @@ def calculate_pp_roll_price(desc, df_price):
         return None
     return query_pp_roll_price(df_price, raw_glue, laminate_type, rc_percent)
 
+
+def output_price_for_desc(desc, price, pp_roll_price):
+    """方正结果只输出一列：PP卷料用整卷价，其它用原计算价。"""
+    if is_pp_roll_desc(desc) and pp_roll_price not in (None, ''):
+        return pp_roll_price
+    return price
 
 def _match_cu_thick(candidates, rc_value):
     """在候选行中匹配铜厚值"""
@@ -785,6 +769,10 @@ def calculate_price(desc, df_price, df_account):
         return None, '', '物料描述为空'
     
     is_pp_prefix = bool(re.match(r'^PP\s+', desc, re.IGNORECASE))
+    is_roll = is_pp_roll_desc(desc)
+    
+    if is_roll:
+        return _calc_roll(desc, df_price)
     
     # 判断是否为非 PP 开头的 PP 行：型号以P结尾且包含 RC%，且无mm厚度信息
     # 如：NY2170P 1080 RC68% 21.6"x24.6" 有卤 CAF
@@ -792,11 +780,8 @@ def calculate_price(desc, df_price, df_account):
         not is_pp_prefix
         and bool(re.search(r'RC\s*\d+\s*%', desc, re.IGNORECASE))
         and not bool(re.search(r'\d+\.?\d*\s*mm', desc, re.IGNORECASE))
-        and not bool(re.search(r'\d+M/Roll', desc, re.IGNORECASE))
+        and not is_roll
     )
-    
-    if re.search(r'\d+M/Roll', desc, re.IGNORECASE):
-        return _calc_roll(desc, df_price)
     
     if is_pp_prefix or is_pp_implicit:
         return _calc_pp(desc, df_price)
@@ -966,14 +951,20 @@ def _calc_roll(desc, df_price):
     卷料价格计算（如 200M/Roll、300M/Roll）
     逻辑：与 PP 相同，叠构从 M/Roll 前的数字提取
     """
-    # 提取胶系（PP 开头）
+    # 提取胶系，兼容 PP 开头和隐式 PP（如 NY2150P 1080 RC71%）
     match = re.match(r'PP\s+([\w\-\(\)\.]+)', desc)
-    if not match:
-        return None, '', f'卷料无法提取胶系（需以PP开头）：{desc[:60]}'
-    raw_glue = match.group(1).strip()
+    if match:
+        raw_glue = match.group(1).strip()
+    else:
+        match2 = re.match(r'([\w\-\(\)\.]+)\s+(\d+)\s+RC', desc, re.IGNORECASE)
+        if not match2:
+            return None, '', f'卷料无法提取胶系：{desc[:60]}'
+        raw_glue = match2.group(1).strip()
     
     # 提取叠构类型（如 1080、1078）
     lam_match = re.search(r'PP\s+[\w\-\(\)\.]+\s+(\d+)\s+RC', desc, re.IGNORECASE)
+    if not lam_match and not match:
+        lam_match = re.match(r'[\w\-\(\)\.]+\s+(\d+)\s+RC', desc, re.IGNORECASE)
     if not lam_match:
         # 尝试从叠构字段提取
         lam_match2 = re.search(r'\b(1078|1080|1035|2116|3313|106|1067)\b', desc)
@@ -988,11 +979,10 @@ def _calc_roll(desc, df_price):
     if rc_percent is None:
         return None, '', f'卷料无法提取 RC%：{desc[:60]}'
     
-    # 提取卷料宽度（如 49.5"*200M/Roll 中的 49.5）
-    roll_size_match = re.search(r'(\d+\.?\d*)"?\s*[*×xX]\s*\d+M/Roll', desc, re.IGNORECASE)
-    if not roll_size_match:
+    # 提取卷料宽度（如 49.5"*200M/Roll 或 49.5" ... 300M/卷 中的 49.5）
+    w = extract_pp_roll_width(desc)
+    if w is None:
         return None, '', f'卷料无法提取宽度（格式如 49.5"*200M/Roll）：{desc[:60]}'
-    w = float(roll_size_match.group(1))
     
     log(f"  卷料解析：原始胶系={raw_glue}, 叠构={laminate_type}, RC%={rc_percent}, 宽度={w}")
     
@@ -1086,7 +1076,7 @@ def process_file(filepath):
         pp_roll_price_value = round_price(pp_roll_price) if pp_roll_price is not None else ''
         
         if not desc or desc == 'nan':
-            results.append({'行号': idx+2, '物料描述': '', '价格': '', 'PP整卷价格': '', '说明': '', '状态': '跳过'})
+            results.append({'行号': idx+2, '物料描述': '', '价格': '', '输出价格': '', '说明': '', '状态': '跳过'})
             skip_count += 1
             continue
         
@@ -1096,14 +1086,15 @@ def process_file(filepath):
         
         if err:
             log(f"  失败：{err}", 'ERROR')
-            results.append({'行号': idx+2, '物料描述': desc, '价格': '', 'PP整卷价格': pp_roll_price_value, '说明': err, '状态': '失败'})
+            results.append({'行号': idx+2, '物料描述': desc, '价格': '', '输出价格': '', '说明': err, '状态': '失败'})
             fail_count += 1
         else:
-            log(f"  价格：{price}")
-            results.append({'行号': idx+2, '物料描述': desc, '价格': price, 'PP整卷价格': pp_roll_price_value, '说明': note, '状态': '成功'})
+            output_price = output_price_for_desc(desc, price, pp_roll_price_value)
+            log(f"  价格：{output_price}")
+            results.append({'行号': idx+2, '物料描述': desc, '价格': price, '输出价格': output_price, '说明': note, '状态': '成功'})
             success_count += 1
             if len(df_calc.columns) > 8:
-                df_calc.iloc[idx, 8] = price
+                df_calc.iloc[idx, 8] = output_price
     
     log(f"\n{'='*60}")
     log(f"处理完成：成功 {success_count} 行，失败 {fail_count} 行，跳过 {skip_count} 行")
@@ -1124,20 +1115,18 @@ def save_result(source_path, df_calc, results, output_path, sheet_name=None):
     calc_sheet_name = sheet_name or select_calculation_sheet_name(wb.sheetnames)
     ws_calc = wb[calc_sheet_name]
     
+    price_col = _last_value_column(ws_calc) + 1
     header_row = _detect_header_row(ws_calc)
-    write_rows = [header_row] + [r['行号'] for r in results if r['状态'] != '跳过']
-    price_col, pp_total_col = _find_writable_result_columns(ws_calc, _last_value_column(ws_calc) + 1, write_rows, 2)
     header_cell = ws_calc.cell(row=header_row, column=price_col, value='方正计算价格')
     header_cell.font = Font(bold=True)
-    pp_header_cell = ws_calc.cell(row=header_row, column=pp_total_col, value='PP整卷价格')
-    pp_header_cell.font = Font(bold=True)
     
     for r in results:
         if r['状态'] == '跳过':
             continue
         row_num = r['行号']
-        if r['状态'] == '成功' and r['价格'] != '':
-            ws_calc.cell(row=row_num, column=price_col, value=r['价格'])
+        output_price = r.get('输出价格', r.get('价格', ''))
+        if r['状态'] == '成功' and output_price != '':
+            ws_calc.cell(row=row_num, column=price_col, value=output_price)
             ws_calc.cell(row=row_num, column=price_col).fill = PatternFill(
                 start_color='E8F5E9', end_color='E8F5E9', fill_type='solid'
             )
@@ -1146,18 +1135,13 @@ def save_result(source_path, df_calc, results, output_path, sheet_name=None):
             ws_calc.cell(row=row_num, column=price_col).fill = PatternFill(
                 start_color='FFEBEE', end_color='FFEBEE', fill_type='solid'
             )
-        if r.get('PP整卷价格') != '':
-            ws_calc.cell(row=row_num, column=pp_total_col, value=r['PP整卷价格'])
-            ws_calc.cell(row=row_num, column=pp_total_col).fill = PatternFill(
-                start_color='E3F2FD', end_color='E3F2FD', fill_type='solid'
-            )
     
     # 添加计算说明 Sheet
     if '计算说明' in wb.sheetnames:
         del wb['计算说明']
     ws_note = wb.create_sheet('计算说明')
     
-    headers = ['行号', '物料描述', '计算价格', 'PP整卷价格', '计算说明', '状态']
+    headers = ['行号', '物料描述', '计算价格', '计算说明', '状态']
     for col, h in enumerate(headers, 1):
         cell = ws_note.cell(row=1, column=col, value=h)
         cell.font = Font(bold=True, color='FFFFFF')
@@ -1170,17 +1154,16 @@ def save_result(source_path, df_calc, results, output_path, sheet_name=None):
             continue
         ws_note.cell(row=data_row, column=1, value=r['行号'])
         ws_note.cell(row=data_row, column=2, value=str(r['物料描述'])[:120])
-        ws_note.cell(row=data_row, column=3, value=r['价格'])
-        ws_note.cell(row=data_row, column=4, value=r.get('PP整卷价格', ''))
-        ws_note.cell(row=data_row, column=5, value=str(r['说明'])[:200])
-        ws_note.cell(row=data_row, column=6, value=r['状态'])
+        ws_note.cell(row=data_row, column=3, value=r.get('输出价格', r.get('价格', '')))
+        ws_note.cell(row=data_row, column=4, value=str(r['说明'])[:200])
+        ws_note.cell(row=data_row, column=5, value=r['状态'])
         
         if r['状态'] == '成功':
-            ws_note.cell(row=data_row, column=6).fill = PatternFill(
+            ws_note.cell(row=data_row, column=5).fill = PatternFill(
                 start_color='C8E6C9', end_color='C8E6C9', fill_type='solid'
             )
         elif r['状态'] == '失败':
-            ws_note.cell(row=data_row, column=6).fill = PatternFill(
+            ws_note.cell(row=data_row, column=5).fill = PatternFill(
                 start_color='FFCDD2', end_color='FFCDD2', fill_type='solid'
             )
         data_row += 1
@@ -1188,9 +1171,8 @@ def save_result(source_path, df_calc, results, output_path, sheet_name=None):
     ws_note.column_dimensions['A'].width = 8
     ws_note.column_dimensions['B'].width = 65
     ws_note.column_dimensions['C'].width = 12
-    ws_note.column_dimensions['D'].width = 14
-    ws_note.column_dimensions['E'].width = 90
-    ws_note.column_dimensions['F'].width = 10
+    ws_note.column_dimensions['D'].width = 90
+    ws_note.column_dimensions['E'].width = 10
     
     wb.save(output_path)
 
@@ -1202,24 +1184,6 @@ def _last_value_column(ws) -> int:
             if cell.value not in (None, ''):
                 last_col = max(last_col, cell.column)
     return last_col
-
-
-def _column_has_merged_target(ws, col: int, rows) -> bool:
-    for merged_range in ws.merged_cells.ranges:
-        if merged_range.min_col <= col <= merged_range.max_col:
-            for row in rows:
-                if merged_range.min_row <= row <= merged_range.max_row:
-                    return True
-    return False
-
-
-def _find_writable_result_columns(ws, start_col: int, rows, count: int):
-    col = start_col
-    while True:
-        cols = list(range(col, col + count))
-        if all(not _column_has_merged_target(ws, candidate_col, rows) for candidate_col in cols):
-            return cols
-        col += 1
 
 
 def _detect_header_row(ws) -> int:

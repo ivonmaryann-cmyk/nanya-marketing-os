@@ -134,7 +134,7 @@ def queue_in_transit_job(employee_id: str, uploaded_file, original_filename: str
     input_path = employee_dir / f"{timestamp}_in_transit_{safe_name}"
     uploaded_file.save(input_path)
 
-    display_name = f"在途核对：{original_filename}"
+    display_name = f"深南在途核对：{original_filename}"
     job_id = create_job(
         employee_id,
         display_name,
@@ -152,7 +152,7 @@ def run_in_transit_job(job_id: int, employee_id: str) -> None:
     if not job:
         return
 
-    append_job_log(job_id, "开始在途核对任务")
+    append_job_log(job_id, "开始深南在途核对任务")
     try:
         input_path = Path(job["stored_input_path"])
 
@@ -160,7 +160,7 @@ def run_in_transit_job(job_id: int, employee_id: str) -> None:
         append_job_log(job_id, f"读取 Sheet：{INTERNAL_DETAIL_SHEET} / {CUSTOMER_DETAIL_SHEET}")
 
         result = calculate_in_transit_workbook(input_path, job_id=job_id)
-        output_path = input_path.with_name(f"{input_path.stem}_在途核对结果.xlsx")
+        output_path = input_path.with_name(f"{input_path.stem}_深南在途核对结果.xlsx")
         save_result_workbook(result, output_path)
 
         update_job_status(
@@ -176,7 +176,7 @@ def run_in_transit_job(job_id: int, employee_id: str) -> None:
         )
         append_job_log(job_id, f"核对完成，结果文件：{output_path.name}")
     except Exception as exc:
-        append_job_log(job_id, f"在途核对失败：{exc}")
+        append_job_log(job_id, f"深南在途核对失败：{exc}")
         update_job_status(job_id, status="failed", error_message=str(exc), completed=True)
         raise
 

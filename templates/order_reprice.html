@@ -29,7 +29,9 @@
   </div>
 </section>
 
-<section class="order-reprice-shell" data-active-mode="{{ active_job.order_reprice_mode if active_job else 'block1' }}">
+{% set active_mode = active_job.order_reprice_mode if active_job else 'block1' %}
+{% set active_customer = active_job.customer_key if active_job else 'shenghong' %}
+<section class="order-reprice-shell" data-active-mode="{{ active_mode }}" data-active-customer="{{ active_customer }}">
   <div class="work-column">
     <article class="card task-card order-reprice-control">
       <div class="section-head">
@@ -37,11 +39,11 @@
           <div class="step-tag">客户选择</div>
           <h2>改价与核对</h2>
         </div>
-        <span class="rule-chip">胜宏当前可用</span>
+        <span class="rule-chip">胜宏 / 景旺当前可用</span>
       </div>
       <div class="customer-selector" role="list" aria-label="客户选择">
         {% for customer in customers %}
-        <button type="button" class="customer-option {% if customer.enabled and loop.first %}active{% endif %}" data-customer="{{ customer.key }}" {% if not customer.enabled %}disabled{% endif %}>
+        <button type="button" class="customer-option {% if customer.enabled and customer.key == active_customer %}active{% endif %}" data-customer="{{ customer.key }}" {% if not customer.enabled %}disabled{% endif %}>
           <span>{{ customer.label }}</span>
           <em>{{ "可用" if customer.enabled else "待接入" }}</em>
         </button>
@@ -49,17 +51,20 @@
       </div>
 
       <div class="order-tabs" role="tablist" aria-label="订单改价功能">
-        {% for mode in customers[0].modes %}
-        <button type="button" class="order-tab" data-tab="{{ mode }}" role="tab">
+        {% for customer in customers if customer.enabled %}
+        {% for mode in customer.modes %}
+        <button type="button" class="order-tab" data-tab="{{ mode }}" data-customer="{{ customer.key }}" role="tab">
           {{ mode_meta[mode].tab }}
         </button>
+        {% endfor %}
         {% endfor %}
       </div>
     </article>
 
-    {% for mode in customers[0].modes %}
+    {% for customer in customers if customer.enabled %}
+    {% for mode in customer.modes %}
     {% set meta = mode_meta[mode] %}
-    <article class="card task-card task-card-primary order-panel" data-panel="{{ mode }}" role="tabpanel">
+    <article class="card task-card task-card-primary order-panel" data-panel="{{ mode }}" data-customer="{{ customer.key }}" role="tabpanel">
       <div class="task-card-title">
         <div>
           <div class="step-tag">{{ meta.tab }}</div>
@@ -68,9 +73,46 @@
         <span class="rule-chip">{{ mode_labels[mode] }}</span>
       </div>
 
+      {% if mode == 'jingwang_factory_merge' %}
       <form method="post" action="{{ url_for('main.create_order_reprice_job_view') }}" enctype="multipart/form-data" class="form-grid order-reprice-form">
         <input type="hidden" name="mode" value="{{ mode }}">
-        <input type="hidden" name="customer_key" value="shenghong">
+        <input type="hidden" name="customer_key" value="{{ customer.key }}">
+        <label class="upload-dropzone" data-upload-label data-file-label="{{ meta.factory_701_label }}">
+          <input type="file" name="factory_701_file" accept=".xlsx,.xls,.xlsm" required>
+          <span class="upload-icon">701</span>
+          <strong>拖拽{{ meta.factory_701_label }} Excel 到这里，或点击选择</strong>
+          <em>{{ meta.factory_701_label }}：未选择；{{ meta.factory_701_hint }}</em>
+        </label>
+        <label class="upload-dropzone" data-upload-label data-file-label="{{ meta.factory_411_label }}">
+          <input type="file" name="factory_411_file" accept=".xlsx,.xls,.xlsm" required>
+          <span class="upload-icon">411</span>
+          <strong>拖拽{{ meta.factory_411_label }} Excel 到这里，或点击选择</strong>
+          <em>{{ meta.factory_411_label }}：未选择；{{ meta.factory_411_hint }}</em>
+        </label>
+        <button type="submit">{{ meta.button }}</button>
+      </form>
+      {% elif mode == 'jingwang_customer_price_check' %}
+      <form method="post" action="{{ url_for('main.create_order_reprice_job_view') }}" enctype="multipart/form-data" class="form-grid order-reprice-form">
+        <input type="hidden" name="mode" value="{{ mode }}">
+        <input type="hidden" name="customer_key" value="{{ customer.key }}">
+        <label class="upload-dropzone" data-upload-label data-file-label="{{ meta.merged_label }}">
+          <input type="file" name="merged_file" accept=".xlsx,.xls,.xlsm" required>
+          <span class="upload-icon">合并</span>
+          <strong>拖拽{{ meta.merged_label }} Excel 到这里，或点击选择</strong>
+          <em>{{ meta.merged_label }}：未选择；{{ meta.merged_hint }}</em>
+        </label>
+        <label class="upload-dropzone" data-upload-label data-file-label="客户数据">
+          <input type="file" name="customer_file" accept=".xlsx,.xls,.xlsm" required>
+          <span class="upload-icon">客户</span>
+          <strong>拖拽客户数据 Excel 到这里，或点击选择</strong>
+          <em>客户数据：未选择；{{ meta.customer_hint }}</em>
+        </label>
+        <button type="submit">{{ meta.button }}</button>
+      </form>
+      {% else %}
+      <form method="post" action="{{ url_for('main.create_order_reprice_job_view') }}" enctype="multipart/form-data" class="form-grid order-reprice-form">
+        <input type="hidden" name="mode" value="{{ mode }}">
+        <input type="hidden" name="customer_key" value="{{ customer.key }}">
         <label class="upload-dropzone" data-upload-label data-file-label="客户明细">
           <input type="file" name="customer_file" accept=".xlsx,.xls,.xlsm" required>
           <span class="upload-icon">客户</span>
@@ -93,6 +135,7 @@
         {% endif %}
         <button type="submit">{{ meta.button }}</button>
       </form>
+      {% endif %}
 
       <div class="result-panel" data-result-panel="{{ mode }}">
         <div class="section-head compact-head">
@@ -120,6 +163,7 @@
         </div>
       </div>
     </article>
+    {% endfor %}
     {% endfor %}
 
     <article class="card task-card">
@@ -222,7 +266,10 @@
   const statLabels = {
     block1: ["总记录数", "匹配成功数", "项次拆分匹配数", "未匹配数", "匹配成功率"],
     block2: ["总记录数", "价格正确数", "价格异常数", "未匹配数", "异常率"],
-    block3: ["总记录数", "价格正确数", "价格错误数", "未匹配数"]
+    block3: ["总记录数", "价格正确数", "价格错误数", "未匹配数"],
+    jingwang_factory_merge: ["701原始行数", "411原始行数", "过滤删除数", "411被701覆盖数", "合并表行数"],
+    jingwang_customer_price_check: ["客户总记录数", "客户已匹配数", "客户未匹配数", "价格一致数", "价格不一致数"],
+    jingwang_price_check: ["客户总记录数", "客户已匹配数", "客户未匹配数", "价格一致数", "价格不一致数", "411被701覆盖数"]
   };
 
   function preventFileOpen(event) {
@@ -257,9 +304,19 @@
     label.classList.add("has-file");
   }
 
+  function customerForMode(mode) {
+    const tab = document.querySelector(`.order-tab[data-tab="${mode}"]`);
+    return tab ? tab.dataset.customer : "shenghong";
+  }
+
   function activateMode(mode) {
+    const customer = customerForMode(mode);
+    document.querySelectorAll(".customer-option").forEach(option => {
+      option.classList.toggle("active", option.dataset.customer === customer);
+    });
     document.querySelectorAll(".order-tab").forEach(tab => {
       const active = tab.dataset.tab === mode;
+      tab.classList.toggle("hidden", tab.dataset.customer !== customer);
       tab.classList.toggle("active", active);
       tab.setAttribute("aria-selected", active ? "true" : "false");
     });
@@ -269,6 +326,19 @@
     document.querySelectorAll("[data-history-row]").forEach(row => {
       row.classList.toggle("hidden", row.dataset.mode !== mode);
     });
+    const shell = document.querySelector(".order-reprice-shell");
+    if (shell) {
+      shell.dataset.activeMode = mode;
+      shell.dataset.activeCustomer = customer;
+    }
+  }
+
+  function activateCustomer(customer, preferredMode = null) {
+    const tabs = Array.from(document.querySelectorAll(`.order-tab[data-customer="${customer}"]`));
+    const mode = tabs.some(tab => tab.dataset.tab === preferredMode)
+      ? preferredMode
+      : (tabs[0] ? tabs[0].dataset.tab : null);
+    if (mode) activateMode(mode);
   }
 
   function renderStats(mode, cards) {
@@ -338,8 +408,12 @@
     tab.addEventListener("click", () => activateMode(tab.dataset.tab));
   });
 
+  document.querySelectorAll(".customer-option:not([disabled])").forEach(button => {
+    button.addEventListener("click", () => activateCustomer(button.dataset.customer));
+  });
+
   const shell = document.querySelector(".order-reprice-shell");
-  activateMode(shell ? shell.dataset.activeMode : "block1");
+  activateCustomer(shell ? shell.dataset.activeCustomer : "shenghong", shell ? shell.dataset.activeMode : "block1");
 
   const panel = document.getElementById("live-panel");
   if (panel) {

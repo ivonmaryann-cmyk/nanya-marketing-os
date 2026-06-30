@@ -51,7 +51,7 @@ def calculate_fangzheng_quote(spec: str) -> dict:
         }
     return {
         "status": "成功",
-        "price": round(float(price), 2) if price is not None else None,
+        "price": calculator.round_price(price) if price is not None else None,
         "note": note or "计算成功",
         "material_type": "方正价格",
         "rule_version": rule_version,
@@ -116,7 +116,7 @@ def run_job(job_id: int, employee_id: str, rule_version: str) -> None:
             pp_roll_price_value = calculator.round_price(pp_roll_price) if pp_roll_price is not None else ""
             if err:
                 fail_count += 1
-                results.append({"行号": index, "物料描述": desc, "价格": "", "PP整卷价格": pp_roll_price_value, "说明": err, "状态": "失败"})
+                results.append({"行号": index, "物料描述": desc, "价格": "", "输出价格": "", "说明": err, "状态": "失败"})
                 append_job_log(
                     job_id,
                     f"第 {index} 行失败：{err}",
@@ -126,10 +126,11 @@ def run_job(job_id: int, employee_id: str, rule_version: str) -> None:
                 )
             else:
                 success_count += 1
-                results.append({"行号": index, "物料描述": desc, "价格": price, "PP整卷价格": pp_roll_price_value, "说明": note, "状态": "成功"})
+                output_price = calculator.output_price_for_desc(desc, price, pp_roll_price_value)
+                results.append({"行号": index, "物料描述": desc, "价格": price, "输出价格": output_price, "说明": note, "状态": "成功"})
                 append_job_log(
                     job_id,
-                    f"第 {index} 行成功：{price}",
+                    f"第 {index} 行成功：{output_price}",
                     success_count=success_count,
                     current_row=processed,
                     total_rows=total_rows,

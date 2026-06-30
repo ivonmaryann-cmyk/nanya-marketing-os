@@ -62,6 +62,9 @@ from .hushi_rules import (
 from .hushi_service import calculate_hushi_quote, queue_hushi_job
 from .in_transit_service import queue_in_transit_job
 from .job_control import cancel_job_process, reconcile_interrupted_jobs
+from .order_reprice_service import JINGWANG_CUSTOMER_PRICE_CHECK_MODE
+from .order_reprice_service import JINGWANG_FACTORY_MERGE_MODE
+from .order_reprice_service import JINGWANG_PRICE_CHECK_MODE
 from .order_reprice_service import MODE_LABELS as ORDER_REPRICE_MODE_LABELS
 from .order_reprice_service import queue_order_reprice_job
 from .price_calculation_customers import (
@@ -179,9 +182,16 @@ FUNCTION_CARDS = [
         "stage": "test",
     },
     {
+        "key": "price_calculation",
+        "title": "价格计算",
+        "desc": "按客户选择价格表，上传 Excel 或粘贴单条规格后自动匹配新价格并输出刷价结果。",
+        "route": "main.price_calculation",
+        "stage": "test",
+    },
+    {
         "key": "in_transit",
-        "title": "在途核对",
-        "desc": "上传包含厂内明细和客户明细的 Excel，自动核对数量、品名、日期和待出货明细。",
+        "title": "深南在途核对",
+        "desc": "上传系统导出数据和客户在途数据，自动核对数量、品名和匹配状态。",
         "route": "main.in_transit",
         "stage": "test",
     },
@@ -215,7 +225,9 @@ FEATURE_LABELS = {
     "shennan": "深南价格计算",
     "bomin": "博敏价格计算",
     "hushi": "沪士价格计算",
-    "in_transit": "在途核对",
+    "price_calculation": "价格计算",
+    "in_transit": "深南在途核对",
+    "order_reprice": "订单改价",
     "work_planning": "工作规划",
 }
 
@@ -248,6 +260,36 @@ ORDER_REPRICE_MODE_META = {
         "factory_hint": "字段：客户单号、项次、客户产品编号、单价",
         "button": "开始改价核对",
     },
+    JINGWANG_FACTORY_MERGE_MODE: {
+        "tab": "厂内数据合并",
+        "title": "景旺厂内701/411数据合并",
+        "history": "厂内数据合并",
+        "factory_701_label": "厂内701",
+        "factory_701_hint": "字段：订单号/出货单号、项次、客户单号、客户产品编号、单价",
+        "factory_411_label": "厂内411",
+        "factory_411_hint": "字段：单别单号、项次、客户单号、客户产品编号、单价",
+        "button": "开始合并",
+    },
+    JINGWANG_CUSTOMER_PRICE_CHECK_MODE: {
+        "tab": "客户数据核价",
+        "title": "景旺客户数据核价",
+        "history": "客户数据核价",
+        "customer_hint": "字段：物料编号、采购单号.1、价格",
+        "merged_label": "701+411合并表",
+        "merged_hint": "上传第一步生成的701+411合并表",
+        "button": "开始核价",
+    },
+    JINGWANG_PRICE_CHECK_MODE: {
+        "tab": "订单核价",
+        "title": "景旺订单核价",
+        "history": "订单核价",
+        "customer_hint": "字段：物料编号、采购单号.1、价格",
+        "factory_701_label": "厂内701",
+        "factory_701_hint": "字段：订单号/出货单号、项次、客户单号、客户产品编号、单价",
+        "factory_411_label": "厂内411",
+        "factory_411_hint": "字段：单别单号、项次、客户单号、客户产品编号、单价",
+        "button": "开始订单核价",
+    },
 }
 
 ORDER_REPRICE_CUSTOMERS = [
@@ -257,7 +299,7 @@ ORDER_REPRICE_CUSTOMERS = [
         "enabled": True,
         "modes": ["block1", "block2", "block3"],
     },
-    {"key": "jingwang", "label": "景旺", "enabled": False, "modes": []},
+    {"key": "jingwang", "label": "景旺", "enabled": True, "modes": [JINGWANG_FACTORY_MERGE_MODE, JINGWANG_CUSTOMER_PRICE_CHECK_MODE]},
     {"key": "bomin", "label": "博敏", "enabled": False, "modes": []},
 ]
 
@@ -493,7 +535,9 @@ def _decorate_job(job) -> dict:
         manifest = _order_reprice_manifest(data)
         mode = _order_reprice_mode_from_job(data, manifest)
         data["order_reprice_mode"] = mode
-        data["customer_label"] = manifest.get("customer_label") or "胜宏"
+        is_jingwang_mode = mode in {JINGWANG_FACTORY_MERGE_MODE, JINGWANG_CUSTOMER_PRICE_CHECK_MODE, JINGWANG_PRICE_CHECK_MODE}
+        data["customer_key"] = manifest.get("customer_key") or ("jingwang" if is_jingwang_mode else "shenghong")
+        data["customer_label"] = manifest.get("customer_label") or ("景旺" if is_jingwang_mode else "胜宏")
         data["function_type"] = ORDER_REPRICE_MODE_META.get(mode, {}).get("history", "订单改价")
         stats = _order_reprice_stats(data, mode)
         data["order_reprice_stats"] = stats
@@ -522,6 +566,12 @@ def _order_reprice_stats(job: dict, mode: str) -> dict:
                 return _order_reprice_block2_stats(result_path)
             if mode == "block3":
                 return _order_reprice_block3_stats(result_path)
+            if mode == JINGWANG_FACTORY_MERGE_MODE:
+                return _order_reprice_jingwang_merge_stats(result_path)
+            if mode == JINGWANG_CUSTOMER_PRICE_CHECK_MODE:
+                return _order_reprice_jingwang_stats(result_path, include_covered=False)
+            if mode == JINGWANG_PRICE_CHECK_MODE:
+                return _order_reprice_jingwang_stats(result_path, include_covered=True)
         except Exception:
             pass
     return _order_reprice_fallback_stats(job, mode)
@@ -546,6 +596,22 @@ def _order_reprice_fallback_stats(job: dict, mode: str) -> dict:
             {"label": "价格正确数", "value": success},
             {"label": "价格异常数", "value": fail},
             {"label": "未匹配数", "value": "-"},
+            {"label": "异常率", "value": _format_percent(fail, total)},
+        ]
+        return {"total": total, "issue_count": fail, "cards": cards}
+    if mode == JINGWANG_FACTORY_MERGE_MODE:
+        cards = [
+            {"label": "合并表行数", "value": success or total},
+            {"label": "异常数", "value": fail},
+            {"label": "覆盖数量", "value": "-"},
+            {"label": "处理状态", "value": job.get("status") or "-"},
+        ]
+        return {"total": success or total, "issue_count": fail, "cards": cards}
+    if mode in {JINGWANG_CUSTOMER_PRICE_CHECK_MODE, JINGWANG_PRICE_CHECK_MODE}:
+        cards = [
+            {"label": "客户总记录数", "value": total},
+            {"label": "价格一致数", "value": success},
+            {"label": "异常/未匹配数", "value": fail},
             {"label": "异常率", "value": _format_percent(fail, total)},
         ]
         return {"total": total, "issue_count": fail, "cards": cards}
@@ -607,6 +673,44 @@ def _order_reprice_block3_stats(result_path: Path) -> dict:
         {"label": "未匹配数", "value": unmatched},
     ]
     return {"total": total, "issue_count": error + unmatched, "cards": cards}
+
+
+def _order_reprice_jingwang_merge_stats(result_path: Path) -> dict:
+    summary = _workbook_summary(result_path, "合并汇总")
+    rows_701 = _summary_int(summary, "701原始行数") or _summary_int(summary, "701行数")
+    rows_411 = _summary_int(summary, "411原始行数") or _summary_int(summary, "411行数")
+    filtered = _summary_int(summary, "701过滤删除数") + _summary_int(summary, "411过滤删除数")
+    covered_411 = _summary_int(summary, "411被701覆盖数量")
+    merged = _summary_int(summary, "合并表行数")
+    cards = [
+        {"label": "701原始行数", "value": rows_701},
+        {"label": "411原始行数", "value": rows_411},
+        {"label": "过滤删除数", "value": filtered},
+        {"label": "411被701覆盖数", "value": covered_411},
+        {"label": "合并表行数", "value": merged},
+    ]
+    return {"total": merged, "issue_count": 0, "cards": cards}
+
+
+def _order_reprice_jingwang_stats(result_path: Path, *, include_covered: bool = True) -> dict:
+    summary = _workbook_summary(result_path, "核价汇总")
+    total = _summary_int(summary, "客户总记录数")
+    matched = _summary_int(summary, "客户已匹配数量")
+    unmatched = _summary_int(summary, "客户未匹配数量")
+    price_equal = _summary_int(summary, "价格一致数量") or _summary_int(summary, "金额一致数量")
+    price_mismatch = _summary_int(summary, "价格不一致数量") or _summary_int(summary, "金额不一致数量")
+    covered_411 = _summary_int(summary, "411被701覆盖数量")
+    issue_count = price_mismatch + unmatched
+    cards = [
+        {"label": "客户总记录数", "value": total},
+        {"label": "客户已匹配数", "value": matched},
+        {"label": "客户未匹配数", "value": unmatched},
+        {"label": "价格一致数", "value": price_equal},
+        {"label": "价格不一致数", "value": price_mismatch},
+    ]
+    if include_covered:
+        cards.append({"label": "411被701覆盖数", "value": covered_411})
+    return {"total": total, "issue_count": issue_count, "cards": cards}
 
 
 def _workbook_records(path: Path, sheet_name: str) -> list[dict]:
@@ -1318,14 +1422,14 @@ def create_in_transit_job_view():
         return redirect(url_for("main.in_transit"))
     original_filename = (uploaded_file.filename or "").strip()
     if not original_filename.lower().endswith((".xlsx", ".xlsm", ".xls")):
-        flash("在途核对仅支持 .xlsx / .xlsm / .xls 文件。", "error")
+        flash("深南在途核对仅支持 .xlsx / .xlsm / .xls 文件。", "error")
         return redirect(url_for("main.in_transit"))
     active_job = get_active_job(current_employee(), "in_transit")
     if active_job:
-        flash("当前已有在途核对任务正在处理，请先等待完成或停止后再上传。", "error")
+        flash("当前已有深南在途核对任务正在处理，请先等待完成或停止后再上传。", "error")
         return redirect(url_for("main.in_transit", job_id=active_job["id"]))
     job_id = queue_in_transit_job(current_employee(), uploaded_file, original_filename)
-    flash("在途核对任务已创建，系统正在处理。", "success")
+    flash("深南在途核对任务已创建，系统正在处理。", "success")
     return redirect(url_for("main.in_transit", job_id=job_id))
 
 
@@ -1339,13 +1443,89 @@ def create_order_reprice_job_view():
         flash("请选择订单改价处理块。", "error")
         return redirect(url_for("main.order_reprice"))
 
+    customer_key = request.form.get("customer_key", "shenghong").strip() or "shenghong"
     customer_file = request.files.get("customer_file")
     factory_file = request.files.get("factory_file")
+    factory_701_file = request.files.get("factory_701_file")
+    factory_411_file = request.files.get("factory_411_file")
+    merged_file = request.files.get("merged_file")
     quote_files = [file_obj for file_obj in request.files.getlist("quote_files") if file_obj and file_obj.filename]
 
     def _valid_excel(file_obj) -> bool:
         return bool(file_obj and file_obj.filename and file_obj.filename.lower().endswith((".xlsx", ".xlsm", ".xls")))
 
+    active_job = get_active_job(current_employee(), "order_reprice")
+    if active_job:
+        flash("当前已有订单改价任务正在处理，请先等待完成或停止后再上传。", "error")
+        return redirect(url_for("main.order_reprice", job_id=active_job["id"]))
+
+    if mode == JINGWANG_FACTORY_MERGE_MODE:
+        if customer_key != "jingwang":
+            flash("景旺厂内数据合并请选择景旺客户。", "error")
+            return redirect(url_for("main.order_reprice"))
+        if not _valid_excel(factory_701_file) or not _valid_excel(factory_411_file):
+            flash("请上传厂内701和厂内411两份 Excel 文件。", "error")
+            return redirect(url_for("main.order_reprice"))
+        try:
+            job_id = queue_order_reprice_job(
+                current_employee(),
+                mode,
+                customer_key=customer_key,
+                factory_701_file=factory_701_file,
+                factory_411_file=factory_411_file,
+            )
+        except Exception as exc:
+            flash(f"景旺厂内数据合并任务创建失败：{exc}", "error")
+            return redirect(url_for("main.order_reprice"))
+        flash("景旺厂内数据合并任务已创建，系统正在处理。", "success")
+        return redirect(url_for("main.order_reprice", job_id=job_id))
+
+    if mode == JINGWANG_CUSTOMER_PRICE_CHECK_MODE:
+        if customer_key != "jingwang":
+            flash("景旺客户数据核价请选择景旺客户。", "error")
+            return redirect(url_for("main.order_reprice"))
+        if not _valid_excel(merged_file) or not _valid_excel(customer_file):
+            flash("请上传701+411合并表和客户数据两份 Excel 文件。", "error")
+            return redirect(url_for("main.order_reprice"))
+        try:
+            job_id = queue_order_reprice_job(
+                current_employee(),
+                mode,
+                customer_file,
+                customer_key=customer_key,
+                merged_file=merged_file,
+            )
+        except Exception as exc:
+            flash(f"景旺客户数据核价任务创建失败：{exc}", "error")
+            return redirect(url_for("main.order_reprice"))
+        flash("景旺客户数据核价任务已创建，系统正在处理。", "success")
+        return redirect(url_for("main.order_reprice", job_id=job_id))
+
+    if mode == JINGWANG_PRICE_CHECK_MODE:
+        if customer_key != "jingwang":
+            flash("景旺订单核价请选择景旺客户。", "error")
+            return redirect(url_for("main.order_reprice"))
+        if not _valid_excel(factory_701_file) or not _valid_excel(factory_411_file) or not _valid_excel(customer_file):
+            flash("请上传厂内701、厂内411和客户数据三份 Excel 文件。", "error")
+            return redirect(url_for("main.order_reprice"))
+        try:
+            job_id = queue_order_reprice_job(
+                current_employee(),
+                mode,
+                customer_file,
+                customer_key=customer_key,
+                factory_701_file=factory_701_file,
+                factory_411_file=factory_411_file,
+            )
+        except Exception as exc:
+            flash(f"景旺订单核价任务创建失败：{exc}", "error")
+            return redirect(url_for("main.order_reprice"))
+        flash("景旺订单核价任务已创建，系统正在处理。", "success")
+        return redirect(url_for("main.order_reprice", job_id=job_id))
+
+    if customer_key != "shenghong":
+        flash("该客户暂未支持当前订单改价功能。", "error")
+        return redirect(url_for("main.order_reprice"))
     if not _valid_excel(customer_file) or not _valid_excel(factory_file):
         flash("请上传客户明细和厂内明细 Excel 文件。", "error")
         return redirect(url_for("main.order_reprice"))
@@ -1356,12 +1536,15 @@ def create_order_reprice_job_view():
         flash("报价单仅支持 .xlsx / .xlsm / .xls 文件。", "error")
         return redirect(url_for("main.order_reprice"))
 
-    active_job = get_active_job(current_employee(), "order_reprice")
-    if active_job:
-        flash("当前已有订单改价任务正在处理，请先等待完成或停止后再上传。", "error")
-        return redirect(url_for("main.order_reprice", job_id=active_job["id"]))
     try:
-        job_id = queue_order_reprice_job(current_employee(), mode, customer_file, factory_file, quote_files)
+        job_id = queue_order_reprice_job(
+            current_employee(),
+            mode,
+            customer_file,
+            factory_file,
+            quote_files,
+            customer_key=customer_key,
+        )
     except Exception as exc:
         flash(f"订单改价任务创建失败：{exc}", "error")
         return redirect(url_for("main.order_reprice"))

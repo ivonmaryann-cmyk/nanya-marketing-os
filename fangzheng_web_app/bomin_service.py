@@ -640,10 +640,10 @@ def _extract_pp_glass(text: str) -> str | None:
     product = _extract_product(upper)
     if product:
         tail = upper.split(product, 1)[-1]
-        match = re.search(r"\b(\d{2,4})\b", tail)
+        match = re.search(r"\b(\d{2,4})\b(?=.*\bRC\b)", tail)
         if match:
             return _norm_glass(match.group(1))
-    match = re.search(r"\b(\d{2,4})\b(?=.*(?:\bRC\b|含胶量))", upper)
+    match = re.search(r"\b(\d{2,4})\b(?=.*\bRC\b)", upper)
     return _norm_glass(match.group(1)) if match else None
 
 
@@ -710,7 +710,7 @@ def _normalize_unit(unit: str | None, value: float) -> str:
 
 def _looks_like_pp(text: str, product: str | None) -> bool:
     upper = text.upper()
-    has_pp_glass = bool(re.search(r"\b\d{2,4}\b(?=.*(?:\bRC\b|含胶量))", upper))
+    has_pp_glass = bool(re.search(r"\b\d{2,4}\b(?=.*\bRC\b)", upper))
     if re.search(r"\bRC\b|含胶量", upper) and has_pp_glass:
         return True
     if product and re.search(r"P$", product):

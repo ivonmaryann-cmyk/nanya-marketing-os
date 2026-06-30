@@ -1,16 +1,16 @@
 {% extends "base.html" %}
-{% block title %}在途核对 | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block title %}深南在途核对 | {{ platform_name }} {{ platform_version }}{% endblock %}
 {% block content %}
 <div class="page-backbar">
   <a class="back-link" href="{{ url_for('main.dashboard') }}">返回功能中心</a>
-  <span>功能中心 / 在途核对</span>
+  <span>功能中心 / 深南在途核对</span>
 </div>
 
 <section class="feature-hero">
   <div class="hero-watermark feature-mark">IN TRANSIT</div>
   <div class="feature-hero-copy">
     <div class="panel-tag">TEST WORKSPACE</div>
-    <h1>在途核对</h1>
+    <h1>深南在途核对</h1>
     <p>上传包含厂内明细和客户明细两张 Sheet 的 Excel，系统按客户单号、物料编码、项次和到货日期做一对一核对，并输出数量、品名、日期和待出货明细结果。</p>
   </div>
   <div class="feature-metrics">
@@ -43,7 +43,7 @@
         <label class="upload-dropzone" id="in-transit-dropzone" for="in-transit-excel-file">
           <input id="in-transit-excel-file" type="file" name="in_transit_excel_file" accept=".xlsx,.xls,.xlsm" required>
           <span class="upload-icon">在途</span>
-          <strong id="in-transit-upload-title">拖拽在途核对 Excel 到这里，或点击选择文件</strong>
+          <strong id="in-transit-upload-title">拖拽深南在途核对 Excel 到这里，或点击选择文件</strong>
           <em id="in-transit-upload-filename">需包含厂内明细和客户明细两张 Sheet</em>
         </label>
         <button type="submit">开始核对</button>
@@ -84,7 +84,7 @@
             </td>
           </tr>
           {% else %}
-          <tr><td colspan="5">还没有在途核对记录。</td></tr>
+          <tr><td colspan="5">还没有深南在途核对记录。</td></tr>
           {% endfor %}
         </tbody>
       </table>
@@ -136,7 +136,7 @@
         </div>
       </div>
       {% else %}
-      <div class="empty-log">还没有在途核对任务，上传 Excel 后这里会实时显示处理动态。</div>
+      <div class="empty-log">还没有深南在途核对任务，上传 Excel 后这里会实时显示处理动态。</div>
       {% endif %}
     </article>
   </aside>
@@ -151,7 +151,7 @@
       input: document.getElementById("in-transit-excel-file"),
       title: document.getElementById("in-transit-upload-title"),
       filename: document.getElementById("in-transit-upload-filename"),
-      emptyText: "请先选择在途核对 Excel"
+      emptyText: "请先选择深南在途核对 Excel"
     }
   ];
 

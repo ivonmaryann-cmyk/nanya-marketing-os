@@ -7,6 +7,7 @@ from .rules import ensure_default_rule_version
 from .bomin_rules import ensure_default_bomin_rule_version
 from .hushi_rules import ensure_default_hushi_rule_version
 from .job_control import reconcile_interrupted_jobs
+from .price_calculation_rules import ensure_default_price_rule_versions
 from .shennan_rules import ensure_default_shennan_rule_version
 from .transcode_rules import ensure_default_transcode_rule_version
 
@@ -24,6 +25,7 @@ def create_app() -> Flask:
     ensure_default_shennan_rule_version()
     ensure_default_hushi_rule_version()
     ensure_default_bomin_rule_version()
+    ensure_default_price_rule_versions()
 
     app.register_blueprint(bp)
     return app

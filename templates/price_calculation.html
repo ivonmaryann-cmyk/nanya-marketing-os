@@ -11,7 +11,7 @@
   <div class="feature-hero-copy">
     <div class="panel-tag">TEST WORKSPACE</div>
     <h1>价格计算</h1>
-    <p>选择客户后上传 Excel，系统按该客户当前价格表自动匹配规格并输出刷价结果。第一版已接入景旺，后续客户会继续接入同一入口。</p>
+    <p>选择客户后上传 Excel，系统按该客户当前价格表自动匹配规格并输出刷价结果。不同客户共用同一入口，计算规则按客户独立维护。</p>
     <div class="hero-actions">
       <a class="feature-action" href="{{ url_for('main.admin_price_calculation_rules', customer_key=selected_customer) }}">规则管理</a>
     </div>
@@ -71,7 +71,7 @@
         <span class="rule-chip">已接入客户可用</span>
       </div>
       <div class="customer-selector" role="list" aria-label="客户选择">
-        {% for customer in customers %}
+        {% for customer in customers if customer.enabled %}
         <button type="button" class="customer-option {% if customer.key == selected_customer %}active{% endif %}" data-customer="{{ customer.key }}" data-enabled="{{ '1' if customer.enabled else '0' }}" {% if not customer.enabled %}disabled{% endif %}>
           <span>{{ customer.label }}</span>
           <em>{{ "可用" if customer.enabled else "待接入" }}</em>
