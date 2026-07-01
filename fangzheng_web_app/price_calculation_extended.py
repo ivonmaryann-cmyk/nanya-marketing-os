@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 import re
+import zipfile
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -74,6 +76,8 @@ def load_extended_rules(customer_key: str, rule_path: str | Path) -> ExtRules:
         rules = _load_aoshikang_rules(rule_path)
     elif customer_key == "mingyang":
         rules = _load_mingyang_rules(rule_path)
+    elif customer_key == "lejian":
+        rules = _load_lejian_rules(rule_path)
     else:
         raise ValueError(f"不支持的扩展价格计算客户：{customer_key}")
     if not rules.pp_rows and not rules.ccl_rows:
@@ -91,6 +95,8 @@ def calculate_extended_spec(customer_key: str, spec: str, rules: ExtRules, quant
         return _calculate_aoshikang_spec(desc, rules, quantity=quantity)
     if customer_key == "mingyang":
         return _calculate_mingyang_spec(desc, rules, quantity=quantity)
+    if customer_key == "lejian":
+        return _calculate_lejian_spec(desc, rules, quantity=quantity)
     if _looks_like_pp(desc):
         return _calculate_pp(customer_key, desc, rules)
     return _calculate_ccl(customer_key, desc, rules, quantity=quantity)
@@ -486,6 +492,325 @@ def _mingyang_price_columns(headers: list[str]) -> dict[int, str]:
         if key:
             price_cols[idx] = key
     return price_cols
+
+def _load_lejian_rules(rule_path: str | Path) -> ExtRules:
+    sheets = _workbook_value_sheets(rule_path)
+    pp_rows: list[ExtPpRule] = []
+    ccl_rows: list[ExtCclRule] = []
+    for sheet_name, rows in sheets:
+        for row_index, values in enumerate(rows, start=1):
+            normalized = [_text(value).replace("\n", "").replace(" ", "") for value in values]
+            if {"型号", "铜箔OZ", "布种叠构"}.issubset(set(normalized)):
+                _load_lejian_ccl_rows(sheet_name, rows, row_index, normalized, ccl_rows)
+            if "布种" in normalized and "含量%" in normalized:
+                _load_lejian_pp_rows(sheet_name, rows, row_index, normalized, pp_rows)
+    return ExtRules("lejian", pp_rows, ccl_rows)
+
+
+def _load_lejian_ccl_rows(
+    sheet_name: str,
+    rows: list[list[Any]],
+    header_row: int,
+    headers: list[str],
+    ccl_rows: list[ExtCclRule],
+) -> None:
+    header_map = _header_map(headers)
+    product_col = header_map.get("型号") or 3
+    thickness_col = header_map.get("含铜厚度mm") or header_map.get("含铜厚度") or 4
+    copper_col = header_map.get("铜箔OZ") or 6
+    foil_top_col = header_map.get("上铜箔类型") or 7
+    foil_bottom_col = header_map.get("下铜箔类型") or 8
+    stack_col = header_map.get("布种叠构") or 9
+    price_cols = _lejian_ccl_price_columns(headers)
+    for data_row in range(header_row + 1, len(rows) + 1):
+        values = rows[data_row - 1]
+        product = _norm_product(_row_value(values, product_col))
+        if not product:
+            continue
+        if _text(_row_value(values, 3)) == "布种":
+            break
+        copper = _norm_copper(_row_value(values, copper_col))
+        foil = _norm_foil(_row_value(values, foil_top_col)) or _norm_foil(_row_value(values, foil_bottom_col)) or "HTE"
+        stack = _norm_stack(_row_value(values, stack_col))
+        prices = {key: _to_float(_row_value(values, col)) for col, key in price_cols.items()}
+        prices = {key: value for key, value in prices.items() if value is not None}
+        thickness_values = _parse_lejian_thickness_values(_row_value(values, thickness_col))
+        if not copper or not prices or not thickness_values:
+            continue
+        for thickness_mm in thickness_values:
+            ccl_rows.append(ExtCclRule(data_row, sheet_name, product, thickness_mm, None, copper, foil, stack, prices))
+
+
+def _load_lejian_pp_rows(
+    sheet_name: str,
+    rows: list[list[Any]],
+    header_row: int,
+    headers: list[str],
+    pp_rows: list[ExtPpRule],
+) -> None:
+    header_map = _header_map(headers)
+    glass_col = header_map.get("布种") or 3
+    rc_col = header_map.get("含量%") or 4
+    product_cols: list[tuple[int, str]] = []
+    for col_idx, header in enumerate(headers, start=1):
+        product = _norm_product(header)
+        if product.startswith("NY"):
+            product_cols.append((col_idx, product))
+    for data_row in range(header_row + 1, len(rows) + 1):
+        values = rows[data_row - 1]
+        glass = _norm_glass(_row_value(values, glass_col))
+        rc_min, rc_max = _parse_rc_range(_row_value(values, rc_col))
+        if not glass or rc_min is None or rc_max is None:
+            continue
+        for col_idx, product in product_cols:
+            price = _to_float(_row_value(values, col_idx))
+            if price is not None:
+                pp_rows.append(ExtPpRule(data_row, sheet_name, product, glass, rc_min, rc_max, None, 49.5, price))
+
+
+def _calculate_lejian_spec(desc: str, rules: ExtRules, quantity: Any = None) -> ExtCalcResult:
+    if _looks_like_pp(desc) or "半固化片" in desc:
+        return _calculate_lejian_pp(desc, rules)
+    return _calculate_lejian_ccl(desc, rules, quantity=quantity)
+
+
+def _calculate_lejian_pp(desc: str, rules: ExtRules) -> ExtCalcResult:
+    product = _extract_lejian_product(desc)
+    glass = _extract_glass(desc)
+    rc = _extract_lejian_rc(desc)
+    if not product or not glass or rc is None:
+        return ExtCalcResult("失败", "PP", "待确认", "", "", "", "乐健PP规格缺少型号、布种或RC")
+    product_norm = _norm_product(product)
+    base_product = product_norm[:-1] if product_norm.endswith("P") else product_norm
+    products = {product_norm, base_product, f"{base_product}P"}
+    matches = [
+        row
+        for row in rules.pp_rows
+        if row.product in products
+        and row.glass == glass
+        and row.rc_min is not None
+        and row.rc_max is not None
+        and row.rc_min - 0.001 <= rc <= row.rc_max + 0.001
+    ]
+    if not matches:
+        return ExtCalcResult("失败", "PP", "待确认", "", "", "", "未命中乐健PP报价：型号、布种或RC不匹配")
+    best = sorted(matches, key=lambda row: (0 if row.product == base_product else 1, row.excel_row))[0]
+    if best.price is None:
+        return ExtCalcResult("失败", "PP", "待确认", "", "", "", "命中乐健PP报价行但单价为空")
+    price = _round_money(best.price)
+    note = f"命中乐健PP报价 Sheet {best.sheet} 第{best.excel_row}行，布种={glass}，RC={rc:g}，按旧报价表原价={price:.2f}"
+    return ExtCalcResult("成功", "PP", price, "", _fmt_width(best.width), "", note, best.excel_row, best.sheet)
+
+
+def _calculate_lejian_ccl(desc: str, rules: ExtRules, quantity: Any = None) -> ExtCalcResult:
+    product = _extract_lejian_product(desc)
+    thickness_mm = _extract_lejian_thickness_mm(desc)
+    copper = _extract_copper(desc)
+    length_in, width_in = _extract_lejian_size(desc)
+    if not product or thickness_mm is None or not copper or length_in is None or width_in is None:
+        return ExtCalcResult("失败", "CCL", "待确认", "", "", "", "乐健CCL规格缺少型号、厚度、铜厚或尺寸")
+    product_norm = _norm_product(product)
+    candidates = [
+        row
+        for row in rules.ccl_rows
+        if row.product == product_norm
+        and _lejian_thickness_matches(row, thickness_mm)
+        and (row.copper == copper or row.copper == _reverse_copper(copper))
+    ]
+    if not candidates:
+        return ExtCalcResult("失败", "CCL", "待确认", "", "", "", "未命中乐健CCL报价：型号、厚度或铜厚不匹配")
+    stack = _extract_stack(desc)
+    if stack:
+        stack_matches = [row for row in candidates if row.stack == stack]
+        if stack_matches:
+            candidates = stack_matches
+    row = sorted(candidates, key=lambda item: item.excel_row)[0]
+    price_result = _lejian_ccl_size_price(row, length_in, width_in)
+    if not price_result["ok"]:
+        return ExtCalcResult("失败", "CCL", "待确认", "", "", "", price_result["reason"])
+    price = _round_money(price_result["price"])
+    total = _calc_total(quantity, price)
+    note = (
+        f"命中乐健CCL报价 Sheet {row.sheet} 第{row.excel_row}行，厚度={row.thickness_mm:g}，"
+        f"铜厚={row.copper}，尺寸列={price_result['label']}，公式={price_result['formula']}"
+    )
+    return ExtCalcResult("成功", "CCL", price, total, "", "", note, row.excel_row, price_result["label"])
+
+
+def _lejian_ccl_size_price(row: ExtCclRule, length_in: float, width_in: float) -> dict[str, Any]:
+    dim = _lejian_sheet_width(length_in, width_in)
+    for target, key in [(37, "37"), (41, "41"), (43, "43")]:
+        if abs(dim - target) <= 0.8 and row.prices.get(key) is not None:
+            price = float(row.prices[key])
+            return {"ok": True, "price": price, "label": f"{key}*49", "formula": f"{price:.6g}"}
+    for target, source_key, factor in [(82, "41", 2), (86, "43", 2)]:
+        if abs(dim - target) <= 0.8 and row.prices.get(source_key) is not None:
+            base = float(row.prices[source_key])
+            return {"ok": True, "price": base * factor, "label": f"{target}*49", "formula": f"{base:.6g}*{factor:g}"}
+    return {"ok": False, "reason": f"乐健CCL未找到可用尺寸报价：{length_in:g}*{width_in:g}"}
+
+
+def _extract_lejian_product(desc: str) -> str:
+    matches = re.findall(r"NY\s*-?\s*[A-Z]?\d{3,4}[A-Z0-9]*P?", desc, re.I)
+    return _norm_product(matches[-1]) if matches else ""
+
+
+def _extract_lejian_rc(desc: str) -> float | None:
+    match = re.search(r"RC\s*[:：]?\s*(\d+(?:\.\d+)?)", desc, re.I)
+    if not match:
+        return None
+    value = float(match.group(1))
+    return value * 100 if value <= 1 else value
+
+
+def _extract_lejian_thickness_mm(desc: str) -> float | None:
+    match = re.search(r"FR-?\s*4\s+(\d+(?:\.\d+)?)", desc, re.I)
+    if match:
+        return float(match.group(1))
+    match = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:\(|（)?\s*(?:含铜|不含铜)", desc, re.I)
+    if match:
+        return float(match.group(1))
+    return _extract_thickness_mm(desc)
+
+
+def _extract_lejian_size(desc: str) -> tuple[float | None, float | None]:
+    candidates: list[tuple[float, float]] = []
+    for match in re.finditer(r"(\d+(?:\.\d+)?)\s*[*xX×]\s*(\d+(?:\.\d+)?)", desc):
+        left = float(match.group(1))
+        right = float(match.group(2))
+        if left <= 120 and right <= 120 and max(left, right) >= 30:
+            candidates.append((left, right))
+    if candidates:
+        return candidates[-1]
+    return _extract_size(desc, ignore_decimal=False)
+
+
+def _lejian_sheet_width(length_in: float, width_in: float) -> float:
+    if abs(length_in - 49) <= 1.0:
+        return width_in
+    if abs(width_in - 49) <= 1.0:
+        return length_in
+    return max(length_in, width_in)
+
+
+def _lejian_ccl_price_columns(headers: list[str]) -> dict[int, str]:
+    price_cols: dict[int, str] = {}
+    for idx, header in enumerate(headers, start=1):
+        normalized = _text(header).replace(" ", "")
+        if "SF" in normalized:
+            price_cols[idx] = "SF"
+        elif "37*49" in normalized:
+            price_cols[idx] = "37"
+        elif "41*49" in normalized:
+            price_cols[idx] = "41"
+        elif "43*49" in normalized:
+            price_cols[idx] = "43"
+    return price_cols
+
+
+def _parse_lejian_thickness_values(value: Any) -> list[float]:
+    text = _text(value).replace(",", "")
+    values: list[float] = []
+    seen: set[float] = set()
+    for item in re.findall(r"\d+(?:\.\d+)?", text):
+        number = float(item)
+        if 0 < number < 10 and number not in seen:
+            seen.add(number)
+            values.append(number)
+    return values
+
+
+def _lejian_thickness_matches(row: ExtCclRule, thickness_mm: float) -> bool:
+    return row.thickness_mm is not None and abs(row.thickness_mm - thickness_mm) <= 0.012
+
+
+def _row_value(values: list[Any], one_based_col: int) -> Any:
+    index = one_based_col - 1
+    return values[index] if 0 <= index < len(values) else None
+
+
+def _workbook_value_sheets(path: str | Path) -> list[tuple[str, list[list[Any]]]]:
+    try:
+        wb = load_workbook_compat(path, data_only=True)
+        return [
+            (
+                ws.title,
+                [[ws.cell(row=row_idx, column=col_idx).value for col_idx in range(1, ws.max_column + 1)] for row_idx in range(1, ws.max_row + 1)],
+            )
+            for ws in wb.worksheets
+        ]
+    except Exception:
+        return _xlsx_value_sheets_from_xml(path)
+
+
+_XLSX_MAIN_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+_XLSX_REL_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+_XLSX_PKG_REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+
+
+def _xlsx_value_sheets_from_xml(path: str | Path) -> list[tuple[str, list[list[Any]]]]:
+    with zipfile.ZipFile(Path(path)) as archive:
+        shared = _xlsx_shared_strings(archive)
+        rels_root = ET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+        rels = {rel.attrib["Id"]: rel.attrib["Target"] for rel in rels_root.findall(f"{_XLSX_PKG_REL_NS}Relationship")}
+        workbook_root = ET.fromstring(archive.read("xl/workbook.xml"))
+        sheets: list[tuple[str, list[list[Any]]]] = []
+        for sheet in workbook_root.find(f"{_XLSX_MAIN_NS}sheets").findall(f"{_XLSX_MAIN_NS}sheet"):
+            name = sheet.attrib["name"]
+            rel_id = sheet.attrib.get(f"{_XLSX_REL_NS}id")
+            target = rels.get(rel_id or "", "")
+            sheet_path = f"xl/{target.lstrip('/')}" if not target.startswith("xl/") else target
+            sheet_root = ET.fromstring(archive.read(sheet_path))
+            rows: list[list[Any]] = []
+            for row in sheet_root.findall(f".//{_XLSX_MAIN_NS}sheetData/{_XLSX_MAIN_NS}row"):
+                row_idx = int(row.attrib.get("r", "0"))
+                while len(rows) < row_idx:
+                    rows.append([])
+                values = rows[row_idx - 1]
+                for cell in row.findall(f"{_XLSX_MAIN_NS}c"):
+                    col_idx = _xlsx_col_index(cell.attrib.get("r", ""))
+                    if not col_idx:
+                        continue
+                    while len(values) < col_idx:
+                        values.append(None)
+                    values[col_idx - 1] = _xlsx_cell_value(cell, shared)
+            sheets.append((name, rows))
+        return sheets
+
+
+def _xlsx_shared_strings(archive: zipfile.ZipFile) -> list[str]:
+    try:
+        root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
+    except KeyError:
+        return []
+    return ["".join(node.text or "" for node in item.iter(f"{_XLSX_MAIN_NS}t")) for item in root.findall(f"{_XLSX_MAIN_NS}si")]
+
+
+def _xlsx_cell_value(cell, shared: list[str]) -> Any:
+    value_node = cell.find(f"{_XLSX_MAIN_NS}v")
+    raw = value_node.text if value_node is not None else ""
+    cell_type = cell.attrib.get("t")
+    if cell_type == "s" and raw:
+        try:
+            return shared[int(raw)]
+        except (ValueError, IndexError):
+            return raw
+    if cell_type == "inlineStr":
+        return "".join(node.text or "" for node in cell.iter(f"{_XLSX_MAIN_NS}t"))
+    if raw and re.fullmatch(r"-?\d+(?:\.\d+)?", raw):
+        number = float(raw)
+        return int(number) if number.is_integer() else number
+    return raw
+
+
+def _xlsx_col_index(cell_ref: str) -> int:
+    match = re.match(r"([A-Z]+)", cell_ref)
+    if not match:
+        return 0
+    value = 0
+    for char in match.group(1):
+        value = value * 26 + ord(char) - 64
+    return value
 
 
 def _load_aoshikang_pp_sheet(ws, pp_rows: list[ExtPpRule]) -> None:

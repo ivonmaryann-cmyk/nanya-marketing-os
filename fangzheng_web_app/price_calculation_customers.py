@@ -58,6 +58,13 @@ PRICE_CALCULATION_CUSTOMERS = [
         "rule_label": "明阳报价表",
         "test_label": "明阳测试数据",
     },
+    {
+        "key": "lejian",
+        "label": "乐健",
+        "enabled": True,
+        "rule_label": "乐健报价表",
+        "test_label": "乐健测试数据",
+    },
     {"key": "shenghong", "label": "胜宏", "enabled": False, "rule_label": "胜宏报价表", "test_label": "胜宏测试数据"},
     {"key": "bomin", "label": "博敏", "enabled": False, "rule_label": "博敏报价表", "test_label": "博敏测试数据"},
 ]
