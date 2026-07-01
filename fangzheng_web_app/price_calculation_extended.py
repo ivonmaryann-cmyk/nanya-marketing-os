@@ -78,6 +78,8 @@ def load_extended_rules(customer_key: str, rule_path: str | Path) -> ExtRules:
         rules = _load_mingyang_rules(rule_path)
     elif customer_key == "lejian":
         rules = _load_lejian_rules(rule_path)
+    elif customer_key == "guanghe":
+        rules = _load_guanghe_rules(rule_path)
     else:
         raise ValueError(f"不支持的扩展价格计算客户：{customer_key}")
     if not rules.pp_rows and not rules.ccl_rows:
@@ -97,6 +99,8 @@ def calculate_extended_spec(customer_key: str, spec: str, rules: ExtRules, quant
         return _calculate_mingyang_spec(desc, rules, quantity=quantity)
     if customer_key == "lejian":
         return _calculate_lejian_spec(desc, rules, quantity=quantity)
+    if customer_key == "guanghe":
+        return _calculate_guanghe_spec(desc, rules, quantity=quantity)
     if _looks_like_pp(desc):
         return _calculate_pp(customer_key, desc, rules)
     return _calculate_ccl(customer_key, desc, rules, quantity=quantity)
@@ -722,6 +726,374 @@ def _parse_lejian_thickness_values(value: Any) -> list[float]:
 
 def _lejian_thickness_matches(row: ExtCclRule, thickness_mm: float) -> bool:
     return row.thickness_mm is not None and abs(row.thickness_mm - thickness_mm) <= 0.012
+
+
+def _load_guanghe_rules(rule_path: str | Path) -> ExtRules:
+    wb = load_workbook_compat(rule_path, data_only=True)
+    pp_rows: list[ExtPpRule] = []
+    ccl_rows: list[ExtCclRule] = []
+    for ws in wb.worksheets:
+        max_col = min(ws.max_column, 30)
+        for row_idx in range(1, ws.max_row + 1):
+            values = [_text(ws.cell(row_idx, col).value) for col in range(1, max_col + 1)]
+            normalized = [value.replace("\n", "").replace("\u00a0", " ").strip() for value in values]
+            if _guanghe_is_ccl_header(normalized):
+                _load_guanghe_ccl_rows(ws, row_idx, normalized, ccl_rows)
+            if _guanghe_is_pp_header(normalized):
+                _load_guanghe_pp_rows(ws, row_idx, normalized, pp_rows)
+    return ExtRules("guanghe", pp_rows, ccl_rows)
+
+
+def _load_guanghe_ccl_rows(ws, header_row: int, headers: list[str], ccl_rows: list[ExtCclRule]) -> None:
+    product_col = _find_header_contains(headers, {"产品类别", "Products"}) or 1
+    mm_col = _find_header_contains(headers, {"厚度mm", "厚度 MM", "mm"}) or 2
+    mil_col = _find_header_contains(headers, {"厚度mil", "mil"}) or 3
+    copper_col = _find_header_contains(headers, {"铜厚"}) or 4
+    foil_col = _find_header_contains(headers, {"铜箔类型"}) or 5
+    stack_col = _find_header_contains(headers, {"组合叠构", "叠构"}) or 6
+    price_cols = _guanghe_ccl_price_columns(headers)
+    product = _guanghe_product_from_text(ws.title)
+    thickness_mm: float | None = None
+    thickness_mil: float | None = None
+    foil = ""
+    stack = ""
+    for data_row in range(header_row + 1, ws.max_row + 1):
+        row_values = [_text(ws.cell(data_row, col).value) for col in range(1, 31)]
+        if _guanghe_is_pp_header(row_values) or any("产品型号" in value for value in row_values):
+            break
+        if not any(row_values):
+            continue
+        row_product = _guanghe_product_from_text(row_values[product_col - 1] if product_col <= len(row_values) else "")
+        if row_product:
+            product = row_product
+        row_thickness_mm = _to_float(row_values[mm_col - 1] if mm_col <= len(row_values) else None)
+        row_thickness_mil = _to_float(row_values[mil_col - 1] if mil_col <= len(row_values) else None)
+        if row_thickness_mm is not None:
+            thickness_mm = row_thickness_mm
+        if row_thickness_mil is not None:
+            thickness_mil = row_thickness_mil
+        copper = _norm_copper(row_values[copper_col - 1] if copper_col <= len(row_values) else "")
+        row_foil = _norm_foil(row_values[foil_col - 1] if foil_col <= len(row_values) else "")
+        row_stack = _norm_stack(row_values[stack_col - 1] if stack_col <= len(row_values) else "")
+        if row_foil:
+            foil = row_foil
+        if row_stack:
+            stack = row_stack
+        prices = {key: _to_float(ws.cell(data_row, col).value) for col, key in price_cols.items()}
+        prices = {key: value for key, value in prices.items() if value is not None}
+        if not product or not copper or not stack or not prices:
+            continue
+        ccl_rows.append(ExtCclRule(data_row, ws.title, product, thickness_mm, thickness_mil, copper, foil, stack, prices))
+
+
+def _load_guanghe_pp_rows(ws, header_row: int, headers: list[str], pp_rows: list[ExtPpRule]) -> None:
+    product_col = _find_header_contains(headers, {"Products", "产品类别"}) or 1
+    glass_col = _find_header_contains(headers, {"Glass type", "产品型号"}) or 2
+    rc_col = _find_header_contains(headers, {"Resin Content", "树脂含量"}) or 3
+    length_col = _find_header_contains(headers, {"Length", "标准卷装长度"}) or 4
+    width_col = _find_header_contains(headers, {"Width", "标准卷装宽度"}) or 5
+    per_m_col = _guanghe_first_header_col(headers, {"M未税", "Per M"})
+    per_43_col = _guanghe_43_price_col(headers)
+    product = _guanghe_product_from_text(ws.title)
+    for data_row in range(header_row + 1, ws.max_row + 1):
+        row_values = [_text(ws.cell(data_row, col).value) for col in range(1, 31)]
+        if not any(row_values):
+            continue
+        row_product = _guanghe_product_from_text(row_values[product_col - 1] if product_col <= len(row_values) else "")
+        if row_product:
+            product = row_product
+        glass = _norm_glass(row_values[glass_col - 1] if glass_col <= len(row_values) else "")
+        rc_min, rc_max = _parse_rc_range(row_values[rc_col - 1] if rc_col <= len(row_values) else "")
+        length = _length_int(row_values[length_col - 1] if length_col <= len(row_values) else None)
+        width = _to_float(row_values[width_col - 1] if width_col <= len(row_values) else None)
+        if width is not None and 0 < width <= 1:
+            width *= 100
+        price = _to_float(ws.cell(data_row, per_m_col).value) if per_m_col else None
+        price_43 = _to_float(ws.cell(data_row, per_43_col).value) if per_43_col else None
+        if product and glass and rc_min is not None and rc_max is not None and (price is not None or price_43 is not None):
+            pp_rows.append(ExtPpRule(data_row, ws.title, product, glass, rc_min, rc_max, length, width, price, price_43))
+
+
+def _calculate_guanghe_spec(desc: str, rules: ExtRules, quantity: Any = None) -> ExtCalcResult:
+    if _looks_like_pp(desc) or desc.upper().startswith("PP"):
+        return _calculate_guanghe_pp(desc, rules)
+    return _calculate_guanghe_ccl(desc, rules, quantity=quantity)
+
+
+def _calculate_guanghe_pp(desc: str, rules: ExtRules) -> ExtCalcResult:
+    product = _extract_product(desc) or _guanghe_product_from_text(desc)
+    glass = _extract_glass(desc)
+    rc = _extract_rc(desc)
+    width = _guanghe_extract_pp_width(desc) or _extract_width(desc)
+    if not product or not glass or rc is None:
+        return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width), "", "广合PP规格缺少型号、玻布或RC")
+    products = _guanghe_product_aliases(product)
+    matches = [
+        row
+        for row in rules.pp_rows
+        if row.product in products
+        and row.glass == glass
+        and row.rc_min is not None
+        and row.rc_max is not None
+        and row.rc_min - 0.001 <= rc <= row.rc_max + 0.001
+    ]
+    if not matches:
+        return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width), "", "未命中广合PP报价：型号、玻布或RC不匹配")
+    product_norm = _norm_product(product)
+    best = sorted(
+        matches,
+        key=lambda row: (
+            0 if row.product == product_norm else 1,
+            row.excel_row,
+        ),
+    )[0]
+    small_piece = _guanghe_extract_pp_small_piece(desc)
+    if small_piece:
+        cut_width_in, full_width_in = small_piece
+        split = math.floor(full_width_in / cut_width_in) if cut_width_in else 0
+        if split <= 0:
+            return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(cut_width_in), "", f"广合PP小片纬向无法一开：{cut_width_in:g}inch")
+        if best.price is None:
+            return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(cut_width_in), "", "命中广合PP报价行但每米价为空")
+        raw_price = cut_width_in * 0.0254 / split * float(best.price)
+        price = _round_money(raw_price)
+        note = (
+            f"命中广合PP报价 Sheet {best.sheet} 第 {best.excel_row} 行，"
+            f"型号={best.product}，玻布={glass}，RC={rc:g}，小片={cut_width_in:g}*{full_width_in:g}inch，"
+            f"公式={cut_width_in:g}*0.0254/{split}*{float(best.price):.6g}"
+        )
+        return ExtCalcResult("成功", "PP", price, "", _fmt_width(cut_width_in), "", note, best.excel_row, best.sheet)
+    use_43 = width is not None and width <= 43.8
+    raw_price = best.roll_price if use_43 else best.price
+    if raw_price is None:
+        missing_label = "43inch每米价" if use_43 else "每米价"
+        return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width), "", f"命中广合PP报价行但{missing_label}为空")
+    price = _round_money(raw_price)
+    price_label = "43inch每米价" if use_43 else "每米价"
+    note = (
+        f"命中广合PP报价 Sheet {best.sheet} 第 {best.excel_row} 行，"
+        f"型号={best.product}，玻布={glass}，RC={rc:g}，{price_label}={price:.2f}"
+    )
+    return ExtCalcResult("成功", "PP", price, "", _fmt_width(width or best.width), "", note, best.excel_row, best.sheet)
+
+
+def _calculate_guanghe_ccl(desc: str, rules: ExtRules, quantity: Any = None) -> ExtCalcResult:
+    product = _extract_product(desc) or _guanghe_product_from_text(desc)
+    thickness_mil = _guanghe_extract_thickness_mil(desc)
+    thickness_mm = thickness_mil * 0.0254 if thickness_mil is not None else _extract_thickness_mm(desc)
+    copper = _extract_copper(desc)
+    foil = _extract_foil(desc)
+    stack = _extract_stack(desc)
+    length_in, width_in = _guanghe_extract_size(desc)
+    if not product or thickness_mm is None or not copper or not stack or length_in is None or width_in is None:
+        return ExtCalcResult("失败", "CCL", "待确认", "", "", "", "广合CCL规格缺少型号、厚度、铜厚、叠构或尺寸")
+    products = _guanghe_product_aliases(product)
+    product_rows = [
+        row
+        for row in rules.ccl_rows
+        if row.product in products
+        and _thickness_matches(row, thickness_mil, thickness_mm)
+    ]
+    copper_rows = [row for row in product_rows if row.copper == copper or row.copper == _reverse_copper(copper)]
+    stack_rows = [row for row in copper_rows if row.stack == stack]
+    candidates = [row for row in stack_rows if not row.foil or not foil or row.foil == foil]
+    if not candidates:
+        return ExtCalcResult("失败", "CCL", "待确认", "", "", "", "未命中广合CCL报价：型号、厚度、铜厚、叠构或铜箔不匹配")
+    last_reason = ""
+    for row in sorted(candidates, key=lambda item: (0 if item.product == _norm_product(product) else 1, item.excel_row)):
+        price_result = _guanghe_ccl_size_price(row, length_in, width_in)
+        if price_result["ok"]:
+            price = _round_money(price_result["price"])
+            total = _calc_total(quantity, price)
+            thickness_text = f"{row.thickness_mil:g}mil" if row.thickness_mil is not None else ""
+            note = (
+                f"命中广合CCL报价 Sheet {row.sheet} 第 {row.excel_row} 行，"
+                f"型号={row.product}，厚度={thickness_text}，铜厚={row.copper}，"
+                f"叠构={row.stack}，尺寸列={price_result['label']}，公式={price_result['formula']}"
+            )
+            return ExtCalcResult("成功", "CCL", price, total, "", "", note, row.excel_row, price_result["label"])
+        last_reason = price_result["reason"]
+    return ExtCalcResult("失败", "CCL", "待确认", "", "", "", last_reason or "广合CCL报价行找到，但尺寸未匹配")
+
+
+def _guanghe_ccl_size_price(row: ExtCclRule, length_in: float, width_in: float) -> dict[str, Any]:
+    direct_key, direct_label = _guanghe_direct_price_key(length_in, width_in, row.prices)
+    if direct_key and row.prices.get(direct_key) is not None:
+        price = float(row.prices[direct_key])
+        return {"ok": True, "price": price, "label": direct_label, "formula": f"{price:.6g}"}
+    dim = _guanghe_sheet_width(length_in, width_in)
+    for target, source_key, factor in [(74, "37", 2), (82, "41", 2), (86, "43", 2)]:
+        if abs(dim - target) <= 0.8 and row.prices.get(source_key) is not None:
+            base = float(row.prices[source_key])
+            return {"ok": True, "price": base * factor, "label": f"{target}*49", "formula": f"{base:.6g}*{factor:g}"}
+    cut_result = _guanghe_ccl_cut_price(row, length_in, width_in)
+    if cut_result["ok"]:
+        return cut_result
+    sf_price = row.prices.get("SF")
+    if sf_price is not None:
+        price = float(sf_price) * length_in * width_in / 144
+        formula = f"{float(sf_price):.6g}*{length_in:.6g}*{width_in:.6g}/144"
+        return {"ok": True, "price": price, "label": "SF", "formula": formula}
+    return {"ok": False, "reason": f"广合CCL未找到可用尺寸报价：{length_in:g}*{width_in:g}"}
+
+
+def _guanghe_is_ccl_header(values: list[str]) -> bool:
+    compact = {_text(value).replace(" ", "") for value in values}
+    return "厚度mm" in compact and "铜厚" in compact and ("37*49" in compact or "41*49" in compact or "43*49" in compact)
+
+
+def _guanghe_is_pp_header(values: list[str]) -> bool:
+    compact = {_text(value).replace(" ", "") for value in values}
+    return "Glasstype" in compact and "ResinContent" in compact
+
+
+def _guanghe_product_from_text(value: Any) -> str:
+    match = re.search(r"NY\s*-?\s*(?:\d{3,4}[A-Z0-9]*P?|P\dP?)", _text(value), re.I)
+    return _norm_product(match.group(0)) if match else ""
+
+
+def _guanghe_product_aliases(product: str) -> set[str]:
+    product_norm = _norm_product(product)
+    aliases = {product_norm}
+    if product_norm.endswith("P"):
+        aliases.add(product_norm[:-1])
+    else:
+        aliases.add(f"{product_norm}P")
+    return aliases
+
+
+def _guanghe_extract_thickness_mil(desc: str) -> float | None:
+    quote_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:\"|IN|INCH|英寸)", desc, re.I)
+    if quote_match:
+        return float(quote_match.group(1)) * 1000
+    return _extract_thickness_mil(desc, _extract_product(desc))
+
+
+def _guanghe_extract_pp_width(desc: str) -> float | None:
+    match = re.search(r"纬向\s*(\d+(?:\.\d+)?)\s*(?:\"|IN|INCH|英寸)?", desc, re.I)
+    return float(match.group(1)) if match else None
+
+
+def _guanghe_extract_pp_small_piece(desc: str) -> tuple[float, float] | None:
+    match = re.search(
+        r"(?<!RC)(\d+(?:\.\d+)?)\s*(?:\"|IN|INCH|英寸)?\s*[*xX×]\s*(\d+(?:\.\d+)?)\s*(?:\"|IN|INCH|英寸)",
+        desc,
+        re.I,
+    )
+    if not match:
+        return None
+    first = float(match.group(1))
+    second = float(match.group(2))
+    if first <= 0 or second <= 0 or first > 60 or second > 60:
+        return None
+    full_width = max(first, second)
+    cut_width = min(first, second)
+    if full_width < 49:
+        return None
+    return cut_width, full_width
+
+
+def _guanghe_extract_size(desc: str) -> tuple[float | None, float | None]:
+    match = re.search(
+        r"经向\s*(\d+(?:\.\d+)?)\s*(?:\"|IN|INCH|英寸)?\s*[*xX×]?\s*纬向\s*(\d+(?:\.\d+)?)\s*(?:\"|IN|INCH|英寸)?",
+        desc,
+        re.I,
+    )
+    if match:
+        return float(match.group(1)), float(match.group(2))
+    return _extract_size(desc, ignore_decimal=False)
+
+
+def _guanghe_direct_price_key(length_in: float, width_in: float, prices: dict[str, float | None]) -> tuple[str, str]:
+    dim = _guanghe_sheet_width(length_in, width_in)
+    for target, key in [(37, "37"), (41, "41"), (43, "43")]:
+        if abs(dim - target) <= 0.8 and key in prices:
+            return key, f"{key}*49"
+    return _direct_price_key(length_in, width_in, prices)
+
+
+def _guanghe_sheet_width(length_in: float, width_in: float) -> float:
+    if abs(length_in - 49) <= 1.0:
+        return width_in
+    if abs(width_in - 49) <= 1.0:
+        return length_in
+    return max(length_in, width_in)
+
+
+def _guanghe_ccl_cut_price(row: ExtCclRule, length_in: float, width_in: float) -> dict[str, Any]:
+    candidates = [
+        (74, 49, "37", 2),
+        (82, 49, "41", 2),
+        (86, 49, "43", 2),
+        (37, 49, "37", 1),
+        (41, 49, "41", 1),
+        (43, 49, "43", 1),
+    ]
+    valid: list[dict[str, Any]] = []
+    for parent_w, parent_h, source_key, factor in candidates:
+        parent_price = row.prices.get(source_key)
+        if parent_price is None:
+            continue
+        for piece_w, piece_h in ((length_in, width_in), (width_in, length_in)):
+            if piece_w <= 0 or piece_h <= 0:
+                continue
+            opens_w = math.floor((parent_w + 1e-9) / piece_w)
+            opens_h = math.floor((parent_h + 1e-9) / piece_h)
+            opens = opens_w * opens_h
+            if opens <= 1:
+                continue
+            fit_error = abs(piece_w * opens_w - parent_w) + abs(piece_h * opens_h - parent_h)
+            if fit_error <= 0.8:
+                valid.append(
+                    {
+                        "price": float(parent_price) * factor / opens,
+                        "parent": f"{parent_w}*{parent_h}",
+                        "source_key": source_key,
+                        "factor": factor,
+                        "opens": opens,
+                        "fit_error": fit_error,
+                        "parent_price": float(parent_price),
+                    }
+                )
+    if not valid:
+        return {"ok": False, "reason": f"广合CCL未找到可裁切母板：{length_in:g}*{width_in:g}"}
+    best = sorted(valid, key=lambda item: (item["fit_error"], -item["opens"], item["parent"]))[0]
+    formula = f"{best['parent_price']:.6g}*{best['factor']:g}/{best['opens']:g}"
+    label = f"{best['parent']}/{best['opens']:g}"
+    return {"ok": True, "price": best["price"], "label": label, "formula": formula}
+
+
+def _guanghe_ccl_price_columns(headers: list[str]) -> dict[int, str]:
+    price_cols: dict[int, str] = {}
+    for idx, header in enumerate(headers, start=1):
+        normalized = _text(header).replace(" ", "")
+        if not normalized:
+            continue
+        if "SF" in normalized:
+            price_cols[idx] = "SF"
+        elif "37*49" in normalized:
+            price_cols[idx] = "37"
+        elif "41*49" in normalized:
+            price_cols[idx] = "41"
+        elif "43*49" in normalized:
+            price_cols[idx] = "43"
+    return price_cols
+
+
+def _guanghe_first_header_col(headers: list[str], names: set[str]) -> int | None:
+    for idx, header in enumerate(headers, start=1):
+        normalized = _text(header).replace(" ", "").replace("\u00a0", "")
+        if any(name.replace(" ", "") in normalized for name in names):
+            return idx
+    return None
+
+
+def _guanghe_43_price_col(headers: list[str]) -> int | None:
+    for idx, header in enumerate(headers, start=1):
+        normalized = _text(header).replace(" ", "").replace("\u00a0", "").lower()
+        if "43" in normalized and ("m未税" in normalized or "perm" in normalized or "43in" in normalized):
+            return idx
+    return None
 
 
 def _row_value(values: list[Any], one_based_col: int) -> Any:
@@ -2828,7 +3200,7 @@ def _looks_like_glass_pair(left: str, right: str) -> bool:
 def _find_header_row(ws) -> tuple[int | None, dict[str, int]]:
     for row_idx in range(1, min(ws.max_row, 30) + 1):
         headers = {_text(cell.value): cell.column for cell in ws[row_idx] if _text(cell.value)}
-        if {"客户规格"} & set(headers) or {"物料长描述"} & set(headers) or {"物料描述"} & set(headers):
+        if {"客户规格"} & set(headers) or {"物料长描述"} & set(headers) or {"物料描述"} & set(headers) or {"规格"} & set(headers):
             return row_idx, headers
     return None, {}
 
