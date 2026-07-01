@@ -121,6 +121,7 @@ def ensure_default_price_rule_version(customer_key: str, quote_variant: str | No
         "mingyang": (packaged_dir / "mingyang" / PRICE_RULE_FILENAME, packaged_dir / "mingyang" / TEST_DATA_FILENAME),
         "lejian": (packaged_dir / "lejian" / PRICE_RULE_FILENAME, packaged_dir / "lejian" / TEST_DATA_FILENAME),
         "guanghe": (packaged_dir / "guanghe" / PRICE_RULE_FILENAME, packaged_dir / "guanghe" / TEST_DATA_FILENAME),
+        "zhongfu": (packaged_dir / "zhongfu" / PRICE_RULE_FILENAME, packaged_dir / "zhongfu" / TEST_DATA_FILENAME),
     }
     seed_files = seed_map.get(customer_key)
     if not seed_files:
@@ -226,7 +227,7 @@ def validate_price_rule_files(customer_key: str, rule_path: str | Path, test_dat
         load_workbook_compat(rule_path, data_only=True)
         _validate_plin_rule_file(rule_path)
         return
-    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "guanghe"}:
+    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "guanghe", "zhongfu"}:
         load_workbook_compat(rule_path, data_only=True)
         return
     if customer_key == "lejian":
@@ -283,6 +284,7 @@ def _copy_existing_test_data(customer_key: str, target: Path, quote_variant: str
         "mingyang": packaged_dir / "mingyang" / TEST_DATA_FILENAME,
         "lejian": packaged_dir / "lejian" / TEST_DATA_FILENAME,
         "guanghe": packaged_dir / "guanghe" / TEST_DATA_FILENAME,
+        "zhongfu": packaged_dir / "zhongfu" / TEST_DATA_FILENAME,
     }
     if customer_key in default_test_map:
         default_test = default_test_map[customer_key]
