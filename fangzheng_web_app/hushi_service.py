@@ -317,12 +317,13 @@ def extract_pp_fields(spec: str) -> tuple[Optional[str], Optional[float]]:
     return glass, rc
 
 
-def extract_ccl_fields(spec: str) -> dict[str, Optional[str | float]]:
+def extract_ccl_fields(spec: str) -> dict[str, object]:
     text = normalize_text(spec).upper()
     thickness = None
     copper = None
     structure = None
     foil = None
+    foil_pairs = extract_copper_foil_pairs(text)
 
     match = re.search(r"\b(\d{3,4})\s*\"", text)
     if match:
@@ -359,7 +360,20 @@ def extract_ccl_fields(spec: str) -> dict[str, Optional[str | float]]:
     if foil_tokens:
         foil = "/".join(dict.fromkeys(foil_tokens))
 
-    return {"thickness": thickness, "copper": copper, "structure": structure, "foil": foil}
+    return {
+        "thickness": thickness,
+        "copper": copper,
+        "structure": structure,
+        "foil": foil,
+        "foil_pairs": foil_pairs,
+    }
+
+
+def extract_copper_foil_pairs(text: str) -> tuple[tuple[str, str], ...]:
+    pairs = []
+    for side, foil in re.findall(r"\b(H|1|2|3)\s*\(\s*(H-?VLP|PVLP|FVLP|RTF3|RTF2|RTF)\s*\)", text):
+        pairs.append((normalize_copper_side(side), normalize_foil_token(foil)))
+    return tuple(pairs)
 
 
 def extract_size(spec: str) -> Optional[tuple[float, float]]:
@@ -407,6 +421,15 @@ def numeric_value(value: Any) -> Optional[float]:
         return None
 
 
+def is_hushi_rule_file(path: Path) -> bool:
+    return (
+        path.is_file()
+        and path.suffix.lower() in {".xlsx", ".xls", ".xlsm"}
+        and not path.name.startswith("~$")
+        and path.stat().st_size > 0
+    )
+
+
 def find_rule_file(product: str, rule_dir: Path, rule_cache: dict[str, Optional[Path]] | None = None) -> Optional[Path]:
     pkey = quote_product_key(product)
     if rule_cache is not None and pkey in rule_cache:
@@ -415,15 +438,32 @@ def find_rule_file(product: str, rule_dir: Path, rule_cache: dict[str, Optional[
     files = [
         path
         for path in rule_dir.iterdir()
-        if path.is_file() and path.suffix.lower() in {".xlsx", ".xls", ".xlsm"}
+        if is_hushi_rule_file(path)
     ]
-    candidates = []
+
+    name_candidates = []
     for path in files:
         fkey = quote_product_key(path.stem)
         if pkey in fkey:
-            candidates.append(path)
-    if candidates:
-        result = sorted(candidates, key=_rule_file_sort_key)[0]
+            name_candidates.append(path)
+
+    exact_candidates = [path for path in name_candidates if rule_file_contains_product(path, pkey)]
+    if exact_candidates:
+        result = sorted(exact_candidates, key=_rule_file_sort_key)[0]
+        if rule_cache is not None:
+            rule_cache[pkey] = result
+        return result
+
+    if not name_candidates:
+        exact_candidates = [path for path in files if rule_file_contains_product(path, pkey)]
+        if exact_candidates:
+            result = sorted(exact_candidates, key=_rule_file_sort_key)[0]
+            if rule_cache is not None:
+                rule_cache[pkey] = result
+            return result
+
+    if name_candidates:
+        result = sorted(name_candidates, key=_rule_file_sort_key)[0]
         if rule_cache is not None:
             rule_cache[pkey] = result
         return result
@@ -524,16 +564,67 @@ def match_pp(spec: str, product: str, rule_file: Path, size_info: tuple[float, f
     return HushiMatchResult(None, None, "failed", f"PP 报价未命中：产品={product}, 玻纤={glass}, RC={rc}", rule_file.name, ",".join(pp_sheets), product=product, material_type="PP")
 
 
+def normalize_copper_side(value: Any) -> str:
+    return normalize_key(value).replace("H-", "H")
+
+
+def normalize_foil_token(value: Any) -> str:
+    text = normalize_key(value).replace("H-VLP", "HVLP")
+    return "HVLP" if text == "HVLP" else text
+
+
+def split_copper(value: Any) -> list[str]:
+    text = normalize_copper_side(value)
+    return [part for part in text.split("/") if part]
+
+
+def split_foil(value: Any) -> list[str]:
+    text = normalize_foil_token(value)
+    return [part for part in text.split("/") if part]
+
+
+def copper_foil_map(copper: Any, foil: Any) -> dict[str, str]:
+    copper_parts = split_copper(copper)
+    foil_parts = split_foil(foil)
+    if not copper_parts or not foil_parts:
+        return {}
+    if len(copper_parts) == len(foil_parts):
+        return dict(zip(copper_parts, foil_parts))
+    if len(foil_parts) == 1:
+        return {part: foil_parts[0] for part in copper_parts}
+    return {}
+
+
 def foil_match(expected: Optional[str], actual: Any) -> bool:
     if not expected:
         return False
-    exp = normalize_key(expected).replace("H-", "H")
-    act = normalize_key(actual).replace("H-", "H")
+    exp = normalize_foil_token(expected)
+    act = normalize_foil_token(actual)
     if exp == act:
         return True
     if "/" in exp and act in exp.split("/"):
         return True
     return False
+
+
+def ccl_copper_foil_match(
+    expected_copper: Optional[str],
+    expected_foil: Optional[str],
+    expected_pairs: object,
+    actual_copper: Any,
+    actual_foil: Any,
+) -> bool:
+    if text_match(expected_copper, actual_copper) and foil_match(expected_foil, actual_foil):
+        return True
+
+    if not expected_pairs:
+        return False
+
+    expected_map = {side: foil for side, foil in expected_pairs if side and foil}
+    actual_map = copper_foil_map(actual_copper, actual_foil)
+    if not expected_map or not actual_map:
+        return False
+    return expected_map == actual_map
 
 
 def match_ccl(spec: str, product: str, rule_file: Path, size_info: tuple[float, float, float]) -> HushiMatchResult:
@@ -556,11 +647,15 @@ def match_ccl(spec: str, product: str, rule_file: Path, size_info: tuple[float, 
                 continue
             if not number_match(fields["thickness"], row[product_idx + 1].value if product_idx + 1 < len(row) else None):
                 continue
-            if not text_match(fields["copper"], row[product_idx + 2].value if product_idx + 2 < len(row) else None):
-                continue
             if not text_match(fields["structure"], row[product_idx + 3].value if product_idx + 3 < len(row) else None):
                 continue
-            if not foil_match(fields["foil"], row[product_idx + 4].value if product_idx + 4 < len(row) else None):
+            if not ccl_copper_foil_match(
+                fields["copper"],
+                fields["foil"],
+                fields.get("foil_pairs"),
+                row[product_idx + 2].value if product_idx + 2 < len(row) else None,
+                row[product_idx + 4].value if product_idx + 4 < len(row) else None,
+            ):
                 continue
             price, col, normal, rebate, note = pick_price(row, product_idx + 5, product_idx + 6)
             w_floor, h_floor, area_step = size_info
