@@ -52,10 +52,21 @@
       </select>
     </label>
     {% endif %}
+    {% if selected_customer == "guanghe" %}
+    <label>
+      <span>黄石广合单价 Excel</span>
+      <input type="file" name="guanghe_huangshi_file" accept=".xls,.xlsx,.xlsm" required>
+    </label>
+    <label>
+      <span>南亚新材价格更新 Excel</span>
+      <input type="file" name="guanghe_nanya_file" accept=".xls,.xlsx,.xlsm" required>
+    </label>
+    {% else %}
     <label>
       <span>客户报价表 Excel</span>
       <input type="file" name="rule_file" accept=".xls,.xlsx,.xlsm" required>
     </label>
+    {% endif %}
     <label>
       <span>更新备注</span>
       <input type="text" name="remark" placeholder="例如：景旺2026年5月报价表第一版">

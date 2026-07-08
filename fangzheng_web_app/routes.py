@@ -67,6 +67,9 @@ from .order_reprice_service import JINGWANG_FACTORY_MERGE_MODE
 from .order_reprice_service import JINGWANG_PRICE_CHECK_MODE
 from .order_reprice_service import MODE_LABELS as ORDER_REPRICE_MODE_LABELS
 from .order_reprice_service import queue_order_reprice_job
+from .pdf_excel_service import ALLOWED_EXTENSIONS as PDF_EXCEL_ALLOWED_EXTENSIONS
+from .pdf_excel_service import FEATURE as PDF_EXCEL_FEATURE
+from .pdf_excel_service import queue_pdf_excel_job
 from .price_calculation_customers import (
     PRICE_CALCULATION_CUSTOMERS,
     default_price_customer_key,
@@ -77,6 +80,7 @@ from .price_calculation_rules import (
     get_active_price_rule_version,
     get_price_rule_history,
     normalize_price_quote_variant,
+    save_new_guanghe_rule_version,
     save_new_price_rule_version,
 )
 from .price_calculation_service import calculate_price_quote, queue_price_calculation_job, run_jingwang_regression
@@ -203,6 +207,13 @@ FUNCTION_CARDS = [
         "stage": "test",
     },
     {
+        "key": "pdf_excel",
+        "title": "PDF/图片转Excel",
+        "desc": "批量上传 PDF 或图片，通用识别采购单版式和明细表，输出采购单与明细数据 Excel。",
+        "route": "main.pdf_excel",
+        "stage": "test",
+    },
+    {
         "key": "work_planning",
         "title": "工作规划",
         "desc": "按自定义任务类型管理个人私有待办，支持优先级、进展、截止日期和任务描述。",
@@ -219,6 +230,7 @@ FUNCTION_CARDS = [
 ]
 
 FEATURE_LABELS = {
+    "pdf_excel": "PDF/图片转Excel",
     "fangzheng": "方正价格计算",
     "transcode": "营销自动化转码",
     "transcode_agent": "营销转码Agent",
@@ -491,6 +503,18 @@ def _price_calculation_manifest(job: dict) -> dict:
         return {}
 
 
+def _pdf_excel_manifest(job: dict) -> dict:
+    if not job or job.get("feature") != PDF_EXCEL_FEATURE:
+        return {}
+    manifest_path = Path(job.get("stored_input_path") or "")
+    if not manifest_path.exists():
+        return {}
+    try:
+        return json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
 def _price_customer_from_request() -> str:
     key = (
         request.values.get("customer_key")
@@ -549,6 +573,12 @@ def _decorate_job(job) -> dict:
         data["quote_variant"] = normalize_price_quote_variant(data["price_customer_key"], manifest.get("quote_variant"))
         data["customer_label"] = manifest.get("customer_label") or "景旺"
         data["function_type"] = f"{data['customer_label']}价格计算"
+    elif data.get("feature") == PDF_EXCEL_FEATURE:
+        manifest = _pdf_excel_manifest(data)
+        file_count = len(manifest.get("files") or [])
+        data["customer_label"] = "批量" if file_count > 1 else "单文件"
+        data["function_type"] = "PDF/图片转Excel"
+        data["display_total"] = data.get("total_rows") or file_count
     return data
 
 
@@ -902,6 +932,20 @@ def order_reprice():
         mode_labels=ORDER_REPRICE_MODE_LABELS,
         mode_meta=ORDER_REPRICE_MODE_META,
         customers=ORDER_REPRICE_CUSTOMERS,
+    )
+
+
+@bp.get("/features/pdf-excel")
+def pdf_excel():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    jobs = list_jobs(current_employee(), limit=20, feature=PDF_EXCEL_FEATURE)
+    return render_template(
+        "pdf_excel.html",
+        jobs=_decorate_jobs(jobs),
+        active_rule_version="PDF/图片转Excel 内置解析规则 v1",
+        active_job=_decorate_job(_active_job_for(PDF_EXCEL_FEATURE, jobs)),
     )
 
 
@@ -1433,6 +1477,40 @@ def create_in_transit_job_view():
     return redirect(url_for("main.in_transit", job_id=job_id))
 
 
+@bp.post("/pdf-excel/jobs")
+def create_pdf_excel_job_view():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    uploaded_files = [file_obj for file_obj in request.files.getlist("pdf_excel_files") if file_obj and file_obj.filename]
+    if not uploaded_files:
+        flash("请先上传 PDF 或图片文件。", "error")
+        return redirect(url_for("main.pdf_excel"))
+    invalid_files = [
+        file_obj.filename
+        for file_obj in uploaded_files
+        if Path(file_obj.filename or "").suffix.lower() not in PDF_EXCEL_ALLOWED_EXTENSIONS
+    ]
+    if invalid_files:
+        flash(f"不支持的文件类型：{', '.join(invalid_files)}", "error")
+        return redirect(url_for("main.pdf_excel"))
+    active_job = get_active_job(current_employee(), PDF_EXCEL_FEATURE)
+    if active_job:
+        flash("当前已有 PDF/图片转Excel 任务正在处理，请先等待完成或停止后再上传。", "error")
+        return redirect(url_for("main.pdf_excel", job_id=active_job["id"]))
+    try:
+        job_id = queue_pdf_excel_job(
+            current_employee(),
+            uploaded_files,
+            max_workers=2,
+        )
+    except Exception as exc:
+        flash(f"PDF/图片转Excel 任务创建失败：{exc}", "error")
+        return redirect(url_for("main.pdf_excel"))
+    flash("PDF/图片转Excel 任务已创建，系统正在处理。", "success")
+    return redirect(url_for("main.pdf_excel", job_id=job_id))
+
+
 @bp.post("/order-reprice/jobs")
 def create_order_reprice_job_view():
     redirect_resp = require_login()
@@ -1680,6 +1758,7 @@ def cancel_job(job_id: int):
             "in_transit": "main.in_transit",
             "order_reprice": "main.order_reprice",
             "price_calculation": "main.price_calculation",
+            "pdf_excel": "main.pdf_excel",
             "transcode_special_import": "main.admin_transcode_special_rules",
         }.get(job["feature"] if job else "", "main.history")
         return redirect(url_for(feature_route, job_id=job_id) if job else url_for("main.history"))
@@ -1696,6 +1775,7 @@ def cancel_job(job_id: int):
         "in_transit": "main.in_transit",
         "order_reprice": "main.order_reprice",
         "price_calculation": "main.price_calculation",
+        "pdf_excel": "main.pdf_excel",
         "transcode_special_import": "main.admin_transcode_special_rules",
     }.get(job["feature"] if job else "", "main.history")
     return redirect(url_for(feature_route, job_id=job_id) if job else url_for("main.history"))
@@ -2140,20 +2220,32 @@ def admin_price_calculation_rules():
     if request.method == "POST":
         admin_password = request.form.get("admin_password", "")
         rule_file = request.files.get("rule_file")
+        guanghe_huangshi_file = request.files.get("guanghe_huangshi_file")
+        guanghe_nanya_file = request.files.get("guanghe_nanya_file")
         remark = request.form.get("remark", "").strip()
         if not verify_admin_password(admin_password):
             flash("管理员密码错误。", "error")
-        elif not rule_file or not rule_file.filename:
+        elif selected_customer == "guanghe" and (not guanghe_huangshi_file or not guanghe_huangshi_file.filename or not guanghe_nanya_file or not guanghe_nanya_file.filename):
+            flash("请上传黄石广合单价和南亚新材价格更新两份 Excel。", "error")
+        elif selected_customer != "guanghe" and (not rule_file or not rule_file.filename):
             flash("请上传所选客户的报价表 Excel。", "error")
         else:
             try:
-                version = save_new_price_rule_version(
-                    selected_customer,
-                    rule_file,
-                    updated_by=current_employee(),
-                    remark=remark,
-                    quote_variant=selected_quote_variant,
-                )
+                if selected_customer == "guanghe":
+                    version = save_new_guanghe_rule_version(
+                        guanghe_huangshi_file,
+                        guanghe_nanya_file,
+                        updated_by=current_employee(),
+                        remark=remark,
+                    )
+                else:
+                    version = save_new_price_rule_version(
+                        selected_customer,
+                        rule_file,
+                        updated_by=current_employee(),
+                        remark=remark,
+                        quote_variant=selected_quote_variant,
+                    )
                 regression = run_jingwang_regression(selected_customer, version, selected_quote_variant)
                 if regression["total"]:
                     flash(

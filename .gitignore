@@ -10,6 +10,7 @@ venv/
 env/
 
 # Local server logs and generated runtime output.
+/outputs/
 *.log
 *.out
 *.err

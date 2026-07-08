@@ -1,0 +1,241 @@
+{% extends "base.html" %}
+{% block title %}PDF/图片转Excel | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('main.dashboard') }}">返回功能中心</a>
+  <span>功能中心 / PDF/图片转Excel</span>
+</div>
+
+<section class="feature-hero">
+  <div class="hero-watermark feature-mark">PDF XLSX</div>
+  <div class="feature-hero-copy">
+    <div class="panel-tag">TEST WORKSPACE</div>
+    <h1>PDF/图片转Excel</h1>
+    <p>批量上传采购订单 PDF 或图片，系统统一转成页面图片，先做分区和表格线检测，再按单元格识别明细，生成采购单和明细数据。</p>
+  </div>
+  <div class="feature-metrics">
+    <div>
+      <span>当前规则</span>
+      <strong>{{ active_rule_version }}</strong>
+    </div>
+    <div>
+      <span>输入文件</span>
+      <strong>PDF / PNG / JPG</strong>
+    </div>
+    <div>
+      <span>输出结果</span>
+      <strong>采购单 / 明细数据</strong>
+    </div>
+  </div>
+</section>
+
+<section class="split-layout">
+  <div class="work-column">
+    <article class="card task-card task-card-primary">
+      <div class="task-card-title">
+        <div>
+          <div class="step-tag">第一步</div>
+          <h2>上传一个或多个文件</h2>
+        </div>
+      </div>
+      <form method="post" action="{{ url_for('main.create_pdf_excel_job_view') }}" enctype="multipart/form-data" class="form-grid" id="pdf-excel-form">
+        <label class="upload-dropzone" id="pdf-excel-dropzone" for="pdf-excel-files">
+          <input id="pdf-excel-files" type="file" name="pdf_excel_files" accept=".pdf,.png,.jpg,.jpeg,.bmp,.tif,.tiff" multiple required>
+          <span class="upload-icon">PDF</span>
+          <strong id="pdf-excel-upload-title">拖放 PDF 或图片到这里，或点击选择文件</strong>
+          <em id="pdf-excel-upload-filename">支持单文件和批量文件；无模板也会走通用采购单识别</em>
+        </label>
+        <button type="submit">开始转换</button>
+      </form>
+    </article>
+
+    <article class="card task-card">
+      <div class="section-head">
+        <div>
+          <div class="step-tag">第二步</div>
+          <h2>最近任务</h2>
+        </div>
+        <a href="{{ url_for('main.history') }}">查看全部</a>
+      </div>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>文件</th>
+            <th>状态</th>
+            <th>文件数</th>
+            <th>时间</th>
+            <th>结果</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for job in jobs %}
+          <tr>
+            <td>#{{ job.id }}</td>
+            <td><a href="{{ url_for('main.job_detail', job_id=job.id) }}">{{ job.source_filename }}</a></td>
+            <td><span class="status {{ job.status }}">{{ job.status }}</span></td>
+            <td>{{ job.display_total }}</td>
+            <td>{{ job.created_at }}</td>
+            <td>
+              {% if job.status == 'completed' %}
+              <a class="primary-link compact" href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载结果</a>
+              {% else %}
+              -
+              {% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="6">还没有 PDF/图片转Excel 任务记录。</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </article>
+  </div>
+
+  <aside class="log-column">
+    <article class="card card-dark log-console">
+      <div class="section-head">
+        <div>
+          <div class="console-tag">LIVE CONSOLE</div>
+          <h2>处理日志</h2>
+        </div>
+        {% if active_job %}
+        <a href="{{ url_for('main.job_detail', job_id=active_job.id) }}">详情</a>
+        {% endif %}
+      </div>
+      {% if active_job %}
+      <div id="live-panel" data-job-id="{{ active_job.id }}">
+        <div class="progress-meta">
+          <div>
+            <span>当前任务</span>
+            <strong>#{{ active_job.id }} {{ active_job.source_filename }}</strong>
+          </div>
+          <div>
+            <span>状态</span>
+            <strong id="live-status">{{ active_job.status }}</strong>
+          </div>
+        </div>
+        <div class="progress-stats">
+          <div><span>进度</span><strong id="live-progress">{{ active_job.current_row }}/{{ active_job.total_rows }}</strong></div>
+          <div><span>成功</span><strong id="live-success">{{ active_job.success_count }}</strong></div>
+          <div><span>失败</span><strong id="live-fail">{{ active_job.fail_count }}</strong></div>
+          <div><span>跳过</span><strong id="live-skip">{{ active_job.skip_count }}</strong></div>
+        </div>
+        <div class="progress-bar">
+          <div id="live-bar"></div>
+        </div>
+        <pre id="live-log" class="live-log">{{ active_job.log_text or '任务已创建，等待处理日志...' }}</pre>
+        {% if active_job.status in ['queued', 'running'] %}
+        <form method="post" action="{{ url_for('main.cancel_job', job_id=active_job.id) }}" class="job-cancel-form">
+          <button type="submit" class="danger-button">停止任务</button>
+        </form>
+        {% endif %}
+        <div id="live-download" class="{% if active_job.status != 'completed' %}hidden{% endif %}">
+          <div class="result-ready">
+            <a class="primary-link" href="{{ url_for('main.download', job_id=active_job.id, kind='result') }}">下载结果文件</a>
+          </div>
+        </div>
+      </div>
+      {% else %}
+      <div class="empty-log">上传文件后，这里会显示页面分区、表格检测、单元格 OCR、字段清洗和 Excel 生成日志。</div>
+      {% endif %}
+    </article>
+  </aside>
+</section>
+
+<script>
+  const form = document.getElementById("pdf-excel-form");
+  const dropzone = document.getElementById("pdf-excel-dropzone");
+  const input = document.getElementById("pdf-excel-files");
+  const title = document.getElementById("pdf-excel-upload-title");
+  const filename = document.getElementById("pdf-excel-upload-filename");
+  const allowedExtensions = [".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"];
+
+  function preventFileOpen(event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  function validFile(file) {
+    const lowerName = file.name.toLowerCase();
+    return allowedExtensions.some(ext => lowerName.endsWith(ext));
+  }
+
+  function setFiles(files) {
+    const selected = Array.from(files || []).filter(validFile);
+    if (!selected.length) {
+      title.textContent = "请选择 PDF 或图片文件";
+      filename.textContent = "支持 .pdf / .png / .jpg / .jpeg / .bmp / .tif / .tiff";
+      dropzone.classList.remove("has-file");
+      input.value = "";
+      return;
+    }
+    const transfer = new DataTransfer();
+    selected.forEach(file => transfer.items.add(file));
+    input.files = transfer.files;
+    title.textContent = selected.length === 1 ? "文件已选择" : `${selected.length} 个文件已选择`;
+    filename.textContent = selected.map(file => file.name).join("、");
+    dropzone.classList.add("has-file");
+  }
+
+  ["dragenter", "dragover", "dragleave", "drop"].forEach(eventName => {
+    window.addEventListener(eventName, preventFileOpen);
+  });
+  ["dragenter", "dragover"].forEach(eventName => {
+    dropzone.addEventListener(eventName, event => {
+      preventFileOpen(event);
+      dropzone.classList.add("is-dragover");
+    });
+  });
+  ["dragleave", "drop"].forEach(eventName => {
+    dropzone.addEventListener(eventName, event => {
+      preventFileOpen(event);
+      dropzone.classList.remove("is-dragover");
+    });
+  });
+  dropzone.addEventListener("drop", event => setFiles(event.dataTransfer.files));
+  input.addEventListener("change", () => setFiles(input.files));
+  form.addEventListener("submit", event => {
+    if (!input.files.length) {
+      event.preventDefault();
+      title.textContent = "请先选择文件";
+    }
+  });
+
+  const livePanel = document.getElementById("live-panel");
+  if (livePanel) {
+    const jobId = livePanel.dataset.jobId;
+    const statusEl = document.getElementById("live-status");
+    const progressEl = document.getElementById("live-progress");
+    const successEl = document.getElementById("live-success");
+    const failEl = document.getElementById("live-fail");
+    const skipEl = document.getElementById("live-skip");
+    const logEl = document.getElementById("live-log");
+    const barEl = document.getElementById("live-bar");
+    const downloadEl = document.getElementById("live-download");
+
+    async function refreshJob() {
+      const response = await fetch(`/api/jobs/${jobId}`);
+      if (!response.ok) return;
+      const data = await response.json();
+      statusEl.textContent = data.status;
+      progressEl.textContent = `${data.current_row}/${data.total_rows}`;
+      successEl.textContent = data.success_count;
+      failEl.textContent = data.fail_count;
+      skipEl.textContent = data.skip_count;
+      logEl.textContent = data.log_text || "任务处理中...";
+      const total = Number(data.total_rows || 0);
+      const current = Number(data.current_row || 0);
+      barEl.style.width = total ? `${Math.min(100, Math.round(current / total * 100))}%` : "12%";
+      if (data.status === "completed") {
+        downloadEl.classList.remove("hidden");
+      }
+      if (["completed", "failed", "canceled"].includes(data.status)) {
+        clearInterval(timer);
+      }
+    }
+    const timer = setInterval(refreshJob, 1500);
+    refreshJob();
+  }
+</script>
+{% endblock %}

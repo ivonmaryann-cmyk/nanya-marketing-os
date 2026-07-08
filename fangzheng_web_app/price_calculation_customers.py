@@ -73,6 +73,13 @@ PRICE_CALCULATION_CUSTOMERS = [
         "test_label": "广合测试数据",
     },
     {
+        "key": "shengyi",
+        "label": "生益",
+        "enabled": True,
+        "rule_label": "生益报价表",
+        "test_label": "生益测试数据",
+    },
+    {
         "key": "zhongfu",
         "label": "中富",
         "enabled": True,

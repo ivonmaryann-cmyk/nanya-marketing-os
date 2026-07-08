@@ -16,6 +16,8 @@ from .price_calculation_customers import PRICE_CALCULATION_CUSTOMERS, enabled_pr
 
 PRICE_RULE_FILENAME = "price_rules.xlsx"
 TEST_DATA_FILENAME = "test_data.xlsx"
+GUANGHE_HUANGSHI_RULE_FILENAME = "guanghe_huangshi_price_rules.xlsx"
+GUANGHE_NANYA_RULE_FILENAME = "guanghe_nanya_price_rules.xlsx"
 ALLOWED_RULE_EXTENSIONS = {".xlsx", ".xls", ".xlsm"}
 JINGWANG_QUOTE_VARIANTS = {"new": "新报价单", "old": "旧报价单"}
 
@@ -121,6 +123,7 @@ def ensure_default_price_rule_version(customer_key: str, quote_variant: str | No
         "mingyang": (packaged_dir / "mingyang" / PRICE_RULE_FILENAME, packaged_dir / "mingyang" / TEST_DATA_FILENAME),
         "lejian": (packaged_dir / "lejian" / PRICE_RULE_FILENAME, packaged_dir / "lejian" / TEST_DATA_FILENAME),
         "guanghe": (packaged_dir / "guanghe" / PRICE_RULE_FILENAME, packaged_dir / "guanghe" / TEST_DATA_FILENAME),
+        "shengyi": (packaged_dir / "shengyi" / PRICE_RULE_FILENAME, packaged_dir / "shengyi" / TEST_DATA_FILENAME),
         "zhongfu": (packaged_dir / "zhongfu" / PRICE_RULE_FILENAME, packaged_dir / "zhongfu" / TEST_DATA_FILENAME),
     }
     seed_files = seed_map.get(customer_key)
@@ -218,6 +221,73 @@ def save_new_price_rule_version(
     return version
 
 
+def save_new_guanghe_rule_version(
+    huangshi_file: FileStorage,
+    nanya_file: FileStorage,
+    test_file: FileStorage | None = None,
+    *,
+    updated_by: str,
+    remark: str,
+) -> str:
+    customer = enabled_price_customer("guanghe")
+    source_files = [
+        ("黄石广合单价", huangshi_file, GUANGHE_HUANGSHI_RULE_FILENAME),
+        ("南亚新材价格更新", nanya_file, GUANGHE_NANYA_RULE_FILENAME),
+    ]
+    for label, storage, _target_name in source_files:
+        if not storage or not storage.filename:
+            raise ValueError(f"请上传{label} Excel")
+        source_name = secure_filename(storage.filename) or _target_name
+        if Path(source_name).suffix.lower() not in ALLOWED_RULE_EXTENSIONS:
+            raise ValueError(f"{label}仅支持 .xlsx / .xls / .xlsm 文件")
+    test_name = ""
+    if test_file and test_file.filename:
+        test_name = secure_filename(test_file.filename or TEST_DATA_FILENAME) or TEST_DATA_FILENAME
+        if Path(test_name).suffix.lower() not in ALLOWED_RULE_EXTENSIONS:
+            raise ValueError("测试数据仅支持 .xlsx / .xls / .xlsm 文件")
+
+    version = datetime.now().strftime("guanghe_rules_%Y%m%d_%H%M%S")
+    version_dir = _versions_dir("guanghe") / version
+    version_dir.mkdir(parents=True, exist_ok=True)
+
+    saved_sources: list[tuple[str, Path, str]] = []
+    uploaded_names: list[str] = []
+    for label, storage, target_name in source_files:
+        uploaded_name = storage.filename or target_name
+        uploaded_names.append(uploaded_name)
+        target_path = version_dir / target_name
+        storage.save(target_path)
+        validate_price_rule_files("guanghe", target_path)
+        saved_sources.append((label, target_path, uploaded_name))
+
+    _merge_guanghe_rule_sources([(label, path) for label, path, _name in saved_sources], version_dir / PRICE_RULE_FILENAME)
+    if test_file and test_file.filename:
+        uploaded_test = version_dir / test_name
+        test_file.save(uploaded_test)
+        _copy_excel_as_xlsx(uploaded_test, version_dir / TEST_DATA_FILENAME)
+    else:
+        test_name = _copy_existing_test_data("guanghe", version_dir / TEST_DATA_FILENAME)
+    validate_price_rule_files("guanghe", version_dir / PRICE_RULE_FILENAME, version_dir / TEST_DATA_FILENAME)
+
+    set_setting(_active_key("guanghe"), version)
+    append_price_rule_history(
+        "guanghe",
+        {
+            "version": version,
+            "customer_key": "guanghe",
+            "customer_label": customer["label"],
+            "quote_variant": "",
+            "quote_variant_label": "",
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "updated_by": updated_by,
+            "remark": remark or "网页上传广合两份报价单并合并生效",
+            "rule_file": "；".join(uploaded_names),
+            "test_file": test_name,
+        },
+    )
+    return version
+
+
 def validate_price_rule_files(customer_key: str, rule_path: str | Path, test_data_path: str | Path | None = None) -> None:
     enabled_price_customer(customer_key)
     detected = excel_format(rule_path)
@@ -227,7 +297,7 @@ def validate_price_rule_files(customer_key: str, rule_path: str | Path, test_dat
         load_workbook_compat(rule_path, data_only=True)
         _validate_plin_rule_file(rule_path)
         return
-    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "guanghe", "zhongfu"}:
+    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "guanghe", "shengyi", "zhongfu"}:
         load_workbook_compat(rule_path, data_only=True)
         return
     if customer_key == "lejian":
@@ -284,6 +354,7 @@ def _copy_existing_test_data(customer_key: str, target: Path, quote_variant: str
         "mingyang": packaged_dir / "mingyang" / TEST_DATA_FILENAME,
         "lejian": packaged_dir / "lejian" / TEST_DATA_FILENAME,
         "guanghe": packaged_dir / "guanghe" / TEST_DATA_FILENAME,
+        "shengyi": packaged_dir / "shengyi" / TEST_DATA_FILENAME,
         "zhongfu": packaged_dir / "zhongfu" / TEST_DATA_FILENAME,
     }
     if customer_key in default_test_map:
@@ -318,3 +389,32 @@ def _copy_excel_as_xlsx(source: Path, target: Path) -> None:
         shutil.copy2(normalized, target)
     else:
         workbook.save(target)
+
+
+def _merge_guanghe_rule_sources(sources: list[tuple[str, Path]], target: Path) -> None:
+    from openpyxl import Workbook
+
+    merged = Workbook()
+    merged.remove(merged.active)
+    used_titles: set[str] = set()
+    for _label, source in sources:
+        workbook = load_workbook_compat(source, data_only=True)
+        for worksheet in workbook.worksheets:
+            target_sheet = merged.create_sheet(_unique_sheet_title(worksheet.title, used_titles))
+            for row in worksheet.iter_rows():
+                target_sheet.append([cell.value for cell in row])
+    if not merged.worksheets:
+        raise ValueError("广合报价单未读取到任何 Sheet")
+    merged.save(target)
+
+
+def _unique_sheet_title(title: str, used_titles: set[str]) -> str:
+    base = (title or "Sheet").strip()[:31] or "Sheet"
+    candidate = base
+    index = 2
+    while candidate in used_titles:
+        suffix = f"_{index}"
+        candidate = f"{base[:31 - len(suffix)]}{suffix}"
+        index += 1
+    used_titles.add(candidate)
+    return candidate

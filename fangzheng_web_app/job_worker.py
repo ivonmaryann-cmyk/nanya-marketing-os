@@ -61,6 +61,10 @@ def main(argv: list[str] | None = None) -> int:
             from .price_calculation_service import run_price_calculation_job
 
             run_price_calculation_job(job_id, employee_id)
+        elif feature == "pdf_excel":
+            from .pdf_excel_service import run_pdf_excel_job
+
+            run_pdf_excel_job(job_id, employee_id)
         elif feature == "transcode_special_import":
             from .transcode_special_import_service import run_transcode_special_import_job
 
