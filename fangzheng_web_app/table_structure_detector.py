@@ -71,6 +71,49 @@ def _grid_from_bbox(horizontal, vertical, bbox: tuple[int, int, int, int]) -> di
     }
 
 
+def _subgrids_from_sparse_grid(horizontal, vertical, bbox: tuple[int, int, int, int], grid: dict[str, Any]) -> list[dict[str, Any]]:
+    """Find nested table bands when a full-page frame hides short vertical lines.
+
+    Some purchase orders put detail rows at the top and terms below in merged
+    cells. If we evaluate vertical projections against the full outer frame,
+    the detail columns are too short and get filtered. Split by unusually large
+    horizontal gaps and re-detect columns inside each band.
+    """
+    y_positions = grid.get("y_positions") or []
+    if grid.get("column_count", 0) >= 6 or len(y_positions) < 4:
+        return []
+
+    gaps = [right - left for left, right in zip(y_positions, y_positions[1:])]
+    if not gaps:
+        return []
+    sorted_gaps = sorted(gaps)
+    normal_row_gap = sorted_gaps[max(0, len(sorted_gaps) // 3)]
+    split_threshold = max(90, int(normal_row_gap * 1.7))
+
+    bands: list[tuple[int, int]] = []
+    start_index = 0
+    for index, gap in enumerate(gaps):
+        if gap >= split_threshold:
+            if index - start_index + 1 >= 3:
+                bands.append((start_index, index))
+            start_index = index + 1
+    if len(y_positions) - start_index >= 3:
+        bands.append((start_index, len(y_positions) - 1))
+
+    x, _y, w, _h = bbox
+    result: list[dict[str, Any]] = []
+    for start, end in bands:
+        y0 = max(0, int(y_positions[start]) - 4)
+        y1 = int(y_positions[end]) + 4
+        if y1 - y0 <= 60:
+            continue
+        subgrid = _grid_from_bbox(horizontal, vertical, (x, y0, w, y1 - y0))
+        if not subgrid or subgrid.get("column_count", 0) < 6:
+            continue
+        result.append(subgrid)
+    return result
+
+
 def detect_table_grids(image_path: Path) -> list[dict[str, Any]]:
     """Detect bordered table grids and return cell boundary positions."""
     cv2, np = _load_cv2()
@@ -85,12 +128,14 @@ def detect_table_grids(image_path: Path) -> list[dict[str, Any]]:
             continue
         grid = _grid_from_bbox(horizontal, vertical, (x, y, w, h))
         if grid:
-            grids.append(grid)
+            subgrids = _subgrids_from_sparse_grid(horizontal, vertical, (x, y, w, h), grid)
+            grids.extend(subgrids or [grid])
 
     if not grids:
         grid = _grid_from_bbox(horizontal, vertical, (0, 0, width, height))
         if grid:
-            grids.append(grid)
+            subgrids = _subgrids_from_sparse_grid(horizontal, vertical, (0, 0, width, height), grid)
+            grids.extend(subgrids or [grid])
 
     grids.sort(key=lambda item: (item["bbox"][1], -item["row_count"] * item["column_count"]))
     deduped: list[dict[str, Any]] = []

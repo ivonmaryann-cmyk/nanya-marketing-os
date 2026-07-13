@@ -727,6 +727,19 @@ def _is_mapped_non_detail_row(row: dict[str, Any]) -> bool:
     if not has_detail_anchor and code and any(keyword.lower() in code.lower() for keyword in section_keywords):
         return True
 
+    seq = clean_text(standard.get(SEQ))
+    name = clean_text(standard.get(NAME))
+    has_sequence = bool(re.fullmatch(r"\d+(?:\.\d+)?", seq))
+    has_code = bool(re.search(r"[A-Za-z]{1,8}\d{2,}|\d{3,}[A-Za-z]", code))
+    qty = _money(standard.get(QTY))
+    price = _money(standard.get(PRICE))
+    amount = _money(standard.get(AMOUNT))
+    date = clean_text(standard.get(DATE))
+    if not (has_sequence or has_code) and not (name and qty is not None and (price is not None or amount is not None or date)):
+        return True
+    if qty is None and price is None and amount is None and not date:
+        return True
+
     non_empty_standard = [value for value in standard.values() if clean_text(value)]
     return not has_detail_anchor and len(non_empty_standard) <= 1
 

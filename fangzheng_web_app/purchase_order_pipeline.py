@@ -13,7 +13,7 @@ from .page_image_renderer import render_input_pages
 from .pdf_native_parser import parse_pdf_native
 from .purchase_field_rules import clean_text, classify_section_line, extract_key_values, find_detail_header_row, looks_like_detail_data, normalize_date, normalize_number
 from .purchase_layout_cache import load_layout_cache, save_layout_cache
-from .purchase_order_segmenter import _cached_ocr_regions, build_detail_rows_from_table, segment_purchase_page, segment_purchase_page_with_layout
+from .purchase_order_segmenter import _cached_grids, _cached_ocr_regions, build_detail_rows_from_table, segment_purchase_page, segment_purchase_page_with_layout
 from .purchase_result_normalizer import normalize_purchase_document
 from .template_parser import identify_template
 
@@ -809,7 +809,8 @@ def run_purchase_order_pipeline(file_item: dict[str, str], work_dir: Path | None
 
         render_dir = base_dir / "pages"
         clean_dir = base_dir / "clean"
-        rendered_pages = render_input_pages(file_item, render_dir)
+        render_dpi = 180 if input_path.suffix.lower() == ".pdf" else 240
+        rendered_pages = render_input_pages(file_item, render_dir, dpi=render_dpi)
         if not rendered_pages:
             raise RuntimeError("未能渲染页面图片。")
 
@@ -817,34 +818,40 @@ def run_purchase_order_pipeline(file_item: dict[str, str], work_dir: Path | None
         clean_pages = [preprocess_page_image(rendered_page, clean_dir) for rendered_page in rendered_pages]
         layout_cache = None
         if len(clean_pages) == 1:
-            quick_lines = _quick_page_lines(clean_pages[0])
-            probe_lines = []
-            seen_probe_lines: set[str] = set()
-            for line in quick_lines:
-                key = clean_text(line).lower().replace(" ", "")
-                if key and key not in seen_probe_lines:
-                    seen_probe_lines.add(key)
-                    probe_lines.append(clean_text(line))
-            auxiliary_text = _native_pdf_text(file_item)
-            if auxiliary_text:
-                for line in auxiliary_text.splitlines():
-                    text = clean_text(line)
-                    key = text.lower().replace(" ", "")
-                    if text and key not in seen_probe_lines:
-                        seen_probe_lines.add(key)
-                        probe_lines.append(text)
-            probe_header = extract_key_values(probe_lines)
-            layout_cache = load_layout_cache(
-                probe_header,
-                probe_lines,
-                int(clean_pages[0].get("width") or 0),
-                int(clean_pages[0].get("height") or 0),
-            )
-            if layout_cache:
-                pages.append(segment_purchase_page_with_layout(clean_pages[0], layout_cache))
+            clean_image_path = Path(clean_pages[0].get("clean_image_path") or clean_pages[0]["image_path"])
+            precheck_grids = _cached_grids(clean_image_path)
+            has_clear_grid = any(int(grid.get("column_count") or 0) >= 6 and int(grid.get("row_count") or 0) >= 2 for grid in precheck_grids)
+            if has_clear_grid:
+                pages.append(segment_purchase_page(clean_pages[0]))
             else:
-                probe_page = segment_purchase_page(clean_pages[0])
-                pages.append(probe_page)
+                quick_lines = _quick_page_lines(clean_pages[0])
+                probe_lines = []
+                seen_probe_lines: set[str] = set()
+                for line in quick_lines:
+                    key = clean_text(line).lower().replace(" ", "")
+                    if key and key not in seen_probe_lines:
+                        seen_probe_lines.add(key)
+                        probe_lines.append(clean_text(line))
+                auxiliary_text = _native_pdf_text(file_item)
+                if auxiliary_text:
+                    for line in auxiliary_text.splitlines():
+                        text = clean_text(line)
+                        key = text.lower().replace(" ", "")
+                        if text and key not in seen_probe_lines:
+                            seen_probe_lines.add(key)
+                            probe_lines.append(text)
+                probe_header = extract_key_values(probe_lines)
+                layout_cache = load_layout_cache(
+                    probe_header,
+                    probe_lines,
+                    int(clean_pages[0].get("width") or 0),
+                    int(clean_pages[0].get("height") or 0),
+                )
+                if layout_cache:
+                    pages.append(segment_purchase_page_with_layout(clean_pages[0], layout_cache))
+                else:
+                    probe_page = segment_purchase_page(clean_pages[0])
+                    pages.append(probe_page)
         else:
             for clean_page in clean_pages:
                 pages.append(segment_purchase_page(clean_page))

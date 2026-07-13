@@ -23,6 +23,38 @@ REMARK = "备注"
 ALLOWED_FIELDS = set(STANDARD_HEADERS)
 CRITICAL_FIELDS = [CODE, NAME, QTY, UNIT, PRICE, AMOUNT, DATE]
 NUMERIC_FIELDS = {QTY, PRICE, AMOUNT}
+FIELD_ALIASES = {
+    SEQ: SEQ,
+    CODE: CODE,
+    NAME: NAME,
+    DESC: DESC,
+    QTY: QTY,
+    UNIT: UNIT,
+    PRICE: PRICE,
+    AMOUNT: AMOUNT,
+    DATE: DATE,
+    REMARK: REMARK,
+    "\u5e8f\u53f7": SEQ,
+    "\u7269\u6599\u7f16\u7801": CODE,
+    "\u6599\u4ef6\u7f16\u53f7": CODE,
+    "\u4ea7\u54c1\u7f16\u7801": CODE,
+    "\u7269\u6599\u540d\u79f0": NAME,
+    "\u4ea7\u54c1\u540d\u79f0": NAME,
+    "\u540d\u79f0\u89c4\u683c": NAME,
+    "\u89c4\u683c\u578b\u53f7": DESC,
+    "\u8bf4\u660e": DESC,
+    "\u6570\u91cf": QTY,
+    "\u8ba2\u8d2d\u6570\u91cf": QTY,
+    "\u5355\u4f4d": UNIT,
+    "\u542b\u7a0e\u5355\u4ef7": PRICE,
+    "\u5355\u4ef7": PRICE,
+    "\u91d1\u989d": AMOUNT,
+    "\u542b\u7a0e\u91d1\u989d": AMOUNT,
+    "\u4ea4\u8d27\u65e5\u671f": DATE,
+    "\u4ea4\u671f": DATE,
+    "\u5230\u8d27\u65e5\u671f": DATE,
+    "\u5907\u6ce8": REMARK,
+}
 
 
 def _money(value: Any) -> Decimal | None:
@@ -38,6 +70,11 @@ def _amount_mismatch(standard: dict[str, Any]) -> bool:
 
 def _missing_fields(standard: dict[str, Any]) -> list[str]:
     return [field for field in CRITICAL_FIELDS if not clean_text(standard.get(field))]
+
+
+def _canonical_field(field: Any) -> str:
+    text = clean_text(field)
+    return FIELD_ALIASES.get(text, text)
 
 
 def _row_needs_repair(row: dict[str, Any], related_issues: list[dict[str, Any]]) -> bool:
@@ -151,6 +188,69 @@ def _candidate_rows(document: dict[str, Any], max_rows: int) -> list[dict[str, A
     return candidates
 
 
+def _raw_table_rows_for_body_repair(document: dict[str, Any]) -> list[dict[str, Any]]:
+    tables = []
+    for table in document.get("raw_detail_tables") or []:
+        rows = table.get("rows") or table.get("raw_rows") or []
+        if not rows:
+            continue
+        tables.append(
+            {
+                "page_index": table.get("page_index", ""),
+                "table_index": table.get("table_index", ""),
+                "method": table.get("method", ""),
+                "bbox": table.get("bbox") or [],
+                "rows": rows[:30],
+            }
+        )
+    return tables[:4]
+
+
+def _page_lines_for_body_repair(document: dict[str, Any]) -> list[dict[str, Any]]:
+    pages = []
+    for page in document.get("pages") or []:
+        lines = [clean_text(line) for line in page.get("text_lines") or [] if clean_text(line)]
+        if not lines:
+            continue
+        pages.append({"page_index": page.get("page_index", ""), "text_lines": lines[:80]})
+    return pages[:3]
+
+
+def _body_missing_payload(document: dict[str, Any], max_rows: int) -> dict[str, Any] | None:
+    raw_tables = _raw_table_rows_for_body_repair(document)
+    page_lines = _page_lines_for_body_repair(document)
+    if not raw_tables and not page_lines:
+        return None
+    return {
+        "task": "rebuild_missing_purchase_order_body_only",
+        "source_file": document.get("source_file", ""),
+        "allowed_fields": list(STANDARD_HEADERS),
+        "field_aliases": {
+            "\u5e8f\u53f7": SEQ,
+            "\u7269\u6599\u7f16\u7801": CODE,
+            "\u7269\u6599\u540d\u79f0": NAME,
+            "\u8bf4\u660e": DESC,
+            "\u6570\u91cf": QTY,
+            "\u5355\u4f4d": UNIT,
+            "\u542b\u7a0e\u5355\u4ef7": PRICE,
+            "\u91d1\u989d": AMOUNT,
+            "\u4ea4\u8d27\u65e5\u671f": DATE,
+            "\u5907\u6ce8": REMARK,
+        },
+        "rules": [
+            "\u53ea\u91cd\u5efa\u8ba2\u5355\u6b63\u6587\u660e\u7ec6\u884c\uff0c\u4e0d\u5904\u7406\u8ba2\u5355\u5934\u3001\u4ed8\u6b3e\u3001\u6761\u6b3e\u3001\u7b7e\u6838\u533a\u3002",
+            "\u53ea\u80fd\u4f7f\u7528 raw_detail_tables \u6216 page_text_lines \u4e2d\u770b\u5f97\u5230\u7684\u8bc1\u636e\uff0c\u4e0d\u8981\u51ed\u7a7a\u7f16\u9020\u660e\u7ec6\u3002",
+            "\u5982\u679c\u65e0\u6cd5\u786e\u8ba4\u660e\u7ec6\u884c\uff0c\u8fd4\u56de {\"rows\":[]} \u3002",
+            "\u6700\u591a\u8fd4\u56de max_rows \u6761\u660e\u7ec6\uff0c\u6bcf\u6761\u9700\u8981 confidence>=0.65 \u548c source_evidence\u3002",
+            "\u8fd4\u56de\u4e25\u683c JSON\uff1a{\"rows\":[{\"standard\":{\"\u5b57\u6bb5\":\"\u503c\"},\"original\":{\"raw\":\"\u539f\u6587\"},\"confidence\":0.0,\"source_evidence\":\"\u8bc1\u636e\",\"reason\":\"\u539f\u56e0\"}]}",
+        ],
+        "max_rows": max_rows,
+        "raw_detail_tables": raw_tables,
+        "page_text_lines": page_lines,
+        "issues": (document.get("issues") or [])[:10],
+    }
+
+
 def _normalize_field_value(field: str, value: Any) -> str:
     text = clean_text(value)
     if not text:
@@ -163,6 +263,7 @@ def _normalize_field_value(field: str, value: Any) -> str:
 
 
 def _can_apply_field(field: str, current: Any, candidate: Any, suspect_fields: list[str]) -> bool:
+    field = _canonical_field(field)
     if field not in ALLOWED_FIELDS:
         return False
     candidate_text = clean_text(candidate)
@@ -217,7 +318,8 @@ def _apply_repairs(document: dict[str, Any], response: dict[str, Any]) -> int:
         set_fields = repair.get("set_fields") or {}
         source_evidence = clean_text(repair.get("source_evidence"))
         reason = clean_text(repair.get("reason"))
-        for field, raw_value in set_fields.items():
+        for raw_field, raw_value in set_fields.items():
+            field = _canonical_field(raw_field)
             current = standard.get(field, "")
             if not _can_apply_field(field, current, raw_value, suspect_fields):
                 continue
@@ -246,6 +348,113 @@ def _apply_repairs(document: dict[str, Any], response: dict[str, Any]) -> int:
     return applied
 
 
+def _row_has_minimum_body_fields(standard: dict[str, Any]) -> bool:
+    has_name_or_code = bool(clean_text(standard.get(CODE)) or clean_text(standard.get(NAME)))
+    has_qty = bool(clean_text(standard.get(QTY)))
+    has_price_or_amount = bool(clean_text(standard.get(PRICE)) or clean_text(standard.get(AMOUNT)))
+    return has_name_or_code and has_qty and has_price_or_amount
+
+
+def _apply_missing_body_rows(document: dict[str, Any], response: dict[str, Any]) -> int:
+    rows = []
+    for index, item in enumerate(response.get("rows") or []):
+        try:
+            confidence = float(item.get("confidence", 0))
+        except (TypeError, ValueError):
+            confidence = 0
+        if confidence < 0.65:
+            continue
+
+        standard: dict[str, str] = {}
+        for raw_field, raw_value in (item.get("standard") or {}).items():
+            field = _canonical_field(raw_field)
+            if field not in ALLOWED_FIELDS:
+                continue
+            clean_value = _normalize_field_value(field, raw_value)
+            if clean_value:
+                standard[field] = clean_value
+        if not _row_has_minimum_body_fields(standard):
+            continue
+
+        original = item.get("original") if isinstance(item.get("original"), dict) else {}
+        source_evidence = clean_text(item.get("source_evidence"))
+        reason = clean_text(item.get("reason"))
+        raw_text = source_evidence or clean_text(original.get("raw"))
+        row = {
+            "original": original,
+            "standard": standard,
+            "cleaning_notes": [],
+            "page_index": "",
+            "table_index": "",
+            "row_index": index,
+            "raw_text": raw_text,
+            "confidence": confidence,
+            "method": "ai_missing_body_rebuild",
+            "ai_repair": [
+                {
+                    "field": "\u660e\u7ec6\u884c",
+                    "value": raw_text,
+                    "source_evidence": source_evidence,
+                    "reason": reason,
+                    "confidence": confidence,
+                }
+            ],
+        }
+        rows.append(row)
+        document.setdefault("issues", []).append(
+            {
+                "page_index": "",
+                "region": "AI\u8865\u7f3a",
+                "field": "\u8ba2\u5355\u6b63\u6587",
+                "raw_value": raw_text[:500],
+                "clean_value": " ".join(f"{field}:{value}" for field, value in standard.items())[:500],
+                "confidence": confidence,
+                "message": f"AI\u5728\u539f\u59cb\u8868\u683c/\u6587\u672c\u8bc1\u636e\u4e2d\u91cd\u5efa\u7f3a\u5931\u660e\u7ec6\uff1a{reason}",
+            }
+        )
+    if not rows:
+        return 0
+    document["mapped_detail_rows"] = rows
+    return len(rows)
+
+
+def _try_repair_missing_body(
+    document: dict[str, Any],
+    config: Any,
+    *,
+    log: Callable[[str], None] | None = None,
+) -> bool:
+    if document.get("mapped_detail_rows"):
+        return False
+    payload = _body_missing_payload(document, config.max_rows)
+    if not payload:
+        return False
+    if log:
+        log(f"AI\u8865\u7f3a\u68c0\u67e5\uff1a\u8ba2\u5355\u6b63\u6587\u660e\u7ec6\u7f3a\u5931\uff0c\u5c1d\u8bd5\u8c03\u7528 {config.model} \u91cd\u5efa\u3002")
+    try:
+        response = request_repair_json(config, payload)
+    except DeepSeekRepairError as exc:
+        document.setdefault("issues", []).append(
+            {
+                "page_index": "",
+                "region": "AI\u8865\u7f3a",
+                "field": "\u8ba2\u5355\u6b63\u6587",
+                "raw_value": "",
+                "clean_value": "",
+                "confidence": 0,
+                "message": f"AI\u6b63\u6587\u91cd\u5efa\u8df3\u8fc7\uff1a{exc}",
+            }
+        )
+        if log:
+            log(f"AI\u6b63\u6587\u91cd\u5efa\u8df3\u8fc7\uff1a{exc}")
+        return False
+    applied_rows = _apply_missing_body_rows(document, response)
+    document.setdefault("ai_repair_summary", {})["missing_body_rows"] = applied_rows
+    if log:
+        log(f"AI\u6b63\u6587\u91cd\u5efa\u5b8c\u6210\uff1a\u5199\u5165\u660e\u7ec6 {applied_rows} \u884c\u3002")
+    return applied_rows > 0
+
+
 def audit_and_repair_purchase_document(
     document: dict[str, Any],
     *,
@@ -254,6 +463,9 @@ def audit_and_repair_purchase_document(
     repaired = copy.deepcopy(document)
     config = get_ai_repair_config()
     if not config.available:
+        return repaired
+
+    if _try_repair_missing_body(repaired, config, log=log):
         return repaired
 
     candidates = _candidate_rows(repaired, config.max_rows)

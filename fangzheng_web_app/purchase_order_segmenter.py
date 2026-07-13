@@ -22,6 +22,7 @@ from .table_structure_detector import detect_table_grids, iter_grid_cells
 
 _GRID_CACHE: dict[str, list[dict[str, Any]]] = {}
 _OCR_REGION_CACHE: dict[str, list[dict[str, Any]]] = {}
+_TABLE_OCR_REGION_CACHE: dict[str, list[dict[str, Any]]] = {}
 
 
 def _load_cv2():
@@ -54,6 +55,39 @@ def _cached_ocr_regions(image_path: Path) -> list[dict[str, Any]]:
         with Image.open(image_path) as image:
             _OCR_REGION_CACHE[key] = ocr_image_regions(image.convert("RGB"))
     return [dict(region) for region in _OCR_REGION_CACHE[key]]
+
+
+def _cached_table_ocr_regions(image_path: Path, grid: dict[str, Any]) -> list[dict[str, Any]]:
+    image_key = _image_cache_key(image_path)
+    bbox = [int(value) for value in (grid.get("bbox") or [0, 0, 0, 0])[:4]]
+    cache_key = f"{image_key}:{','.join(str(value) for value in bbox)}"
+    if cache_key in _TABLE_OCR_REGION_CACHE:
+        return [dict(region) for region in _TABLE_OCR_REGION_CACHE[cache_key]]
+    with Image.open(image_path) as image:
+        image = image.convert("RGB")
+        x0, y0, x1, y1 = bbox
+        padding = 8
+        crop_box = (
+            max(0, x0 - padding),
+            max(0, y0 - padding),
+            min(image.width, x1 + padding),
+            min(image.height, y1 + padding),
+        )
+        crop = image.crop(crop_box)
+    regions = []
+    for region in ocr_image_regions(crop):
+        rb = region.get("bbox") or [0, 0, 0, 0]
+        shifted = dict(region)
+        shifted["bbox"] = [
+            round(float(rb[0]) + crop_box[0], 2),
+            round(float(rb[1]) + crop_box[1], 2),
+            round(float(rb[2]) + crop_box[0], 2),
+            round(float(rb[3]) + crop_box[1], 2),
+        ]
+        shifted["method"] = "table_ocr_region"
+        regions.append(shifted)
+    _TABLE_OCR_REGION_CACHE[cache_key] = regions
+    return [dict(region) for region in regions]
 
 
 def _is_blank_crop(image: Image.Image) -> bool:
@@ -103,10 +137,18 @@ def _join_regions(regions: list[dict[str, Any]]) -> tuple[str, float]:
     return clean_text(text), confidence
 
 
-def _ocr_grid_rows(image_path: Path, grid: dict[str, Any], page_index: int, regions: list[dict[str, Any]]) -> tuple[list[list[str]], list[dict[str, Any]]]:
+def _ocr_grid_rows(
+    image_path: Path,
+    grid: dict[str, Any],
+    page_index: int,
+    regions: list[dict[str, Any]],
+    *,
+    max_cell_ocr_fallback: int | None = None,
+) -> tuple[list[list[str]], list[dict[str, Any]]]:
     image = Image.open(image_path).convert("RGB")
     cells: list[dict[str, Any]] = []
     matrix: dict[int, dict[int, str]] = {}
+    fallback_count = 0
     for row_index, column_index, bbox in iter_grid_cells(grid):
         contained_regions = _regions_in_bbox(regions, bbox)
         if contained_regions:
@@ -116,7 +158,10 @@ def _ocr_grid_rows(image_path: Path, grid: dict[str, Any], page_index: int, regi
             crop = _crop_cell(image, bbox)
             if _is_blank_crop(crop):
                 result = {"text": "", "confidence": 1.0, "method": "manual_empty"}
+            elif max_cell_ocr_fallback is not None and fallback_count >= max_cell_ocr_fallback:
+                result = {"text": "", "confidence": 0.0, "method": "cell_ocr_skipped"}
             else:
+                fallback_count += 1
                 result = ocr_cell(crop)
         text = clean_text(result.get("text"))
         matrix.setdefault(row_index, {})[column_index] = text
@@ -528,6 +573,18 @@ def _split_stacked_detail_row(row: list[str], mapping: dict[int, str]) -> list[l
     return split_rows
 
 
+def _looks_like_structured_detail_row(row: list[str]) -> bool:
+    values = [clean_text(value) for value in row]
+    if not any(values):
+        return False
+    first = values[0] if values else ""
+    leading = " ".join(values[:4])
+    has_sequence = bool(re.fullmatch(r"\d+(?:\.\d+)?", first))
+    has_code = bool(re.search(r"[A-Za-z]{1,8}\d{2,}|\d{3,}[A-Za-z]", leading))
+    numeric_tokens = re.findall(r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?", " ".join(values))
+    return (has_sequence or has_code) and len(numeric_tokens) >= 2
+
+
 def segment_purchase_page(page: dict[str, Any]) -> dict[str, Any]:
     image_path = Path(page.get("clean_image_path") or page["image_path"])
     page_index = int(page.get("page_index", 0))
@@ -535,25 +592,33 @@ def segment_purchase_page(page: dict[str, Any]) -> dict[str, Any]:
     tables: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
 
-    try:
-        regions = _cached_ocr_regions(image_path)
-    except Exception as exc:
-        regions = []
-        issues.append(
-            {
-                "page_index": page_index,
-                "region": "页面 OCR",
-                "field": "",
-                "raw_value": "",
-                "clean_value": "",
-                "confidence": 0,
-                "message": f"页面文本 OCR 失败：{exc}",
-            }
-        )
+    has_clear_grid = any(int(grid.get("column_count") or 0) >= 6 and int(grid.get("row_count") or 0) >= 2 for grid in grids)
+
+    regions: list[dict[str, Any]] = []
+    if not has_clear_grid:
+        try:
+            regions = _cached_ocr_regions(image_path)
+        except Exception as exc:
+            issues.append(
+                {
+                    "page_index": page_index,
+                    "region": "\u9875\u9762 OCR",
+                    "field": "",
+                    "raw_value": "",
+                    "clean_value": "",
+                    "confidence": 0,
+                    "message": f"\u9875\u9762\u6587\u672c OCR \u5931\u8d25\uff1a{exc}",
+                }
+            )
 
     for grid in grids:
-        cell_rows, cell_cells = _ocr_grid_rows(image_path, grid, page_index, regions)
-        region_rows, region_cells = _rows_from_region_grid(regions, grid, page_index)
+        grid_regions = regions
+        max_cell_ocr_fallback = None
+        if has_clear_grid and int(grid.get("column_count") or 0) >= 6:
+            grid_regions = _cached_table_ocr_regions(image_path, grid)
+            max_cell_ocr_fallback = 0
+        cell_rows, cell_cells = _ocr_grid_rows(image_path, grid, page_index, grid_regions, max_cell_ocr_fallback=max_cell_ocr_fallback)
+        region_rows, region_cells = _rows_from_region_grid(grid_regions, grid, page_index)
         if _region_rows_are_better(region_rows, cell_rows, grid):
             rows, cells, method = region_rows, region_cells, "page_ocr_row_cluster"
         else:
@@ -573,6 +638,21 @@ def segment_purchase_page(page: dict[str, Any]) -> dict[str, Any]:
         )
 
     inferred_table = None
+    if not tables and not regions:
+        try:
+            regions = _cached_ocr_regions(image_path)
+        except Exception as exc:
+            issues.append(
+                {
+                    "page_index": page_index,
+                    "region": "\u9875\u9762 OCR",
+                    "field": "",
+                    "raw_value": "",
+                    "clean_value": "",
+                    "confidence": 0,
+                    "message": f"\u9875\u9762\u6587\u672c OCR \u5931\u8d25\uff1a{exc}",
+                }
+            )
     if not tables and regions:
         inferred_table = _infer_text_table_from_regions(regions, page_index)
         if inferred_table:
@@ -811,6 +891,8 @@ def build_detail_rows_from_table(table: dict[str, Any]) -> tuple[list[dict[str, 
             )
             continue
         if header_index is not None and not looks_like_detail_data(row) and len([v for v in row if clean_text(v)]) <= 2:
+            continue
+        if header_index is not None and table.get("method") != "docling_markdown" and not _looks_like_structured_detail_row(row):
             continue
         if table.get("method") == "docling_markdown":
             split_rows = [row]
