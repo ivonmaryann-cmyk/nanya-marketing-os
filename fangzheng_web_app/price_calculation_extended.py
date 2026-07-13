@@ -2867,6 +2867,15 @@ def _calculate_aoshikang_ccl(desc: str, rules: ExtRules, quantity: Any = None) -
     candidates = [row for row in candidates if _aoshikang_thickness_matches(row, parsed)]
     if not candidates:
         return ExtCalcResult("失败", "CCL", "待确认", "", "", "", "CCL胶系找到，但厚度未找到")
+    exact_thickness_rows = [
+        row
+        for row in candidates
+        if row.thickness_mm is not None
+        and parsed["thickness"] is not None
+        and abs(row.thickness_mm - float(parsed["thickness"])) <= 0.0005
+    ]
+    if exact_thickness_rows:
+        candidates = exact_thickness_rows
     candidates = [row for row in candidates if _aoshikang_copper_matches(row.copper, parsed["copper"])]
     if not candidates:
         return ExtCalcResult("失败", "CCL", "待确认", "", "", "", f"CCL厚度找到，但铜厚未匹配：{parsed['copper']}")
