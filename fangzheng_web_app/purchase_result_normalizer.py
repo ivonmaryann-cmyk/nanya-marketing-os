@@ -684,6 +684,18 @@ def _strong_row_count(rows: list[dict[str, Any]]) -> int:
     return count
 
 
+def _strong_name_score(rows: list[dict[str, Any]]) -> int:
+    score = 0
+    for row in rows:
+        standard = row.get("standard") or {}
+        if not clean_text(standard.get(CODE)):
+            continue
+        if not any(clean_text(standard.get(field)) for field in [QTY, AMOUNT, DATE]):
+            continue
+        score += len(clean_text(standard.get(NAME)))
+    return score
+
+
 def _should_replace_mapped_rows(old_rows: list[dict[str, Any]], new_rows: list[dict[str, Any]]) -> bool:
     if not new_rows:
         return False
@@ -692,10 +704,18 @@ def _should_replace_mapped_rows(old_rows: list[dict[str, Any]], new_rows: list[d
     old_strong = _strong_row_count(old_rows)
     new_strong = _strong_row_count(new_rows)
     if new_strong < old_strong:
+        old_name_score = _strong_name_score(old_rows)
+        new_name_score = _strong_name_score(new_rows)
+        if len(new_rows) < len(old_rows) and new_name_score > old_name_score * 1.25:
+            return True
         return False
+    if new_strong > old_strong:
+        return True
     old_score = sum(_row_quality(row) for row in old_rows)
     new_score = sum(_row_quality(row) for row in new_rows)
     if new_score > old_score:
+        return True
+    if new_strong == old_strong and _strong_name_score(new_rows) > _strong_name_score(old_rows) * 1.25:
         return True
     return new_strong == old_strong and len(new_rows) < len(old_rows)
 

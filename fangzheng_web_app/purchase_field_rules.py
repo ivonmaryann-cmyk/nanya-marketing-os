@@ -179,15 +179,21 @@ def map_detail_row(raw_headers: list[str], row: list[str], mapping: dict[int, st
         if number:
             standard[numeric_field] = number
     date = normalize_date(standard.get("交货日期"))
+    if not date:
+        date = normalize_date(" ".join(clean_text(value) for value in row))
     if date:
         standard["交货日期"] = date
     material_code = clean_text(standard.get("物料编码"))
     material_parts = material_code.split()
     if len(material_parts) > 1 and re.search(r"\d", material_parts[0]):
-        standard["物料编码"] = material_parts[0]
-        remainder = " ".join(material_parts[1:])
-        if remainder and remainder not in clean_text(standard.get("物料名称")):
-            standard["物料名称"] = clean_text(f"{remainder} {standard.get('物料名称', '')}")
+        remainder_parts = material_parts[1:]
+        if all(re.fullmatch(r"\d{1,4}", part) for part in remainder_parts):
+            standard["物料编码"] = material_parts[0] + "".join(remainder_parts)
+        else:
+            standard["物料编码"] = material_parts[0]
+            remainder = " ".join(remainder_parts)
+            if remainder and remainder not in clean_text(standard.get("物料名称")):
+                standard["物料名称"] = clean_text(f"{remainder} {standard.get('物料名称', '')}")
 
     return {"original": original, "standard": standard, "cleaning_notes": cleaning_notes}
 

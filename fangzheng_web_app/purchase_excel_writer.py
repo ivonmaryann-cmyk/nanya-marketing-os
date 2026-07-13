@@ -185,6 +185,53 @@ def _standard_header(name: str) -> str:
     return f"标准-{name}"
 
 
+def _original_header_standard_field(header: str) -> str | None:
+    compact = clean_text(header).replace(" ", "").lower()
+    if not compact:
+        return None
+    aliases = [
+        ("序号", ["序号", "序", "no", "item"]),
+        ("物料编码", ["物料编码", "物料编号", "料件编号", "原料编码", "产品编码", "partno", "partnumber"]),
+        ("物料名称", ["物料名称", "名称规格", "规格型号", "产品名称", "原料名称", "品名规格", "description"]),
+        ("说明", ["说明"]),
+        ("数量", ["数量", "订单数量", "采购量", "quantity", "qty"]),
+        ("单位", ["单位", "unit"]),
+        ("含税单价", ["含税单价", "单价", "unitprice", "price"]),
+        ("金额", ["金额", "amount"]),
+        ("交货日期", ["交货日期", "到货日期", "交期", "deliverydate"]),
+        ("备注", ["备注", "comments", "remark"]),
+    ]
+    matches = [field for field, keys in aliases if any(key in compact for key in keys)]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _is_noisy_original_header(header: str) -> bool:
+    compact = clean_text(header).replace(" ", "").lower()
+    if not compact:
+        return True
+    if compact.startswith("列") and compact[1:].isdigit():
+        return True
+    if ("金额" in compact or "amount" in compact) and any(key in compact for key in ["到货日期", "交货日期", "交期", "deliverydate"]):
+        return True
+    matched_fields = {
+        field
+        for field in STANDARD_HEADERS
+        if field.replace(" ", "").lower() in compact
+    }
+    return len(matched_fields) > 1
+
+
+def _normalized_original_values(original: dict[str, Any], standard: dict[str, Any]) -> dict[str, Any]:
+    values = dict(original)
+    for header in list(values.keys()):
+        field = _original_header_standard_field(header)
+        if field and clean_text(standard.get(field)):
+            values[header] = standard.get(field)
+    return values
+
+
 def _detail_number_format(header: str) -> str | None:
     field = header.replace("标准-", "")
     if field == "数量":
@@ -243,6 +290,8 @@ def _detail_headers(documents: list[dict[str, Any]]) -> list[str]:
         for row in document.get("mapped_detail_rows") or []:
             for header in (row.get("original") or {}).keys():
                 header_text = clean_text(header)
+                if _is_noisy_original_header(header_text):
+                    continue
                 key = header_text.lower()
                 if header_text and key not in seen:
                     seen.add(key)
@@ -279,8 +328,8 @@ def _write_detail_sheet(ws, documents: list[dict[str, Any]]) -> int:
                         "订单号": header_info.get("订单号", ""),
                     }
                 )
-            original = detail.get("original") or {}
             standard = detail.get("standard") or {}
+            original = _normalized_original_values(detail.get("original") or {}, standard)
             values.update(original)
             values.update({f"标准-{key}": value for key, value in standard.items()})
             for column, header in enumerate(headers, start=1):
@@ -296,6 +345,10 @@ def _write_detail_sheet(ws, documents: list[dict[str, Any]]) -> int:
                             value = _typed_value(field, value)
                     else:
                         value = _typed_value(field, value)
+                else:
+                    field = _original_header_standard_field(header)
+                    if field and not clean_text(value) and clean_text(standard.get(field)):
+                        value = standard.get(field)
                 cell = ws.cell(row=row_index, column=column, value=value)
                 align = "right" if header.replace("标准-", "") in {"数量", "含税单价", "金额"} else "left"
                 _style_cell(cell, align=align)
