@@ -12,6 +12,7 @@ from typing import Any
 
 from werkzeug.utils import secure_filename
 
+from .ai_repair_config import get_ai_repair_config
 from .db import append_job_log, create_job, get_job, update_job_status
 from .docling_parser import parse_pdf_with_docling
 from .image_table_parser import parse_image_tables
@@ -19,8 +20,10 @@ from .job_control import launch_job_process
 from .json_to_excel import build_business_document, write_conversion_workbook
 from .paths import JOBS_DIR
 from .pdf_native_parser import parse_pdf_native
+from .purchase_ai_repair import audit_and_repair_purchase_document
 from .purchase_excel_writer import write_purchase_order_workbook
 from .purchase_order_pipeline import run_purchase_order_pipeline
+from .purchase_result_normalizer import normalize_purchase_document
 from .template_parser import identify_template, likely_order_number, likely_supplier
 
 
@@ -438,7 +441,7 @@ def _parse_file_with_purchase_pipeline(file_item: dict[str, str], work_dir: Path
         return run_purchase_order_pipeline(file_item, work_dir)
     except Exception as exc:
         legacy_document = _parse_file(file_item)
-        return _legacy_to_purchase_document(legacy_document, fallback_reason=str(exc))
+        return normalize_purchase_document(_legacy_to_purchase_document(legacy_document, fallback_reason=str(exc)))
 
 
 def run_pdf_excel_job(job_id: int, employee_id: str) -> None:
@@ -458,6 +461,7 @@ def run_pdf_excel_job(job_id: int, employee_id: str) -> None:
     work_dir.mkdir(parents=True, exist_ok=True)
 
     append_job_log(job_id, f"开始 PDF/图片转Excel任务，共 {len(files)} 个文件。", total_rows=len(files), current_row=0)
+    append_job_log(job_id, get_ai_repair_config().safe_status())
     documents: list[dict[str, Any]] = []
     success_count = 0
     fail_count = 0
@@ -476,6 +480,12 @@ def run_pdf_excel_job(job_id: int, employee_id: str) -> None:
                 file_item = future_map[future]
                 try:
                     document = future.result()
+                    document = audit_and_repair_purchase_document(
+                        document,
+                        log=lambda message: append_job_log(job_id, f"{file_item['original_filename']}：{message}"),
+                    )
+                    if document.get("layout_cache_hit"):
+                        append_job_log(job_id, f"{file_item['original_filename']}：已命中历史版式缓存。")
                     documents.append(document)
                     success_count += 1
                     json_path = json_dir / f"{Path(file_item['stored_path']).stem}.json"

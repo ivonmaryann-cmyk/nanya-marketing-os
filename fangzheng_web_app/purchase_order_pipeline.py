@@ -12,7 +12,9 @@ from .image_preprocess import preprocess_page_image
 from .page_image_renderer import render_input_pages
 from .pdf_native_parser import parse_pdf_native
 from .purchase_field_rules import clean_text, classify_section_line, extract_key_values, find_detail_header_row, looks_like_detail_data, normalize_date, normalize_number
-from .purchase_order_segmenter import build_detail_rows_from_table, segment_purchase_page
+from .purchase_layout_cache import load_layout_cache, save_layout_cache
+from .purchase_order_segmenter import _cached_ocr_regions, build_detail_rows_from_table, segment_purchase_page, segment_purchase_page_with_layout
+from .purchase_result_normalizer import normalize_purchase_document
 from .template_parser import identify_template
 
 
@@ -59,6 +61,16 @@ def _collect_lines(pages: list[dict[str, Any]], auxiliary_text: str) -> list[str
             seen.add(key)
             result.append(text)
     return result
+
+
+def _quick_page_lines(page: dict[str, Any]) -> list[str]:
+    image_path = Path(page.get("clean_image_path") or page["image_path"])
+    try:
+        regions = _cached_ocr_regions(image_path)
+    except Exception:
+        return []
+    regions.sort(key=lambda item: ((item.get("bbox") or [0, 0, 0, 0])[1], (item.get("bbox") or [0, 0, 0, 0])[0]))
+    return [clean_text(region.get("text")) for region in regions if clean_text(region.get("text"))]
 
 
 def _detail_tables_from_pages(pages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
@@ -784,15 +796,16 @@ def run_purchase_order_pipeline(file_item: dict[str, str], work_dir: Path | None
     try:
         if input_path.suffix.lower() == ".pdf":
             native = _native_pdf_summary(input_path)
+            native_text = str(native.get("text") or "")
             native_text_document = _native_text_purchase_document(file_item, native)
             if native_text_document:
-                return native_text_document
+                return normalize_purchase_document(native_text_document, source_text=native_text)
             native_document = _native_purchase_document(file_item, native)
             if native_document:
-                return native_document
+                return normalize_purchase_document(native_document, source_text=native_text)
             docling_document = _docling_purchase_document(file_item, native)
             if docling_document:
-                return docling_document
+                return normalize_purchase_document(docling_document, source_text=native_text)
 
         render_dir = base_dir / "pages"
         clean_dir = base_dir / "clean"
@@ -801,9 +814,40 @@ def run_purchase_order_pipeline(file_item: dict[str, str], work_dir: Path | None
             raise RuntimeError("未能渲染页面图片。")
 
         pages: list[dict[str, Any]] = []
-        for rendered_page in rendered_pages:
-            clean_page = preprocess_page_image(rendered_page, clean_dir)
-            pages.append(segment_purchase_page(clean_page))
+        clean_pages = [preprocess_page_image(rendered_page, clean_dir) for rendered_page in rendered_pages]
+        layout_cache = None
+        if len(clean_pages) == 1:
+            quick_lines = _quick_page_lines(clean_pages[0])
+            probe_lines = []
+            seen_probe_lines: set[str] = set()
+            for line in quick_lines:
+                key = clean_text(line).lower().replace(" ", "")
+                if key and key not in seen_probe_lines:
+                    seen_probe_lines.add(key)
+                    probe_lines.append(clean_text(line))
+            auxiliary_text = _native_pdf_text(file_item)
+            if auxiliary_text:
+                for line in auxiliary_text.splitlines():
+                    text = clean_text(line)
+                    key = text.lower().replace(" ", "")
+                    if text and key not in seen_probe_lines:
+                        seen_probe_lines.add(key)
+                        probe_lines.append(text)
+            probe_header = extract_key_values(probe_lines)
+            layout_cache = load_layout_cache(
+                probe_header,
+                probe_lines,
+                int(clean_pages[0].get("width") or 0),
+                int(clean_pages[0].get("height") or 0),
+            )
+            if layout_cache:
+                pages.append(segment_purchase_page_with_layout(clean_pages[0], layout_cache))
+            else:
+                probe_page = segment_purchase_page(clean_pages[0])
+                pages.append(probe_page)
+        else:
+            for clean_page in clean_pages:
+                pages.append(segment_purchase_page(clean_page))
 
         auxiliary_text = _native_pdf_text(file_item)
         lines = _collect_lines(pages, auxiliary_text)
@@ -829,7 +873,7 @@ def run_purchase_order_pipeline(file_item: dict[str, str], work_dir: Path | None
         if template and raw_detail_tables:
             parser_mode = "generic_page_grid_ocr_template_enhanced"
 
-        return {
+        document = {
             "pipeline_version": "purchase_order_v1",
             "source_file": source_file,
             "file_type": _file_type(input_path),
@@ -861,6 +905,13 @@ def run_purchase_order_pipeline(file_item: dict[str, str], work_dir: Path | None
             "issues": issues,
             "warnings": [],
         }
+        if layout_cache:
+            document["layout_cache_hit"] = True
+            document.setdefault("warnings", []).append("已命中历史版式缓存，使用缓存区域快速识别。")
+        normalized_document = normalize_purchase_document(document, source_text="\n".join(lines))
+        if not layout_cache and save_layout_cache(normalized_document):
+            normalized_document.setdefault("warnings", []).append("已保存本次版式缓存，后续相同版式将优先快速识别。")
+        return normalized_document
     finally:
         if cleanup is not None:
             cleanup.cleanup()

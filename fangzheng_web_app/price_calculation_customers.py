@@ -80,6 +80,13 @@ PRICE_CALCULATION_CUSTOMERS = [
         "test_label": "生益测试数据",
     },
     {
+        "key": "techuang",
+        "label": "特创",
+        "enabled": True,
+        "rule_label": "特创报价表",
+        "test_label": "特创测试数据",
+    },
+    {
         "key": "zhongfu",
         "label": "中富",
         "enabled": True,

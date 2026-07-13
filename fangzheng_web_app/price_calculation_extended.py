@@ -82,6 +82,8 @@ def load_extended_rules(customer_key: str, rule_path: str | Path) -> ExtRules:
         rules = _load_guanghe_rules(rule_path)
     elif customer_key == "shengyi":
         rules = _load_shengyi_rules(rule_path)
+    elif customer_key == "techuang":
+        rules = _load_techuang_rules(rule_path)
     elif customer_key == "zhongfu":
         rules = _load_zhongfu_rules(rule_path)
     else:
@@ -107,6 +109,8 @@ def calculate_extended_spec(customer_key: str, spec: str, rules: ExtRules, quant
         return _calculate_guanghe_spec(desc, rules, quantity=quantity)
     if customer_key == "shengyi":
         return _calculate_shengyi_spec(desc, rules, quantity=quantity)
+    if customer_key == "techuang":
+        return _calculate_techuang_spec(desc, rules, quantity=quantity)
     if customer_key == "zhongfu":
         return _calculate_zhongfu_spec(desc, rules, quantity=quantity)
     if _looks_like_pp(desc):
@@ -127,6 +131,8 @@ def run_extended_regression(customer_key: str, rules: ExtRules, test_data_path: 
             continue
         desc_col = _first_col(headers, {"客户规格", "物料长描述", "物料描述", "规格"})
         expected_col = _first_col(headers, {"新价", "新单价", "新含税价", "新价格", "单价"})
+        if customer_key == "techuang":
+            expected_col = None
         conflict_specs = _taixing_conflict_specs(ws, header_row, desc_col, expected_col) if customer_key in {"taixing", "aoshikang"} and desc_col and expected_col else {}
         if not desc_col:
             continue
@@ -137,7 +143,9 @@ def run_extended_regression(customer_key: str, rules: ExtRules, test_data_path: 
             total += 1
             result = calculate_extended_spec(customer_key, spec, rules)
             expected = ws.cell(row_idx, expected_col).value if expected_col else None
-            if expected_col:
+            if customer_key == "techuang":
+                ok = bool(result.note) and (result.status == "成功" or result.price == "待确认")
+            elif expected_col:
                 tolerance = 0.0002 if customer_key in {"taixing", "aoshikang"} else 0.02
                 ok = _result_equal(result.price, expected, tolerance=tolerance)
             else:
@@ -734,6 +742,465 @@ def _parse_lejian_thickness_values(value: Any) -> list[float]:
 
 def _lejian_thickness_matches(row: ExtCclRule, thickness_mm: float) -> bool:
     return row.thickness_mm is not None and abs(row.thickness_mm - thickness_mm) <= 0.012
+
+
+def _load_techuang_rules(rule_path: str | Path) -> ExtRules:
+    wb = load_workbook_compat(rule_path, data_only=True)
+    pp_rows: list[ExtPpRule] = []
+    ccl_rows: list[ExtCclRule] = []
+    for ws in wb.worksheets:
+        title = _text(ws.title)
+        if title == "板材":
+            _load_techuang_ccl_rows(ws, ccl_rows)
+        elif title.upper() == "PP":
+            _load_techuang_pp_rows(ws, pp_rows)
+        elif title == "方板":
+            _load_techuang_square_rows(ws, ccl_rows)
+    return ExtRules("techuang", pp_rows, ccl_rows)
+
+
+def _load_techuang_ccl_rows(ws, ccl_rows: list[ExtCclRule]) -> None:
+    header_products = [_techuang_product_from_text(ws.cell(7, col).value) for col in range(1, ws.max_column + 1)]
+    product_by_col: dict[int, str] = {}
+    product = ""
+    for col, header_product in enumerate(header_products, start=1):
+        if header_product:
+            product = header_product
+        if product:
+            product_by_col[col] = product
+    for data_row in range(9, ws.max_row + 1):
+        first = _text(ws.cell(data_row, 1).value)
+        if not first or "备注" in first:
+            if "备注" in first:
+                break
+            continue
+        thickness_values = _techuang_thickness_values(first)
+        contain = _techuang_contain_status(ws.cell(data_row, 2).value)
+        if not thickness_values:
+            continue
+        for col in range(4, ws.max_column + 1):
+            price = _to_float(ws.cell(data_row, col).value)
+            if price is None:
+                continue
+            product = product_by_col.get(col, "")
+            copper, foil = _techuang_copper_from_header(ws.cell(8, col).value)
+            if not product or not copper:
+                continue
+            stack = _techuang_norm_stack(ws.cell(data_row, 3).value, copper)
+            if not stack:
+                continue
+            for thickness_mm in thickness_values:
+                ccl_rows.append(
+                    ExtCclRule(
+                        data_row,
+                        ws.title,
+                        product,
+                        thickness_mm,
+                        thickness_mm / 0.0254,
+                        copper,
+                        foil,
+                        stack,
+                        {"41": price},
+                        contain,
+                    )
+                )
+
+
+def _load_techuang_square_rows(ws, ccl_rows: list[ExtCclRule]) -> None:
+    for data_row in range(2, ws.max_row + 1):
+        product = _techuang_product_from_text(ws.cell(data_row, 1).value)
+        thickness_mm = _to_float(ws.cell(data_row, 2).value)
+        copper = _norm_copper(ws.cell(data_row, 3).value)
+        size = _techuang_size_key(ws.cell(data_row, 4).value)
+        price = _to_float(ws.cell(data_row, 5).value)
+        if not product or thickness_mm is None or not copper or not size or price is None:
+            continue
+        ccl_rows.append(ExtCclRule(data_row, ws.title, product, thickness_mm, thickness_mm / 0.0254, copper, "", "", {size: price}, "square"))
+
+
+def _load_techuang_pp_rows(ws, pp_rows: list[ExtPpRule]) -> None:
+    product_by_col = {col: _techuang_product_from_text(ws.cell(7, col).value) for col in range(4, ws.max_column + 1)}
+    for data_row in range(8, ws.max_row + 1):
+        first = _text(ws.cell(data_row, 1).value)
+        if not first or "备注" in first:
+            if "备注" in first:
+                break
+            continue
+        glasses = _norm_glasses(first)
+        length = _length_int(ws.cell(data_row, 2).value)
+        rc_min, rc_max = _parse_rc_range(ws.cell(data_row, 3).value)
+        if not glasses or rc_min is None or rc_max is None:
+            continue
+        for col in range(4, ws.max_column + 1):
+            product = product_by_col.get(col, "")
+            price = _to_float(ws.cell(data_row, col).value)
+            if not product or price is None:
+                continue
+            for glass in glasses:
+                pp_rows.append(ExtPpRule(data_row, ws.title, product, glass, rc_min, rc_max, length, None, price))
+
+
+def _calculate_techuang_spec(desc: str, rules: ExtRules, quantity: Any = None) -> ExtCalcResult:
+    if _techuang_looks_like_pp(desc):
+        return _calculate_techuang_pp(desc, rules)
+    return _calculate_techuang_ccl(desc, rules, quantity=quantity)
+
+
+def _calculate_techuang_pp(desc: str, rules: ExtRules) -> ExtCalcResult:
+    product = _techuang_product_from_text(desc)
+    glass = _extract_glass(desc)
+    rc = _techuang_extract_rc(desc)
+    piece = _techuang_extract_pp_piece(desc)
+    length = None if piece else _techuang_extract_roll_length(desc)
+    if not product or not glass or rc is None:
+        return ExtCalcResult("失败", "PP", "待确认", "", "", _shengyi_fmt_roll_length(length), "特创PP规格缺少型号、玻布或RC")
+    products = _techuang_product_aliases(product)
+    matches = [
+        row
+        for row in rules.pp_rows
+        if row.product in products
+        and row.glass == glass
+        and row.rc_min is not None
+        and row.rc_max is not None
+        and row.rc_min - 0.001 <= rc <= row.rc_max + 0.001
+        and (piece is not None or length is None or row.length is None or row.length == length)
+    ]
+    if not matches:
+        return ExtCalcResult("失败", "PP", "待确认", "", "", _shengyi_fmt_roll_length(length), "未命中特创PP报价：型号、玻布、RC或卷长不匹配")
+    product_norm = _norm_product(product)
+    best = sorted(matches, key=lambda row: (0 if row.product == product_norm else 1, row.excel_row))[0]
+    if best.price is None:
+        return ExtCalcResult("失败", "PP", "待确认", "", "", _shengyi_fmt_roll_length(length), "命中特创PP报价行但价格为空")
+    if piece:
+        opens = math.floor(49 / piece["latitudinal_in"]) if piece["latitudinal_in"] > 0 else 0
+        if opens < 1:
+            return ExtCalcResult("失败", "PP", "待确认", "", "", "", f"特创PP片状纬向无法按49inch开料：{piece['latitudinal_m']:g}m")
+        per_m_price = _techuang_pp_quote_price(best.price)
+        raw_price = piece["radial_m"] / opens * per_m_price
+        price = _round_money(raw_price)
+        formula = f"round({piece['radial_m']:g}/{opens}*{per_m_price:.2f},2)"
+        note = f"命中特创PP报价 Sheet {best.sheet} 第{best.excel_row}行，型号={best.product}，玻布={glass}，RC={rc:g}，片状公式={formula}"
+        return ExtCalcResult("成功", "PP", price, "", "", "", note, best.excel_row, best.sheet)
+    price = _techuang_pp_quote_price(best.price)
+    note = f"命中特创PP报价 Sheet {best.sheet} 第{best.excel_row}行，型号={best.product}，玻布={glass}，RC={rc:g}，每米价={price:.2f}"
+    return ExtCalcResult("成功", "PP", price, "", "", _shengyi_fmt_roll_length(length or best.length), note, best.excel_row, best.sheet)
+
+
+def _calculate_techuang_ccl(desc: str, rules: ExtRules, quantity: Any = None) -> ExtCalcResult:
+    product = _techuang_product_from_text(desc)
+    thickness_mm = _extract_thickness_mm(desc)
+    copper = _extract_copper(desc)
+    foil = _extract_foil(desc)
+    stack = _extract_stack(desc)
+    contain = _techuang_contain_status(desc)
+    length_in, width_in = _techuang_extract_size(desc)
+    if not product or thickness_mm is None or not copper or length_in is None or width_in is None:
+        return ExtCalcResult("失败", "CCL", "待确认", "", "", "", "特创CCL规格缺少型号、厚度、铜厚或尺寸")
+    products = _techuang_product_aliases(product)
+    squares = [
+        row
+        for row in rules.ccl_rows
+        if row.kind == "square"
+        and row.product in products
+        and _techuang_thickness_matches(row, thickness_mm)
+        and row.copper in _techuang_copper_aliases(copper)
+    ]
+    for row in sorted(squares, key=lambda item: item.excel_row):
+        price_result = _techuang_square_price(row, length_in, width_in)
+        if price_result["ok"]:
+            price = _round_money(price_result["price"])
+            total = _calc_total(quantity, price)
+            note = f"命中特创方板报价 Sheet {row.sheet} 第{row.excel_row}行，尺寸={price_result['label']}，价格={price:.2f}"
+            return ExtCalcResult("成功", "CCL", price, total, "", "", note, row.excel_row, price_result["label"])
+    if not stack:
+        return ExtCalcResult("失败", "CCL", "待确认", "", "", "", "特创CCL规格缺少叠构")
+    candidates = [
+        row
+        for row in rules.ccl_rows
+        if row.kind != "square"
+        and row.product in products
+        and _techuang_thickness_matches(row, thickness_mm)
+        and (not contain or not row.kind or row.kind == contain)
+        and row.stack == stack
+        and row.copper in _techuang_copper_aliases(copper)
+    ]
+    if not candidates:
+        return ExtCalcResult("失败", "CCL", "待确认", "", "", "", "未命中特创CCL报价：型号、厚度、含铜状态、铜厚或叠构不匹配")
+    normalized_product = _techuang_product_aliases(product)
+    last_reason = ""
+    for row in sorted(candidates, key=lambda item: (0 if item.product in normalized_product else 1, _techuang_thickness_distance(item, thickness_mm), 0 if item.copper == copper else 1, 0 if (foil or "") == (item.foil or "") else 1, item.excel_row)):
+        price_result = _techuang_ccl_size_price(row, length_in, width_in, requested_copper=copper, requested_foil=foil)
+        if price_result["ok"]:
+            price = _round_money(price_result["price"])
+            total = _calc_total(quantity, price)
+            note = (
+                f"命中特创CCL报价 Sheet {row.sheet} 第{row.excel_row}行，型号={row.product}，厚度={row.thickness_mm:g}mm，"
+                f"铜厚={row.copper}{'(' + row.foil + ')' if row.foil else ''}，叠构={row.stack}，"
+                f"尺寸={price_result['label']}，公式={price_result['formula']}"
+            )
+            return ExtCalcResult("成功", "CCL", price, total, "", "", note, row.excel_row, price_result["label"])
+        last_reason = price_result["reason"]
+    return ExtCalcResult("失败", "CCL", "待确认", "", "", "", last_reason or "特创CCL报价行找到，但尺寸规则未匹配")
+
+
+def _techuang_product_from_text(value: Any) -> str:
+    text = _text(value)
+    match = re.search(r"NY\s*-?\s*(?:A\d[A-Z0-9]*P?|[A-Z]?\d{3,4}[A-Z0-9]*(?:M2|MP|P)?)", text, re.I)
+    return _norm_product(match.group(0)) if match else ""
+
+
+def _techuang_product_aliases(product: str) -> set[str]:
+    norm = _norm_product(product)
+    aliases = {norm}
+    if norm == "NY3150HFP":
+        aliases.add("NY3150HF")
+    if norm in {"NY3170M2", "NY3170MP"}:
+        aliases.add("NY3170M")
+    return aliases
+
+
+def _techuang_thickness_values(value: Any) -> list[float]:
+    values: list[float] = []
+    seen: set[float] = set()
+    for item in re.findall(r"\d+(?:\.\d+)?", _text(value)):
+        number = float(item)
+        if 10 < number < 1000:
+            number = number / 100
+        if 0 < number < 10 and number not in seen:
+            seen.add(number)
+            values.append(number)
+    return values
+
+
+def _techuang_copper_from_header(value: Any) -> tuple[str, str]:
+    text = _text(value).upper().replace("（", "(").replace("）", ")")
+    foil = "RTF" if "RTF" in text else ""
+    copper = _norm_copper(text)
+    if not copper and text.replace(" ", "") == "00":
+        copper = "0/0"
+    return copper, foil
+
+
+def _techuang_contain_status(value: Any) -> str:
+    text = _text(value)
+    if "不含铜" in text:
+        return "不含铜"
+    if "含铜" in text:
+        return "含铜"
+    return ""
+
+
+def _techuang_norm_stack(value: Any, copper: str = "") -> str:
+    text = _text(value).upper().replace("\r", "\n")
+    if ":" in text and copper:
+        for label, stack_text in re.findall(r"([^:\n]+):([^\n]+)", text):
+            label_coppers = _techuang_stack_label_coppers(label)
+            if copper in label_coppers or _reverse_copper(copper) in label_coppers:
+                stack = _norm_stack(stack_text)
+                if stack:
+                    return stack
+    return _norm_stack(text)
+
+
+def _techuang_stack_label_coppers(label: str) -> set[str]:
+    normalized = label.upper().replace("HH", "H/H").replace("JJ", "J/J").replace(" ", "")
+    coppers: set[str] = set()
+    for part in re.split(r"[+、,，]", normalized):
+        copper = _norm_copper(part)
+        if copper:
+            coppers.add(copper)
+    return coppers
+
+
+def _techuang_looks_like_pp(desc: str) -> bool:
+    return "PP" in desc.upper() and "RC" in desc.upper()
+
+
+def _techuang_extract_size(desc: str) -> tuple[float | None, float | None]:
+    tg_match = re.search(r"TG\s*\d+(?:\.\d+)?", desc, re.I)
+    search_text = desc[tg_match.end() :] if tg_match else desc
+    candidates: list[float] = []
+    glass_codes = {106, 1067, 1078, 1080, 1506, 2113, 2116, 2313, 3313, 7628}
+    product = _techuang_product_from_text(desc)
+    product_numbers = {int(item) for item in re.findall(r"\d{3,4}", product)}
+    for item in re.findall(r"(?<![\d.])(\d{3,4})(?![\d.])", search_text):
+        value = int(item)
+        if value in glass_codes or value in product_numbers or value in {135, 150, 170, 175, 190, 200}:
+            continue
+        if 300 <= value <= 2500:
+            candidates.append(value / 25.4)
+    if len(candidates) >= 2:
+        return candidates[0], candidates[1]
+    return _extract_size(desc, ignore_decimal=False)
+
+
+def _techuang_extract_rc(desc: str) -> float | None:
+    match = re.search(r"RC\s*[:=：]?\s*(\d+(?:\.\d+)?)", desc, re.I)
+    if not match:
+        return _extract_rc(desc)
+    value = float(match.group(1))
+    return value * 100 if value <= 1 else value
+
+
+def _techuang_extract_roll_length(desc: str) -> int | None:
+    text = re.sub(r"(\d)\s+\.", r"\1.", desc)
+    values = [float(item) for item in re.findall(r"(\d+(?:\.\d+)?)\s*M\b", text, re.I)]
+    roll_lengths = [value for value in values if value >= 50]
+    if not roll_lengths:
+        return None
+    return int(math.floor(roll_lengths[0] + 1e-9))
+
+
+def _techuang_extract_pp_piece(desc: str) -> dict[str, float] | None:
+    text = re.sub(r"(\d)\s+\.", r"\1.", desc)
+    values = [float(item) for item in re.findall(r"(\d+(?:\.\d+)?)\s*M\b", text, re.I)]
+    small = [value for value in values if 0 < value < 2]
+    if len(small) < 2 or "片" not in desc:
+        return None
+    first, second = small[-2], small[-1]
+    if abs(first - 0.62) <= abs(second - 0.62):
+        latitudinal, radial = first, second
+    else:
+        latitudinal, radial = second, first
+    return {"radial_m": radial, "latitudinal_m": latitudinal, "latitudinal_in": latitudinal / 0.0254}
+
+
+def _techuang_thickness_matches(row: ExtCclRule, thickness_mm: float) -> bool:
+    return row.thickness_mm is not None and abs(row.thickness_mm - thickness_mm) <= 0.012
+
+
+def _techuang_thickness_distance(row: ExtCclRule, thickness_mm: float) -> float:
+    return abs((row.thickness_mm or 999) - thickness_mm)
+
+
+def _techuang_copper_aliases(copper: str) -> set[str]:
+    aliases = {copper, _reverse_copper(copper)}
+    if copper == "0/0":
+        aliases.add("H/H")
+    return aliases
+
+
+def _techuang_size_key(value: Any) -> str:
+    text = _text(value).replace(" ", "")
+    match = re.search(r"(\d+(?:\.\d+)?)\s*[*xX×]\s*(\d+(?:\.\d+)?)", text)
+    if not match:
+        return ""
+    return f"{_fmt_dim(float(match.group(1)))}*{_fmt_dim(float(match.group(2)))}"
+
+
+def _techuang_ccl_quote_price(value: Any) -> float:
+    return round(float(value) + 1e-9, 1)
+
+
+def _techuang_ccl_calc_price(value: Any) -> float:
+    return _round_money(value)
+
+
+def _techuang_pp_quote_price(value: Any) -> float:
+    return _round_money(value)
+
+
+def _techuang_square_price(row: ExtCclRule, length_in: float, width_in: float) -> dict[str, Any]:
+    for key, price in row.prices.items():
+        if price is None:
+            continue
+        parts = [float(item) for item in key.split("*")]
+        if len(parts) == 2 and ((abs(length_in - parts[0]) <= 0.8 and abs(width_in - parts[1]) <= 0.8) or (abs(length_in - parts[1]) <= 0.8 and abs(width_in - parts[0]) <= 0.8)):
+            quote_price = _techuang_ccl_quote_price(price)
+            return {"ok": True, "price": quote_price, "label": key, "formula": f"{quote_price:.1f}"}
+    return {"ok": False, "reason": "未命中特创方板尺寸"}
+
+
+def _techuang_ccl_size_price(row: ExtCclRule, length_in: float, width_in: float, *, requested_copper: str, requested_foil: str) -> dict[str, Any]:
+    base = row.prices.get("41")
+    if base is None:
+        return {"ok": False, "reason": "特创CCL报价行缺少41*49基准价"}
+    base_price = _techuang_ccl_quote_price(base)
+    adjusted = _techuang_adjusted_base_price(base_price, row, requested_copper, requested_foil)
+    if not adjusted["ok"]:
+        return adjusted
+    base_price = adjusted["price"]
+    radial = length_in
+    latitudinal = width_in
+    standard = _techuang_standard_size_price(base_price, radial, latitudinal, calculated_base=adjusted["calculated"])
+    if standard["ok"]:
+        return standard
+    cut = _techuang_cut_size_price(base_price, radial, latitudinal)
+    if cut["ok"]:
+        return cut
+    return {"ok": False, "reason": f"特创CCL未找到可裁切尺寸：{length_in:g}*{width_in:g}"}
+
+
+def _techuang_adjusted_base_price(base_price: float, row: ExtCclRule, requested_copper: str, requested_foil: str) -> dict[str, Any]:
+    price = base_price
+    formula = f"{base_price:.1f}"
+    calculated = False
+    if requested_copper == "0/0" and row.copper != "0/0":
+        price -= 12
+        formula = f"({formula}-12)"
+        calculated = True
+    if requested_foil == "RTF" and row.foil != "RTF":
+        price *= 1.10
+        formula = f"({formula}*1.1)"
+        calculated = True
+    return {"ok": True, "price": price, "formula": formula, "calculated": calculated}
+
+
+def _techuang_standard_size_price(base_price: float, radial: float, latitudinal: float, *, calculated_base: bool = False) -> dict[str, Any]:
+    pairs = [
+        (37, 49, 0.9, "37*49"),
+        (41, 49, 1.0, "41*49"),
+        (43, 49, 1.05, "43*49"),
+        (41, 43, 0.96, "41*43"),
+        (74, 49, 1.8, "74*49"),
+        (82, 49, 2.0, "82*49"),
+        (86, 49, 2.10, "86*49"),
+    ]
+    for parent_w, parent_h, factor, label in pairs:
+        if abs(radial - parent_w) <= 0.8 and abs(latitudinal - parent_h) <= 0.8:
+            if factor == 1.0 and not calculated_base:
+                return {"ok": True, "price": base_price, "label": label, "formula": f"{base_price:.1f}"}
+            price = _techuang_ccl_calc_price(base_price * factor)
+            return {"ok": True, "price": price, "label": label, "formula": f"{base_price:.1f}*{factor:g}"}
+    return {"ok": False}
+
+
+def _techuang_cut_size_price(base_price: float, radial: float, latitudinal: float) -> dict[str, Any]:
+    parents = [
+        (37, 49, 0.9, "37*49"),
+        (41, 49, 1.0, "41*49"),
+        (43, 49, 1.05, "43*49"),
+        (74, 49, 1.8, "74*49"),
+        (82, 49, 2.0, "82*49"),
+        (86, 49, 2.1, "86*49"),
+    ]
+    valid: list[dict[str, Any]] = []
+    tolerance = 0.08
+    for parent_w, parent_h, factor, label in parents:
+        opens_w = math.floor((parent_w + tolerance) / radial) if radial > 0 else 0
+        opens_h = math.floor((parent_h + tolerance) / latitudinal) if latitudinal > 0 else 0
+        opens = opens_w * opens_h
+        if opens <= 1:
+            continue
+        used_w = radial * opens_w
+        used_h = latitudinal * opens_h
+        if used_w - parent_w > tolerance or used_h - parent_h > tolerance:
+            continue
+        fit_error = abs(parent_w - used_w) + abs(parent_h - used_h)
+        valid.append(
+            {
+                "price": _techuang_ccl_calc_price(base_price * factor / opens),
+                "label": f"{label}/{opens}",
+                "formula": f"{base_price:.1f}*{factor:g}/{opens:g}",
+                "opens": opens,
+                "fit_error": fit_error,
+                "area": parent_w * parent_h,
+            }
+        )
+    if not valid:
+        return {"ok": False}
+    best = sorted(valid, key=lambda item: (item["fit_error"], item["area"], -item["opens"]))[0]
+    return {"ok": True, "price": best["price"], "label": best["label"], "formula": best["formula"]}
 
 
 def _load_shengyi_rules(rule_path: str | Path) -> ExtRules:

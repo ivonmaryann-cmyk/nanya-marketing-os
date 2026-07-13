@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 from typing import Any
 
@@ -282,6 +283,158 @@ def _looks_like_section_row(text: str) -> bool:
     return any(keyword in text for keyword in keywords)
 
 
+def _looks_like_detail_header_text(text: str) -> bool:
+    compact = clean_text(text).replace(" ", "").lower()
+    return (
+        any(keyword in compact for keyword in ["\u5e8f\u53f7", "\u9879\u6b21", "no."])
+        and any(keyword in compact for keyword in ["\u4ea7\u54c1\u540d\u79f0", "\u7269\u6599\u540d\u79f0", "\u89c4\u683c", "part", "description"])
+        and any(keyword in compact for keyword in ["\u6570\u91cf", "\u8ba2\u8d2d\u6570\u91cf", "qty", "quantity"])
+        and any(keyword in compact for keyword in ["\u5355\u4ef7", "\u91d1\u989d", "price", "amount"])
+    )
+
+
+def _looks_like_table_end_text(text: str) -> bool:
+    compact = clean_text(text).replace(" ", "")
+    return any(keyword in compact for keyword in ["\u5408\u8ba1\u91d1\u989d", "\u5408\u8ba1(RMB", "\u5408\u8ba1\uff1a", "\u5408\u540c\u8ba2\u7acb", "\u5907\u6ce8\uff1a", "\u5236\u5355\uff1a"])
+
+
+def _virtual_x_positions_from_header(header_regions: list[dict[str, Any]]) -> list[int]:
+    ordered = sorted(header_regions, key=lambda item: _region_center(item)[0])
+    if len(ordered) < 4:
+        return []
+    centers = [_region_center(region)[0] for region in ordered]
+    positions = [int(max(0, min((region.get("bbox") or [0, 0, 0, 0])[0] for region in ordered) - 20))]
+    for left, right in zip(centers, centers[1:]):
+        positions.append(int(round((left + right) / 2)))
+    right_edge = int(max((region.get("bbox") or [0, 0, 0, 0])[2] for region in ordered) + 80)
+    positions.append(right_edge)
+    return positions
+
+
+def _normalize_virtual_grid_rows(rows: list[list[str]]) -> list[list[str]]:
+    if len(rows) <= 1:
+        return rows
+    normalized: list[list[str]] = [rows[0]]
+    for row in rows[1:]:
+        current = list(row)
+        if not current:
+            continue
+        first_cell = clean_text(current[0])
+        match = re.match(r"^(\d+(?:\.\d+)?)\s+(.+)$", first_cell)
+        if match and len(current) > 1:
+            current[0] = match.group(1)
+            current[1] = clean_text(f"{current[1]} {match.group(2)}")
+            normalized.append(current)
+            continue
+        if first_cell and not re.fullmatch(r"\d+(?:\.\d+)?", first_cell) and normalized and len(normalized[-1]) > 1:
+            previous = normalized[-1]
+            previous[1] = clean_text(f"{previous[1]} {first_cell}")
+            if len(current) > 1 and clean_text(current[1]):
+                previous[1] = clean_text(f"{previous[1]} {current[1]}")
+            continue
+        normalized.append(current)
+    return normalized
+
+
+def _infer_text_table_from_regions(regions: list[dict[str, Any]], page_index: int) -> dict[str, Any] | None:
+    row_clusters = _cluster_regions_by_row(regions)
+    header_cluster_index: int | None = None
+    for index, row_regions in enumerate(row_clusters):
+        row_text, _confidence = _join_regions(row_regions)
+        if _looks_like_detail_header_text(row_text):
+            header_cluster_index = index
+            break
+    if header_cluster_index is None:
+        return None
+
+    header_regions = row_clusters[header_cluster_index]
+    x_positions = _virtual_x_positions_from_header(header_regions)
+    if len(x_positions) < 5:
+        return None
+
+    selected_clusters: list[list[dict[str, Any]]] = []
+    for row_regions in row_clusters[header_cluster_index:]:
+        row_text, _confidence = _join_regions(row_regions)
+        if selected_clusters and _looks_like_table_end_text(row_text):
+            break
+        selected_clusters.append(row_regions)
+    if len(selected_clusters) < 3:
+        return None
+
+    rows: list[list[str]] = []
+    cells: list[dict[str, Any]] = []
+    all_xs: list[float] = []
+    all_ys: list[float] = []
+    for row_index, row_regions in enumerate(selected_clusters):
+        buckets: dict[int, list[dict[str, Any]]] = {}
+        for region in row_regions:
+            bbox = region.get("bbox") or [0, 0, 0, 0]
+            cx = (float(bbox[0]) + float(bbox[2])) / 2
+            column_index = _column_index_for_x(x_positions, cx)
+            if column_index is None:
+                continue
+            buckets.setdefault(column_index, []).append(region)
+            all_xs.extend([float(bbox[0]), float(bbox[2])])
+            all_ys.extend([float(bbox[1]), float(bbox[3])])
+
+        row: list[str] = []
+        row_y1_values = [(region.get("bbox") or [0, 0, 0, 0])[1] for region in row_regions]
+        row_y2_values = [(region.get("bbox") or [0, 0, 0, 0])[3] for region in row_regions]
+        for column_index in range(len(x_positions) - 1):
+            column_regions = buckets.get(column_index, [])
+            text, confidence = _join_regions(column_regions)
+            row.append(text)
+            if column_regions:
+                xs: list[float] = []
+                ys: list[float] = []
+                for region in column_regions:
+                    rb = region.get("bbox") or [0, 0, 0, 0]
+                    xs.extend([float(rb[0]), float(rb[2])])
+                    ys.extend([float(rb[1]), float(rb[3])])
+                cell_bbox = [round(min(xs)), round(min(ys)), round(max(xs)), round(max(ys))]
+            else:
+                cell_bbox = [
+                    x_positions[column_index],
+                    round(min(row_y1_values)),
+                    x_positions[column_index + 1],
+                    round(max(row_y2_values)),
+                ]
+            cells.append(
+                {
+                    "page_index": page_index,
+                    "table_index": 0,
+                    "row_index": row_index,
+                    "column_index": column_index,
+                    "text": text,
+                    "bbox": cell_bbox,
+                    "confidence": confidence,
+                    "method": "text_region_virtual_grid",
+                }
+            )
+        if any(clean_text(value) for value in row):
+            rows.append(row)
+
+    if not rows:
+        return None
+    rows = _normalize_virtual_grid_rows(rows)
+    bbox = [
+        round(min(all_xs)) if all_xs else x_positions[0],
+        round(min(all_ys)) if all_ys else 0,
+        round(max(all_xs)) if all_xs else x_positions[-1],
+        round(max(all_ys)) if all_ys else 0,
+    ]
+    return {
+        "page_index": page_index,
+        "table_index": 0,
+        "table_type": _table_type(rows),
+        "bbox": bbox,
+        "confidence": 0.82,
+        "raw_rows": rows,
+        "cells": cells,
+        "method": "text_region_virtual_grid",
+    }
+
+
 def _column_for(mapping: dict[int, str], field: str) -> int | None:
     for column, mapped_field in mapping.items():
         if mapped_field == field:
@@ -419,7 +572,16 @@ def segment_purchase_page(page: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
-    non_table_regions = [region for region in regions if not _inside_any_table(region, grids)]
+    inferred_table = None
+    if not tables and regions:
+        inferred_table = _infer_text_table_from_regions(regions, page_index)
+        if inferred_table:
+            tables.append(inferred_table)
+
+    table_areas = list(grids)
+    if inferred_table:
+        table_areas.append({"bbox": inferred_table.get("bbox") or []})
+    non_table_regions = [region for region in regions if not _inside_any_table(region, table_areas)]
     non_table_regions.sort(key=lambda item: ((item.get("bbox") or [0, 0, 0, 0])[1], (item.get("bbox") or [0, 0, 0, 0])[0]))
     text_lines = [clean_text(region.get("text")) for region in non_table_regions if clean_text(region.get("text"))]
 
@@ -460,6 +622,146 @@ def segment_purchase_page(page: dict[str, Any]) -> dict[str, Any]:
         "text_lines": text_lines,
         "sections": sections,
         "issues": issues,
+    }
+
+
+def segment_purchase_page_with_layout(page: dict[str, Any], layout: dict[str, Any]) -> dict[str, Any]:
+    image_path = Path(page.get("clean_image_path") or page["image_path"])
+    page_index = int(page.get("page_index", 0))
+    width = int(page.get("width") or 0)
+    height = int(page.get("height") or 0)
+    from .purchase_layout_cache import cache_bbox_to_page
+
+    bbox = cache_bbox_to_page(layout, width, height)
+    if not bbox:
+        return segment_purchase_page(page)
+
+    issues: list[dict[str, Any]] = []
+    try:
+        regions = _cached_ocr_regions(image_path)
+    except Exception as exc:
+        regions = []
+        issues.append(
+            {
+                "page_index": page_index,
+                "region": "\u9875\u9762 OCR",
+                "field": "",
+                "raw_value": "",
+                "clean_value": "",
+                "confidence": 0,
+                "message": f"\u7f13\u5b58\u7248\u5f0f\u5feb\u901f OCR \u5931\u8d25\uff1a{exc}",
+            }
+        )
+
+    grid = {
+        "table_index": 0,
+        "bbox": bbox,
+        "x_positions": [bbox[0], bbox[2]],
+        "y_positions": [bbox[1], bbox[3]],
+        "confidence": 0.9,
+    }
+    table_regions = _regions_in_bbox(regions, bbox)
+    cached_method = str(layout.get("method") or "")
+    if "text_region_virtual_grid" in cached_method:
+        inferred_table = _infer_text_table_from_regions(table_regions, page_index)
+        if inferred_table:
+            inferred_table["bbox"] = bbox
+            inferred_table["confidence"] = max(float(inferred_table.get("confidence") or 0), 0.9)
+            inferred_table["method"] = "layout_cache_text_region_virtual_grid"
+            non_table_regions = [region for region in regions if not _inside_any_table(region, [grid])]
+            non_table_regions.sort(key=lambda item: ((item.get("bbox") or [0, 0, 0, 0])[1], (item.get("bbox") or [0, 0, 0, 0])[0]))
+            text_lines = [clean_text(region.get("text")) for region in non_table_regions if clean_text(region.get("text"))]
+            sections = {"\u5907\u6ce8": [], "\u6761\u6b3e": [], "\u4ed8\u6b3e\u4fe1\u606f": [], "\u6536\u8d27\u4fe1\u606f": [], "\u7b7e\u6838\u533a": []}
+            for line in text_lines:
+                section = classify_section_line(line)
+                if section:
+                    sections.setdefault(section, []).append(line)
+            return {
+                "page_index": page_index,
+                "width": page.get("width"),
+                "height": page.get("height"),
+                "image_path": str(image_path),
+                "tables": [inferred_table],
+                "text_regions": non_table_regions,
+                "text_lines": text_lines,
+                "sections": sections,
+                "issues": issues,
+                "layout_cache_hit": True,
+            }
+
+    row_clusters = _cluster_regions_by_row(table_regions)
+    raw_rows: list[list[str]] = []
+    cells: list[dict[str, Any]] = []
+    for row_index, row_regions in enumerate(row_clusters):
+        text, confidence = _join_regions(row_regions)
+        if not clean_text(text):
+            continue
+        raw_rows.append([text])
+        xs: list[float] = []
+        ys: list[float] = []
+        for region in row_regions:
+            rb = region.get("bbox") or [0, 0, 0, 0]
+            xs.extend([float(rb[0]), float(rb[2])])
+            ys.extend([float(rb[1]), float(rb[3])])
+        cell_bbox = [round(min(xs)), round(min(ys)), round(max(xs)), round(max(ys))] if xs and ys else bbox
+        cells.append(
+            {
+                "page_index": page_index,
+                "table_index": 0,
+                "row_index": row_index,
+                "column_index": 0,
+                "text": text,
+                "bbox": cell_bbox,
+                "confidence": confidence,
+                "method": "layout_cache_row_cluster",
+            }
+        )
+
+    if not raw_rows:
+        issues.append(
+            {
+                "page_index": page_index,
+                "region": "\u660e\u7ec6\u8868",
+                "field": "",
+                "raw_value": "",
+                "clean_value": "",
+                "confidence": 0,
+                "message": "\u7f13\u5b58\u7248\u5f0f\u547d\u4e2d\uff0c\u4f46\u660e\u7ec6\u533a\u57df\u672a\u8bc6\u522b\u5230\u6587\u672c\uff0c\u5df2\u56de\u9000\u5b8c\u6574\u8bc6\u522b\u3002",
+            }
+        )
+        return segment_purchase_page(page)
+
+    non_table_regions = [region for region in regions if not _inside_any_table(region, [grid])]
+    non_table_regions.sort(key=lambda item: ((item.get("bbox") or [0, 0, 0, 0])[1], (item.get("bbox") or [0, 0, 0, 0])[0]))
+    text_lines = [clean_text(region.get("text")) for region in non_table_regions if clean_text(region.get("text"))]
+    sections = {"\u5907\u6ce8": [], "\u6761\u6b3e": [], "\u4ed8\u6b3e\u4fe1\u606f": [], "\u6536\u8d27\u4fe1\u606f": [], "\u7b7e\u6838\u533a": []}
+    for line in text_lines:
+        section = classify_section_line(line)
+        if section:
+            sections.setdefault(section, []).append(line)
+
+    return {
+        "page_index": page_index,
+        "width": page.get("width"),
+        "height": page.get("height"),
+        "image_path": str(image_path),
+        "tables": [
+            {
+                "page_index": page_index,
+                "table_index": 0,
+                "table_type": "detail_table",
+                "bbox": bbox,
+                "confidence": 0.9,
+                "raw_rows": raw_rows,
+                "cells": cells,
+                "method": f"layout_cache_{layout.get('method') or 'row_cluster'}",
+            }
+        ],
+        "text_regions": non_table_regions,
+        "text_lines": text_lines,
+        "sections": sections,
+        "issues": issues,
+        "layout_cache_hit": True,
     }
 
 

@@ -107,6 +107,47 @@ def _write_raw_table(ws, row: int, table: dict[str, Any], max_col_hint: int) -> 
     return row + 1, max(0, len(rows) - 1)
 
 
+def _rebuilt_detail_rows(document: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        detail
+        for detail in document.get("mapped_detail_rows") or []
+        if "packed_text_rebuild" in str(detail.get("method") or "")
+    ]
+
+
+def _write_rebuilt_detail_table(ws, row: int, document: dict[str, Any], max_col_hint: int) -> tuple[int, int]:
+    details = _rebuilt_detail_rows(document)
+    if not details:
+        return row, 0
+    headers = list(STANDARD_HEADERS)
+    max_col = max(max_col_hint, len(headers))
+    page_indexes = sorted({int(detail.get("page_index") or 0) + 1 for detail in details})
+    page_text = "、".join(str(index) for index in page_indexes) if page_indexes else "1"
+    ws.cell(row=row, column=1, value=f"明细表 - 第 {page_text} 页（已重建分列）")
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=max_col)
+    _style_row(ws, row, 1, max_col, fill=SECTION_FILL)
+    row += 1
+
+    for column, header in enumerate(headers, start=1):
+        ws.cell(row=row, column=column, value=header)
+    _style_row(ws, row, 1, max_col, fill=HEADER_FILL, color="FFFFFF")
+    row += 1
+
+    for detail in details:
+        standard = detail.get("standard") or {}
+        for column, header in enumerate(headers, start=1):
+            value = _typed_value(header, standard.get(header, ""))
+            cell = ws.cell(row=row, column=column, value=value)
+            align = "right" if header in {"数量", "含税单价", "金额"} else "left"
+            _style_cell(cell, align=align)
+            number_format = _detail_number_format(f"标准-{header}")
+            if number_format:
+                cell.number_format = number_format
+        ws.row_dimensions[row].height = 36
+        row += 1
+    return row + 1, len(details)
+
+
 def _write_sections(ws, row: int, sections: dict[str, list[str]], max_col: int) -> int:
     for section in ["备注", "条款", "付款信息", "收货信息", "签核区"]:
         lines = [clean_text(line) for line in sections.get(section) or [] if clean_text(line)]
@@ -168,7 +209,8 @@ def _write_purchase_sheet(ws, documents: list[dict[str, Any]]) -> dict[str, int]
 
     for index, document in enumerate(documents, start=1):
         raw_tables = document.get("raw_detail_tables") or []
-        max_col = max([7] + [max((len(r) for r in table.get("rows") or []), default=1) for table in raw_tables])
+        rebuilt_rows = _rebuilt_detail_rows(document)
+        max_col = max([7, len(STANDARD_HEADERS) if rebuilt_rows else 0] + [max((len(r) for r in table.get("rows") or []), default=1) for table in raw_tables])
         title = clean_text(document.get("source_file")) or f"文件 {index}"
         ws.cell(row=row, column=1, value=f"{index}. {title}")
         ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=max_col)
@@ -176,7 +218,10 @@ def _write_purchase_sheet(ws, documents: list[dict[str, Any]]) -> dict[str, int]
         ws.row_dimensions[row].height = 24
         row += 1
         row = _write_key_values(ws, row, document.get("header_info") or {}, max_col)
-        if raw_tables:
+        if rebuilt_rows:
+            row, count = _write_rebuilt_detail_table(ws, row, document, max_col)
+            detail_count += count
+        elif raw_tables:
             for table in raw_tables:
                 row, count = _write_raw_table(ws, row, table, max_col)
                 detail_count += count

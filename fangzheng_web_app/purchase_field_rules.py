@@ -9,9 +9,9 @@ STANDARD_HEADERS = ["序号", "物料编码", "物料名称", "说明", "数量"
 
 DETAIL_ALIASES = {
     "序号": ["序号", "项次", "项目", "行号", "item", "item no", "no.", "no"],
-    "物料编码": ["物料编码", "物料代码", "原料编码", "料号", "品号", "goods no", "part no", "part no.", "part", "p/n"],
-    "物料名称": ["物料名称", "原料名称", "品名", "名称", "型号", "规格", "型号/规格", "description", "desc"],
-    "说明": ["说明", "描述", "环保要求", "rohs", "remark", "comments", "comment"],
+    "物料编码": ["物料编码", "物料编号", "物料代码", "原料编码", "料件编号", "料号", "品号", "goods no", "goodsno", "part no", "part no.", "part", "p/n"],
+    "物料名称": ["物料名称", "物料品名", "原料名称", "品名", "名称", "型号", "规格", "名称规格", "型号/规格", "description", "desc"],
+    "说明": ["说明", "描述", "物料描述", "环保要求", "rohs", "remark", "comments", "comment"],
     "数量": ["数量", "采购量", "订购数量", "quantity", "qty"],
     "单位": ["单位", "计量单位", "unit", "uom"],
     "含税单价": ["含税单价", "单价", "单价rmb", "unit price", "price"],
@@ -61,6 +61,9 @@ def normalize_date(value: Any) -> str:
     text = clean_text(value)
     match = re.search(DATE_PATTERN, text)
     if not match:
+        compact_month_day = re.search(r"(20\d{2})[-/](\d{2})(\d{2})(?!\d)", text)
+        if compact_month_day:
+            return f"{compact_month_day.group(1)}-{compact_month_day.group(2)}-{compact_month_day.group(3)}"
         compact_date = re.search(r"20\d{6}", text)
         if compact_date:
             raw = compact_date.group(0)

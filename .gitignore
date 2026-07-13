@@ -1,5 +1,8 @@
 # Runtime data: never commit local or production state.
 /storage/
+.env
+.env.local
+.env.*.local
 
 # Python cache and local virtual environments.
 __pycache__/
