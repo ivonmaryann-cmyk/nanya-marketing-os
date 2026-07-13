@@ -429,18 +429,19 @@ def _load_mingyang_rules(rule_path: str | Path) -> ExtRules:
 
 
 def _mingyang_is_pp_header(values: list[str]) -> bool:
-    value_set = set(values)
-    return bool({"布种", "RC含量", "长度", "宽幅"}.issubset(value_set) and ({"产品型号", "新价格"}.issubset(value_set) or {"胶系", "单价"}.issubset(value_set)))
+    has_base_cols = all(_find_header_contains(values, {name}) for name in {"布种", "RC含量", "长度", "宽幅"})
+    has_product = bool(_find_header_contains(values, {"产品型号"}) or _find_header_contains(values, {"胶系"}))
+    has_price = bool(_find_header_contains(values, {"新价格"}) or _find_header_contains(values, {"单价"}))
+    return has_base_cols and has_product and has_price
 
 
 def _load_mingyang_pp_rows(ws, header_row: int, values: list[str], pp_rows: list[ExtPpRule]) -> None:
-    headers = _header_map(values)
-    product_col = headers.get("产品型号") or headers.get("胶系") or 2
-    glass_col = headers.get("布种") or 3
-    rc_col = headers.get("RC含量") or 4
-    length_col = headers.get("长度") or 5
-    width_col = headers.get("宽幅") or 6
-    price_col = headers.get("新价格") or headers.get("单价") or 7
+    product_col = _find_header_contains(values, {"产品型号"}) or _find_header_contains(values, {"胶系"}) or 2
+    glass_col = _find_header_contains(values, {"布种"}) or 3
+    rc_col = _find_header_contains(values, {"RC含量"}) or 4
+    length_col = _find_header_contains(values, {"长度"}) or 5
+    width_col = _find_header_contains(values, {"宽幅"}) or 6
+    price_col = _find_header_contains(values, {"新价格"}) or _find_header_contains(values, {"单价"}) or 7
     for data_row in range(header_row + 1, ws.max_row + 1):
         first = _text(ws.cell(data_row, 1).value)
         if first.startswith("说明"):
@@ -477,9 +478,9 @@ def _load_mingyang_ccl_rows(ws, header_row: int, values: list[str], ccl_rows: li
             break
         product = _norm_product(ws.cell(data_row, product_col).value)
         thickness_values = _parse_mingyang_thickness_values(ws.cell(data_row, thickness_col).value)
-        copper = _norm_copper(ws.cell(data_row, copper_col).value)
+        copper = _mingyang_norm_copper(ws.cell(data_row, copper_col).value)
         foil = _norm_foil(ws.cell(data_row, foil_col).value)
-        stack = _norm_stack(ws.cell(data_row, stack_col).value)
+        stack = _mingyang_norm_stack(ws.cell(data_row, stack_col).value)
         if product and thickness_values and copper and stack:
             prices = _row_prices(ws, data_row, price_cols)
             if prices:
@@ -512,6 +513,50 @@ def _mingyang_price_columns(headers: list[str]) -> dict[int, str]:
         if key:
             price_cols[idx] = key
     return price_cols
+
+def _mingyang_norm_copper(value: Any) -> str:
+    text = _text(value).upper().replace("OZ", "").replace(" ", "")
+    aliases = {"J/J": "J/J", "J/0": "J/J", "0/J": "J/J"}
+    if text in aliases:
+        return aliases[text]
+    return _norm_copper(text)
+
+
+def _extract_mingyang_copper(desc: str) -> str:
+    text = _text(desc).upper().replace(" ", "")
+    match = re.search(r"(?<![A-Z0-9])(J|H|[0-9]+(?:\.\d+)?)\s*/\s*(J|H|[0-9]+(?:\.\d+)?)(?:OZ)?", text, re.I)
+    if match:
+        return _mingyang_norm_copper(f"{match.group(1)}/{match.group(2)}")
+    return _mingyang_norm_copper(_extract_copper(desc))
+
+
+def _mingyang_norm_stack(value: Any) -> str:
+    stack = _norm_stack(value)
+    if stack:
+        return stack
+    text = _text(value).upper().replace("\\", "*").replace("×", "*").replace("X", "*")
+    text = re.sub(r"\*+", "*", text)
+    glass_pattern = r"1035|1067|1078|1080|1086|1506|2113|2116|2313|3313|7628|106"
+    pieces: list[tuple[str, int]] = []
+    for count, glass in re.findall(rf"(?<!\d)(\d+)\s*\*\s*({glass_pattern})(?!\d)", text):
+        pieces.append((glass, int(count)))
+    for glass, count in re.findall(rf"(?<!\d)({glass_pattern})\s*\*\s*(\d+)(?!\d)", text):
+        pieces.append((glass, int(count)))
+    if not pieces:
+        return ""
+    return "+".join(f"{count}*{glass}" for glass, count in sorted(pieces, key=lambda item: item[0]))
+
+
+def _extract_mingyang_size(desc: str) -> tuple[float | None, float | None]:
+    text = _text(desc).upper().replace("×", "X")
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(?:\"|IN|INCH)?\s*(?:\*+|X)\s*(\d+(?:\.\d+)?)\s*(?:\"|IN|INCH)?", text, re.I)
+    if match:
+        a, b = float(match.group(1)), float(match.group(2))
+        glass_codes = {106, 1067, 1078, 1080, 1506, 2113, 2116, 2313, 3313, 7628}
+        if 0 < a <= 120 and 0 < b <= 120 and int(a) not in glass_codes and int(b) not in glass_codes:
+            return math.floor(a + 1e-9), math.floor(b + 1e-9)
+    return _extract_size(desc, ignore_decimal=True)
+
 
 def _load_lejian_rules(rule_path: str | Path) -> ExtRules:
     sheets = _workbook_value_sheets(rule_path)
@@ -2559,10 +2604,9 @@ def _calculate_mingyang_pp(desc: str, rules: ExtRules) -> ExtCalcResult:
             f"纬向一开{split}，公式={small_length_m:.3f}*{best.price:.6g}/{split}={price:.2f}{length_note}"
         )
         return ExtCalcResult("成功", "PP", price, "", _fmt_width(best.width), "", note, best.excel_row, best.sheet)
-    if length is None:
-        return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(best.width), "", "PP卷料缺少米数，无法按单价×米数计算")
-    price = _round_money(float(best.price) * length)
-    note = f"命中明阳PP报价 Sheet {best.sheet} 第 {best.excel_row} 行，PP卷料: 单价{best.price:.6g}×{length}={price:.2f}{length_note}"
+    price = _round_money(float(best.price))
+    roll_note = f"，规格卷长={length}m" if length is not None else ""
+    note = f"命中明阳PP报价 Sheet {best.sheet} 第 {best.excel_row} 行，PP卷料单价={price:.2f}{roll_note}{length_note}"
     return ExtCalcResult("成功", "PP", price, "", _fmt_width(best.width), _fmt_length(length), note, best.excel_row, best.sheet)
 
 
@@ -2570,10 +2614,10 @@ def _calculate_mingyang_ccl(desc: str, rules: ExtRules, quantity: Any = None) ->
     product = _extract_product(desc)
     thickness_mm = _extract_mingyang_thickness_mm(desc)
     thickness_mil = _extract_thickness_mil(desc, product)
-    copper = _extract_copper(desc)
+    copper = _extract_mingyang_copper(desc)
     foil = _extract_foil(desc) or "HTE"
-    stack = _extract_stack(desc)
-    length_in, width_in = _extract_size(desc, ignore_decimal=True)
+    stack = _mingyang_norm_stack(desc)
+    length_in, width_in = _extract_mingyang_size(desc)
     if not product or thickness_mm is None and thickness_mil is None or not copper or not stack or length_in is None or width_in is None:
         return ExtCalcResult("失败", "CCL", "待确认", "", "", "", "CCL规格缺少型号、厚度、铜厚、尺寸或配料结构")
     product_norm = _norm_product(product)
