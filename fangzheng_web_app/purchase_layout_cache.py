@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .paths import PDF_EXCEL_LAYOUT_CACHE_DIR
+from .paths import PDF_EXCEL_LAYOUT_CACHE_DIR, PDF_EXCEL_LAYOUT_TEMPLATE_DIR
 from .purchase_field_rules import clean_text
 
 
@@ -58,6 +58,10 @@ def layout_signature(header_info: dict[str, Any], lines: list[str], width: int, 
 
 
 def _cache_path(signature: str) -> Path:
+    return PDF_EXCEL_LAYOUT_TEMPLATE_DIR / f"{signature}.json"
+
+
+def _legacy_cache_path(signature: str) -> Path:
     return PDF_EXCEL_LAYOUT_CACHE_DIR / f"{signature}.json"
 
 
@@ -66,6 +70,9 @@ def load_layout_cache(header_info: dict[str, Any], lines: list[str], width: int,
     if not signature:
         return None
     path = _cache_path(signature)
+    legacy_path = _legacy_cache_path(signature)
+    if not path.exists() and legacy_path.exists():
+        path = legacy_path
     if not path.exists():
         return None
     try:
@@ -76,6 +83,12 @@ def load_layout_cache(header_info: dict[str, Any], lines: list[str], width: int,
         return None
     if abs(float(cache.get("page_ratio") or 0) - _page_ratio(width, height)) > 0.04:
         return None
+    if path == legacy_path:
+        try:
+            PDF_EXCEL_LAYOUT_TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
+            _cache_path(signature).write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
     return cache
 
 
@@ -127,7 +140,7 @@ def save_layout_cache(document: dict[str, Any]) -> bool:
         "row_count": len(rows),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
-    PDF_EXCEL_LAYOUT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    PDF_EXCEL_LAYOUT_TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
     _cache_path(signature).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return True
 

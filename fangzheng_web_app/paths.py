@@ -26,6 +26,10 @@ BOMIN_RULES_VERSIONS_DIR = BOMIN_RULES_DIR / "versions"
 PRICE_CALCULATION_RULES_DIR = RULES_DIR / "price_calculation"
 JOBS_DIR = STORAGE_DIR / "jobs"
 PDF_EXCEL_CACHE_DIR = STORAGE_DIR / "pdf_excel_cache"
+PDF_EXCEL_TEMPLATE_DIR = STORAGE_DIR / "pdf_excel_templates"
+PDF_EXCEL_LAYOUT_TEMPLATE_DIR = PDF_EXCEL_TEMPLATE_DIR / "layouts"
+# Backward-compatible read path for layout rules saved before they were promoted
+# from disposable cache data to reusable templates.
 PDF_EXCEL_LAYOUT_CACHE_DIR = PDF_EXCEL_CACHE_DIR / "layouts"
 DATABASE_PATH = STORAGE_DIR / "app.db"
 
@@ -48,6 +52,8 @@ def ensure_storage_dirs() -> None:
         PRICE_CALCULATION_RULES_DIR,
         JOBS_DIR,
         PDF_EXCEL_CACHE_DIR,
+        PDF_EXCEL_TEMPLATE_DIR,
+        PDF_EXCEL_LAYOUT_TEMPLATE_DIR,
         PDF_EXCEL_LAYOUT_CACHE_DIR,
     ]:
         path.mkdir(parents=True, exist_ok=True)

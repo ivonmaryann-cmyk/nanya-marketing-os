@@ -311,13 +311,19 @@ def _row_field(mapping: dict[int, str], field: str) -> int | None:
     return None
 
 
-def _append_cell_text(existing: str, addition: str) -> str:
+def _append_code_text(existing: str, addition: str) -> str:
+    return re.sub(r"\s+", "", f"{clean_text(existing)}{clean_text(addition)}")
+
+
+def _append_cell_text(existing: str, addition: str, *, field: str | None = None) -> str:
     existing = clean_text(existing)
     addition = clean_text(addition)
     if not addition:
         return existing
     if not existing:
-        return addition
+        return _append_code_text("", addition) if field == CODE else addition
+    if field == CODE:
+        return _append_code_text(existing, addition)
     if addition in {")", "）"} and existing.endswith("("):
         return f"{existing}{addition}"
     if addition in {")", "）"}:
@@ -325,6 +331,10 @@ def _append_cell_text(existing: str, addition: str) -> str:
     if existing.endswith("(") or existing.endswith("（"):
         return f"{existing}{addition}"
     return clean_text(f"{existing} {addition}")
+
+
+def _append_row_cell_text(existing: str, addition: str, column: int, mapping: dict[int, str]) -> str:
+    return _append_cell_text(existing, addition, field=mapping.get(column))
 
 
 def _merge_fragment_rows(rows: list[list[str]], header_index: int, mapping: dict[int, str]) -> tuple[list[list[str]], list[str]]:
@@ -342,7 +352,7 @@ def _merge_fragment_rows(rows: list[list[str]], header_index: int, mapping: dict
         row = list(rows[index])
         if _is_fragment_row(row):
             for column in _non_empty_indexes(row):
-                pending[column] = _append_cell_text(pending.get(column, ""), row[column])
+                pending[column] = _append_row_cell_text(pending.get(column, ""), row[column], column, mapping)
             index += 1
             continue
 
@@ -350,7 +360,7 @@ def _merge_fragment_rows(rows: list[list[str]], header_index: int, mapping: dict
             for column, value in pending.items():
                 if column >= len(row):
                     row.extend([""] * (column + 1 - len(row)))
-                row[column] = _append_cell_text(value, row[column]) if row[column] else value
+                row[column] = _append_row_cell_text(value, row[column], column, mapping) if row[column] else value
             pending = {}
 
         lookahead = index + 1
@@ -358,7 +368,7 @@ def _merge_fragment_rows(rows: list[list[str]], header_index: int, mapping: dict
             for column in _non_empty_indexes(rows[lookahead]):
                 if column >= len(row):
                     row.extend([""] * (column + 1 - len(row)))
-                row[column] = _append_cell_text(row[column], rows[lookahead][column])
+                row[column] = _append_row_cell_text(row[column], rows[lookahead][column], column, mapping)
             lookahead += 1
 
         if lookahead != index + 1:
@@ -406,11 +416,28 @@ def _merge_multiline_detail_rows(rows: list[list[str]], header_index: int, mappi
                     continue
                 if column >= len(previous):
                     previous.extend([""] * (column + 1 - len(previous)))
-                previous[column] = _append_cell_text(previous[column], current[column])
+                previous[column] = _append_row_cell_text(previous[column], current[column], column, mapping)
             warnings.append("已合并跨行明细规格文本。")
         else:
             merged.append(current)
     return merged, warnings
+
+
+def _compact_material_code_column(rows: list[list[str]], header_index: int, mapping: dict[int, str]) -> tuple[list[list[str]], list[str]]:
+    code_col = _row_field(mapping, CODE)
+    if code_col is None:
+        return rows, []
+    normalized = [list(row) for row in rows]
+    changed = False
+    for row in normalized[header_index + 1 :]:
+        if code_col >= len(row):
+            continue
+        original = clean_text(row[code_col])
+        compacted = re.sub(r"\s+", "", original)
+        if compacted != original:
+            row[code_col] = compacted
+            changed = True
+    return normalized, ["已清理物料编码列内部空格。"] if changed else []
 
 
 def _normalize_table_rows(rows: list[list[str]]) -> tuple[list[list[str]], dict[int, str], list[str]]:
@@ -420,6 +447,7 @@ def _normalize_table_rows(rows: list[list[str]]) -> tuple[list[list[str]], dict[
         return rows, {}, []
     rows, fragment_warnings = _merge_fragment_rows(rows, header_index, mapping)
     rows, multiline_warnings = _merge_multiline_detail_rows(rows, header_index, mapping)
+    rows, code_warnings = _compact_material_code_column(rows, header_index, mapping)
     normalized = rows[: header_index + 1]
     for row in rows[header_index + 1 :]:
         if _is_header_like_row(row) or _is_summary_or_section_row(row):
@@ -427,7 +455,7 @@ def _normalize_table_rows(rows: list[list[str]]) -> tuple[list[list[str]], dict[
         if not looks_like_detail_data(row) and len(_non_empty_indexes(row)) <= 2:
             continue
         normalized.append(row)
-    return normalized, mapping, fragment_warnings + multiline_warnings
+    return normalized, mapping, fragment_warnings + multiline_warnings + code_warnings
 
 
 def _rebuild_detail_rows_from_tables(document: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -696,6 +724,19 @@ def _strong_name_score(rows: list[dict[str, Any]]) -> int:
     return score
 
 
+def _strong_code_score(rows: list[dict[str, Any]]) -> int:
+    score = 0
+    for row in rows:
+        standard = row.get("standard") or {}
+        code = clean_text(standard.get(CODE))
+        if not code:
+            continue
+        if not any(clean_text(standard.get(field)) for field in [QTY, AMOUNT, DATE]):
+            continue
+        score += len(re.sub(r"\s+", "", code))
+    return score
+
+
 def _should_replace_mapped_rows(old_rows: list[dict[str, Any]], new_rows: list[dict[str, Any]]) -> bool:
     if not new_rows:
         return False
@@ -710,6 +751,8 @@ def _should_replace_mapped_rows(old_rows: list[dict[str, Any]], new_rows: list[d
             return True
         return False
     if new_strong > old_strong:
+        return True
+    if new_strong == old_strong and _strong_code_score(new_rows) > _strong_code_score(old_rows) * 1.25:
         return True
     old_score = sum(_row_quality(row) for row in old_rows)
     new_score = sum(_row_quality(row) for row in new_rows)

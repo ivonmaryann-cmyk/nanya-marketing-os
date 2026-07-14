@@ -183,19 +183,67 @@ def map_detail_row(raw_headers: list[str], row: list[str], mapping: dict[int, st
         date = normalize_date(" ".join(clean_text(value) for value in row))
     if date:
         standard["交货日期"] = date
+    _repair_split_material_code(standard)
+
+    return {"original": original, "standard": standard, "cleaning_notes": cleaning_notes}
+
+
+def _repair_split_material_code(standard: dict[str, str]) -> None:
     material_code = clean_text(standard.get("物料编码"))
+    material_name = clean_text(standard.get("物料名称"))
+    if not material_code:
+        return
+
     material_parts = material_code.split()
     if len(material_parts) > 1 and re.search(r"\d", material_parts[0]):
         remainder_parts = material_parts[1:]
-        if all(re.fullmatch(r"\d{1,4}", part) for part in remainder_parts):
-            standard["物料编码"] = material_parts[0] + "".join(remainder_parts)
+        if _looks_like_code_continuation(material_parts[0], remainder_parts):
+            material_code = material_parts[0] + "".join(remainder_parts)
+            standard["物料编码"] = material_code
         else:
-            standard["物料编码"] = material_parts[0]
+            material_code = material_parts[0]
+            standard["物料编码"] = material_code
             remainder = " ".join(remainder_parts)
-            if remainder and remainder not in clean_text(standard.get("物料名称")):
-                standard["物料名称"] = clean_text(f"{remainder} {standard.get('物料名称', '')}")
+            if remainder and remainder not in material_name:
+                material_name = clean_text(f"{remainder} {material_name}")
+                standard["物料名称"] = material_name
 
-    return {"original": original, "standard": standard, "cleaning_notes": cleaning_notes}
+    if not re.search(r"[-_/]$", material_code):
+        standard["物料编码"] = _compact_material_code(material_code)
+        return
+    match = re.match(r"^([A-Za-z0-9][A-Za-z0-9_-]{1,16})(?:\s+|$)(.*)$", material_name)
+    if not match:
+        standard["物料编码"] = _compact_material_code(material_code)
+        return
+    tail = match.group(1)
+    if not _is_code_tail(tail):
+        standard["物料编码"] = _compact_material_code(material_code)
+        return
+    standard["物料编码"] = _compact_material_code(f"{material_code}{tail}")
+    standard["物料名称"] = clean_text(match.group(2))
+
+
+def _compact_material_code(value: str) -> str:
+    return re.sub(r"\s+", "", clean_text(value))
+
+
+def _looks_like_code_continuation(prefix: str, parts: list[str]) -> bool:
+    if not parts:
+        return False
+    if all(re.fullmatch(r"\d{1,8}", part) for part in parts):
+        return True
+    if re.search(r"[-_/]$", prefix) and all(_is_code_tail(part) for part in parts):
+        return True
+    return False
+
+
+def _is_code_tail(value: str) -> bool:
+    text = clean_text(value)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{1,16}", text):
+        return False
+    if text.upper() in {"FR4", "NYA1", "NY2150", "SHNY", "RMB"}:
+        return False
+    return bool(re.search(r"\d", text))
 
 
 def looks_like_detail_data(row: list[str]) -> bool:

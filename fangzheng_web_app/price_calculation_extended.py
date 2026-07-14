@@ -204,21 +204,62 @@ def _load_hanyu_rules(rule_path: str | Path) -> ExtRules:
                     ccl_rows.append(ExtCclRule(data_row, ws.title, product, thickness_mm, thickness_mil, copper, foil, stack, _row_prices(ws, data_row, price_cols)))
             if {"Products", "Glass type", "Resin Content", "Length (m)"}.issubset(value_set):
                 headers = _header_map(values)
-                per_m_col = _first_header_col(values, {"Per M"})
-                per_roll_col = _first_header_col(values, {"Per Roll"})
+                price_groups = _hanyu_pp_price_groups(ws, row_idx, values)
                 for data_row in range(row_idx + 1, ws.max_row + 1):
                     product = _norm_product(ws.cell(data_row, headers.get("Products", 1)).value)
                     glasses = _norm_glasses(ws.cell(data_row, headers.get("Glass type", 2)).value)
                     rc_min, rc_max = _parse_rc_range(ws.cell(data_row, headers.get("Resin Content", 3)).value)
                     length = _length_int(ws.cell(data_row, headers.get("Length (m)", 4)).value)
-                    price = _to_float(ws.cell(data_row, per_m_col).value) if per_m_col else None
-                    roll_price = _to_float(ws.cell(data_row, per_roll_col).value) if per_roll_col else None
                     if not product:
                         break
-                    if glasses and rc_min is not None and price is not None:
+                    if not glasses or rc_min is None:
+                        continue
+                    for group in price_groups:
+                        price = _to_float(ws.cell(data_row, group["per_m_col"]).value)
+                        roll_price = _to_float(ws.cell(data_row, group["per_roll_col"]).value) if group.get("per_roll_col") else None
+                        if price is None:
+                            continue
                         for glass in glasses:
-                            pp_rows.append(ExtPpRule(data_row, ws.title, product, glass, rc_min, rc_max, length, None, price, roll_price))
+                            pp_rows.append(ExtPpRule(data_row, ws.title, product, glass, rc_min, rc_max, length, group["width"], price, roll_price))
     return ExtRules("hanyu", pp_rows, ccl_rows)
+
+
+def _hanyu_pp_price_groups(ws, header_row: int, values: list[str]) -> list[dict[str, Any]]:
+    groups: list[dict[str, Any]] = []
+    for col_idx, header in enumerate(values, start=1):
+        if header != "Per M":
+            continue
+        width = _hanyu_pp_width_from_header_group(ws, header_row, col_idx)
+        if width is None:
+            width = 49.5 if not groups else 43.5 if len(groups) == 1 else None
+        per_roll_col = col_idx + 1 if col_idx < len(values) and values[col_idx] == "Per Roll" else None
+        groups.append({"width": width, "per_m_col": col_idx, "per_roll_col": per_roll_col})
+    if groups:
+        return groups
+    per_m_col = _first_header_col(values, {"Per M"})
+    per_roll_col = _first_header_col(values, {"Per Roll"})
+    return [{"width": None, "per_m_col": per_m_col, "per_roll_col": per_roll_col}] if per_m_col else []
+
+
+def _hanyu_pp_width_from_header_group(ws, header_row: int, col_idx: int) -> float | None:
+    if header_row <= 1:
+        return None
+    for scan_col in range(col_idx, 0, -1):
+        width = _hanyu_pp_width_from_text(ws.cell(header_row - 1, scan_col).value)
+        if width is not None:
+            return width
+    return None
+
+
+def _hanyu_pp_width_from_text(value: Any) -> float | None:
+    text = _text(value)
+    for match in re.findall(r"\d+(?:\.\d+)?", text):
+        number = float(match)
+        if 42.5 <= number <= 44.0:
+            return 43.5
+        if 48.5 <= number <= 50.0:
+            return 49.5
+    return None
 
 
 def _load_wutong_rules(rule_path: str | Path) -> ExtRules:
@@ -523,8 +564,8 @@ def _mingyang_norm_copper(value: Any) -> str:
 
 
 def _extract_mingyang_copper(desc: str) -> str:
-    text = _text(desc).upper().replace(" ", "")
-    match = re.search(r"(?<![A-Z0-9])(J|H|[0-9]+(?:\.\d+)?)\s*/\s*(J|H|[0-9]+(?:\.\d+)?)(?:OZ)?", text, re.I)
+    text = _text(desc).upper().replace("OZ", "")
+    match = re.search(r"(?<![A-Z0-9.])(J|H|[0-9]+(?:\.\d+)?)\s*/\s*(J|H|[0-9]+(?:\.\d+)?)(?![A-Z0-9.])", text, re.I)
     if match:
         return _mingyang_norm_copper(f"{match.group(1)}/{match.group(2)}")
     return _mingyang_norm_copper(_extract_copper(desc))
@@ -2652,7 +2693,7 @@ def _calculate_mingyang_ccl(desc: str, rules: ExtRules, quantity: Any = None) ->
 
     derived = _mingyang_derived_ccl_price(stack_rows, copper, foil, length_in, width_in)
     if derived["ok"]:
-        price = _round_money(derived["price"])
+        price = derived["price"]
         total = _calc_total(quantity, price)
         row = derived["row"]
         note = (
@@ -2728,17 +2769,19 @@ def _mingyang_derived_ccl_price(
     if _mingyang_is_rtf_foil(foil) and _mingyang_rtf_needs_manual(copper):
         return {"ok": False, "reason": f"{copper}以上RTF铜价另议，未找到完全匹配报价行"}
 
-    base_rows = [row for row in stack_rows if row.copper == base_copper]
+    base_rows = [row for row in stack_rows if row.copper == base_copper and "高速" not in row.sheet]
+    if not base_rows:
+        return {"ok": False, "reason": "明阳高速材料不适用说明2加价原则，需具体询价"}
     same_foil_rows = [row for row in base_rows if not foil or not row.foil or row.foil == foil]
     hte_rows = [row for row in base_rows if row.foil in {"", "HTE"}]
-    if same_foil_rows:
-        candidates = same_foil_rows
-        foil_factor = 1.0
-        foil_note = ""
-    elif _mingyang_is_rtf_foil(foil) and hte_rows:
+    if _mingyang_is_rtf_foil(foil) and hte_rows:
         candidates = hte_rows
         foil_factor = 1.03
         foil_note = "*1.03"
+    elif same_foil_rows:
+        candidates = same_foil_rows
+        foil_factor = 1.0
+        foil_note = ""
     else:
         return {"ok": False, "reason": f"未找到说明2基准铜厚行：{base_copper}/{foil or '未写铜箔'}"}
 
@@ -2750,8 +2793,9 @@ def _mingyang_derived_ccl_price(
         if base_41 is None:
             continue
         adjusted_41 = (float(base_41) + adjustment) * foil_factor
-        price = adjusted_41 * size_factor["factor"]
-        formula = f"({base_41:.6g}{adjustment:+.6g}){foil_note}*{size_factor['factor']:.6g}"
+        raw_price = adjusted_41 * size_factor["factor"]
+        price = int(math.floor(raw_price + 0.5 + 1e-9))
+        formula = f"ROUND(({base_41:.6g}{adjustment:+.6g}){foil_note}*{size_factor['factor']:.6g},0)"
         return {
             "ok": True,
             "price": price,
@@ -2770,11 +2814,11 @@ def _mingyang_ccl_base_adjustment(copper: str) -> tuple[str | None, float | None
     if normalized == "J/J":
         return "H/H", -2.0
     if normalized == "2/2":
-        return "H/H", 150.0
+        return "H/H", 160.0
     if normalized in {"1/2", "2/1"}:
-        return "H/H", 110.0
+        return "H/H", 120.0
     if normalized == "1.5/1.5":
-        return "H/H", 100.0
+        return "H/H", 110.0
     if normalized in {"1/H", "H/1"}:
         return "1/1", -10.0
     if normalized == "3/3":
@@ -3049,7 +3093,7 @@ def _calculate_pp(customer_key: str, desc: str, rules: ExtRules) -> ExtCalcResul
     products = {product_norm, base_product, f"{base_product}P"}
     if base_product.endswith("H"):
         products.add(f"{base_product[:-1]}P")
-    matches: list[tuple[int, ExtPpRule]] = []
+    matches: list[tuple[tuple[float, float, int], ExtPpRule]] = []
     for row in rules.pp_rows:
         if row.product not in products or row.glass != glass:
             continue
@@ -3057,7 +3101,8 @@ def _calculate_pp(customer_key: str, desc: str, rules: ExtRules) -> ExtCalcResul
             continue
         if row.rc_min is not None and row.rc_max is not None and row.rc_min - 0.001 <= rc <= row.rc_max + 0.001:
             product_rank = 0 if row.product == product_norm else 1
-            matches.append((product_rank, row))
+            width_rank = _hanyu_pp_width_rank(width, row.width) if customer_key == "hanyu" else 0
+            matches.append(((product_rank, width_rank, row.excel_row), row))
     if not matches and customer_key in {"eaton", "hanyu"}:
         for row in rules.pp_rows:
             if row.product not in products or row.glass != glass:
@@ -3065,8 +3110,9 @@ def _calculate_pp(customer_key: str, desc: str, rules: ExtRules) -> ExtCalcResul
             if row.rc_min is not None and row.rc_max is not None and row.rc_min - 0.001 <= rc <= row.rc_max + 0.001:
                 product_rank = 0 if row.product == product_norm else 1
                 length_rank = abs((row.length or 0) - (length or row.length or 0))
-                matches.append((product_rank + length_rank, row))
-    best = sorted(matches, key=lambda item: (item[0], item[1].excel_row))[0][1] if matches else None
+                width_rank = _hanyu_pp_width_rank(width, row.width) if customer_key == "hanyu" else 0
+                matches.append(((product_rank + length_rank, width_rank, row.excel_row), row))
+    best = sorted(matches, key=lambda item: item[0])[0][1] if matches else None
     if not best:
         return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width), _fmt_length(length), "未命中PP报价：型号、玻布、RC或卷长不匹配")
     if customer_key in {"eaton", "hanyu"} and small_length_m is not None and small_width_in is not None:
@@ -3091,7 +3137,8 @@ def _calculate_pp(customer_key: str, desc: str, rules: ExtRules) -> ExtCalcResul
         price = _hanyu_price(best.price)
         note = (
             f"命中瀚宇PP报价 Sheet {best.sheet} 第 {best.excel_row} 行，"
-            f"玻布={glass}，RC={rc:g}，卷长按{length}m匹配，Per M={price:.6f}"
+            f"玻布={glass}，RC={rc:g}，报价宽幅={_fmt_width(best.width) or '未写'}，"
+            f"卷长按{length}m匹配，Per M={price:.6f}"
         )
         return ExtCalcResult("成功", "PP", price, "", _fmt_width(width or best.width), _fmt_length(length), note, best.excel_row, best.sheet)
     if customer_key == "eaton" and length:
@@ -3283,6 +3330,13 @@ def _taixing_precise_price(value: Any) -> float:
 
 def _hanyu_price(value: Any) -> float:
     return round(float(value), 6)
+
+
+def _hanyu_pp_width_rank(spec_width: float | None, row_width: float | None) -> float:
+    target_width = 49.5 if spec_width is None or spec_width > 43.8 else 43.5
+    if row_width is None:
+        return 2.0
+    return 0.0 if abs(row_width - target_width) <= 0.8 else 1.0 + abs(row_width - target_width)
 
 
 def _taixing_ccl_price(value: Any) -> float:
