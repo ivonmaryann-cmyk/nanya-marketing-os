@@ -2632,6 +2632,7 @@ def _calculate_mingyang_pp(desc: str, rules: ExtRules) -> ExtCalcResult:
     )[0]
     if best.price is None:
         return ExtCalcResult("失败", "PP", "待确认", "", "", _fmt_length(length), "命中PP报价行但单价为空")
+    roll_200_price = _round_money(float(best.price) * 200)
     length_note = "" if length is None or best.length in {None, length} else f"，报价卷长{best.length}m与规格{length}m不一致，按规格米数计算"
     if small_length_m is not None and small_width_mm is not None:
         split = math.floor(((best.width or 49.5) * 25.4 + 1e-9) / small_width_mm)
@@ -2642,13 +2643,14 @@ def _calculate_mingyang_pp(desc: str, rules: ExtRules) -> ExtCalcResult:
         note = (
             f"命中明阳PP报价 Sheet {best.sheet} 第 {best.excel_row} 行，单价={best.price:.6g}，"
             f"径向={small_length_m * 1000:.0f}mm，纬向={small_width_mm:.0f}mm，"
-            f"纬向一开{split}，公式={small_length_m:.3f}*{best.price:.6g}/{split}={price:.2f}{length_note}"
+            f"纬向一开{split}，公式={small_length_m:.3f}*{best.price:.6g}/{split}={price:.2f}，"
+            f"200M整卷价格={roll_200_price:.2f}{length_note}"
         )
-        return ExtCalcResult("成功", "PP", price, "", _fmt_width(best.width), "", note, best.excel_row, best.sheet)
+        return ExtCalcResult("成功", "PP", price, roll_200_price, _fmt_width(best.width), "", note, best.excel_row, best.sheet)
     price = _round_money(float(best.price))
     roll_note = f"，规格卷长={length}m" if length is not None else ""
-    note = f"命中明阳PP报价 Sheet {best.sheet} 第 {best.excel_row} 行，PP卷料单价={price:.2f}{roll_note}{length_note}"
-    return ExtCalcResult("成功", "PP", price, "", _fmt_width(best.width), _fmt_length(length), note, best.excel_row, best.sheet)
+    note = f"命中明阳PP报价 Sheet {best.sheet} 第 {best.excel_row} 行，PP卷料单价={price:.2f}，200M整卷价格={roll_200_price:.2f}{roll_note}{length_note}"
+    return ExtCalcResult("成功", "PP", price, roll_200_price, _fmt_width(best.width), _fmt_length(length), note, best.excel_row, best.sheet)
 
 
 def _calculate_mingyang_ccl(desc: str, rules: ExtRules, quantity: Any = None) -> ExtCalcResult:
@@ -2794,8 +2796,12 @@ def _mingyang_derived_ccl_price(
             continue
         adjusted_41 = (float(base_41) + adjustment) * foil_factor
         raw_price = adjusted_41 * size_factor["factor"]
-        price = int(math.floor(raw_price + 0.5 + 1e-9))
-        formula = f"ROUND(({base_41:.6g}{adjustment:+.6g}){foil_note}*{size_factor['factor']:.6g},0)"
+        if copper == "2/2":
+            price = _round_money(raw_price)
+            formula = f"ROUND(({base_41:.6g}{adjustment:+.6g}){foil_note}*{size_factor['factor']:.6g},2)"
+        else:
+            price = int(math.floor(raw_price + 0.5 + 1e-9))
+            formula = f"ROUND(({base_41:.6g}{adjustment:+.6g}){foil_note}*{size_factor['factor']:.6g},0)"
         return {
             "ok": True,
             "price": price,

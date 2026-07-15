@@ -306,7 +306,12 @@ def process_price_workbook(workbook, customer_key: str, rules: JingwangRules | P
         has_quantity = bool(qty_col)
         is_plin = customer_key == "plin"
         simple_price_only = customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "techuang", "zhongfu"}
-        simple_headers = ["新价格", "整卷价格"] if customer_key == "taixing" else ["新价格"]
+        if customer_key == "taixing":
+            simple_headers = ["新价格", "整卷价格"]
+        elif customer_key == "mingyang":
+            simple_headers = ["新价格", "200M整卷价格"]
+        else:
+            simple_headers = ["新价格"]
         net_price_col = _find_net_price_col(headers) if customer_key == "aoshikang" else None
         if customer_key == "aoshikang" and net_price_col:
             simple_headers = [*simple_headers, "净价结果"]
@@ -392,6 +397,9 @@ def process_price_workbook(workbook, customer_key: str, rules: JingwangRules | P
                             result.rule_row,
                             result.size_column,
                         )
+                if customer_key == "mingyang" and "200M整卷价格" in output_cols:
+                    roll_200_price = result.total if result.material_type == "PP" and isinstance(result.total, (int, float)) else ""
+                    ws.cell(row=row_idx, column=output_cols["200M整卷价格"], value=_excel_value(roll_200_price))
                 if customer_key == "aoshikang" and net_price_col and "净价结果" in output_cols:
                     net_price, net_note = _aoshikang_net_price_result(ws.cell(row=row_idx, column=net_price_col).value)
                     ws.cell(row=row_idx, column=output_cols["净价结果"], value=_taixing_excel_value(net_price))
@@ -411,7 +419,7 @@ def process_price_workbook(workbook, customer_key: str, rules: JingwangRules | P
                     result.status,
                     result.material_type,
                     result.price,
-                    "",
+                    result.total if customer_key == "mingyang" else "",
                     result.width,
                     result.roll_length,
                     result.note,
