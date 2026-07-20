@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0",
+  "risks": [
+    {"risk_id": "PFR-001", "customer": "惠州智恩", "contains_all": ["NY-A2"], "field": "胶系/基板级别", "reason": "NY-A2是否使用AL及对应等级仍待业务确认"},
+    {"risk_id": "PFR-002", "customer": "赣州超跃", "contains_all": ["NY3170HF"], "field": "胶系", "reason": "NY3170HF客户专用胶系代码缺唯一已批准映射"},
+    {"risk_id": "PFR-003", "customer": "深圳联创", "contains_all": ["NY3150HC"], "field": "基板级别", "reason": "NY3150HC订单缺少汽车板/等级选择条件"},
+    {"risk_id": "PFR-004", "customer": "广东依顿", "contains_all": ["NY2150H", "ANTI"], "field": "基板级别", "reason": "NY2150H ANTI-CAF的AY/AC选择条件待业务确认"},
+    {"risk_id": "PFR-005", "customer": "湖奥士康", "contains_all": ["耐CAF"], "field": "基板级别", "reason": "同类耐CAF规格存在A1/AC并存，缺订单备注或物料号选择条件"},
+    {"risk_id": "PFR-006", "customer": "广州名幸", "contains_all": ["假板"], "field": "基板级别", "reason": "相同假板文本存在A1/A5并存，缺品号/物料编码选择条件"},
+    {"risk_id": "PFR-007", "customer": "深圳安比", "contains_all": ["NY1600", "CTI600"], "field": "基板级别", "reason": "NY1600 CTI600的F1选择条件未进入已批准规则"},
+    {"risk_id": "PFR-008", "customer": "广华升鑫", "contains_all": ["NY-A2"], "field": "厚度/总芯厚", "reason": "NY-A2厚度转换依赖订单含铜口径，当前字段不足"},
+    {"risk_id": "PFR-009", "customer": "广东喜珍", "contains_all": ["NY2140", "耐CAF"], "field": "基板级别", "reason": "NY2140耐CAF等级与通用F1规则冲突"},
+    {"risk_id": "PFR-010", "customer": "珠海景旺", "contains_all": ["NY2150"], "field": "基板级别", "reason": "AP需要电源板/能源板订单语义，当前订单字段未提供"},
+    {"risk_id": "PFR-011", "customer": "广东世运", "contains_all": ["NY2140"], "field": "基板级别", "reason": "客户NY2140等级与通用F1规则存在冲突，需客户规则优先条件"}
+  ]
+}

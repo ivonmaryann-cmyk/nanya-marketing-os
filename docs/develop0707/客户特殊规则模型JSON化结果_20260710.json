@@ -1,0 +1,3793 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-07-10T15:10:29+08:00",
+  "source_file": "docs/develop0707/客户特殊规则结构化草稿_按原表行_20260708.xlsx",
+  "model_provider": "DeepSeek",
+  "model": "deepseek-v4-pro",
+  "prompt_sha256": "7e4e122ea942146f794e46915561c8aa66b4288b7169d9c596fce4b16fc71fe0",
+  "schema_sha256": "5e5b2fb14a483f4dd643ac9f97b1d4a2917d80c06637b4ce749a739946eba47e",
+  "candidate_count": 42,
+  "completed_count": 42,
+  "summary": {
+    "status_counts": {
+      "待业务确认": 3,
+      "程序校验通过": 39
+    },
+    "execution_mode_counts": {
+      "待业务确认": 3,
+      "结构化后可确定性执行": 39
+    }
+  },
+  "items": [
+    {
+      "candidate_id": "MSR-0003-01",
+      "customer_code": "122023",
+      "customer_name": "超颖电子",
+      "source_row": 3,
+      "business_field": "基板级别",
+      "source_text": "除汽车板外，基板级别=AT",
+      "required_input_fields": "胶系",
+      "status": "待业务确认",
+      "recommended_execution_mode": "待业务确认",
+      "validation_result": "结构校验通过；存在待确认项",
+      "business_question": "第1项第1个条件字段未明确：is_automotive；第1项第1个条件来源未明确：需从客户其他规则或订单特征中识别汽车板；规则未提供判断'汽车板'的具体条件（如胶系关键词、备注字样、客户指定等），无法确定使用哪个订单字段或何种特征来排除汽车板。",
+      "model_confidence": "medium",
+      "semantic_type_summary": "exclusion_set",
+      "target_field_summary": "grade_intent",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "exclusion_set",
+            "target_field": "grade_intent",
+            "normalized_value": "AT",
+            "stated_target_value": "AT",
+            "conditions": [
+              {
+                "field": "is_automotive",
+                "operator": "equals",
+                "value": false,
+                "source_scope": "需从客户其他规则或订单特征中识别汽车板"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "除汽车板外，基板级别=AT",
+            "confidence": "medium",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [
+          {
+            "field": "汽车板识别",
+            "reason": "规则未提供判断'汽车板'的具体条件（如胶系关键词、备注字样、客户指定等），无法确定使用哪个订单字段或何种特征来排除汽车板。",
+            "evidence_text": "除汽车板外"
+          }
+        ],
+        "missing_inputs": [],
+        "model_confidence": "medium"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "exclusion_set",
+            "target_field": "grade_intent",
+            "normalized_value": "AT",
+            "stated_target_value": "AT",
+            "conditions": [
+              {
+                "field": "is_automotive",
+                "operator": "equals",
+                "value": false,
+                "source_scope": "需从客户其他规则或订单特征中识别汽车板"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "除汽车板外，基板级别=AT",
+            "confidence": "medium",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [
+          {
+            "field": "汽车板识别",
+            "reason": "规则未提供判断'汽车板'的具体条件（如胶系关键词、备注字样、客户指定等），无法确定使用哪个订单字段或何种特征来排除汽车板。",
+            "evidence_text": "除汽车板外"
+          }
+        ],
+        "missing_inputs": [],
+        "model_confidence": "medium"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0004-01",
+      "customer_code": "103890",
+      "customer_name": "珠海景旺",
+      "source_row": 4,
+      "business_field": "基板级别",
+      "source_text": "当订单备注有电源板和能源板时=AP",
+      "required_input_fields": "订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_present",
+      "target_field_summary": "grade_intent",
+      "normalization_notes": "第1项第1个条件source_scope：CCL特殊规则->订单备注",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AP",
+            "stated_target_value": "AP",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "电源板",
+                  "能源板"
+                ],
+                "source_scope": "CCL特殊规则"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当订单备注有电源板和能源板时=AP",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AP",
+            "stated_target_value": "AP",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "电源板",
+                  "能源板"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当订单备注有电源板和能源板时=AP",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0005-01",
+      "customer_code": "103031",
+      "customer_name": "江福昌发",
+      "source_row": 5,
+      "business_field": "基板厚度",
+      "source_text": "订单若不备注芯厚，默认是总厚且基板厚度<0.8需要进行芯总厚转换",
+      "required_input_fields": "订单备注；基板厚度",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_absent；external_lookup",
+      "target_field_summary": "total_core",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_absent",
+            "target_field": "total_core",
+            "normalized_value": "总厚",
+            "stated_target_value": "总厚",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "not_contains",
+                "value": "芯厚",
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "订单若不备注芯厚，默认是总厚",
+            "confidence": "high",
+            "deterministic_preferred": true
+          },
+          {
+            "semantic_type": "external_lookup",
+            "target_field": "total_core",
+            "normalized_value": "需要进行芯总厚转换",
+            "stated_target_value": "需要进行芯总厚转换",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "not_contains",
+                "value": "芯厚",
+                "source_scope": "订单备注"
+              },
+              {
+                "field": "基板厚度",
+                "operator": "lt",
+                "value": 0.8,
+                "source_scope": "基板厚度"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "基板厚度<0.8需要进行芯总厚转换",
+            "confidence": "high",
+            "deterministic_preferred": true
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_absent",
+            "target_field": "total_core",
+            "normalized_value": "总厚",
+            "stated_target_value": "总厚",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "not_contains",
+                "value": "芯厚",
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "订单若不备注芯厚，默认是总厚",
+            "confidence": "high",
+            "deterministic_preferred": true
+          },
+          {
+            "semantic_type": "external_lookup",
+            "target_field": "total_core",
+            "normalized_value": "需要进行芯总厚转换",
+            "stated_target_value": "需要进行芯总厚转换",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "not_contains",
+                "value": "芯厚",
+                "source_scope": "订单备注"
+              },
+              {
+                "field": "基板厚度",
+                "operator": "lt",
+                "value": 0.8,
+                "source_scope": "基板厚度"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "基板厚度<0.8需要进行芯总厚转换",
+            "confidence": "high",
+            "deterministic_preferred": true
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0007-01",
+      "customer_code": "105007",
+      "customer_name": "湖奥士康",
+      "source_row": 7,
+      "business_field": "铜箔类型+印字/非印字",
+      "source_text": "当备注中有水印要求时=铜箔类型+有水印",
+      "required_input_fields": "订单备注；铜箔规格",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_present",
+      "target_field_summary": "print_mark",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "print_mark",
+            "normalized_value": "有水印",
+            "stated_target_value": "铜箔类型+有水印",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "水印要求"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当备注中有水印要求时=铜箔类型+有水印",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "print_mark",
+            "normalized_value": "有水印",
+            "stated_target_value": "铜箔类型+有水印",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "水印要求"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当备注中有水印要求时=铜箔类型+有水印",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0007-02",
+      "customer_code": "105007",
+      "customer_name": "湖奥士康",
+      "source_row": 7,
+      "business_field": "基板级别",
+      "source_text": "当备注中有X0A0/X0B0/car/汽车板/458/439字样时=AC",
+      "required_input_fields": "订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_present",
+      "target_field_summary": "grade_intent",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AUTOMOTIVE",
+            "stated_target_value": "AC",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "X0A0",
+                  "X0B0",
+                  "car",
+                  "汽车板",
+                  "458",
+                  "439"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当备注中有X0A0/X0B0/car/汽车板/458/439字样时=AC",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AUTOMOTIVE",
+            "stated_target_value": "AC",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "X0A0",
+                  "X0B0",
+                  "car",
+                  "汽车板",
+                  "458",
+                  "439"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当备注中有X0A0/X0B0/car/汽车板/458/439字样时=AC",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 3
+    },
+    {
+      "candidate_id": "MSR-0007-03",
+      "customer_code": "105007",
+      "customer_name": "湖奥士康",
+      "source_row": 7,
+      "business_field": "基板级别",
+      "source_text": "当备注中有MINILED字样时=AM",
+      "required_input_fields": "订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_present",
+      "target_field_summary": "grade_intent",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "",
+            "stated_target_value": "AM",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "MINILED"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "备注中有MINILED字样",
+            "confidence": "high",
+            "deterministic_preferred": true
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "",
+            "stated_target_value": "AM",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "MINILED"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "备注中有MINILED字样",
+            "confidence": "high",
+            "deterministic_preferred": true
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0021-01",
+      "customer_code": "104354",
+      "customer_name": "常熟敬鹏",
+      "source_row": 21,
+      "business_field": "基板厚度",
+      "source_text": "客户料品名称上有“FML”为芯厚订单",
+      "required_input_fields": "客户料品名称；订单规格/订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_present",
+      "target_field_summary": "total_core",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "total_core",
+            "normalized_value": "core_thickness",
+            "stated_target_value": "芯厚",
+            "conditions": [
+              {
+                "field": "客户料品名称",
+                "operator": "contains_any",
+                "value": [
+                  "FML"
+                ],
+                "source_scope": "客户料品名称"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "客户料品名称上有“FML”为芯厚订单",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "total_core",
+            "normalized_value": "core_thickness",
+            "stated_target_value": "芯厚",
+            "conditions": [
+              {
+                "field": "客户料品名称",
+                "operator": "contains_any",
+                "value": [
+                  "FML"
+                ],
+                "source_scope": "客户料品名称"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "客户料品名称上有“FML”为芯厚订单",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 3
+    },
+    {
+      "candidate_id": "MSR-0021-02",
+      "customer_code": "104354",
+      "customer_name": "常熟敬鹏",
+      "source_row": 21,
+      "business_field": "基板级别",
+      "source_text": "NY1600及NY2140外，其余均下汽车板料号",
+      "required_input_fields": "胶系",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "exclusion_set",
+      "target_field_summary": "grade_intent",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "exclusion_set",
+            "target_field": "grade_intent",
+            "normalized_value": "automotive",
+            "stated_target_value": "汽车板",
+            "conditions": [
+              {
+                "field": "胶系",
+                "operator": "not_in",
+                "value": [
+                  "NY1600",
+                  "NY2140"
+                ],
+                "source_scope": "胶系"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "NY1600及NY2140外，其余均下汽车板料号",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "exclusion_set",
+            "target_field": "grade_intent",
+            "normalized_value": "automotive",
+            "stated_target_value": "汽车板",
+            "conditions": [
+              {
+                "field": "胶系",
+                "operator": "not_in",
+                "value": [
+                  "NY1600",
+                  "NY2140"
+                ],
+                "source_scope": "胶系"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "NY1600及NY2140外，其余均下汽车板料号",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0023-01",
+      "customer_code": "104443",
+      "customer_name": "无新美亚",
+      "source_row": 23,
+      "business_field": "基板尺寸",
+      "source_text": "客户订单中的尺寸, 参考新美亚客户尺寸转换表进行换算",
+      "required_input_fields": "订单规格/订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "external_lookup",
+      "target_field_summary": "size",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "external_lookup",
+            "target_field": "size",
+            "normalized_value": "",
+            "stated_target_value": "",
+            "conditions": [
+              {
+                "field": "订单规格/订单备注",
+                "operator": "present",
+                "value": null,
+                "source_scope": "订单规格/订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "客户订单中的尺寸, 参考新美亚客户尺寸转换表进行换算",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "external_lookup",
+            "target_field": "size",
+            "normalized_value": "",
+            "stated_target_value": "",
+            "conditions": [
+              {
+                "field": "订单规格/订单备注",
+                "operator": "present",
+                "value": null,
+                "source_scope": "订单规格/订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "客户订单中的尺寸, 参考新美亚客户尺寸转换表进行换算",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0023-02",
+      "customer_code": "104443",
+      "customer_name": "无新美亚",
+      "source_row": 23,
+      "business_field": "总/芯厚",
+      "source_text": "物料编码631.是芯厚，632.是总厚",
+      "required_input_fields": "客户物料编码/订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "explicit_fact",
+      "target_field_summary": "total_core",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "explicit_fact",
+            "target_field": "total_core",
+            "normalized_value": "core",
+            "stated_target_value": "芯厚",
+            "conditions": [
+              {
+                "field": "客户物料编码",
+                "operator": "equals",
+                "value": "631",
+                "source_scope": "客户物料编码"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "物料编码631.是芯厚",
+            "confidence": "high",
+            "deterministic_preferred": true
+          },
+          {
+            "semantic_type": "explicit_fact",
+            "target_field": "total_core",
+            "normalized_value": "total",
+            "stated_target_value": "总厚",
+            "conditions": [
+              {
+                "field": "客户物料编码",
+                "operator": "equals",
+                "value": "632",
+                "source_scope": "客户物料编码"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "632.是总厚",
+            "confidence": "high",
+            "deterministic_preferred": true
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "explicit_fact",
+            "target_field": "total_core",
+            "normalized_value": "core",
+            "stated_target_value": "芯厚",
+            "conditions": [
+              {
+                "field": "客户物料编码",
+                "operator": "equals",
+                "value": "631",
+                "source_scope": "客户物料编码"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "物料编码631.是芯厚",
+            "confidence": "high",
+            "deterministic_preferred": true
+          },
+          {
+            "semantic_type": "explicit_fact",
+            "target_field": "total_core",
+            "normalized_value": "total",
+            "stated_target_value": "总厚",
+            "conditions": [
+              {
+                "field": "客户物料编码",
+                "operator": "equals",
+                "value": "632",
+                "source_scope": "客户物料编码"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "632.是总厚",
+            "confidence": "high",
+            "deterministic_preferred": true
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 2
+    },
+    {
+      "candidate_id": "MSR-0037-01",
+      "customer_code": "103898",
+      "customer_name": "广东喜珍",
+      "source_row": 37,
+      "business_field": "基板级别",
+      "source_text": "当备注中有X0A0/X0B0/car/汽车板/458/439字样时=AC",
+      "required_input_fields": "订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_present",
+      "target_field_summary": "grade_intent",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AC",
+            "stated_target_value": "AC",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "X0A0",
+                  "X0B0",
+                  "car",
+                  "汽车板",
+                  "458",
+                  "439"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当备注中有X0A0/X0B0/car/汽车板/458/439字样时=AC",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AC",
+            "stated_target_value": "AC",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "X0A0",
+                  "X0B0",
+                  "car",
+                  "汽车板",
+                  "458",
+                  "439"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当备注中有X0A0/X0B0/car/汽车板/458/439字样时=AC",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0037-02",
+      "customer_code": "103898",
+      "customer_name": "广东喜珍",
+      "source_row": 37,
+      "business_field": "基板级别",
+      "source_text": "当备注中有MINILED字样时=AM",
+      "required_input_fields": "订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_present",
+      "target_field_summary": "grade_intent",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "miniled",
+            "stated_target_value": "AM",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "MINILED"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "备注中有MINILED字样时=AM",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "miniled",
+            "stated_target_value": "AM",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "MINILED"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "备注中有MINILED字样时=AM",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0038-01",
+      "customer_code": "257103",
+      "customer_name": "森德科技",
+      "source_row": 38,
+      "business_field": "基板级别",
+      "source_text": "当备注中有X0A0/X0B0/car/汽车板/458/439字样时=AC",
+      "required_input_fields": "订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_present",
+      "target_field_summary": "grade_intent",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AC",
+            "stated_target_value": "AC",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "X0A0",
+                  "X0B0",
+                  "car",
+                  "汽车板",
+                  "458",
+                  "439"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当备注中有X0A0/X0B0/car/汽车板/458/439字样时=AC",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AC",
+            "stated_target_value": "AC",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "X0A0",
+                  "X0B0",
+                  "car",
+                  "汽车板",
+                  "458",
+                  "439"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当备注中有X0A0/X0B0/car/汽车板/458/439字样时=AC",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0038-02",
+      "customer_code": "257103",
+      "customer_name": "森德科技",
+      "source_row": 38,
+      "business_field": "基板级别",
+      "source_text": "当备注中有MINILED字样时=AM",
+      "required_input_fields": "订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_present",
+      "target_field_summary": "grade_intent",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AM",
+            "stated_target_value": "AM",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "MINILED"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当备注中有MINILED字样时=AM",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AM",
+            "stated_target_value": "AM",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "MINILED"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当备注中有MINILED字样时=AM",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0043-01",
+      "customer_code": "123114",
+      "customer_name": "赣州景旺",
+      "source_row": 43,
+      "business_field": "基板级别",
+      "source_text": "当订单备注有电源板和能源板时=AP",
+      "required_input_fields": "订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_present",
+      "target_field_summary": "grade_intent",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AP",
+            "stated_target_value": "AP",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "电源板",
+                  "能源板"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当订单备注有电源板和能源板时=AP",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AP",
+            "stated_target_value": "AP",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "电源板",
+                  "能源板"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当订单备注有电源板和能源板时=AP",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0044-01",
+      "customer_code": "123018",
+      "customer_name": "江西景旺",
+      "source_row": 44,
+      "business_field": "基板级别",
+      "source_text": "当订单备注有电源板和能源板时=AP",
+      "required_input_fields": "订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_present",
+      "target_field_summary": "grade_intent",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "",
+            "stated_target_value": "AP",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "电源板",
+                  "能源板"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当订单备注有电源板和能源板时=AP",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "",
+            "stated_target_value": "AP",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "电源板",
+                  "能源板"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当订单备注有电源板和能源板时=AP",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0045-01",
+      "customer_code": "103375",
+      "customer_name": "龙川景旺",
+      "source_row": 45,
+      "business_field": "基板级别",
+      "source_text": "当订单备注有电源板和能源板时=AP",
+      "required_input_fields": "订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_present",
+      "target_field_summary": "grade_intent",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AP",
+            "stated_target_value": "AP",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "电源板",
+                  "能源板"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当订单备注有电源板和能源板时=AP",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AP",
+            "stated_target_value": "AP",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "电源板",
+                  "能源板"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当订单备注有电源板和能源板时=AP",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0046-01",
+      "customer_code": "103040",
+      "customer_name": "深圳景旺",
+      "source_row": 46,
+      "business_field": "基板级别",
+      "source_text": "当订单备注有电源板和能源板时=AP",
+      "required_input_fields": "订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_present",
+      "target_field_summary": "grade_intent",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AP",
+            "stated_target_value": "AP",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "电源板",
+                  "能源板"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当订单备注有电源板和能源板时=AP",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AP",
+            "stated_target_value": "AP",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "电源板",
+                  "能源板"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当订单备注有电源板和能源板时=AP",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0048-01",
+      "customer_code": "123002",
+      "customer_name": "信福昌发",
+      "source_row": 48,
+      "business_field": "基板厚度",
+      "source_text": "订单若不备注芯厚，默认是总厚且基板厚度<0.8需要进行芯总厚转换",
+      "required_input_fields": "订单备注；基板厚度",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "default_when_missing；external_lookup",
+      "target_field_summary": "total_core；thickness",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "default_when_missing",
+            "target_field": "total_core",
+            "normalized_value": "总厚",
+            "stated_target_value": "总厚",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "not_contains",
+                "value": "芯厚",
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "订单若不备注芯厚，默认是总厚",
+            "confidence": "high",
+            "deterministic_preferred": true
+          },
+          {
+            "semantic_type": "external_lookup",
+            "target_field": "thickness",
+            "normalized_value": "执行总芯厚转换",
+            "stated_target_value": "",
+            "conditions": [
+              {
+                "field": "基板厚度",
+                "operator": "lt",
+                "value": 0.8,
+                "source_scope": "基板厚度"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "基板厚度<0.8需要进行芯总厚转换",
+            "confidence": "high",
+            "deterministic_preferred": true
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "default_when_missing",
+            "target_field": "total_core",
+            "normalized_value": "总厚",
+            "stated_target_value": "总厚",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "not_contains",
+                "value": "芯厚",
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "订单若不备注芯厚，默认是总厚",
+            "confidence": "high",
+            "deterministic_preferred": true
+          },
+          {
+            "semantic_type": "external_lookup",
+            "target_field": "thickness",
+            "normalized_value": "执行总芯厚转换",
+            "stated_target_value": "",
+            "conditions": [
+              {
+                "field": "基板厚度",
+                "operator": "lt",
+                "value": 0.8,
+                "source_scope": "基板厚度"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "基板厚度<0.8需要进行芯总厚转换",
+            "confidence": "high",
+            "deterministic_preferred": true
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0049-01",
+      "customer_code": "103683",
+      "customer_name": "鹤山中富",
+      "source_row": 49,
+      "business_field": "基板级别",
+      "source_text": "当订单中客户规格没有Q时=AP",
+      "required_input_fields": "客户规格；订单规格/订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_absent",
+      "target_field_summary": "grade_intent",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_absent",
+            "target_field": "grade_intent",
+            "normalized_value": "AP",
+            "stated_target_value": "AP",
+            "conditions": [
+              {
+                "field": "客户规格",
+                "operator": "not_contains",
+                "value": "Q",
+                "source_scope": "客户规格"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当订单中客户规格没有Q时",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_absent",
+            "target_field": "grade_intent",
+            "normalized_value": "AP",
+            "stated_target_value": "AP",
+            "conditions": [
+              {
+                "field": "客户规格",
+                "operator": "not_contains",
+                "value": "Q",
+                "source_scope": "客户规格"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当订单中客户规格没有Q时",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 2
+    },
+    {
+      "candidate_id": "MSR-0050-01",
+      "customer_code": "103067",
+      "customer_name": "深圳中富",
+      "source_row": 50,
+      "business_field": "基板级别",
+      "source_text": "当订单中客户规格没有Q时=AP",
+      "required_input_fields": "客户规格；订单规格/订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_absent",
+      "target_field_summary": "grade_intent",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_absent",
+            "target_field": "grade_intent",
+            "normalized_value": "AP",
+            "stated_target_value": "AP",
+            "conditions": [
+              {
+                "field": "客户规格",
+                "operator": "not_contains",
+                "value": "Q",
+                "source_scope": "客户规格"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当订单中客户规格没有Q时",
+            "confidence": "high",
+            "deterministic_preferred": true
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_absent",
+            "target_field": "grade_intent",
+            "normalized_value": "AP",
+            "stated_target_value": "AP",
+            "conditions": [
+              {
+                "field": "客户规格",
+                "operator": "not_contains",
+                "value": "Q",
+                "source_scope": "客户规格"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当订单中客户规格没有Q时",
+            "confidence": "high",
+            "deterministic_preferred": true
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0100-01",
+      "customer_code": "123043",
+      "customer_name": "吉安生益",
+      "source_row": 100,
+      "business_field": "基板级别",
+      "source_text": "当客户规格描述有“AT板”字样时=AC",
+      "required_input_fields": "客户规格",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_present",
+      "target_field_summary": "grade_intent",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "",
+            "stated_target_value": "AC",
+            "conditions": [
+              {
+                "field": "客户规格",
+                "operator": "contains_any",
+                "value": [
+                  "AT板"
+                ],
+                "source_scope": "客户规格"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当客户规格描述有“AT板”字样时=AC",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "",
+            "stated_target_value": "AC",
+            "conditions": [
+              {
+                "field": "客户规格",
+                "operator": "contains_any",
+                "value": [
+                  "AT板"
+                ],
+                "source_scope": "客户规格"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当客户规格描述有“AT板”字样时=AC",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 2
+    },
+    {
+      "candidate_id": "MSR-0101-01",
+      "customer_code": "103738",
+      "customer_name": "生益电子",
+      "source_row": 101,
+      "business_field": "基板级别",
+      "source_text": "当客户规格描述有“AT板”字样时=AC",
+      "required_input_fields": "客户规格",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_present",
+      "target_field_summary": "grade_intent",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AT板意图",
+            "stated_target_value": "AC",
+            "conditions": [
+              {
+                "field": "客户规格",
+                "operator": "contains_any",
+                "value": [
+                  "AT板"
+                ],
+                "source_scope": "客户规格"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当客户规格描述有“AT板”字样时=AC",
+            "confidence": "high",
+            "deterministic_preferred": true
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AT板意图",
+            "stated_target_value": "AC",
+            "conditions": [
+              {
+                "field": "客户规格",
+                "operator": "contains_any",
+                "value": [
+                  "AT板"
+                ],
+                "source_scope": "客户规格"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当客户规格描述有“AT板”字样时=AC",
+            "confidence": "high",
+            "deterministic_preferred": true
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0102-01",
+      "customer_code": "103312",
+      "customer_name": "深万基隆",
+      "source_row": 102,
+      "business_field": "基板厚度",
+      "source_text": "订单若不备注芯厚，默认是总厚且基板厚度<0.8需要进行芯总厚转换",
+      "required_input_fields": "订单备注；基板厚度",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "multi_condition",
+      "target_field_summary": "total_core",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "multi_condition",
+            "target_field": "total_core",
+            "normalized_value": "默认总厚（订单未备注芯厚）且基板厚度<0.8时需执行总芯厚转换",
+            "stated_target_value": "",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "not_contains",
+                "value": "芯厚",
+                "source_scope": "订单备注"
+              },
+              {
+                "field": "基板厚度",
+                "operator": "lt",
+                "value": 0.8,
+                "source_scope": "基板厚度"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "订单若不备注芯厚，默认是总厚且基板厚度<0.8需要进行芯总厚转换",
+            "confidence": "high",
+            "deterministic_preferred": true
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "multi_condition",
+            "target_field": "total_core",
+            "normalized_value": "默认总厚（订单未备注芯厚）且基板厚度<0.8时需执行总芯厚转换",
+            "stated_target_value": "",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "not_contains",
+                "value": "芯厚",
+                "source_scope": "订单备注"
+              },
+              {
+                "field": "基板厚度",
+                "operator": "lt",
+                "value": 0.8,
+                "source_scope": "基板厚度"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "订单若不备注芯厚，默认是总厚且基板厚度<0.8需要进行芯总厚转换",
+            "confidence": "high",
+            "deterministic_preferred": true
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0126-01",
+      "customer_code": "103792",
+      "customer_name": "广东世运",
+      "source_row": 126,
+      "business_field": "基板级别",
+      "source_text": "客户订单备注栏如:2DPOA74309E 第5码:A普通汽车板，S是安全类的，都需下汽车板AC",
+      "required_input_fields": "订单备注；客户物料编码/订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "position_code",
+      "target_field_summary": "grade_intent",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "position_code",
+            "target_field": "grade_intent",
+            "normalized_value": "AC",
+            "stated_target_value": "AC",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "char_at",
+                "value": {
+                  "position": 5,
+                  "values": [
+                    "A",
+                    "S"
+                  ]
+                },
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "客户订单备注栏如:2DPOA74309E 第5码:A普通汽车板，S是安全类的，都需下汽车板AC",
+            "confidence": "high",
+            "deterministic_preferred": true
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "position_code",
+            "target_field": "grade_intent",
+            "normalized_value": "AC",
+            "stated_target_value": "AC",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "char_at",
+                "value": {
+                  "position": 5,
+                  "values": [
+                    "A",
+                    "S"
+                  ]
+                },
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "客户订单备注栏如:2DPOA74309E 第5码:A普通汽车板，S是安全类的，都需下汽车板AC",
+            "confidence": "high",
+            "deterministic_preferred": true
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0127-01",
+      "customer_code": "103809",
+      "customer_name": "鹤山世安",
+      "source_row": 127,
+      "business_field": "基板级别",
+      "source_text": "客户订单备注栏如:2DPOA74309E 第5码:A普通汽车板，S是安全类的，都需下汽车板AC",
+      "required_input_fields": "订单备注；客户物料编码/订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "position_code",
+      "target_field_summary": "grade_intent",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "position_code",
+            "target_field": "grade_intent",
+            "normalized_value": "automotive",
+            "stated_target_value": "AC",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "char_at",
+                "value": [
+                  "A",
+                  "S"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "客户订单备注栏如:2DPOA74309E 第5码:A普通汽车板，S是安全类的，都需下汽车板AC",
+            "confidence": "high",
+            "deterministic_preferred": true
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "position_code",
+            "target_field": "grade_intent",
+            "normalized_value": "automotive",
+            "stated_target_value": "AC",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "char_at",
+                "value": [
+                  "A",
+                  "S"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "客户订单备注栏如:2DPOA74309E 第5码:A普通汽车板，S是安全类的，都需下汽车板AC",
+            "confidence": "high",
+            "deterministic_preferred": true
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0131-01",
+      "customer_code": "104158",
+      "customer_name": "江苏瀚宇",
+      "source_row": 131,
+      "business_field": "基板级别",
+      "source_text": "客户物料编码最后一位是Q时=AC",
+      "required_input_fields": "客户物料编码/订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "position_code",
+      "target_field_summary": "grade_intent",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "position_code",
+            "target_field": "grade_intent",
+            "normalized_value": "AC",
+            "stated_target_value": "AC",
+            "conditions": [
+              {
+                "field": "客户物料编码",
+                "operator": "char_at",
+                "value": "最后一位=Q",
+                "source_scope": "客户物料编码"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "客户物料编码最后一位是Q时=AC",
+            "confidence": "high",
+            "deterministic_preferred": true
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "position_code",
+            "target_field": "grade_intent",
+            "normalized_value": "AC",
+            "stated_target_value": "AC",
+            "conditions": [
+              {
+                "field": "客户物料编码",
+                "operator": "char_at",
+                "value": "最后一位=Q",
+                "source_scope": "客户物料编码"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "客户物料编码最后一位是Q时=AC",
+            "confidence": "high",
+            "deterministic_preferred": true
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 2
+    },
+    {
+      "candidate_id": "MSR-0144-01",
+      "customer_code": "106008",
+      "customer_name": "川英创力",
+      "source_row": 144,
+      "business_field": "胶系",
+      "source_text": "订单上没有写胶系时=NY2140，TG140=NY2140,TG150=NY2150,TG170=NY2170",
+      "required_input_fields": "订单规格/订单备注；胶系",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "default_when_missing；keyword_present",
+      "target_field_summary": "glue",
+      "normalization_notes": "第1项第1个条件source_scope：订单规格/订单备注->胶系；胶系明示映射优先于缺失默认，移除伪冲突",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "default_when_missing",
+            "target_field": "glue",
+            "normalized_value": "NY2140",
+            "stated_target_value": "NY2140",
+            "conditions": [
+              {
+                "field": "胶系",
+                "operator": "missing",
+                "value": null,
+                "source_scope": "订单规格/订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "订单上没有写胶系时=NY2140",
+            "confidence": "medium",
+            "deterministic_preferred": false
+          },
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "glue",
+            "normalized_value": "NY2140",
+            "stated_target_value": "NY2140",
+            "conditions": [
+              {
+                "field": "订单规格/订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "TG140"
+                ],
+                "source_scope": "订单规格/订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "TG140=NY2140",
+            "confidence": "medium",
+            "deterministic_preferred": false
+          },
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "glue",
+            "normalized_value": "NY2150",
+            "stated_target_value": "NY2150",
+            "conditions": [
+              {
+                "field": "订单规格/订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "TG150"
+                ],
+                "source_scope": "订单规格/订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "TG150=NY2150",
+            "confidence": "medium",
+            "deterministic_preferred": false
+          },
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "glue",
+            "normalized_value": "NY2170",
+            "stated_target_value": "NY2170",
+            "conditions": [
+              {
+                "field": "订单规格/订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "TG170"
+                ],
+                "source_scope": "订单规格/订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "TG170=NY2170",
+            "confidence": "medium",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [
+          {
+            "field": "glue",
+            "reason": "当订单规格/订单备注中同时存在胶系指定和TG字样时，规则未定义优先级，可能导致冲突",
+            "evidence_text": "订单上没有写胶系时=NY2140，TG140=NY2140,TG150=NY2150,TG170=NY2170"
+          }
+        ],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "default_when_missing",
+            "target_field": "glue",
+            "normalized_value": "NY2140",
+            "stated_target_value": "NY2140",
+            "conditions": [
+              {
+                "field": "胶系",
+                "operator": "missing",
+                "value": null,
+                "source_scope": "胶系"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "订单上没有写胶系时=NY2140",
+            "confidence": "medium",
+            "deterministic_preferred": false
+          },
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "glue",
+            "normalized_value": "NY2140",
+            "stated_target_value": "NY2140",
+            "conditions": [
+              {
+                "field": "订单规格/订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "TG140"
+                ],
+                "source_scope": "订单规格/订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "TG140=NY2140",
+            "confidence": "medium",
+            "deterministic_preferred": false
+          },
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "glue",
+            "normalized_value": "NY2150",
+            "stated_target_value": "NY2150",
+            "conditions": [
+              {
+                "field": "订单规格/订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "TG150"
+                ],
+                "source_scope": "订单规格/订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "TG150=NY2150",
+            "confidence": "medium",
+            "deterministic_preferred": false
+          },
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "glue",
+            "normalized_value": "NY2170",
+            "stated_target_value": "NY2170",
+            "conditions": [
+              {
+                "field": "订单规格/订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "TG170"
+                ],
+                "source_scope": "订单规格/订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "TG170=NY2170",
+            "confidence": "medium",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0150-01",
+      "customer_code": "111001",
+      "customer_name": "天津普林",
+      "source_row": 150,
+      "business_field": "基板级别",
+      "source_text": "客户订单上有“汽车板”字样=AC",
+      "required_input_fields": "订单规格/订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_present",
+      "target_field_summary": "grade_intent",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AC",
+            "stated_target_value": "AC",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "汽车板"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "客户订单上有“汽车板”字样=AC",
+            "confidence": "high",
+            "deterministic_preferred": true
+          },
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AC",
+            "stated_target_value": "AC",
+            "conditions": [
+              {
+                "field": "订单规格",
+                "operator": "contains_any",
+                "value": [
+                  "汽车板"
+                ],
+                "source_scope": "订单规格"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "客户订单上有“汽车板”字样=AC",
+            "confidence": "high",
+            "deterministic_preferred": true
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AC",
+            "stated_target_value": "AC",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "汽车板"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "客户订单上有“汽车板”字样=AC",
+            "confidence": "high",
+            "deterministic_preferred": true
+          },
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AC",
+            "stated_target_value": "AC",
+            "conditions": [
+              {
+                "field": "订单规格",
+                "operator": "contains_any",
+                "value": [
+                  "汽车板"
+                ],
+                "source_scope": "订单规格"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "客户订单上有“汽车板”字样=AC",
+            "confidence": "high",
+            "deterministic_preferred": true
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0159-01",
+      "customer_code": "122019",
+      "customer_name": "湖北金禄",
+      "source_row": 159,
+      "business_field": "基板级别",
+      "source_text": "当备注宁德、ND字样=AC",
+      "required_input_fields": "订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_present",
+      "target_field_summary": "grade_intent",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AC",
+            "stated_target_value": "AC",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "宁德",
+                  "ND"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当备注宁德、ND字样=AC",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AC",
+            "stated_target_value": "AC",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "宁德",
+                  "ND"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当备注宁德、ND字样=AC",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0160-01",
+      "customer_code": "104359",
+      "customer_name": "淮安特创",
+      "source_row": 160,
+      "business_field": "基板级别",
+      "source_text": "当备注中有汽车专用字样时=AC",
+      "required_input_fields": "订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_present",
+      "target_field_summary": "grade_intent",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AC",
+            "stated_target_value": "AC",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "汽车专用"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当备注中有汽车专用字样时=AC",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AC",
+            "stated_target_value": "AC",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "汽车专用"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当备注中有汽车专用字样时=AC",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0181-01",
+      "customer_code": "103996",
+      "customer_name": "深三德盈",
+      "source_row": 181,
+      "business_field": "基板厚度",
+      "source_text": "客户订单默认含铜，不含铜会备注",
+      "required_input_fields": "订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_absent；keyword_present",
+      "target_field_summary": "total_core",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_absent",
+            "target_field": "total_core",
+            "normalized_value": "总厚",
+            "stated_target_value": "",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "not_contains",
+                "value": "不含铜",
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "客户订单默认含铜",
+            "confidence": "high",
+            "deterministic_preferred": false
+          },
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "total_core",
+            "normalized_value": "芯厚",
+            "stated_target_value": "",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": "不含铜",
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "不含铜会备注",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_absent",
+            "target_field": "total_core",
+            "normalized_value": "总厚",
+            "stated_target_value": "",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "not_contains",
+                "value": "不含铜",
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "客户订单默认含铜",
+            "confidence": "high",
+            "deterministic_preferred": false
+          },
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "total_core",
+            "normalized_value": "芯厚",
+            "stated_target_value": "",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": "不含铜",
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "不含铜会备注",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0185-01",
+      "customer_code": "103990、 103984、 123016、 123103",
+      "customer_name": "广华升鑫、深华升鑫",
+      "source_row": 185,
+      "business_field": "基板厚度",
+      "source_text": "客户订单默认含铜，不含铜会备注",
+      "required_input_fields": "订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_absent；keyword_present",
+      "target_field_summary": "total_core",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_absent",
+            "target_field": "total_core",
+            "normalized_value": "总厚",
+            "stated_target_value": "",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "not_contains",
+                "value": "不含铜",
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "客户订单默认含铜，不含铜会备注",
+            "confidence": "high",
+            "deterministic_preferred": false
+          },
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "total_core",
+            "normalized_value": "芯厚",
+            "stated_target_value": "",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": "不含铜",
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "不含铜会备注",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_absent",
+            "target_field": "total_core",
+            "normalized_value": "总厚",
+            "stated_target_value": "",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "not_contains",
+                "value": "不含铜",
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "客户订单默认含铜，不含铜会备注",
+            "confidence": "high",
+            "deterministic_preferred": false
+          },
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "total_core",
+            "normalized_value": "芯厚",
+            "stated_target_value": "",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": "不含铜",
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "不含铜会备注",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 2
+    },
+    {
+      "candidate_id": "MSR-0185-02",
+      "customer_code": "103990、 103984、 123016、 123103",
+      "customer_name": "广华升鑫、深华升鑫",
+      "source_row": 185,
+      "business_field": "铜箔规格",
+      "source_text": "客户订单备注",
+      "required_input_fields": "订单备注",
+      "status": "待业务确认",
+      "recommended_execution_mode": "待业务确认",
+      "validation_result": "结构校验通过；存在待确认项",
+      "business_question": "规则原文'客户订单备注'仅指定信息来源，未提供从订单备注确定铜箔规格所需的关键字映射或选择条件；模型未拆出可执行语义项",
+      "model_confidence": "high",
+      "semantic_type_summary": "",
+      "target_field_summary": "",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [],
+        "ambiguities": [
+          {
+            "field": "copper",
+            "reason": "规则原文'客户订单备注'仅指定信息来源，未提供从订单备注确定铜箔规格所需的关键字映射或选择条件",
+            "evidence_text": "客户订单备注"
+          }
+        ],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [],
+        "ambiguities": [
+          {
+            "field": "copper",
+            "reason": "规则原文'客户订单备注'仅指定信息来源，未提供从订单备注确定铜箔规格所需的关键字映射或选择条件",
+            "evidence_text": "客户订单备注"
+          }
+        ],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0189-01",
+      "customer_code": "122013",
+      "customer_name": "湖北健鼎",
+      "source_row": 189,
+      "business_field": "铜箔类型+印字/非印字",
+      "source_text": "当胶系=NY3170M且下单有双面字样时=RTF",
+      "required_input_fields": "订单规格/订单备注；胶系",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "multi_condition",
+      "target_field_summary": "copper_type",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "multi_condition",
+            "target_field": "copper_type",
+            "normalized_value": "",
+            "stated_target_value": "RTF",
+            "conditions": [
+              {
+                "field": "胶系",
+                "operator": "equals",
+                "value": "NY3170M",
+                "source_scope": "胶系"
+              },
+              {
+                "field": "订单规格/订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "双面"
+                ],
+                "source_scope": "订单规格/订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当胶系=NY3170M且下单有双面字样时=RTF",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "multi_condition",
+            "target_field": "copper_type",
+            "normalized_value": "",
+            "stated_target_value": "RTF",
+            "conditions": [
+              {
+                "field": "胶系",
+                "operator": "equals",
+                "value": "NY3170M",
+                "source_scope": "胶系"
+              },
+              {
+                "field": "订单规格/订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "双面"
+                ],
+                "source_scope": "订单规格/订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当胶系=NY3170M且下单有双面字样时=RTF",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0189-02",
+      "customer_code": "122013",
+      "customer_name": "湖北健鼎",
+      "source_row": 189,
+      "business_field": "铜箔类型+印字/非印字",
+      "source_text": "当胶系=NY3170M且下单无该字样时=HTE",
+      "required_input_fields": "订单规格/订单备注；胶系",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_absent",
+      "target_field_summary": "copper_type",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_absent",
+            "target_field": "copper_type",
+            "normalized_value": "HTE",
+            "stated_target_value": "HTE",
+            "conditions": [
+              {
+                "field": "胶系",
+                "operator": "equals",
+                "value": "NY3170M",
+                "source_scope": "胶系"
+              },
+              {
+                "field": "订单规格/订单备注",
+                "operator": "not_contains",
+                "value": "双面",
+                "source_scope": "订单规格/订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当胶系=NY3170M且下单无该字样时=HTE",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_absent",
+            "target_field": "copper_type",
+            "normalized_value": "HTE",
+            "stated_target_value": "HTE",
+            "conditions": [
+              {
+                "field": "胶系",
+                "operator": "equals",
+                "value": "NY3170M",
+                "source_scope": "胶系"
+              },
+              {
+                "field": "订单规格/订单备注",
+                "operator": "not_contains",
+                "value": "双面",
+                "source_scope": "订单规格/订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当胶系=NY3170M且下单无该字样时=HTE",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0191-01",
+      "customer_code": "104312",
+      "customer_name": "无锡健鼎",
+      "source_row": 191,
+      "business_field": "铜箔类型+印字/非印字",
+      "source_text": "当胶系=NY3170M且下单有双面字样时=RTF",
+      "required_input_fields": "订单规格/订单备注；胶系",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "multi_condition",
+      "target_field_summary": "copper_type",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "multi_condition",
+            "target_field": "copper_type",
+            "normalized_value": "RTF",
+            "stated_target_value": "RTF",
+            "conditions": [
+              {
+                "field": "胶系",
+                "operator": "equals",
+                "value": "NY3170M",
+                "source_scope": "胶系"
+              },
+              {
+                "field": "订单规格/订单备注",
+                "operator": "contains_any",
+                "value": "双面",
+                "source_scope": "订单规格/订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当胶系=NY3170M且下单有双面字样时=RTF",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "multi_condition",
+            "target_field": "copper_type",
+            "normalized_value": "RTF",
+            "stated_target_value": "RTF",
+            "conditions": [
+              {
+                "field": "胶系",
+                "operator": "equals",
+                "value": "NY3170M",
+                "source_scope": "胶系"
+              },
+              {
+                "field": "订单规格/订单备注",
+                "operator": "contains_any",
+                "value": "双面",
+                "source_scope": "订单规格/订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当胶系=NY3170M且下单有双面字样时=RTF",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0191-02",
+      "customer_code": "104312",
+      "customer_name": "无锡健鼎",
+      "source_row": 191,
+      "business_field": "铜箔类型+印字/非印字",
+      "source_text": "当胶系=NY3170M且下单无该字样时=HTE",
+      "required_input_fields": "订单规格/订单备注；胶系",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "multi_condition",
+      "target_field_summary": "copper_type",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "multi_condition",
+            "target_field": "copper_type",
+            "normalized_value": "HTE",
+            "stated_target_value": "HTE",
+            "conditions": [
+              {
+                "field": "胶系",
+                "operator": "equals",
+                "value": "NY3170M",
+                "source_scope": "胶系"
+              },
+              {
+                "field": "订单规格/订单备注",
+                "operator": "not_contains",
+                "value": "双面",
+                "source_scope": "订单规格/订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当胶系=NY3170M且下单无该字样时=HTE",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "multi_condition",
+            "target_field": "copper_type",
+            "normalized_value": "HTE",
+            "stated_target_value": "HTE",
+            "conditions": [
+              {
+                "field": "胶系",
+                "operator": "equals",
+                "value": "NY3170M",
+                "source_scope": "胶系"
+              },
+              {
+                "field": "订单规格/订单备注",
+                "operator": "not_contains",
+                "value": "双面",
+                "source_scope": "订单规格/订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当胶系=NY3170M且下单无该字样时=HTE",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0211-01",
+      "customer_code": "157001",
+      "customer_name": "泰国景旺",
+      "source_row": 211,
+      "business_field": "基板级别",
+      "source_text": "当订单备注有电源板和能源板时=AP",
+      "required_input_fields": "订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_present",
+      "target_field_summary": "grade_intent",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AP",
+            "stated_target_value": "AP",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "电源板",
+                  "能源板"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当订单备注有电源板和能源板时=AP",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "grade_intent",
+            "normalized_value": "AP",
+            "stated_target_value": "AP",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "电源板",
+                  "能源板"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "当订单备注有电源板和能源板时=AP",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0212-01",
+      "customer_code": "103059",
+      "customer_name": "深同创鑫",
+      "source_row": 212,
+      "business_field": "基板厚度",
+      "source_text": "客户订单默认含铜，不含铜会备注",
+      "required_input_fields": "订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "default_when_missing；keyword_present",
+      "target_field_summary": "total_core",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "default_when_missing",
+            "target_field": "total_core",
+            "normalized_value": "总厚",
+            "stated_target_value": "",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "missing",
+                "value": "不含铜",
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "客户订单默认含铜，不含铜会备注",
+            "confidence": "high",
+            "deterministic_preferred": true
+          },
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "total_core",
+            "normalized_value": "芯厚",
+            "stated_target_value": "",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "不含铜"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "不含铜会备注",
+            "confidence": "high",
+            "deterministic_preferred": true
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "default_when_missing",
+            "target_field": "total_core",
+            "normalized_value": "总厚",
+            "stated_target_value": "",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "missing",
+                "value": "不含铜",
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "客户订单默认含铜，不含铜会备注",
+            "confidence": "high",
+            "deterministic_preferred": true
+          },
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "total_core",
+            "normalized_value": "芯厚",
+            "stated_target_value": "",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "不含铜"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "不含铜会备注",
+            "confidence": "high",
+            "deterministic_preferred": true
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0212-02",
+      "customer_code": "103059",
+      "customer_name": "深同创鑫",
+      "source_row": 212,
+      "business_field": "铜箔规格",
+      "source_text": "客户订单备注",
+      "required_input_fields": "订单备注",
+      "status": "待业务确认",
+      "recommended_execution_mode": "待业务确认",
+      "validation_result": "结构校验通过；存在待确认项",
+      "business_question": "规则原文仅指定来源字段为“客户订单备注”，但未给出任何具体条件或映射，无法生成原子语义条件。；模型未拆出可执行语义项",
+      "model_confidence": "medium",
+      "semantic_type_summary": "",
+      "target_field_summary": "",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [],
+        "ambiguities": [
+          {
+            "field": "copper",
+            "reason": "规则原文仅指定来源字段为“客户订单备注”，但未给出任何具体条件或映射，无法生成原子语义条件。",
+            "evidence_text": "客户订单备注"
+          }
+        ],
+        "missing_inputs": [],
+        "model_confidence": "medium"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [],
+        "ambiguities": [
+          {
+            "field": "copper",
+            "reason": "规则原文仅指定来源字段为“客户订单备注”，但未给出任何具体条件或映射，无法生成原子语义条件。",
+            "evidence_text": "客户订单备注"
+          }
+        ],
+        "missing_inputs": [],
+        "model_confidence": "medium"
+      },
+      "attempts": 1
+    },
+    {
+      "candidate_id": "MSR-0220-01",
+      "customer_code": "203012",
+      "customer_name": "深圳安比",
+      "source_row": 220,
+      "business_field": "基板厚度",
+      "source_text": "备注会标注是否含铜，含铜是总厚且<0.8时需要总厚转芯厚",
+      "required_input_fields": "订单备注",
+      "status": "程序校验通过",
+      "recommended_execution_mode": "结构化后可确定性执行",
+      "validation_result": "通过；建议执行方式=结构化后可确定性执行",
+      "business_question": "",
+      "model_confidence": "high",
+      "semantic_type_summary": "keyword_present；multi_condition",
+      "target_field_summary": "total_core",
+      "normalization_notes": "",
+      "raw_model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "total_core",
+            "normalized_value": "总厚",
+            "stated_target_value": "",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "含铜"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "备注会标注是否含铜，含铜是总厚且<0.8时需要总厚转芯厚",
+            "confidence": "high",
+            "deterministic_preferred": false
+          },
+          {
+            "semantic_type": "multi_condition",
+            "target_field": "total_core",
+            "normalized_value": "芯厚",
+            "stated_target_value": "",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "含铜"
+                ],
+                "source_scope": "订单备注"
+              },
+              {
+                "field": "基板厚度",
+                "operator": "lt",
+                "value": 0.8,
+                "source_scope": "基板厚度"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "备注会标注是否含铜，含铜是总厚且<0.8时需要总厚转芯厚",
+            "confidence": "high",
+            "deterministic_preferred": true
+          },
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "total_core",
+            "normalized_value": "芯厚",
+            "stated_target_value": "",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "不含铜"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "备注会标注是否含铜",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "model_result": {
+        "schema_version": "1.0",
+        "task_type": "rule_structure",
+        "material_scope": "CCL",
+        "semantic_items": [
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "total_core",
+            "normalized_value": "总厚",
+            "stated_target_value": "",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "含铜"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "备注会标注是否含铜，含铜是总厚且<0.8时需要总厚转芯厚",
+            "confidence": "high",
+            "deterministic_preferred": false
+          },
+          {
+            "semantic_type": "multi_condition",
+            "target_field": "total_core",
+            "normalized_value": "芯厚",
+            "stated_target_value": "",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "含铜"
+                ],
+                "source_scope": "订单备注"
+              },
+              {
+                "field": "基板厚度",
+                "operator": "lt",
+                "value": 0.8,
+                "source_scope": "基板厚度"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "备注会标注是否含铜，含铜是总厚且<0.8时需要总厚转芯厚",
+            "confidence": "high",
+            "deterministic_preferred": true
+          },
+          {
+            "semantic_type": "keyword_present",
+            "target_field": "total_core",
+            "normalized_value": "芯厚",
+            "stated_target_value": "",
+            "conditions": [
+              {
+                "field": "订单备注",
+                "operator": "contains_any",
+                "value": [
+                  "不含铜"
+                ],
+                "source_scope": "订单备注"
+              }
+            ],
+            "source_field": "CCL特殊规则",
+            "evidence_text": "备注会标注是否含铜",
+            "confidence": "high",
+            "deterministic_preferred": false
+          }
+        ],
+        "ambiguities": [],
+        "missing_inputs": [],
+        "model_confidence": "high"
+      },
+      "attempts": 2
+    }
+  ]
+}

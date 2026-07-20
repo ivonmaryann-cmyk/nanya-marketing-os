@@ -15,6 +15,8 @@ from .job_control import reconcile_interrupted_jobs
 from .price_calculation_rules import ensure_default_price_rule_versions
 from .shennan_rules import ensure_default_shennan_rule_version
 from .transcode_rules import ensure_default_transcode_rule_version
+from .transcode_agent_rules import ensure_default_transcode_agent_rule_version
+from .transcode_semantic_rules import ensure_default_transcode_semantic_rule_version
 
 
 def create_app() -> Flask:
@@ -30,6 +32,8 @@ def create_app() -> Flask:
     reconcile_interrupted_jobs()
     ensure_default_rule_version()
     ensure_default_transcode_rule_version()
+    ensure_default_transcode_agent_rule_version()
+    ensure_default_transcode_semantic_rule_version()
     ensure_default_shennan_rule_version()
     ensure_default_hushi_rule_version()
     ensure_default_bomin_rule_version()

@@ -1,0 +1,65 @@
+{
+  "schema_version": "1.0",
+  "description": "P2-2B原子化时对已确认原文的结构修正；只修正分支边界，不新增业务口径。",
+  "normalized_value_overrides": {
+    "MSR-0023-01#1": "external_lookup:新美亚规格尺寸对照表"
+  },
+  "condition_replacements": {
+    "MSR-0212-01#1": [
+      {
+        "field": "订单备注",
+        "operator": "not_contains",
+        "value": "不含铜",
+        "source_scope": "订单备注"
+      }
+    ]
+  },
+  "condition_additions": {
+    "MSR-0005-01#1": [
+      {
+        "field": "基板厚度",
+        "operator": "gte",
+        "value": 0.8,
+        "source_scope": "基板厚度"
+      }
+    ],
+    "MSR-0048-01#1": [
+      {
+        "field": "基板厚度",
+        "operator": "gte",
+        "value": 0.8,
+        "source_scope": "基板厚度"
+      }
+    ],
+    "MSR-0048-01#2": [
+      {
+        "field": "订单备注",
+        "operator": "not_contains",
+        "value": "芯厚",
+        "source_scope": "订单备注"
+      }
+    ],
+    "MSR-0220-01#1": [
+      {
+        "field": "订单备注",
+        "operator": "not_contains",
+        "value": "不含铜",
+        "source_scope": "订单备注"
+      },
+      {
+        "field": "基板厚度",
+        "operator": "gte",
+        "value": 0.8,
+        "source_scope": "基板厚度"
+      }
+    ],
+    "MSR-0220-01#2": [
+      {
+        "field": "订单备注",
+        "operator": "not_contains",
+        "value": "不含铜",
+        "source_scope": "订单备注"
+      }
+    ]
+  }
+}

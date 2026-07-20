@@ -1,0 +1,68 @@
+{
+  "schema_version": "1.0",
+  "samples": [
+    {
+      "row": 497,
+      "customer_code": "102010",
+      "customer_name": "北京兴斐",
+      "spec": "UL用覆铜板 NY-A3HF 200±20(不含铜) (HTE) 012012 510*614",
+      "approved_semantic_hints": ["012012表示两面均为12um铜箔", "510*614表示毫米尺寸"]
+    },
+    {
+      "row": 601,
+      "customer_code": "103793",
+      "customer_name": "珠海杰赛",
+      "spec": "0.508mm不含铜/18um/NY6300SN/DK=3.53/C级公差---41\"×49\"/长纬/仅5123客户使用/RTF3/2116*5",
+      "approved_semantic_hints": ["单独18um表示两面均为18um铜箔", "DK数值不是铜箔规格"]
+    },
+    {
+      "row": 625,
+      "customer_code": "103793",
+      "customer_name": "珠海杰赛",
+      "spec": "0.203mm不含铜/18um/NY6300S/DK=3.56/C级公差---41\"×49\"/长纬/RTF2/3313*2",
+      "approved_semantic_hints": ["单独18um表示两面均为18um铜箔", "DK数值不是铜箔规格"]
+    },
+    {
+      "row": 685,
+      "customer_code": "203011",
+      "customer_name": "莞森玛仕",
+      "spec": "0.076MM H/H NY6300 21*24\" R",
+      "approved_semantic_hints": ["该客户规格末尾独立R表示RTF铜箔类型"]
+    },
+    {
+      "row": 687,
+      "customer_code": "103962",
+      "customer_name": "深众齐翌",
+      "spec": "NY2150 0.2mm 5um+18um/5um+18um 20.28*24.22",
+      "approved_semantic_hints": ["5um+18um/5um+18um是两面相同的复合铜箔表达"]
+    },
+    {
+      "row": 703,
+      "customer_code": "123095",
+      "customer_name": "江西红森",
+      "spec": "TC 0.10MM C(3-H)/C(H-3) XC/XC MT18EX(C) 20.35\"*24.41\" NY8320NS(2116*1配本）",
+      "approved_semantic_hints": ["MT18EX是该客户受控铜箔语义", "NY8320NS是胶系", "TC表示芯厚口径"]
+    },
+    {
+      "row": 910,
+      "customer_code": "122017",
+      "customer_name": "湖北龙腾",
+      "spec": "高频板材南亚 高频 NY6200 ANT 1.0 1/1 41*49 黄 无水印 不含铜 公差±0.075",
+      "approved_semantic_hints": ["NY6200 ANT中的ANT是该客户受控铜箔类型别名"]
+    },
+    {
+      "row": 918,
+      "customer_code": "110024",
+      "customer_name": "淄博芯材",
+      "spec": "覆铜板NY3176HF 0.3mm 3/3 513x617mm （Mt18Ex）",
+      "approved_semantic_hints": ["Mt18Ex是该客户受控铜箔语义，不是胶系或尺寸"]
+    },
+    {
+      "row": 959,
+      "customer_code": "204044",
+      "customer_name": "西班牙G",
+      "spec": "NY2140 1.00MM 35/00 43X49.3 IGAV UV OVERALL A",
+      "approved_semantic_hints": ["35/00表示一面35um、另一面无铜", "OVERALL表示总厚", "IGAV UV是铜箔类型及印字语义"]
+    }
+  ]
+}

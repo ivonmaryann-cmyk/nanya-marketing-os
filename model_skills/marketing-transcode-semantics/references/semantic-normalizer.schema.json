@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MarketingTranscodeSemanticNormalization",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "task_type",
+    "material_scope",
+    "semantic_items",
+    "ambiguities",
+    "missing_inputs",
+    "model_confidence"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "task_type": {"enum": ["rule_structure", "order_normalization"]},
+    "material_scope": {"enum": ["CCL", "OUT_OF_SCOPE", "UNKNOWN"]},
+    "semantic_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "semantic_type",
+          "target_field",
+          "normalized_value",
+          "stated_target_value",
+          "conditions",
+          "source_field",
+          "evidence_text",
+          "confidence",
+          "deterministic_preferred"
+        ],
+        "properties": {
+          "semantic_type": {
+            "enum": [
+              "keyword_present",
+              "keyword_absent",
+              "default_when_missing",
+              "exclusion_set",
+              "position_code",
+              "alias_mapping",
+              "explicit_fact",
+              "comparison",
+              "multi_condition",
+              "external_lookup",
+              "out_of_scope"
+            ]
+          },
+          "target_field": {
+            "enum": [
+              "glue",
+              "thickness",
+              "copper",
+              "size",
+              "glue_category",
+              "copper_type",
+              "print_mark",
+              "grade_intent",
+              "total_core",
+              "combination_structure",
+              "copper_vendor",
+              "glass_vendor",
+              "formula_code",
+              "unknown"
+            ]
+          },
+          "normalized_value": {"type": "string"},
+          "stated_target_value": {"type": "string"},
+          "conditions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["field", "operator", "value", "source_scope"],
+              "properties": {
+                "field": {"type": "string"},
+                "operator": {
+                  "enum": [
+                    "contains_any",
+                    "contains_all",
+                    "not_contains",
+                    "equals",
+                    "not_equals",
+                    "in",
+                    "not_in",
+                    "lt",
+                    "lte",
+                    "gt",
+                    "gte",
+                    "char_at",
+                    "missing",
+                    "present"
+                  ]
+                },
+                "value": {},
+                "source_scope": {"type": "string"}
+              }
+            }
+          },
+          "source_field": {"type": "string"},
+          "evidence_text": {"type": "string"},
+          "confidence": {"enum": ["high", "medium", "low"]},
+          "deterministic_preferred": {"type": "boolean"}
+        }
+      }
+    },
+    "ambiguities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field", "reason", "evidence_text"],
+        "properties": {
+          "field": {"type": "string"},
+          "reason": {"type": "string"},
+          "evidence_text": {"type": "string"}
+        }
+      }
+    },
+    "missing_inputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field", "reason"],
+        "properties": {
+          "field": {"type": "string"},
+          "reason": {"type": "string"}
+        }
+      }
+    },
+    "model_confidence": {"enum": ["high", "medium", "low"]}
+  }
+}
