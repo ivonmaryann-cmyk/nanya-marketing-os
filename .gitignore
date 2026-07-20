@@ -1,5 +1,6 @@
 # Runtime data: never commit local or production state.
 /storage/
+config/model.local.yaml
 .env
 .env.local
 .env.*.local
@@ -29,6 +30,7 @@ workplan_server_*.log
 *.tmp
 *.temp
 ~$*
+.~*
 
 # OS/editor metadata.
 .DS_Store

@@ -1,0 +1,4 @@
+interface:
+  display_name: "营销转码语义理解"
+  short_description: "用于解析客户特殊规则、订单备注及非公式业务语义并输出受控JSON"
+  default_prompt: "使用 $marketing-transcode-semantics 将CCL客户特殊规则或订单文本转换为经过校验的标准语义数据。"

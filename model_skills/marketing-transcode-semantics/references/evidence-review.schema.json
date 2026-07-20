@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MarketingTranscodeEvidenceReview",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "field_reviews", "hard_blockers", "model_confidence"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "field_reviews": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field", "verdict", "source_field", "evidence_text", "reason"],
+        "properties": {
+          "field": {
+            "enum": ["glue", "thickness", "copper", "size", "glue_category", "copper_type", "grade", "total_core"]
+          },
+          "verdict": {"enum": ["supported", "contradicted", "ambiguous", "missing_evidence"]},
+          "source_field": {"type": "string"},
+          "evidence_text": {"type": "string"},
+          "reason": {"type": "string"}
+        }
+      }
+    },
+    "hard_blockers": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "model_confidence": {"enum": ["high", "medium", "low"]}
+  }
+}

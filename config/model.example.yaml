@@ -1,0 +1,7 @@
+llm:
+  api_key: "请在本地填写，不要提交真实密钥"
+  base_url: "https://api.deepseek.com"
+  model: "deepseek-v4-pro"
+  mode: "shadow"
+  timeout_seconds: 60
+  max_order_calls: 50

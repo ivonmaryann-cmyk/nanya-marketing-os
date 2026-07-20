@@ -1,0 +1,45 @@
+{
+  "schema_version": "1.0",
+  "mode": "shadow",
+  "gate_threshold": 90,
+  "semantic_supported_score": 98,
+  "model_supported_score": 95,
+  "model_accepted_confidences": ["high"],
+  "verdict_scores": {
+    "supported": {"mode": "preserve"},
+    "contradicted": {"mode": "fixed", "value": 0},
+    "ambiguous": {"mode": "cap", "value": 80},
+    "missing_evidence": {"mode": "cap", "value": 60}
+  },
+  "hit_type_verdicts": {
+    "规则冲突": "contradicted",
+    "未识别": "missing_evidence",
+    "默认规则": "supported",
+    "默认常规铜": "supported",
+    "通用阈值": "supported",
+    "阶段性占位": "ambiguous"
+  },
+  "source_keyword_verdicts": {
+    "通用阈值": "supported"
+  },
+  "semantic_target_fields": {
+    "glue": "glue",
+    "thickness": "thickness",
+    "copper_type": "copper_type",
+    "print_mark": "copper_type",
+    "grade_intent": "grade",
+    "total_core": "total_core",
+    "size": "size"
+  },
+  "semantic_value_aliases": {
+    "total_core": {
+      "total": "T",
+      "core": "C",
+      "core_after_total_to_core_conversion": "C"
+    },
+    "copper_type": {
+      "HTE": "W",
+      "RTF": "T"
+    }
+  }
+}
