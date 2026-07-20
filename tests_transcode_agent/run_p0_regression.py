@@ -13,6 +13,7 @@ COMMANDS = [
         "-m",
         "py_compile",
         "fangzheng_web_app/transcode_engine.py",
+        "fangzheng_web_app/transcode_agent_engine.py",
         "fangzheng_web_app/transcode_evidence_scoring.py",
         "fangzheng_web_app/transcode_evidence_model.py",
         "fangzheng_web_app/transcode_agent_rules.py",
@@ -50,6 +51,7 @@ COMMANDS = [
         "tests_transcode_agent/smoke_agent_bundled_defaults.py",
         "tests_transcode_agent/smoke_clean_checkout_startup.py",
         "tests_transcode_agent/smoke_agent_semantic_shadow_batch.py",
+        "tests_transcode_agent/smoke_agent_engine_isolation.py",
     ],
     [sys.executable, "tests_transcode_agent/smoke_clean_checkout_startup.py"],
     [sys.executable, "tests_transcode_agent/smoke_confirmed_draft_rule_version.py"],
@@ -74,6 +76,7 @@ COMMANDS = [
     [sys.executable, "tests_transcode_agent/smoke_agent_pending_risks.py"],
     [sys.executable, "tests_transcode_agent/smoke_agent_bundled_defaults.py"],
     [sys.executable, "tests_transcode_agent/smoke_agent_semantic_shadow_batch.py"],
+    [sys.executable, "tests_transcode_agent/smoke_agent_engine_isolation.py"],
 ]
 
 

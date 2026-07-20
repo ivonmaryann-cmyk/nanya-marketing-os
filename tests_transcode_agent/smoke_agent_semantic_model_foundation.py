@@ -26,7 +26,7 @@ from fangzheng_web_app.transcode_semantic_service import (
     validate_semantic_result,
 )
 from fangzheng_web_app.transcode_agent_service import _detect_semantic_input_columns
-from fangzheng_web_app.transcode_engine import (
+from fangzheng_web_app.transcode_agent_engine import (
     build_context_text_from_row,
     detect_transcode_context_columns,
 )

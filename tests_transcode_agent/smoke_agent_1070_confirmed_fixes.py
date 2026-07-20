@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from fangzheng_web_app import transcode_agent_service as service
-from fangzheng_web_app import transcode_engine as engine
+from fangzheng_web_app import transcode_agent_engine as engine
 from fangzheng_web_app.transcode_semantic_overrides import apply_confirmed_semantic_overrides
 
 

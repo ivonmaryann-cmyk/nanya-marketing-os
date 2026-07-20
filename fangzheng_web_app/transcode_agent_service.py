@@ -73,7 +73,7 @@ from .transcode_order_semantic_model import (
 )
 
 
-TRANSCODE_MODULE_NAME = "fangzheng_web_app.transcode_engine"
+TRANSCODE_MODULE_NAME = "fangzheng_web_app.transcode_agent_engine"
 FIELD_GATE_THRESHOLD = 90
 FORMAL_RESULT_HEADER = "Agent转码结果"
 OUTPUT_STATUS_HEADER = "结果对比"
