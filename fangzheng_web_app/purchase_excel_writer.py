@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from decimal import Decimal
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +8,13 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from .purchase_factory_mapper import (
+    FACTORY_DETAIL_HEADERS,
+    FACTORY_MAIN_HEADERS,
+    _extract_roll_length,
+    _project_detail_standard_fields,
+    project_factory_document,
+)
 from .purchase_field_rules import STANDARD_HEADERS, clean_text, decimal_or_none, normalize_date
 
 
@@ -33,7 +40,7 @@ def _style_row(ws, row: int, start_col: int, end_col: int, *, fill: str, color: 
 
 
 def _set_purchase_sheet_layout(ws) -> None:
-    widths = {"A": 8, "B": 28, "C": 24, "D": 26, "E": 18, "F": 16, "G": 18, "H": 18, "I": 18, "J": 20, "K": 24, "L": 24}
+    widths = {"A": 14, "B": 28, "C": 24, "D": 26, "E": 18, "F": 16, "G": 18, "H": 18, "I": 18, "J": 20, "K": 24, "L": 24}
     for column, width in widths.items():
         ws.column_dimensions[column].width = width
     for index in range(13, 31):
@@ -41,12 +48,21 @@ def _set_purchase_sheet_layout(ws) -> None:
     ws.sheet_view.showGridLines = False
 
 
-def _set_detail_sheet_layout(ws, col_count: int) -> None:
-    for index in range(1, col_count + 1):
+def _set_detail_sheet_layout(ws, headers: list[str]) -> None:
+    descriptive_widths = {
+        "物料编号": 26,
+        "物料编码": 26,
+        "物料名称": 28,
+        "物料名/规格": 28,
+        "型号/规格": 28,
+        "说明": 28,
+        "标准-物料编码": 26,
+        "标准-物料名称": 28,
+        "标准-说明": 28,
+    }
+    for index, header in enumerate(headers, start=1):
         letter = get_column_letter(index)
-        ws.column_dimensions[letter].width = 16
-    for index in range(1, min(col_count, 4) + 1):
-        ws.column_dimensions[get_column_letter(index)].width = 18
+        ws.column_dimensions[letter].width = descriptive_widths.get(header, 16)
     ws.sheet_view.showGridLines = False
     ws.freeze_panes = "A2"
 
@@ -304,59 +320,87 @@ def _detail_headers(documents: list[dict[str, Any]]) -> list[str]:
     return headers
 
 
-def _write_detail_sheet(ws, documents: list[dict[str, Any]]) -> int:
-    headers = _detail_headers(documents)
-    if not headers:
-        headers = STANDARD_HEADERS
-    qty_col = headers.index(_standard_header("数量")) + 1 if _standard_header("数量") in headers else None
-    price_col = headers.index(_standard_header("含税单价")) + 1 if _standard_header("含税单价") in headers else None
-    _set_detail_sheet_layout(ws, len(headers))
-    for column, header in enumerate(headers, start=1):
-        ws.cell(row=1, column=column, value=header)
-    _style_row(ws, 1, 1, len(headers), fill=HEADER_FILL, color="FFFFFF")
+def _set_factory_sheet_layout(ws) -> None:
+    widths = [16, 30, 18, 25, 18, 15, 18, 18, 24, 24, 20, 28]
+    for column, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(column)].width = width
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A4"
 
-    row_index = 2
-    for document in documents:
-        header_info = document.get("header_info") or {}
-        for detail in document.get("mapped_detail_rows") or []:
-            values: dict[str, Any] = {}
-            if len(documents) > 1:
-                values.update(
-                    {
-                        "来源文件": document.get("source_file", ""),
-                        "页码": int(detail.get("page_index") or 0) + 1,
-                        "订单号": header_info.get("订单号", ""),
-                    }
-                )
-            standard = detail.get("standard") or {}
-            original = _normalized_original_values(detail.get("original") or {}, standard)
-            values.update(original)
-            values.update({f"标准-{key}": value for key, value in standard.items()})
-            for column, header in enumerate(headers, start=1):
-                value = values.get(header, "")
-                if header.startswith("标准-"):
-                    field = header.replace("标准-", "")
-                    if field == "金额" and not clean_text(value) and qty_col and price_col:
-                        qty = decimal_or_none(standard.get("数量"))
-                        price = decimal_or_none(standard.get("含税单价"))
-                        if qty is not None and price is not None:
-                            value = f"={get_column_letter(qty_col)}{row_index}*{get_column_letter(price_col)}{row_index}"
-                        else:
-                            value = _typed_value(field, value)
-                    else:
-                        value = _typed_value(field, value)
-                else:
-                    field = _original_header_standard_field(header)
-                    if field and not clean_text(value) and clean_text(standard.get(field)):
-                        value = standard.get(field)
-                cell = ws.cell(row=row_index, column=column, value=value)
-                align = "right" if header.replace("标准-", "") in {"数量", "含税单价", "金额"} else "left"
-                _style_cell(cell, align=align)
-                number_format = _detail_number_format(header)
-                if number_format:
-                    cell.number_format = number_format
-            row_index += 1
-    return max(0, row_index - 2)
+
+def _style_factory_cell(cell, *, header: bool = False) -> None:
+    cell.font = Font(name="宋体", size=11, bold=False, color="000000")
+    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=header)
+    cell.border = THIN_BORDER
+
+
+def _factory_cell_value(header: str, value: Any) -> Any:
+    text = clean_text(value)
+    if not text:
+        return ""
+    if header in {"数量（必填）", "税前单价（选填）", "单价（选填）"}:
+        number = decimal_or_none(text)
+        if number is not None:
+            return float(number) if number % 1 else int(number)
+    if header == "出货日期（选填）":
+        normalized = normalize_date(text)
+        if normalized:
+            try:
+                return datetime.strptime(normalized, "%Y-%m-%d").date()
+            except ValueError:
+                pass
+    return text
+
+
+def _write_detail_sheet(ws, documents: list[dict[str, Any]]) -> int:
+    if len(documents) > 1:
+        raise ValueError("厂内导入模板每个工作簿只能包含一份客户采购单。")
+    document = documents[0] if documents else {}
+    if document and not document.get("factory_import"):
+        project_factory_document(document)
+    factory_import = document.get("factory_import") or {
+        "main_headers": FACTORY_MAIN_HEADERS,
+        "main_values": ["220", "1", "1", "", "", "", "", "", "", "", "", ""],
+        "detail_headers": FACTORY_DETAIL_HEADERS,
+        "rows": [],
+    }
+    main_headers = list(factory_import.get("main_headers") or FACTORY_MAIN_HEADERS)
+    main_values = list(factory_import.get("main_values") or [""] * len(main_headers))
+    detail_headers = list(factory_import.get("detail_headers") or FACTORY_DETAIL_HEADERS)
+    rows = list(factory_import.get("rows") or [])
+    _set_factory_sheet_layout(ws)
+
+    for column in range(1, 13):
+        header = main_headers[column - 1] if column <= len(main_headers) else ""
+        value = main_values[column - 1] if column <= len(main_values) else ""
+        ws.cell(row=1, column=column, value=header or None)
+        ws.cell(row=2, column=column, value=value or None)
+        _style_factory_cell(ws.cell(row=1, column=column), header=True)
+        _style_factory_cell(ws.cell(row=2, column=column))
+
+    for column, header in enumerate(detail_headers, start=1):
+        ws.cell(row=3, column=column, value=header)
+        _style_factory_cell(ws.cell(row=3, column=column), header=True)
+
+    for row_index, row in enumerate(rows, start=4):
+        for column, header in enumerate(detail_headers, start=1):
+            cell = ws.cell(row=row_index, column=column, value=_factory_cell_value(header, row.get(header, "")))
+            _style_factory_cell(cell)
+            if header in {"项次（必填）", "产品编号", "客户产品编号（必填）", "客户订单号"}:
+                cell.number_format = "@"
+            elif header == "出货日期（选填）":
+                cell.number_format = "yyyy/m/d;@"
+            elif header == "数量（必填）":
+                cell.number_format = "0.###"
+            elif header in {"税前单价（选填）", "单价（选填）"}:
+                cell.number_format = "#,##0.00_ "
+
+    ws.row_dimensions[1].height = 30
+    ws.row_dimensions[2].height = 24
+    ws.row_dimensions[3].height = 42
+    for row_index in range(4, 4 + len(rows)):
+        ws.row_dimensions[row_index].height = 24
+    return len(rows)
 
 
 def _write_issue_sheet(ws, documents: list[dict[str, Any]]) -> int:
@@ -390,6 +434,12 @@ def _write_issue_sheet(ws, documents: list[dict[str, Any]]) -> int:
 
 
 def write_purchase_order_workbook(documents: list[dict[str, Any]], output_path: Path) -> dict[str, int]:
+    if len(documents) > 1:
+        raise ValueError("每份厂内订单导入工作簿只能写入一份采购单。")
+    for document in documents:
+        if not document.get("factory_import"):
+            project_factory_document(document)
+
     wb = Workbook()
     purchase_ws = wb.active
     purchase_ws.title = "采购单"
@@ -409,4 +459,6 @@ def write_purchase_order_workbook(documents: list[dict[str, Any]], output_path: 
         "cell_count": detail_count,
         "issue_count": issue_count,
         "page_count": purchase_stats.get("page_count", 0),
+        "ready_count": sum(int((document.get("factory_mapping_summary") or {}).get("ready_rows") or 0) for document in documents),
+        "review_count": sum(int((document.get("factory_mapping_summary") or {}).get("review_rows") or 0) for document in documents),
     }

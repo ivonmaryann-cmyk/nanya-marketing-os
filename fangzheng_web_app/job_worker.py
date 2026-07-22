@@ -53,6 +53,10 @@ def main(argv: list[str] | None = None) -> int:
             from .in_transit_service import run_in_transit_job
 
             run_in_transit_job(job_id, employee_id)
+        elif feature == "inventory_detail":
+            from .inventory_detail_service import run_inventory_detail_job
+
+            run_inventory_detail_job(job_id, employee_id)
         elif feature == "order_reprice":
             from .order_reprice_service import run_order_reprice_job
 

@@ -25,7 +25,8 @@ def create_app() -> Flask:
 
     app = Flask(__name__, template_folder="../templates", static_folder="../static")
     app.config["SECRET_KEY"] = "fangzheng-web-app-dev-secret"
-    app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
+    # 库存明细一次上传两份库存表，当前业务样例合计约 43 MB；预留 multipart 开销。
+    app.config["MAX_CONTENT_LENGTH"] = 120 * 1024 * 1024
 
     ensure_storage_dirs()
     init_db()

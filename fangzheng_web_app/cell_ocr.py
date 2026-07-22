@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import time
 from functools import lru_cache
 from threading import Lock
 from typing import Any
@@ -7,12 +9,25 @@ from typing import Any
 import numpy as np
 from PIL import Image, ImageOps
 
+from .purchase_performance import record_ocr_call
+
 
 class OcrUnavailableError(RuntimeError):
     pass
 
 
 _OCR_LOCK = Lock()
+
+
+def _ocr_thread_count() -> int:
+    configured = os.getenv("PDF_EXCEL_OCR_THREADS", "auto").strip().lower()
+    if configured and configured != "auto":
+        try:
+            return max(1, min(int(configured), 16))
+        except ValueError:
+            pass
+    logical_cpus = max(1, os.cpu_count() or 1)
+    return min(4, max(1, logical_cpus // 2))
 
 
 @lru_cache(maxsize=1)
@@ -23,7 +38,7 @@ def _ocr_engine():
         raise OcrUnavailableError(
             "未安装离线 OCR 组件 rapidocr-onnxruntime，请先安装 requirements.txt 中的依赖。"
         ) from exc
-    return RapidOCR()
+    return RapidOCR(intra_op_num_threads=_ocr_thread_count(), inter_op_num_threads=1)
 
 
 def _normalize_crop(image: Image.Image) -> Image.Image:
@@ -44,9 +59,13 @@ def ocr_cell(image: Image.Image) -> dict[str, Any]:
         return {"text": "", "confidence": 1.0, "method": "manual_empty"}
 
     array = np.array(normalized.convert("RGB"))
-    with _OCR_LOCK:
-        engine = _ocr_engine()
-        result, _elapsed = engine(array)
+    started = time.perf_counter()
+    try:
+        with _OCR_LOCK:
+            engine = _ocr_engine()
+            result, _elapsed = engine(array)
+    finally:
+        record_ocr_call("cell", (time.perf_counter() - started) * 1000)
     if not result:
         return {"text": "", "confidence": 0.0, "method": "cell_ocr"}
 
@@ -69,9 +88,13 @@ def ocr_cell(image: Image.Image) -> dict[str, Any]:
 def ocr_image_regions(image: Image.Image) -> list[dict[str, Any]]:
     normalized = ImageOps.autocontrast(image.convert("RGB"))
     array = np.array(normalized)
-    with _OCR_LOCK:
-        engine = _ocr_engine()
-        result, _elapsed = engine(array)
+    started = time.perf_counter()
+    try:
+        with _OCR_LOCK:
+            engine = _ocr_engine()
+            result, _elapsed = engine(array)
+    finally:
+        record_ocr_call("page", (time.perf_counter() - started) * 1000)
     regions: list[dict[str, Any]] = []
     if not result:
         return regions

@@ -12,6 +12,7 @@ from .purchase_field_rules import (
     clean_text,
     classify_section_line,
     find_detail_header_row,
+    header_score,
     looks_like_detail_data,
     map_detail_row,
     normalize_date,
@@ -264,6 +265,173 @@ def _rows_from_region_grid(regions: list[dict[str, Any]], grid: dict[str, Any], 
         if any(clean_text(value) for value in row):
             rows.append(row)
     return rows, cells
+
+
+SPARSE_OCR_FIELDS = {"数量", "单位", "含税单价", "金额", "交货日期"}
+HEADER_OCR_CORE_FIELDS = {"物料编码", "物料名称", "数量", "含税单价", "金额", "交货日期"}
+
+
+def _valid_sparse_ocr_value(field: str, value: Any) -> str:
+    text = clean_text(value)
+    if not text:
+        return ""
+    if field in {"数量", "含税单价", "金额"}:
+        return normalize_number(text)
+    if field == "交货日期":
+        return normalize_date(text)
+    if field == "单位":
+        if normalize_number(text) == text or len(text) > 8:
+            return ""
+        return text
+    return ""
+
+
+def _repair_sparse_detail_cells(
+    image_path: Path,
+    rows: list[list[str]],
+    cells: list[dict[str, Any]],
+    *,
+    max_repairs: int = 8,
+) -> list[dict[str, Any]]:
+    header_index, mapping = find_detail_header_row(rows)
+    if header_index is None or max_repairs <= 0:
+        return []
+
+    cell_map = {
+        (int(cell.get("row_index") or 0), int(cell.get("column_index") or 0)): cell
+        for cell in cells
+    }
+    actions: list[dict[str, Any]] = []
+    with Image.open(image_path) as source_image:
+        image = source_image.convert("RGB")
+        for row_index in range(header_index + 1, len(rows)):
+            row = rows[row_index]
+            if not _looks_like_structured_detail_row(row):
+                continue
+            for column_index, field in mapping.items():
+                if field not in SPARSE_OCR_FIELDS:
+                    continue
+                if column_index < len(row) and clean_text(row[column_index]):
+                    continue
+                cell = cell_map.get((row_index, column_index))
+                bbox = [int(round(float(value))) for value in (cell or {}).get("bbox", [])[:4]]
+                if len(bbox) != 4:
+                    continue
+                crop = _crop_cell(image, bbox)
+                if _is_blank_crop(crop):
+                    continue
+                result = ocr_cell(crop)
+                clean_value = _valid_sparse_ocr_value(field, result.get("text"))
+                if not clean_value:
+                    continue
+                while len(row) <= column_index:
+                    row.append("")
+                row[column_index] = clean_value
+                if cell is not None:
+                    cell.update(
+                        {
+                            "text": clean_value,
+                            "confidence": result.get("confidence", 0),
+                            "method": "cell_ocr_sparse_fallback",
+                        }
+                    )
+                actions.append(
+                    {
+                        "type": "sparse_cell_ocr",
+                        "row_index": row_index,
+                        "column_index": column_index,
+                        "field": field,
+                        "value": clean_value,
+                        "confidence": result.get("confidence", 0),
+                    }
+                )
+                if len(actions) >= max_repairs:
+                    return actions
+    return actions
+
+
+def _repair_uncertain_detail_headers(
+    image_path: Path,
+    rows: list[list[str]],
+    cells: list[dict[str, Any]],
+    *,
+    max_repairs: int = 4,
+) -> list[dict[str, Any]]:
+    header_index, mapping = find_detail_header_row(rows)
+    if max_repairs <= 0:
+        return []
+    if header_index is None:
+        scored_rows = []
+        for index, row in enumerate(rows[:8]):
+            score, row_mapping = header_score(row)
+            scored_rows.append((score, index, row_mapping))
+        scored_rows.sort(reverse=True)
+        if not scored_rows or scored_rows[0][0] < 2:
+            return []
+        _score, header_index, mapping = scored_rows[0]
+    mapped_fields = set(mapping.values())
+    has_identity = bool({"物料编码", "物料名称"} & mapped_fields)
+    has_quantity = "数量" in mapped_fields
+    has_price_or_amount = bool({"含税单价", "金额"} & mapped_fields)
+    if has_identity and has_quantity and has_price_or_amount and len(mapped_fields) >= 5:
+        return []
+
+    cell_map = {
+        (int(cell.get("row_index") or 0), int(cell.get("column_index") or 0)): cell
+        for cell in cells
+    }
+    header_row = rows[header_index]
+    before_score, before_mapping = header_score(header_row)
+    actions: list[dict[str, Any]] = []
+    with Image.open(image_path) as source_image:
+        image = source_image.convert("RGB")
+        for column_index in range(len(header_row)):
+            cell = cell_map.get((header_index, column_index))
+            confidence = float((cell or {}).get("confidence") or 0)
+            if column_index in before_mapping and confidence >= 0.65:
+                continue
+            bbox = [int(round(float(value))) for value in (cell or {}).get("bbox", [])[:4]]
+            if len(bbox) != 4:
+                continue
+            crop = _crop_cell(image, bbox)
+            if _is_blank_crop(crop):
+                continue
+            result = ocr_cell(crop)
+            candidate = clean_text(result.get("text"))
+            if not candidate or candidate == clean_text(header_row[column_index]):
+                continue
+            trial_row = list(header_row)
+            trial_row[column_index] = candidate
+            trial_score, trial_mapping = header_score(trial_row)
+            new_field = trial_mapping.get(column_index)
+            improves_core = bool(new_field in HEADER_OCR_CORE_FIELDS and new_field not in set(before_mapping.values()))
+            if trial_score <= before_score and not improves_core:
+                continue
+            old_value = clean_text(header_row[column_index])
+            header_row[column_index] = candidate
+            before_score, before_mapping = trial_score, trial_mapping
+            if cell is not None:
+                cell.update(
+                    {
+                        "text": candidate,
+                        "confidence": result.get("confidence", 0),
+                        "method": "cell_ocr_header_fallback",
+                    }
+                )
+            actions.append(
+                {
+                    "type": "header_cell_ocr",
+                    "row_index": header_index,
+                    "column_index": column_index,
+                    "old_value": old_value,
+                    "value": candidate,
+                    "field": new_field or "",
+                    "confidence": result.get("confidence", 0),
+                }
+            )
+            if len(actions) >= max_repairs:
+                break
+    return actions
 
 
 def _region_rows_are_better(region_rows: list[list[str]], cell_rows: list[list[str]], grid: dict[str, Any]) -> bool:
@@ -623,6 +791,9 @@ def segment_purchase_page(page: dict[str, Any]) -> dict[str, Any]:
             rows, cells, method = region_rows, region_cells, "page_ocr_row_cluster"
         else:
             rows, cells, method = cell_rows, cell_cells, "grid_cell_ocr"
+        recovery_actions = _repair_uncertain_detail_headers(image_path, rows, cells)
+        if method == "page_ocr_row_cluster":
+            recovery_actions.extend(_repair_sparse_detail_cells(image_path, rows, cells))
         table_type = _table_type(rows)
         tables.append(
             {
@@ -634,6 +805,7 @@ def segment_purchase_page(page: dict[str, Any]) -> dict[str, Any]:
                 "raw_rows": rows,
                 "cells": cells,
                 "method": method,
+                "recovery_actions": recovery_actions,
             }
         )
 

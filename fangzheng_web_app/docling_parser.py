@@ -22,15 +22,15 @@ def _file_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _cache_key(path: Path) -> str:
+def _cache_key(path: Path, content_sha256: str = "") -> str:
     digest = hashlib.sha256()
-    digest.update(_file_digest(path).encode("ascii"))
+    digest.update((content_sha256 or _file_digest(path)).encode("ascii"))
     digest.update(DOCLING_CACHE_VERSION.encode("ascii"))
     return digest.hexdigest()
 
 
-def _read_cache(path: Path) -> dict[str, Any] | None:
-    cache_path = DOCLING_CACHE_DIR / f"{_cache_key(path)}.json"
+def _read_cache(path: Path, content_sha256: str = "") -> dict[str, Any] | None:
+    cache_path = DOCLING_CACHE_DIR / f"{_cache_key(path, content_sha256)}.json"
     if not cache_path.exists():
         return None
     try:
@@ -48,12 +48,12 @@ def _read_cache(path: Path) -> dict[str, Any] | None:
     }
 
 
-def _write_cache(path: Path, result: dict[str, Any]) -> None:
+def _write_cache(path: Path, result: dict[str, Any], content_sha256: str = "") -> None:
     if result.get("error") or not result.get("markdown"):
         return
     try:
         DOCLING_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        cache_path = DOCLING_CACHE_DIR / f"{_cache_key(path)}.json"
+        cache_path = DOCLING_CACHE_DIR / f"{_cache_key(path, content_sha256)}.json"
         payload = {
             "cache_version": DOCLING_CACHE_VERSION,
             "source_name": path.name,
@@ -89,13 +89,31 @@ def _converter():
     )
 
 
-def pdf_to_markdown(path: Path) -> tuple[str, str | None]:
-    result = parse_pdf_with_docling(path)
+def pdf_to_markdown(path: Path, content_sha256: str = "") -> tuple[str, str | None]:
+    result = parse_pdf_with_docling(path, content_sha256=content_sha256)
     return str(result.get("markdown") or ""), result.get("error")
 
 
-def parse_pdf_with_docling(path: Path) -> dict[str, Any]:
-    cached = _read_cache(path)
+def parse_pdf_with_docling(path: Path, content_sha256: str = "") -> dict[str, Any]:
+    cached = _read_cache(path, content_sha256)
+    if cached is not None:
+        cached["worker_used"] = False
+        return cached
+    try:
+        from .docling_worker import request_docling_parse
+
+        worker_result = request_docling_parse(path, content_sha256=content_sha256)
+    except Exception:
+        worker_result = None
+    if worker_result is not None:
+        return worker_result
+    result = parse_pdf_with_docling_local(path, content_sha256=content_sha256)
+    result["worker_used"] = False
+    return result
+
+
+def parse_pdf_with_docling_local(path: Path, content_sha256: str = "") -> dict[str, Any]:
+    cached = _read_cache(path, content_sha256)
     if cached is not None:
         return cached
     try:
@@ -115,7 +133,7 @@ def parse_pdf_with_docling(path: Path) -> dict[str, Any]:
             "error": None,
             "cache_hit": False,
         }
-        _write_cache(path, parsed)
+        _write_cache(path, parsed, content_sha256)
         return parsed
     except Exception as exc:
         return {"markdown": "", "lines": [], "tables": [], "error": str(exc), "cache_hit": False}

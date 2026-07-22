@@ -7,6 +7,9 @@ openpyxl==3.1.5
 xlrd==2.0.1
 pdfplumber==0.11.7
 pypdf==5.9.0
-docling>=2.0,<3.0
+docling==2.110.0
+docling-core==2.86.0
+docling-ibm-models==3.13.3
 opencv-python-headless==4.12.0.88
 rapidocr-onnxruntime==1.4.4
+onnxruntime==1.27.0

@@ -80,6 +80,8 @@ def _canonical_field(field: Any) -> str:
 def _row_needs_repair(row: dict[str, Any], related_issues: list[dict[str, Any]]) -> bool:
     standard = row.get("standard") or {}
     missing = _missing_fields(standard)
+    if QTY in missing or UNIT in missing:
+        return True
     if len(missing) >= 2:
         return True
     if _amount_mismatch(standard):
@@ -292,15 +294,27 @@ def _append_ai_issue(document: dict[str, Any], row: dict[str, Any], field: str, 
     )
 
 
-def _apply_repairs(document: dict[str, Any], response: dict[str, Any]) -> int:
+def _apply_repairs(document: dict[str, Any], response: dict[str, Any]) -> dict[str, int]:
     rows = document.get("mapped_detail_rows") or []
-    applied = 0
-    for repair in response.get("repairs") or []:
+    stats = {
+        "returned_repairs": 0,
+        "applied_fields": 0,
+        "rejected_row_key": 0,
+        "rejected_low_confidence": 0,
+        "rejected_fields": 0,
+    }
+    repairs = response.get("repairs") or []
+    if not isinstance(repairs, list):
+        return stats
+    for repair in repairs:
+        stats["returned_repairs"] += 1
         try:
             row_key = int(repair.get("row_key"))
         except (TypeError, ValueError):
+            stats["rejected_row_key"] += 1
             continue
         if row_key < 0 or row_key >= len(rows):
+            stats["rejected_row_key"] += 1
             continue
         confidence = repair.get("confidence", 0)
         try:
@@ -308,6 +322,7 @@ def _apply_repairs(document: dict[str, Any], response: dict[str, Any]) -> int:
         except (TypeError, ValueError):
             confidence_value = 0
         if confidence_value < 0.65:
+            stats["rejected_low_confidence"] += 1
             continue
 
         row = rows[row_key]
@@ -322,9 +337,11 @@ def _apply_repairs(document: dict[str, Any], response: dict[str, Any]) -> int:
             field = _canonical_field(raw_field)
             current = standard.get(field, "")
             if not _can_apply_field(field, current, raw_value, suspect_fields):
+                stats["rejected_fields"] += 1
                 continue
             clean_value = _normalize_field_value(field, raw_value)
             if not clean_value:
+                stats["rejected_fields"] += 1
                 continue
             standard[field] = clean_value
             row.setdefault("ai_repair", []).append(
@@ -344,8 +361,53 @@ def _apply_repairs(document: dict[str, Any], response: dict[str, Any]) -> int:
                 clean_value,
                 f"AI补缺已写入：{reason or '根据订单正文证据补足字段'}",
             )
-            applied += 1
-    return applied
+            stats["applied_fields"] += 1
+    return stats
+
+
+def _unresolved_required_fields(standard: dict[str, Any]) -> list[str]:
+    fields: list[str] = []
+    if not clean_text(standard.get(CODE)) and not clean_text(standard.get(NAME)):
+        fields.append("物料编码/物料名称")
+    for field in [QTY, UNIT]:
+        if not clean_text(standard.get(field)):
+            fields.append(field)
+    if not clean_text(standard.get(PRICE)) and not clean_text(standard.get(AMOUNT)):
+        fields.append("含税单价/金额")
+    return fields
+
+
+def _append_unresolved_issues(document: dict[str, Any]) -> int:
+    issues = document.setdefault("issues", [])
+    existing = {
+        (issue.get("page_index"), issue.get("field"), issue.get("message"), clean_text(issue.get("raw_value")))
+        for issue in issues
+    }
+    count = 0
+    for row in document.get("mapped_detail_rows") or []:
+        missing = _unresolved_required_fields(row.get("standard") or {})
+        if not missing:
+            continue
+        field_text = "、".join(missing)
+        message = f"本地识别与 AI 补缺后仍缺少关键字段：{field_text}，需人工复核。"
+        raw_text = clean_text(row.get("raw_text"))[:500]
+        key = (row.get("page_index", ""), field_text, message, raw_text)
+        if key in existing:
+            continue
+        issues.append(
+            {
+                "page_index": row.get("page_index", ""),
+                "region": "明细表",
+                "field": field_text,
+                "raw_value": raw_text,
+                "clean_value": "",
+                "confidence": row.get("confidence", ""),
+                "message": message,
+            }
+        )
+        existing.add(key)
+        count += 1
+    return count
 
 
 def _row_has_minimum_body_fields(standard: dict[str, Any]) -> bool:
@@ -404,12 +466,12 @@ def _apply_missing_body_rows(document: dict[str, Any], response: dict[str, Any])
         document.setdefault("issues", []).append(
             {
                 "page_index": "",
-                "region": "AI\u8865\u7f3a",
-                "field": "\u8ba2\u5355\u6b63\u6587",
+                "region": "AI补缺",
+                "field": "订单正文",
                 "raw_value": raw_text[:500],
                 "clean_value": " ".join(f"{field}:{value}" for field, value in standard.items())[:500],
                 "confidence": confidence,
-                "message": f"AI\u5728\u539f\u59cb\u8868\u683c/\u6587\u672c\u8bc1\u636e\u4e2d\u91cd\u5efa\u7f3a\u5931\u660e\u7ec6\uff1a{reason}",
+                "message": f"AI在原始表格/文本证据中重建缺失明细：{reason}",
             }
         )
     if not rows:
@@ -437,12 +499,12 @@ def _try_repair_missing_body(
         document.setdefault("issues", []).append(
             {
                 "page_index": "",
-                "region": "AI\u8865\u7f3a",
-                "field": "\u8ba2\u5355\u6b63\u6587",
+                "region": "AI补缺",
+                "field": "订单正文",
                 "raw_value": "",
                 "clean_value": "",
                 "confidence": 0,
-                "message": f"AI\u6b63\u6587\u91cd\u5efa\u8df3\u8fc7\uff1a{exc}",
+                "message": f"AI正文重建跳过：{exc}",
             }
         )
         if log:
@@ -462,14 +524,31 @@ def audit_and_repair_purchase_document(
 ) -> dict[str, Any]:
     repaired = copy.deepcopy(document)
     config = get_ai_repair_config()
+    summary = repaired.setdefault("ai_repair_summary", {})
+    summary.update(
+        {
+            "available": bool(config.available),
+            "model": config.model if config.available else "",
+            "candidate_rows": 0,
+            "returned_repairs": 0,
+            "applied_fields": 0,
+            "rejected_row_key": 0,
+            "rejected_low_confidence": 0,
+            "rejected_fields": 0,
+        }
+    )
     if not config.available:
+        summary["unresolved_rows"] = _append_unresolved_issues(repaired)
         return repaired
 
     if _try_repair_missing_body(repaired, config, log=log):
+        summary["unresolved_rows"] = _append_unresolved_issues(repaired)
         return repaired
 
     candidates = _candidate_rows(repaired, config.max_rows)
+    summary["candidate_rows"] = len(candidates)
     if not candidates:
+        summary["unresolved_rows"] = _append_unresolved_issues(repaired)
         return repaired
 
     if log:
@@ -491,11 +570,16 @@ def audit_and_repair_purchase_document(
         )
         if log:
             log(f"AI补缺跳过：{exc}")
+        summary["request_error"] = str(exc)
+        summary["unresolved_rows"] = _append_unresolved_issues(repaired)
         return repaired
 
-    applied = _apply_repairs(repaired, response)
-    repaired.setdefault("ai_repair_summary", {})["candidate_rows"] = len(candidates)
-    repaired.setdefault("ai_repair_summary", {})["applied_fields"] = applied
+    stats = _apply_repairs(repaired, response)
+    summary.update(stats)
+    summary["unresolved_rows"] = _append_unresolved_issues(repaired)
     if log:
-        log(f"AI补缺完成：候选行 {len(candidates)}，写入字段 {applied}。")
+        log(
+            f"AI补缺完成：候选行 {len(candidates)}，模型返回 {stats['returned_repairs']} 条，"
+            f"写入字段 {stats['applied_fields']}，剩余需复核 {summary['unresolved_rows']} 行。"
+        )
     return repaired

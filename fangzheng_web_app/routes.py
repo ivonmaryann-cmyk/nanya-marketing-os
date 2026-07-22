@@ -61,6 +61,16 @@ from .hushi_rules import (
 )
 from .hushi_service import calculate_hushi_quote, queue_hushi_job
 from .in_transit_service import queue_in_transit_job
+from .inventory_detail_service import (
+    FEATURE as INVENTORY_DETAIL_FEATURE,
+    PLAN_A_MODE,
+    cleanup_inventory_detail_job_files,
+    get_inventory_result_path,
+    load_inventory_input_manifest,
+    load_inventory_result_manifest,
+    normalize_inventory_mode,
+    queue_inventory_detail_job,
+)
 from .job_control import cancel_job_process, reconcile_interrupted_jobs
 from .order_reprice_service import JINGWANG_CUSTOMER_PRICE_CHECK_MODE
 from .order_reprice_service import JINGWANG_FACTORY_MERGE_MODE
@@ -200,6 +210,13 @@ FUNCTION_CARDS = [
         "stage": "test",
     },
     {
+        "key": "inventory_detail",
+        "title": "库存明细",
+        "desc": "上传上海厂和江西厂库存表，自动筛选、分级并生成A级与B级胶系分类导航版。",
+        "route": "main.inventory_detail",
+        "stage": "test",
+    },
+    {
         "key": "order_reprice",
         "title": "订单改价",
         "desc": "上传胜宏客户明细、厂内明细和报价单，自动完成订单匹配、价格核对与改价结果校验。",
@@ -239,6 +256,7 @@ FEATURE_LABELS = {
     "hushi": "沪士价格计算",
     "price_calculation": "价格计算",
     "in_transit": "深南在途核对",
+    "inventory_detail": "库存明细",
     "order_reprice": "订单改价",
     "work_planning": "工作规划",
 }
@@ -579,6 +597,28 @@ def _decorate_job(job) -> dict:
         data["customer_label"] = "批量" if file_count > 1 else "单文件"
         data["function_type"] = "PDF/图片转Excel"
         data["display_total"] = data.get("total_rows") or file_count
+    elif data.get("feature") == INVENTORY_DETAIL_FEATURE:
+        input_manifest = load_inventory_input_manifest(data)
+        result_manifest = load_inventory_result_manifest(data)
+        mode = normalize_inventory_mode(
+            input_manifest.get("inventory_mode") or result_manifest.get("inventory_mode")
+        )
+        data["inventory_mode"] = mode
+        if mode == PLAN_A_MODE:
+            data["customer_label"] = "计划A级"
+            data["function_type"] = "计划A级分类"
+            expected_results = [{"key": "plan-a", "label": "计划A级结果"}]
+        else:
+            data["customer_label"] = "仓库分类"
+            data["function_type"] = "仓库B级分类"
+            expected_results = [
+                {"key": "a", "label": "仓库A级结果"},
+                {"key": "b", "label": "仓库B级结果"},
+            ]
+        available_keys = set((result_manifest.get("files") or {}).keys())
+        data["inventory_results"] = [
+            item for item in expected_results if not available_keys or item["key"] in available_keys
+        ]
     return data
 
 
@@ -913,6 +953,22 @@ def in_transit():
         jobs=jobs,
         active_rule_version="内置核对规则 v1",
         active_job=_active_job_for("in_transit", jobs),
+    )
+
+
+@bp.get("/features/inventory-detail")
+def inventory_detail():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    reconcile_interrupted_jobs()
+    raw_jobs = list_jobs(current_employee(), limit=20, feature=INVENTORY_DETAIL_FEATURE)
+    active_job = _active_job_for(INVENTORY_DETAIL_FEATURE, raw_jobs)
+    return render_template(
+        "inventory_detail.html",
+        jobs=_decorate_jobs(raw_jobs),
+        active_rule_version="库存明细内置规则 v1",
+        active_job=_decorate_job(active_job) if active_job else None,
     )
 
 
@@ -1477,6 +1533,60 @@ def create_in_transit_job_view():
     return redirect(url_for("main.in_transit", job_id=job_id))
 
 
+@bp.post("/inventory-detail/jobs")
+def create_inventory_detail_job_view():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    requested_mode = (request.form.get("inventory_mode") or "warehouse").strip().lower()
+    if requested_mode not in {"warehouse", "plan_a"}:
+        flash("库存处理类型无效，请重新选择。", "error")
+        return redirect(url_for("main.inventory_detail"))
+    inventory_mode = normalize_inventory_mode(requested_mode)
+    shanghai_file = request.files.get("shanghai_inventory_file")
+    jiangxi_file = request.files.get("jiangxi_inventory_file")
+    plan_a_file = request.files.get("plan_a_inventory_file")
+    if inventory_mode == PLAN_A_MODE:
+        required_files = [plan_a_file]
+        if not plan_a_file or not plan_a_file.filename:
+            flash("请先上传计划A级库存表。", "error")
+            return redirect(url_for("main.inventory_detail"))
+    else:
+        required_files = [shanghai_file, jiangxi_file]
+        if not shanghai_file or not shanghai_file.filename:
+            flash("请先上传上海厂库存表。", "error")
+            return redirect(url_for("main.inventory_detail"))
+        if not jiangxi_file or not jiangxi_file.filename:
+            flash("请先上传江西厂库存表。", "error")
+            return redirect(url_for("main.inventory_detail"))
+    invalid_files = [
+        file_obj.filename
+        for file_obj in required_files
+        if file_obj and Path(file_obj.filename or "").suffix.lower() not in {".xls", ".xlsx"}
+    ]
+    if invalid_files:
+        flash(f"库存明细仅支持 .xls / .xlsx：{', '.join(invalid_files)}", "error")
+        return redirect(url_for("main.inventory_detail"))
+    active_job = get_active_job(current_employee(), INVENTORY_DETAIL_FEATURE)
+    if active_job:
+        flash("当前已有库存明细任务正在处理，请先等待完成或停止后再上传。", "error")
+        return redirect(url_for("main.inventory_detail", job_id=active_job["id"]))
+    try:
+        job_id = queue_inventory_detail_job(
+            current_employee(),
+            shanghai_file,
+            jiangxi_file,
+            inventory_mode=inventory_mode,
+            plan_a_file=plan_a_file,
+        )
+    except Exception as exc:
+        flash(f"库存明细任务创建失败：{exc}", "error")
+        return redirect(url_for("main.inventory_detail"))
+    mode_label = "计划A级分类" if inventory_mode == PLAN_A_MODE else "仓库B级分类"
+    flash(f"{mode_label}任务已创建，系统正在处理。", "success")
+    return redirect(url_for("main.inventory_detail", job_id=job_id))
+
+
 @bp.post("/pdf-excel/jobs")
 def create_pdf_excel_job_view():
     redirect_resp = require_login()
@@ -1639,7 +1749,7 @@ def job_detail(job_id: int):
     if not job or job["employee_id"] != current_employee():
         flash("未找到该任务。", "error")
         return redirect(url_for("main.history"))
-    return render_template("job_detail.html", job=job)
+    return render_template("job_detail.html", job=_decorate_job(job))
 
 
 @bp.get("/api/jobs/<int:job_id>")
@@ -1756,6 +1866,7 @@ def cancel_job(job_id: int):
             "bomin": "main.bomin",
             "hushi": "main.hushi",
             "in_transit": "main.in_transit",
+            "inventory_detail": "main.inventory_detail",
             "order_reprice": "main.order_reprice",
             "price_calculation": "main.price_calculation",
             "pdf_excel": "main.pdf_excel",
@@ -1773,6 +1884,7 @@ def cancel_job(job_id: int):
         "bomin": "main.bomin",
         "hushi": "main.hushi",
         "in_transit": "main.in_transit",
+        "inventory_detail": "main.inventory_detail",
         "order_reprice": "main.order_reprice",
         "price_calculation": "main.price_calculation",
         "pdf_excel": "main.pdf_excel",
@@ -1803,10 +1915,29 @@ def delete_history(job_id: int):
         return redirect(url_for("main.history"))
     deleted = delete_job(job_id)
     if deleted:
-        for path_key in ["stored_input_path", "stored_result_path"]:
-            safe_unlink(deleted[path_key])
+        if deleted["feature"] == INVENTORY_DETAIL_FEATURE:
+            cleanup_inventory_detail_job_files(deleted)
+        else:
+            for path_key in ["stored_input_path", "stored_result_path"]:
+                safe_unlink(deleted[path_key])
         flash("历史记录已删除。", "success")
     return redirect(url_for("main.history"))
+
+
+@bp.get("/inventory-detail/jobs/<int:job_id>/download/<grade>")
+def download_inventory_detail(job_id: int, grade: str):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    job = get_job(job_id)
+    if not job or job["employee_id"] != current_employee() or job["feature"] != INVENTORY_DETAIL_FEATURE:
+        flash("未找到该库存明细任务。", "error")
+        return redirect(url_for("main.history"))
+    file_path = get_inventory_result_path(job, grade)
+    if not file_path:
+        flash("库存明细结果文件不存在。", "error")
+        return redirect(url_for("main.job_detail", job_id=job_id))
+    return send_file(file_path, as_attachment=True, download_name=file_path.name)
 
 
 @bp.get("/download/<int:job_id>/<kind>")
@@ -1818,6 +1949,10 @@ def download(job_id: int, kind: str):
     if not job or job["employee_id"] != current_employee():
         flash("未找到该任务。", "error")
         return redirect(url_for("main.history"))
+    if job["feature"] == INVENTORY_DETAIL_FEATURE and kind == "result":
+        manifest = load_inventory_input_manifest(job)
+        result_key = "plan-a" if normalize_inventory_mode(manifest.get("inventory_mode")) == PLAN_A_MODE else "a"
+        return redirect(url_for("main.download_inventory_detail", job_id=job_id, grade=result_key))
     file_path = job["stored_result_path"] if kind == "result" else job["stored_input_path"] if kind == "input" else None
     if not file_path or not Path(file_path).exists():
         flash("文件不存在。", "error")

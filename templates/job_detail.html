@@ -24,7 +24,13 @@
   </div>
 
   <div id="download-box" class="{% if job.status != 'completed' %}hidden{% endif %}">
+    {% if job.feature == 'inventory_detail' %}
+    {% for result in job.inventory_results %}
+    <a class="primary-link" href="{{ url_for('main.download_inventory_detail', job_id=job.id, grade=result.key) }}">{{ result.label }}</a>
+    {% endfor %}
+    {% else %}
     <a class="primary-link" href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载结果文件</a>
+    {% endif %}
   </div>
 
   {% if job.status in ['queued', 'running'] %}

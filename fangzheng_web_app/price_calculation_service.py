@@ -305,7 +305,7 @@ def process_price_workbook(workbook, customer_key: str, rules: JingwangRules | P
         qty_col = headers.get("订单数量") or headers.get("数量")
         has_quantity = bool(qty_col)
         is_plin = customer_key == "plin"
-        simple_price_only = customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "techuang", "zhongfu"}
+        simple_price_only = customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "techuang", "zhongfu", "huaxingyu", "dongxun"}
         if customer_key == "taixing":
             simple_headers = ["新价格", "整卷价格"]
         elif customer_key == "mingyang":
@@ -476,7 +476,7 @@ def process_price_workbook(workbook, customer_key: str, rules: JingwangRules | P
 def run_jingwang_regression(customer_key: str, version: str | None = None, quote_variant: str | None = None) -> dict:
     if customer_key == "plin":
         return run_plin_regression(customer_key, version)
-    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "techuang", "zhongfu"}:
+    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "techuang", "zhongfu", "huaxingyu", "dongxun"}:
         rule_version = version or get_active_price_rule_version(customer_key)
         rules = load_extended_rules(customer_key, get_price_rule_file_path(customer_key, rule_version))
         return run_extended_regression(customer_key, rules, get_price_test_data_file_path(customer_key, rule_version))
@@ -608,7 +608,7 @@ def run_plin_regression(customer_key: str, version: str | None = None) -> dict:
 def load_price_rules(customer_key: str, rule_path: str | Path) -> JingwangRules | PlinRules | ExtRules:
     if customer_key == "plin":
         return load_plin_rules(rule_path)
-    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "techuang", "zhongfu"}:
+    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "techuang", "zhongfu", "huaxingyu", "dongxun"}:
         return load_extended_rules(customer_key, rule_path)
     return load_jingwang_rules(rule_path)
 
@@ -616,7 +616,7 @@ def load_price_rules(customer_key: str, rule_path: str | Path) -> JingwangRules 
 def calculate_customer_spec(customer_key: str, spec: str, rules: JingwangRules | PlinRules | ExtRules, quantity: Any = None) -> CalcResult:
     if customer_key == "plin":
         return calculate_plin_spec(spec, rules)  # type: ignore[arg-type]
-    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "techuang", "zhongfu"}:
+    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "techuang", "zhongfu", "huaxingyu", "dongxun"}:
         result = calculate_extended_spec(customer_key, spec, rules, quantity=quantity)  # type: ignore[arg-type]
         return CalcResult(
             result.status,
@@ -685,7 +685,7 @@ def _calculate_jingwang_pp(desc: str, rules: JingwangRules, quantity: Any = None
 def _calculate_jingwang_ccl(desc: str, rules: JingwangRules, quantity: Any = None) -> CalcResult:
     product_match = re.search(r"\b(NY[\w\-.（）()]+)\b", desc, re.I)
     thickness_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*mm\b", desc, re.I)
-    copper_match = re.search(r"\b([0-9Hh]+(?:\.[0-9]+)?)\s*/\s*([0-9Hh]+(?:\.[0-9]+)?)\b", desc)
+    copper_match = re.search(r"\b([0-9HhTt]+(?:\.[0-9]+)?)\s*/\s*([0-9HhTt]+(?:\.[0-9]+)?)\b", desc)
     state = "不含铜" if "不含铜" in desc else ("含铜" if "含铜" in desc else "")
     size_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(mm|in|inch|英寸)?\s*[xX*×]\s*([0-9]+(?:\.[0-9]+)?)\s*(mm|in|inch|英寸)?", desc, re.I)
     if _is_stack_like_size_match(size_match):
@@ -708,18 +708,27 @@ def _calculate_jingwang_ccl(desc: str, rules: JingwangRules, quantity: Any = Non
         return CalcResult("失败", "CCL", "待确认", "待确认", "", "", "CCL规格缺少型号、厚度、铜厚、含铜状态、尺寸或叠构")
     if _jingwang_ccl_force_pending(product, thickness, copper_left, copper_right, state, stack, foil):
         return CalcResult("失败", "CCL", "待确认", "待确认", "", "", "该规格在测试数据中标记为待确认")
-    candidates = [
-        row
-        for row in rules.ccl_rows
-        if row.product == product
-        and row.thickness is not None
-        and abs(row.thickness - thickness) <= 0.001
-        and row.copper_left == copper_left
-        and row.copper_right == copper_right
-        and row.copper_state == state
-        and row.stack == stack
-        and row.foil == foil
-    ]
+    def _matching_ccl_rows(left: str, right: str) -> list[CclRule]:
+        return [
+            row
+            for row in rules.ccl_rows
+            if row.product == product
+            and row.thickness is not None
+            and abs(row.thickness - thickness) <= 0.001
+            and row.copper_left == left
+            and row.copper_right == right
+            and row.copper_state == state
+            and row.stack == stack
+            and row.foil == foil
+        ]
+
+    candidates = _matching_ccl_rows(copper_left, copper_right)
+    fallback_note = ""
+    if not candidates and copper_left == "0.33" and copper_right == "0.33":
+        candidates = _matching_ccl_rows("T", "T")
+        if candidates:
+            fallback_note = "；0.33/0.33未命中，按T/T匹配"
+    note_suffix = f"{fallback_note}{foil_note}"
     parent = _select_ccl_parent(length_in, width_in)
     if candidates and parent and parent["opens"] > 1:
         for row in candidates:
@@ -731,7 +740,7 @@ def _calculate_jingwang_ccl(desc: str, rules: JingwangRules, quantity: Any = Non
             note = (
                 f"基板小片命中报价表第 {row.excel_row} 行，父级{parent['parent_w']}x{parent['parent_h']}，"
                 f"尺寸列{parent['label']}，经向一开{parent['opens_w']}，纬向一开{parent['opens_h']}，"
-                f"总开数{parent['opens']}，原始报价{price:.2f}，公式={price:.2f}/{parent['opens']}{foil_note}"
+                f"总开数{parent['opens']}，原始报价{price:.2f}，公式={price:.2f}/{parent['opens']}{note_suffix}"
             )
             return CalcResult("成功", "CCL", final, total, "", "", note, row.excel_row, parent["label"])
     for row in candidates:
@@ -747,13 +756,13 @@ def _calculate_jingwang_ccl(desc: str, rules: JingwangRules, quantity: Any = Non
             total,
             "",
             "",
-            f"命中基板报价表第 {row.excel_row} 行，尺寸列 {size_column}{foil_note}",
+            f"命中基板报价表第 {row.excel_row} 行，尺寸列 {size_column}{note_suffix}",
             row.excel_row,
             size_column,
         )
     if candidates and length_in is not None and width_in is not None:
         if not parent:
-            return CalcResult("失败", "CCL", "待确认", "待确认", "", "", f"无法匹配基板小片父级板：{length_in:.2f}x{width_in:.2f} inch{foil_note}")
+            return CalcResult("失败", "CCL", "待确认", "待确认", "", "", f"无法匹配基板小片父级板：{length_in:.2f}x{width_in:.2f} inch{note_suffix}")
         for row in candidates:
             price = row.prices.get(parent["key"])
             if price is None:
@@ -763,10 +772,10 @@ def _calculate_jingwang_ccl(desc: str, rules: JingwangRules, quantity: Any = Non
             note = (
                 f"基板小片命中报价表第 {row.excel_row} 行，父级{parent['parent_w']}x{parent['parent_h']}，"
                 f"尺寸列{parent['label']}，经向一开{parent['opens_w']}，纬向一开{parent['opens_h']}，"
-                f"总开数{parent['opens']}，原始报价{price:.2f}，公式={price:.2f}/{parent['opens']}{foil_note}"
+                f"总开数{parent['opens']}，原始报价{price:.2f}，公式={price:.2f}/{parent['opens']}{note_suffix}"
             )
             return CalcResult("成功", "CCL", final, total, "", "", note, row.excel_row, parent["label"])
-        return CalcResult("失败", "CCL", "待确认", "待确认", "", "", f"命中规格但小片父级尺寸列 {parent['label']} 无价格{foil_note}")
+        return CalcResult("失败", "CCL", "待确认", "待确认", "", "", f"命中规格但小片父级尺寸列 {parent['label']} 无价格{note_suffix}")
     if candidates:
         return CalcResult("失败", "CCL", "待确认", "待确认", "", "", f"命中规格但尺寸列 {size_column} 无价格")
     return CalcResult("失败", "CCL", "待确认", "待确认", "", "", "未命中CCL报价：型号、厚度、铜厚、含铜状态、叠构或铜箔不匹配")

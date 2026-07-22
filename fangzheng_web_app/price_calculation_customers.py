@@ -93,6 +93,20 @@ PRICE_CALCULATION_CUSTOMERS = [
         "rule_label": "中富报价表",
         "test_label": "中富测试数据",
     },
+    {
+        "key": "huaxingyu",
+        "label": "华兴宇",
+        "enabled": True,
+        "rule_label": "华兴宇报价表",
+        "test_label": "华兴宇测试数据",
+    },
+    {
+        "key": "dongxun",
+        "label": "东讯",
+        "enabled": True,
+        "rule_label": "东讯报价表",
+        "test_label": "东讯测试数据",
+    },
     {"key": "shenghong", "label": "胜宏", "enabled": False, "rule_label": "胜宏报价表", "test_label": "胜宏测试数据"},
     {"key": "bomin", "label": "博敏", "enabled": False, "rule_label": "博敏报价表", "test_label": "博敏测试数据"},
 ]

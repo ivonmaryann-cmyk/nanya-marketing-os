@@ -28,6 +28,23 @@ AMOUNT = "金额"
 DATE = "交货日期"
 REMARK = "备注"
 DETAIL_FIELDS = [SEQ, CODE, NAME, DESC, QTY, UNIT, PRICE, AMOUNT, DATE, REMARK]
+PP_GLASS_CODES = (
+    "0106",
+    "1027",
+    "1035",
+    "1037",
+    "1067",
+    "1078",
+    "1080",
+    "1086",
+    "1506",
+    "2113",
+    "2116",
+    "2313",
+    "3313",
+    "7628",
+    "106",
+)
 
 HEADER_KEYS = {
     "customer": "客户",
@@ -56,6 +73,22 @@ def _money(value: Any) -> Decimal | None:
 
 def _compact(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or "")).lower()
+
+
+def normalize_pp_spec_spacing(value: Any) -> str:
+    text = clean_text(value)
+    compact_text = re.sub(r"\s+", "", text)
+    if not compact_text:
+        return text
+    glass_pattern = "|".join(PP_GLASS_CODES)
+    match = re.fullmatch(
+        rf"(?P<product>NY[A-Z0-9()/_-]*?P)(?P<glass>{glass_pattern})(?P<rc>\d{{1,3}}(?:\.\d+)?%)(?P<length>\d+(?:\.\d+)?(?:米|M)(?:/卷|/R))",
+        compact_text,
+        flags=re.I,
+    )
+    if not match:
+        return text
+    return " ".join(match.group(name) for name in ["product", "glass", "rc", "length"])
 
 
 def _split_header_body_text(source_text: str) -> tuple[list[str], list[str]]:
@@ -311,6 +344,152 @@ def _row_field(mapping: dict[int, str], field: str) -> int | None:
     return None
 
 
+def _format_fcf_material_spec(value: str) -> str:
+    laminate = re.fullmatch(
+        r"NY(?P<series>\d{4}[A-Z])(?P<thickness>\d+(?:\.\d+)?mm)(?P<rest>1/1\([^)）]{1,20}[)）]\d+(?:\.\d+)?[*×xX]\d+(?:\.\d+)?)",
+        value,
+        flags=re.I,
+    )
+    if laminate:
+        return (
+            f"NY {laminate.group('series')} {laminate.group('thickness')}\n"
+            f"{laminate.group('rest')}"
+        )
+
+    pp = re.fullmatch(
+        r"NYPP(?P<series>\d{4}[A-Z])(?P<glass>\d{3,4})(?P<rest>RC\d{1,3}(?:\.\d+)?%\d+(?:\.\d+)?[\"”]?[*×xX]\d+(?:\.\d+)?(?:米|M))",
+        value,
+        flags=re.I,
+    )
+    if pp:
+        return f"NY PP {pp.group('series')} {pp.group('glass')}\n{pp.group('rest')}"
+    return ""
+
+
+def _split_duplicated_material_code_spec(code_value: str, name_value: str) -> tuple[str, str] | None:
+    compact_code = re.sub(r"\s+", "", clean_text(code_value))
+    compact_name = re.sub(r"\s+", "", clean_text(name_value))
+    if not compact_code or compact_code != compact_name:
+        return None
+
+    patterns = [
+        re.compile(
+            r"^(?P<code>\d{5}NY\d{5}-\d{4}-[A-Z0-9]+-[A-Z0-9]+)(?P<spec>NY\d{4}[A-Z]\d+(?:\.\d+)?mm1/1\([^)）]{1,20}[)）]\d+(?:\.\d+)?[*×xX]\d+(?:\.\d+)?)$",
+            flags=re.I,
+        ),
+        re.compile(
+            r"^(?P<code>NYPP\d{3,4}-\d{1,3}-\d{4})(?P<spec>NYPP\d{4}[A-Z]\d{3,4}RC\d{1,3}(?:\.\d+)?%\d+(?:\.\d+)?[\"”]?[*×xX]\d+(?:\.\d+)?(?:米|M))$",
+            flags=re.I,
+        ),
+    ]
+    for pattern in patterns:
+        match = pattern.fullmatch(compact_code)
+        if not match:
+            continue
+        formatted_spec = _format_fcf_material_spec(match.group("spec"))
+        if formatted_spec:
+            return match.group("code"), formatted_spec
+    return None
+
+
+def _repair_duplicated_code_spec_columns(
+    rows: list[list[str]],
+    header_index: int,
+    mapping: dict[int, str],
+) -> tuple[list[list[str]], list[str]]:
+    code_col = _row_field(mapping, CODE)
+    name_col = _row_field(mapping, NAME)
+    if code_col is None or name_col is None:
+        return rows, []
+
+    normalized = [list(row) for row in rows]
+    changed = False
+    for row in normalized[header_index + 1 :]:
+        if max(code_col, name_col) >= len(row):
+            continue
+        split = _split_duplicated_material_code_spec(row[code_col], row[name_col])
+        if not split:
+            continue
+        row[code_col], row[name_col] = split
+        changed = True
+    warning = "已拆分重复粘连的物料编号与物料名/规格，并恢复规格分行。"
+    return normalized, [warning] if changed else []
+
+
+def _is_unit_token(value: Any) -> bool:
+    text = clean_text(value).lower()
+    return text in {
+        "个",
+        "件",
+        "卷",
+        "张",
+        "片",
+        "套",
+        "箱",
+        "包",
+        "桶",
+        "支",
+        "只",
+        "米",
+        "公斤",
+        "千克",
+        "吨",
+        "kg",
+        "pcs",
+        "pc",
+    }
+
+
+def _repair_shifted_unit_quantity_columns(
+    rows: list[list[str]],
+    header_index: int,
+    mapping: dict[int, str],
+) -> tuple[list[list[str]], list[str]]:
+    headers = rows[header_index]
+    requirement_cols = [
+        index
+        for index, header in enumerate(headers)
+        if any(keyword in _compact(header) for keyword in ["物料要求", "产品要求", "materialrequirement"])
+    ]
+    unit_col = _row_field(mapping, UNIT)
+    qty_col = _row_field(mapping, QTY)
+    price_col = _row_field(mapping, PRICE)
+    amount_col = _row_field(mapping, AMOUNT)
+    if len(requirement_cols) != 1 or unit_col is None or qty_col is None:
+        return rows, []
+
+    requirement_col = requirement_cols[0]
+    normalized = [list(row) for row in rows]
+    changed = False
+    for row in normalized[header_index + 1 :]:
+        required_width = max(requirement_col, unit_col, qty_col, price_col or 0, amount_col or 0) + 1
+        if len(row) < required_width:
+            row.extend([""] * (required_width - len(row)))
+        requirement = clean_text(row[requirement_col])
+        unit = clean_text(row[unit_col])
+        quantity = clean_text(row[qty_col])
+        if not _is_unit_token(requirement):
+            continue
+        if not unit:
+            row[requirement_col] = ""
+            row[unit_col] = requirement
+            changed = True
+            continue
+        shifted_quantity = _money(unit)
+        if quantity or shifted_quantity is None or shifted_quantity <= 0:
+            continue
+        price = _money(row[price_col]) if price_col is not None else None
+        amount = _money(row[amount_col]) if amount_col is not None else None
+        if price is None or amount is None or abs(shifted_quantity * price - amount) > Decimal("0.05"):
+            continue
+        row[requirement_col] = ""
+        row[unit_col] = requirement
+        row[qty_col] = normalize_number(unit)
+        changed = True
+    warning = "已按单位词及数量×单价=金额关系校正左移的单位/数量。"
+    return normalized, [warning] if changed else []
+
+
 def _append_code_text(existing: str, addition: str) -> str:
     return re.sub(r"\s+", "", f"{clean_text(existing)}{clean_text(addition)}")
 
@@ -440,6 +619,48 @@ def _compact_material_code_column(rows: list[list[str]], header_index: int, mapp
     return normalized, ["已清理物料编码列内部空格。"] if changed else []
 
 
+def _normalize_spec_columns(rows: list[list[str]], header_index: int) -> tuple[list[list[str]], list[str]]:
+    normalized = [list(row) for row in rows]
+    headers = normalized[header_index]
+    spec_columns = [
+        index
+        for index, header in enumerate(headers)
+        if any(keyword in _compact(header) for keyword in ["型号/规格", "型号规格", "规格型号", "型号及规格"])
+    ]
+    if not spec_columns:
+        return normalized, []
+    changed = False
+    for row in normalized[header_index + 1 :]:
+        for column in spec_columns:
+            if column >= len(row):
+                continue
+            original = clean_text(row[column])
+            formatted = normalize_pp_spec_spacing(original)
+            if formatted and formatted != original:
+                row[column] = formatted
+                changed = True
+    return normalized, ["已恢复可确认 PP 型号/规格的语义空格。"] if changed else []
+
+
+def _normalize_mapped_detail_specs(rows: list[dict[str, Any]]) -> bool:
+    changed = False
+    for row in rows:
+        standard = row.get("standard") or {}
+        description = clean_text(standard.get(DESC))
+        formatted_description = normalize_pp_spec_spacing(description)
+        if formatted_description and formatted_description != description:
+            standard[DESC] = formatted_description
+            changed = True
+        for header, value in (row.get("original") or {}).items():
+            if not any(keyword in _compact(header) for keyword in ["型号/规格", "型号规格", "规格型号", "型号及规格"]):
+                continue
+            formatted_value = normalize_pp_spec_spacing(value)
+            if formatted_value and formatted_value != clean_text(value):
+                row["original"][header] = formatted_value
+                changed = True
+    return changed
+
+
 def _normalize_table_rows(rows: list[list[str]]) -> tuple[list[list[str]], dict[int, str], list[str]]:
     rows = [[clean_text(value) for value in row] for row in rows if any(clean_text(value) for value in row)]
     header_index, mapping = find_detail_header_row(rows)
@@ -447,7 +668,10 @@ def _normalize_table_rows(rows: list[list[str]]) -> tuple[list[list[str]], dict[
         return rows, {}, []
     rows, fragment_warnings = _merge_fragment_rows(rows, header_index, mapping)
     rows, multiline_warnings = _merge_multiline_detail_rows(rows, header_index, mapping)
+    rows, duplicate_warnings = _repair_duplicated_code_spec_columns(rows, header_index, mapping)
+    rows, shifted_warnings = _repair_shifted_unit_quantity_columns(rows, header_index, mapping)
     rows, code_warnings = _compact_material_code_column(rows, header_index, mapping)
+    rows, spec_warnings = _normalize_spec_columns(rows, header_index)
     normalized = rows[: header_index + 1]
     for row in rows[header_index + 1 :]:
         if _is_header_like_row(row) or _is_summary_or_section_row(row):
@@ -455,7 +679,129 @@ def _normalize_table_rows(rows: list[list[str]]) -> tuple[list[list[str]], dict[
         if not looks_like_detail_data(row) and len(_non_empty_indexes(row)) <= 2:
             continue
         normalized.append(row)
-    return normalized, mapping, fragment_warnings + multiline_warnings + code_warnings
+    return (
+        normalized,
+        mapping,
+        fragment_warnings
+        + multiline_warnings
+        + duplicate_warnings
+        + shifted_warnings
+        + code_warnings
+        + spec_warnings,
+    )
+
+
+def _subtotal_values(document: dict[str, Any], source_text: str) -> list[Decimal]:
+    text_parts = [str(source_text or "")]
+    for page in document.get("pages") or []:
+        text_parts.extend(str(line) for line in page.get("text_lines") or [])
+    for lines in (document.get("sections") or {}).values():
+        text_parts.extend(str(line) for line in lines or [])
+    values: list[Decimal] = []
+    pattern = re.compile(
+        r"(?:小计|合计|sub\s*-?\s*total)\s*(?:\([^)]*\))?\s*[:：]?\s*(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)",
+        flags=re.I,
+    )
+    for match in pattern.finditer("\n".join(text_parts)):
+        try:
+            values.append(Decimal(match.group(1).replace(",", "")))
+        except InvalidOperation:
+            continue
+    return sorted(set(values))
+
+
+def _unique_positive_integer_solution(remaining: Decimal, prices: list[Decimal]) -> list[int] | None:
+    if remaining <= 0 or not prices or len(prices) > 2 or any(price <= 0 for price in prices):
+        return None
+    if len(prices) == 1:
+        quantity = remaining / prices[0]
+        if quantity == quantity.to_integral_value() and Decimal(1) <= quantity <= Decimal(10000):
+            return [int(quantity)]
+        return None
+
+    solutions: list[list[int]] = []
+    max_first = min(int(remaining / prices[0]), 10000)
+    for first in range(1, max_first + 1):
+        rest = remaining - prices[0] * first
+        if rest <= 0:
+            break
+        second = rest / prices[1]
+        if second == second.to_integral_value() and Decimal(1) <= second <= Decimal(10000):
+            solutions.append([first, int(second)])
+            if len(solutions) > 1:
+                return None
+    return solutions[0] if len(solutions) == 1 else None
+
+
+def _infer_missing_quantities_from_subtotal(
+    document: dict[str, Any],
+    source_text: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    tables = document.get("raw_detail_tables") or []
+    subtotals = _subtotal_values(document, source_text)
+    if len(tables) != 1 or len(subtotals) != 1:
+        return [], []
+    table = tables[0]
+    rows = table.get("rows") or []
+    header_index, mapping = find_detail_header_row(rows)
+    if header_index is None:
+        return [], []
+    qty_columns = [column for column, field in mapping.items() if field == QTY]
+    if len(qty_columns) != 1:
+        return [], []
+    qty_column = qty_columns[0]
+
+    known_total = Decimal(0)
+    missing: list[tuple[int, Decimal]] = []
+    for row_index, row in enumerate(rows[header_index + 1 :], start=header_index + 1):
+        if _is_header_like_row(row) or _is_summary_or_section_row(row):
+            continue
+        standard = map_detail_row(rows[header_index], row, mapping).get("standard") or {}
+        if not clean_text(standard.get(CODE)) and not clean_text(standard.get(NAME)):
+            continue
+        price = _money(standard.get(PRICE))
+        amount = _money(standard.get(AMOUNT))
+        quantity = _money(standard.get(QTY))
+        if amount is not None:
+            known_total += amount
+        elif quantity is not None and price is not None:
+            known_total += quantity * price
+        elif quantity is None and price is not None:
+            missing.append((row_index, price))
+        else:
+            return [], []
+    solution = _unique_positive_integer_solution(subtotals[0] - known_total, [price for _row, price in missing])
+    if not solution or len(solution) != len(missing):
+        return [], []
+
+    actions: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = []
+    for (row_index, _price), quantity in zip(missing, solution):
+        while len(rows[row_index]) <= qty_column:
+            rows[row_index].append("")
+        rows[row_index][qty_column] = str(quantity)
+        action = {
+            "type": "subtotal_unique_quantity",
+            "row_index": row_index,
+            "column_index": qty_column,
+            "field": QTY,
+            "value": str(quantity),
+            "subtotal": str(subtotals[0]),
+        }
+        actions.append(action)
+        issues.append(
+            {
+                "page_index": table.get("page_index", 0),
+                "region": "明细表",
+                "field": QTY,
+                "raw_value": " ".join(rows[row_index]),
+                "clean_value": str(quantity),
+                "confidence": "唯一解",
+                "message": f"数量由小计 {subtotals[0]} 与各行单价关系的唯一正整数解补齐。",
+            }
+        )
+    table.setdefault("recovery_actions", []).extend(actions)
+    return actions, issues
 
 
 def _rebuild_detail_rows_from_tables(document: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -851,7 +1197,19 @@ def normalize_purchase_document(document: dict[str, Any], *, source_text: str = 
         warnings.extend(table_warnings)
     normalized["raw_detail_tables"] = normalized_tables
 
+    quantity_actions, quantity_issues = _infer_missing_quantities_from_subtotal(normalized, source_text)
+    recovery_actions = [
+        action
+        for table in normalized.get("raw_detail_tables") or []
+        for action in table.get("recovery_actions") or []
+    ]
+    if recovery_actions:
+        normalized["recovery_actions"] = recovery_actions
+    if quantity_actions:
+        warnings.append("已按小计与单价关系的唯一正整数解补齐缺失数量。")
+
     rebuilt_rows, validation_issues = _rebuild_detail_rows_from_tables(normalized)
+    validation_issues = quantity_issues + validation_issues
     old_rows = list(normalized.get("mapped_detail_rows") or [])
     if not rebuilt_rows and not old_rows:
         rebuilt_rows, packed_issues = _rebuild_rows_from_packed_text(normalized)
@@ -863,6 +1221,8 @@ def normalize_purchase_document(document: dict[str, Any], *, source_text: str = 
         normalized["mapped_detail_rows"] = rebuilt_rows
     elif rebuilt_rows and old_rows:
         warnings.append("规范化明细重建结果未优于原结果，已保留原结构化明细。")
+    if _normalize_mapped_detail_specs(list(normalized.get("mapped_detail_rows") or [])):
+        warnings.append("已同步规范化结构化明细中的 PP 型号/规格空格。")
     filtered_rows, dropped_count = _filter_mapped_detail_rows(list(normalized.get("mapped_detail_rows") or []))
     if dropped_count:
         normalized["mapped_detail_rows"] = filtered_rows

@@ -46,7 +46,13 @@
         <td class="actions">
           <a href="{{ url_for('main.job_detail', job_id=job.id) }}">查看结果</a>
           {% if job.status == 'completed' %}
+          {% if job.feature == 'inventory_detail' %}
+          {% for result in job.inventory_results %}
+          <a href="{{ url_for('main.download_inventory_detail', job_id=job.id, grade=result.key) }}">{{ result.label }}</a>
+          {% endfor %}
+          {% else %}
           <a href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载文件</a>
+          {% endif %}
           {% endif %}
           <form method="post" action="{{ url_for('main.delete_history', job_id=job.id) }}">
             <button type="submit" class="link-button">删除</button>

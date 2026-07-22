@@ -11,7 +11,10 @@ from typing import Any
 from .excel_utils import load_workbook_compat
 
 
-FOIL_TOKEN_PATTERN = r"HS1(?:-M2)?(?:-VSP)?|HS2(?:-M2)?(?:-VSP)?|HVLP[1-4]?|RTF[1-4]?|HTE|VLP"
+FOIL_TOKEN_PATTERN = r"HS1(?:-M2)?(?:-VSP)?|HS2(?:-M2)?(?:-VSP)?|HVLP[1-4]?|RTF[1-4]?|HTE|VLP|RG311"
+
+SHENGYI_GLASS_PATTERN = r"1027|1037|1035|1067|1078|1080|1086|1506|2113|2116|2313|3313|7628|106"
+SHENGYI_CCL_THICKNESS_FALLBACK_MM = 0.003
 
 
 @dataclass
@@ -26,6 +29,7 @@ class ExtPpRule:
     width: float | None
     price: float | None
     roll_price: float | None = None
+    sf_price: float | None = None
 
 
 @dataclass
@@ -86,6 +90,8 @@ def load_extended_rules(customer_key: str, rule_path: str | Path) -> ExtRules:
         rules = _load_techuang_rules(rule_path)
     elif customer_key == "zhongfu":
         rules = _load_zhongfu_rules(rule_path)
+    elif customer_key in {"huaxingyu", "dongxun"}:
+        rules = _load_current_quote_rules(customer_key, rule_path)
     else:
         raise ValueError(f"不支持的扩展价格计算客户：{customer_key}")
     if not rules.pp_rows and not rules.ccl_rows:
@@ -113,6 +119,8 @@ def calculate_extended_spec(customer_key: str, spec: str, rules: ExtRules, quant
         return _calculate_techuang_spec(desc, rules, quantity=quantity)
     if customer_key == "zhongfu":
         return _calculate_zhongfu_spec(desc, rules, quantity=quantity)
+    if customer_key in {"huaxingyu", "dongxun"}:
+        return _calculate_current_quote_spec(customer_key, desc, rules, quantity=quantity)
     if _looks_like_pp(desc):
         return _calculate_pp(customer_key, desc, rules)
     return _calculate_ccl(customer_key, desc, rules, quantity=quantity)
@@ -341,6 +349,82 @@ def _load_eaton_rules(rule_path: str | Path) -> ExtRules:
                         continue
                     ccl_rows.append(ExtCclRule(data_row, ws.title, product, thickness_mm, thickness_mil, copper, foil, stack, _row_prices(ws, data_row, price_cols)))
     return ExtRules("eaton", pp_rows, ccl_rows)
+
+
+def _load_current_quote_rules(customer_key: str, rule_path: str | Path) -> ExtRules:
+    wb = load_workbook_compat(rule_path, data_only=True)
+    pp_rows: list[ExtPpRule] = []
+    ccl_rows: list[ExtCclRule] = []
+    for ws in wb.worksheets:
+        for row_idx in range(1, ws.max_row + 1):
+            values = [_text(ws.cell(row_idx, col).value) for col in range(1, ws.max_column + 1)]
+            value_set = set(values)
+            if {"产品类别", "厚度(mm)", "铜厚", "铜箔类型", "组合结构"}.issubset(value_set):
+                _load_current_quote_ccl_rows(ws, row_idx, values, ccl_rows)
+            if {"Products", "Glass type", "Resin Content", "Length (m)"}.issubset(value_set):
+                _load_current_quote_pp_rows(ws, row_idx, values, pp_rows)
+    return ExtRules(customer_key, pp_rows, ccl_rows)
+
+
+def _load_current_quote_ccl_rows(ws, header_row: int, headers: list[str], ccl_rows: list[ExtCclRule]) -> None:
+    product_col = _find_header_contains(headers, {"产品类别"}) or 2
+    mm_col = _find_header_contains(headers, {"厚度(mm)", "厚度"}) or 3
+    copper_col = _find_header_contains(headers, {"铜厚"}) or 5
+    foil_col = _find_header_contains(headers, {"铜箔类型"}) or 6
+    stack_col = _find_header_contains(headers, {"组合结构"}) or 7
+    price_cols = {col: key for col, key in _price_columns(headers).items() if key in {"SF", "37", "41", "43"}}
+    for data_row in range(header_row + 1, ws.max_row + 1):
+        product = _norm_product(ws.cell(data_row, product_col).value)
+        if not product:
+            continue
+        thickness_mm = _to_float(ws.cell(data_row, mm_col).value)
+        copper = _norm_copper(ws.cell(data_row, copper_col).value)
+        foil = _norm_foil(ws.cell(data_row, foil_col).value) or "HTE"
+        stack = _norm_stack(ws.cell(data_row, stack_col).value)
+        prices = _row_prices(ws, data_row, price_cols)
+        prices = {key: value for key, value in prices.items() if value is not None}
+        if thickness_mm is None or not copper or not stack or not prices:
+            continue
+        ccl_rows.append(ExtCclRule(data_row, ws.title, product, thickness_mm, None, copper, foil, stack, prices))
+
+
+def _load_current_quote_pp_rows(ws, header_row: int, headers: list[str], pp_rows: list[ExtPpRule]) -> None:
+    product_col = _find_header_contains(headers, {"Products"}) or 1
+    glass_col = _find_header_contains(headers, {"Glass type"}) or 2
+    rc_col = _find_header_contains(headers, {"Resin Content"}) or 3
+    length_col = _find_header_contains(headers, {"Length (m)"}) or 4
+    width_col = _find_header_contains(headers, {"Width (inch)"}) or 5
+    per_m_col = _first_header_col(headers, {"Per M", "Per Meter"})
+    per_roll_col = _first_header_col(headers, {"Per Roll"})
+    for data_row in range(header_row + 1, ws.max_row + 1):
+        product = _norm_product(ws.cell(data_row, product_col).value)
+        if not product:
+            continue
+        glasses = _norm_glasses(ws.cell(data_row, glass_col).value)
+        rc_min, rc_max = _parse_rc_range(ws.cell(data_row, rc_col).value)
+        length = _length_int(ws.cell(data_row, length_col).value)
+        width = _to_float(ws.cell(data_row, width_col).value)
+        price = _to_float(ws.cell(data_row, per_m_col).value) if per_m_col else None
+        roll_price = _to_float(ws.cell(data_row, per_roll_col).value) if per_roll_col else None
+        if price is None:
+            price = _current_quote_pp_fallback_price(ws, data_row, headers, per_roll_col)
+        if not glasses or rc_min is None or rc_max is None or price is None:
+            continue
+        for glass in glasses:
+            pp_rows.append(ExtPpRule(data_row, ws.title, product, glass, rc_min, rc_max, length, width, price, roll_price))
+
+
+def _current_quote_pp_fallback_price(ws, row_idx: int, headers: list[str], per_roll_col: int | None) -> float | None:
+    for col_idx in range(1, len(headers) + 1):
+        if col_idx <= 8 or col_idx == per_roll_col:
+            continue
+        header = _text(headers[col_idx - 1])
+        if not header or "涨幅" in header:
+            continue
+        price = _to_float(ws.cell(row_idx, col_idx).value)
+        if price is not None:
+            return price
+    return None
 
 
 def _load_taixing_rules(rule_path: str | Path) -> ExtRules:
@@ -577,7 +661,7 @@ def _mingyang_norm_stack(value: Any) -> str:
         return stack
     text = _text(value).upper().replace("\\", "*").replace("×", "*").replace("X", "*")
     text = re.sub(r"\*+", "*", text)
-    glass_pattern = r"1035|1067|1078|1080|1086|1506|2113|2116|2313|3313|7628|106"
+    glass_pattern = r"1027|1037|1035|1067|1078|1080|1086|1506|2113|2116|2313|3313|7628|106"
     pieces: list[tuple[str, int]] = []
     for count, glass in re.findall(rf"(?<!\d)(\d+)\s*\*\s*({glass_pattern})(?!\d)", text):
         pieces.append((glass, int(count)))
@@ -725,7 +809,7 @@ def _calculate_lejian_ccl(desc: str, rules: ExtRules, quantity: Any = None) -> E
     ]
     if not candidates:
         return ExtCalcResult("失败", "CCL", "待确认", "", "", "", "未命中乐健CCL报价：型号、厚度或铜厚不匹配")
-    stack = _extract_stack(desc)
+    stack = _shengyi_norm_stack(desc)
     if stack:
         stack_matches = [row for row in candidates if row.stack == stack]
         if stack_matches:
@@ -1304,12 +1388,64 @@ def _load_shengyi_rules(rule_path: str | Path) -> ExtRules:
     return ExtRules("shengyi", pp_rows, ccl_rows)
 
 
+def _shengyi_header_normalized(value: Any) -> str:
+    return re.sub(r"\s+", "", _text(value)).upper()
+
+
+def _shengyi_ccl_material_columns(headers: list[str]) -> tuple[int, int]:
+    copper_candidates: list[int] = []
+    foil_candidates: list[int] = []
+    for index, header in enumerate(headers, start=1):
+        normalized = _shengyi_header_normalized(header)
+        if normalized in {"COPPER", "COPPER(OZ)", "COPPEROZ"}:
+            copper_candidates.append(index)
+        if normalized == "COPPERTYPE":
+            foil_candidates.append(index)
+    copper_col = copper_candidates[0] if copper_candidates else 4
+    foil_col = foil_candidates[0] if foil_candidates else 5
+    return copper_col, foil_col
+
+
+def _shengyi_ccl_material_values(row_values: list[str], copper_col: int, foil_col: int) -> tuple[str, str]:
+    first = _row_value(row_values, copper_col)
+    second = _row_value(row_values, foil_col)
+    first_copper = _norm_copper(first)
+    second_copper = _norm_copper(second)
+    if first_copper and not second_copper:
+        return first_copper, _shengyi_norm_foil(second)
+    if second_copper and not first_copper:
+        return second_copper, _shengyi_norm_foil(first)
+    return first_copper or second_copper, _shengyi_norm_foil(second or first)
+
+
+def _shengyi_norm_glasses(value: Any) -> list[str]:
+    text = _text(value).upper().replace("H", "")
+    normalized: list[str] = []
+    for item in re.findall(r"\d{3,4}|106", text):
+        if re.fullmatch(r"0+106", item):
+            item = "106"
+        if item not in normalized:
+            normalized.append(item)
+    return normalized
+
+
+def _shengyi_norm_stack(value: Any) -> str:
+    text = _text(value).upper()
+    pieces: list[tuple[str, int]] = []
+    for count, glass in re.findall(rf"(?<!\d)(\d+)\s*(?:[寮爘*xX脳])\s*({SHENGYI_GLASS_PATTERN})(?!\d)", text):
+        pieces.append((glass, int(count)))
+    for glass, count in re.findall(rf"(?<!\d)({SHENGYI_GLASS_PATTERN})\s*[xX脳*]\s*(\d+)(?!\d)", text):
+        pieces.append((glass, int(count)))
+    if not pieces:
+        return ""
+    return "+".join(f"{count}*{glass}" for glass, count in sorted(pieces, key=lambda item: item[0]))
+
+
 def _load_shengyi_ccl_rows(ws, header_row: int, headers: list[str], ccl_rows: list[ExtCclRule]) -> None:
     product_col = _find_header_contains(headers, {"Type"}) or 1
     mm_col = _find_header_contains(headers, {"Thickness (mm)", "Thickness(mm)"}) or 2
     mil_col = _find_header_contains(headers, {"Thickness (mil)", "Thickness(mil)"}) or 3
-    copper_col = _find_header_contains(headers, {"Copper"}) or 4
-    foil_col = _find_header_contains(headers, {"copper type"}) or 5
+    copper_col, foil_col = _shengyi_ccl_material_columns(headers)
     stack_col = _find_header_contains(headers, {"Structure"}) or 6
     price_cols = _shengyi_ccl_price_columns(headers)
     product = _shengyi_product_from_text(ws.title)
@@ -1331,9 +1467,8 @@ def _load_shengyi_ccl_rows(ws, header_row: int, headers: list[str], ccl_rows: li
             product = row_product
         thickness_mm = _to_float(_row_value(row_values, mm_col))
         thickness_mil = _to_float(_row_value(row_values, mil_col))
-        copper = _norm_copper(_row_value(row_values, copper_col))
-        foil = _shengyi_norm_foil(_row_value(row_values, foil_col))
-        stack = _norm_stack(_row_value(row_values, stack_col))
+        copper, foil = _shengyi_ccl_material_values(row_values, copper_col, foil_col)
+        stack = _shengyi_norm_stack(_row_value(row_values, stack_col))
         prices = _row_prices(ws, data_row, price_cols)
         prices = {key: value for key, value in prices.items() if value is not None}
         if not product or thickness_mm is None or thickness_mil is None or not copper or not stack or not prices:
@@ -1367,7 +1502,7 @@ def _load_shengyi_pp_rows(ws, header_row: int, headers: list[str], pp_rows: list
         row_product = _shengyi_product_from_text(_row_value(row_values, product_col))
         if row_product:
             product = row_product
-        glasses = _norm_glasses(_row_value(row_values, glass_col))
+        glasses = _shengyi_norm_glasses(_row_value(row_values, glass_col))
         rc_min, rc_max = _parse_rc_range(_row_value(row_values, rc_col))
         length = _length_int(_row_value(row_values, length_col))
         width = _to_float(_row_value(row_values, width_col))
@@ -1379,7 +1514,20 @@ def _load_shengyi_pp_rows(ws, header_row: int, headers: list[str], pp_rows: list
             continue
         started = True
         for glass in glasses:
-            pp_rows.append(ExtPpRule(data_row, ws.title, product, glass, rc_min, rc_max, length, width, price, sf_price))
+            pp_rows.append(
+                ExtPpRule(
+                    data_row,
+                    ws.title,
+                    product,
+                    glass,
+                    rc_min,
+                    rc_max,
+                    length,
+                    width,
+                    price,
+                    sf_price=sf_price,
+                )
+            )
 
 
 def _calculate_shengyi_spec(desc: str, rules: ExtRules, quantity: Any = None) -> ExtCalcResult:
@@ -1392,13 +1540,13 @@ def _calculate_shengyi_pp(desc: str, rules: ExtRules) -> ExtCalcResult:
     product = _shengyi_product_from_text(desc)
     glass = _extract_glass(desc)
     rc = _shengyi_extract_rc(desc)
-    length = _extract_length(desc, floor_value=True)
+    length = _shengyi_extract_pp_length(desc)
     pp_piece = _shengyi_extract_pp_piece(desc)
     width = _shengyi_extract_pp_width(desc) or _extract_width(desc) or (pp_piece["mother_width"] if pp_piece else None)
     if not product or not glass or rc is None:
         return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width), _shengyi_fmt_roll_length(length), "生益PP规格缺少型号、玻布或RC")
     products = _shengyi_product_aliases(product, for_pp=True)
-    matches = [
+    exact_matches = [
         row
         for row in rules.pp_rows
         if row.product in products
@@ -1409,15 +1557,36 @@ def _calculate_shengyi_pp(desc: str, rules: ExtRules) -> ExtCalcResult:
         and (length is None or row.length is None or row.length == length)
         and (width is None or row.width is None or abs(row.width - width) <= 0.8)
     ]
+    matches = exact_matches
+    if not matches:
+        matches = [
+            row
+            for row in rules.pp_rows
+            if row.product in products
+            and row.glass == glass
+            and row.rc_min is not None
+            and row.rc_max is not None
+            and abs(((row.rc_min + row.rc_max) / 2) - rc) <= 2.0
+            and (length is None or row.length is None or row.length == length)
+            and (width is None or row.width is None or abs(row.width - width) <= 0.8)
+        ]
     if not matches:
         return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width), _shengyi_fmt_roll_length(length), "未命中生益PP报价：型号、玻布、RC、卷长或宽度不匹配")
-    best = sorted(matches, key=lambda row: (0 if row.product == product else 1, row.excel_row))[0]
+    best = sorted(
+        matches,
+        key=lambda row: (
+            0 if row.product == product else 1,
+            abs(((row.rc_min or rc) + (row.rc_max or rc)) / 2 - rc),
+            0 if row.length == length else 1,
+            row.excel_row,
+        ),
+    )[0]
     if pp_piece:
         piece_price = _shengyi_piece_formula_price(
             pp_piece["radial"],
             pp_piece["latitudinal"],
             pp_piece["mother_width"] or best.width,
-            best.roll_price,
+            best.sf_price,
         )
         if not piece_price["ok"]:
             return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width or best.width), _shengyi_fmt_roll_length(length or best.length), piece_price["reason"])
@@ -1446,14 +1615,20 @@ def _calculate_shengyi_ccl(desc: str, rules: ExtRules, quantity: Any = None) -> 
     if not product or thickness_mm is None or not copper or not stack or length_in is None or width_in is None:
         return ExtCalcResult("失败", "CCL", "待确认", "", "", "", "生益CCL规格缺少型号、厚度、铜厚、叠构或尺寸")
     products = _shengyi_product_aliases(product, for_pp=False)
-    product_rows = [
+    base_rows = [
         row
         for row in rules.ccl_rows
         if row.product in products
-        and _shengyi_thickness_matches(row, thickness_mil, thickness_mm)
         and row.stack == stack
         and row.copper in _shengyi_copper_aliases(copper)
     ]
+    exact_rows = [row for row in base_rows if _shengyi_thickness_exact(row, thickness_mil, thickness_mm)]
+    product_rows = exact_rows or [
+        row
+        for row in base_rows
+        if _shengyi_thickness_matches(row, thickness_mil, thickness_mm, SHENGYI_CCL_THICKNESS_FALLBACK_MM)
+    ]
+    thickness_fallback = not exact_rows and bool(product_rows)
     if not product_rows:
         return ExtCalcResult("失败", "CCL", "待确认", "", "", "", "未命中生益CCL报价：型号、厚度、铜厚或叠构不匹配")
     last_reason = ""
@@ -1471,6 +1646,8 @@ def _calculate_shengyi_ccl(desc: str, rules: ExtRules, quantity: Any = None) -> 
                 f"型号={row.product}，厚度={row.thickness_mm:g}mm，铜厚={row.copper}，铜箔={foil or row.foil or '默认'}，"
                 f"叠构={row.stack}，尺寸列={price_result['label']}，公式={price_result['formula']}{adjusted['note']}"
             )
+            if thickness_fallback and thickness_mm is not None and row.thickness_mm is not None:
+                note += f"，厚度{thickness_mm:g}mm未找到精确报价，按±{SHENGYI_CCL_THICKNESS_FALLBACK_MM:g}mm匹配到{row.thickness_mm:g}mm"
             return ExtCalcResult("成功", "CCL", price, total, "", "", note, row.excel_row, price_result["label"])
         last_reason = price_result["reason"]
     return ExtCalcResult("失败", "CCL", "待确认", "", "", "", last_reason or "生益CCL报价行找到，但尺寸或铜箔规则未匹配")
@@ -1530,13 +1707,17 @@ def _shengyi_product_from_text(value: Any) -> str:
     text = _text(value)
     if re.search(r"NY\s*-?\s*6300\s*\(\s*C\s*\)", text, re.I):
         return "NY6300C"
-    match = re.search(r"NY\s*-?\s*(?:P\dC?|[A-Z]?\d{3,4}[A-Z0-9]*P?C?)", text, re.I)
+    match = re.search(r"NY\s*-?\s*(?:A[12]P?|P\dC?|[A-Z]?\d{3,4}[A-Z0-9]*P?C?)", text, re.I)
     return _norm_product(match.group(0)) if match else ""
 
 
 def _shengyi_product_aliases(product: str, *, for_pp: bool) -> set[str]:
     norm = _norm_product(product)
     aliases = {norm}
+    if norm in {"NY6180HF", "NY6180HFP"}:
+        aliases.add("NY6180P" if for_pp else "NY6180")
+    if norm in {"NYA1P", "NYA2P"}:
+        aliases.add(norm[:-1])
     if norm in {"NYP1C", "NYP2C", "NYP3C"}:
         aliases.add(norm[:-1])
     if norm in {"NYP1", "NYP2", "NYP3"}:
@@ -1550,9 +1731,14 @@ def _shengyi_product_aliases(product: str, *, for_pp: bool) -> set[str]:
 
 
 def _shengyi_extract_thickness_mm(desc: str) -> float | None:
-    match = re.search(r"(\d+(?:\.\d+)?)\s*(?:±|卤|\+/-|-)\s*\d+(?:\.\d+)?\s*MM", desc, re.I)
-    if match:
-        return float(match.group(1))
+    preferred = re.search(
+        r"(?<![A-Z0-9.])(\d+(?:\.\d+)?)\s*"
+        r"(?:[\u00b1+\-/]\s*\d+(?:\.\d+)?)?\s*M{1,2}(?![A-Z])",
+        desc,
+        re.I,
+    )
+    if preferred:
+        return float(preferred.group(1))
     return _extract_thickness_mm(desc)
 
 
@@ -1569,7 +1755,7 @@ def _shengyi_extract_size(desc: str) -> tuple[float | None, float | None]:
     valid: list[tuple[float, float]] = []
     for first, second in matches:
         a, b = float(first), float(second)
-        if 0 < a <= 120 and 0 < b <= 120 and not (int(a) in {106, 1067, 1078, 1080, 1506, 2113, 2116, 2313, 3313, 7628} or int(b) in {106, 1067, 1078, 1080, 1506, 2113, 2116, 2313, 3313, 7628}):
+        if 0 < a <= 120 and 0 < b <= 120 and not (int(a) in {106, 1027, 1037, 1067, 1078, 1080, 1506, 2113, 2116, 2313, 3313, 7628} or int(b) in {106, 1027, 1037, 1067, 1078, 1080, 1506, 2113, 2116, 2313, 3313, 7628}):
             valid.append((a, b))
     if valid:
         return valid[-1]
@@ -1577,35 +1763,73 @@ def _shengyi_extract_size(desc: str) -> tuple[float | None, float | None]:
 
 
 def _shengyi_extract_pp_width(desc: str) -> float | None:
+    labelled = re.search(r"(\d+(?:\.\d+)?)\s*(?:\"|IN|INCH)?\s*\(\s*[\u7eac](?:向)?\s*\)\s*[*xX\u00d7]\s*\d+(?:\.\d+)?\s*M", desc, re.I)
+    if labelled:
+        return float(labelled.group(1))
     match = re.search(r"(\d+(?:\.\d+)?)\s*(?:\"|IN|INCH)?\s*\(\s*纬\s*\)\s*[*xX×]\s*\d+(?:\.\d+)?\s*M", desc, re.I)
     return float(match.group(1)) if match else None
 
 
+def _shengyi_extract_pp_length(desc: str) -> int | None:
+    labelled = re.findall(
+        r"[*xX\u00d7]\s*(?:\(\s*[\u7ecf经]\s*\)\s*)?(\d+(?:\.\d+)?)\s*M\b",
+        desc,
+        re.I,
+    )
+    if labelled:
+        return int(math.floor(float(labelled[-1]) + 1e-9))
+    return _extract_length(desc, floor_value=True)
+
+
 def _shengyi_norm_foil(value: Any) -> str:
-    foil = _norm_foil(value)
-    aliases = {
-        "HS1-M2-VSP": "HVLP1",
-        "HS2-M2-VSP": "HVLP2",
-        "HVLP": "HVLP1",
-    }
-    return aliases.get(foil, foil)
+    text = _text(value).upper()
+    aliases = {"HS1-M2-VSP": "HVLP1", "HS2-M2-VSP": "HVLP2", "HVLP": "HVLP1"}
+    foils: list[str] = []
+    for token in re.findall(FOIL_TOKEN_PATTERN, text, re.I):
+        normalized = aliases.get(token.upper(), token.upper())
+        if normalized not in foils:
+            foils.append(normalized)
+    return "/".join(foils)
+
+
+def _shengyi_foil_tokens(value: Any) -> set[str]:
+    normalized = _shengyi_norm_foil(value)
+    return {token for token in normalized.split("/") if token}
+
+
+def _shengyi_foil_compatible(requested: Any, quoted: Any) -> bool:
+    requested_tokens = _shengyi_foil_tokens(requested)
+    quoted_tokens = _shengyi_foil_tokens(quoted)
+    if not requested_tokens or not quoted_tokens:
+        return not requested_tokens and not quoted_tokens
+    return requested_tokens == quoted_tokens or requested_tokens < quoted_tokens or quoted_tokens < requested_tokens
 
 
 def _shengyi_extract_pp_piece(desc: str) -> dict[str, float] | None:
-    if re.search(r"[*xX×脳]\s*\d+(?:\.\d+)?\s*M\b", desc, re.I):
+    if re.search(r"[*xX\u00d7]\s*\d+(?:\.\d+)?\s*M\b", desc, re.I):
         return None
-    matches = re.findall(r"(\d+(?:\.\d+)?)\s*(?:\"|IN|INCH)?\s*[*xX×脳]\s*(\d+(?:\.\d+)?)\s*(?:\"|IN|INCH)?", desc, re.I)
-    valid: list[tuple[float, float]] = []
-    glass_codes = {106, 1067, 1078, 1080, 1506, 2113, 2116, 2313, 3313, 7628}
-    for first, second in matches:
-        a, b = float(first), float(second)
-        if 0 < a <= 120 and 0 < b <= 120 and int(a) not in glass_codes and int(b) not in glass_codes:
-            valid.append((a, b))
+    pair_pattern = re.compile(
+        r"(?P<first>\d+(?:\.\d+)?)\s*(?:\"|IN|INCH|INC)?\s*"
+        r"(?:\(\s*(?P<first_axis>[\u7eac\u7ecf])(?:向)?\s*\))?\s*"
+        r"[*xX\u00d7]\s*"
+        r"(?P<second>\d+(?:\.\d+)?)\s*(?:\"|IN|INCH|INC)?\s*"
+        r"(?:\(\s*(?P<second_axis>[\u7eac\u7ecf])(?:向)?\s*\))?",
+        re.I,
+    )
+    glass_codes = {1027, 1037, 106, 1067, 1078, 1080, 1506, 2113, 2116, 2313, 3313, 7628}
+    valid: list[tuple[float, float, str, str]] = []
+    for match in pair_pattern.finditer(desc):
+        first, second = float(match.group("first")), float(match.group("second"))
+        if 0 < first <= 120 and 0 < second <= 120 and int(first) not in glass_codes and int(second) not in glass_codes:
+            valid.append((first, second, match.group("first_axis") or "", match.group("second_axis") or ""))
     if not valid:
         return None
-    return _shengyi_piece_axes(*valid[-1], mother_hint=49.5)
-
-
+    first, second, first_axis, second_axis = valid[-1]
+    if first_axis.startswith("纬") and second_axis.startswith("经"):
+        return {"radial": second, "latitudinal": first, "mother_width": 49.5}
+    if first_axis.startswith("经") and second_axis.startswith("纬"):
+        return {"radial": first, "latitudinal": second, "mother_width": 49.5}
+    return _shengyi_piece_axes(first, second, mother_hint=49.5)
 def _shengyi_piece_axes(first: float, second: float, mother_hint: float | None = None) -> dict[str, float]:
     radial, latitudinal = first, second
     mother = mother_hint if mother_hint and mother_hint > 0 else latitudinal
@@ -1620,32 +1844,43 @@ def _shengyi_piece_formula_price(radial: float, latitudinal: float, mother_width
     opens = math.floor(mother_width / latitudinal)
     if opens < 1:
         return {"ok": False, "reason": "Shengyi small-piece split count is less than 1"}
-    price = _round_money(radial * 0.0254 / opens * float(sf_price))
-    formula = f"round({radial:g}*0.0254/{opens}*{float(sf_price):.6g},2)"
+    price = _round_money(float(sf_price) * radial * 48 / opens / 144)
+    formula = f"round({float(sf_price):.6g}*{radial:g}*48/{opens}/144,2)"
     return {"ok": True, "price": price, "label": f"{radial:g}*{latitudinal:g}", "formula": formula, "opens": opens}
 
 
 def _shengyi_copper_aliases(copper: str) -> set[str]:
-    aliases = {copper, _reverse_copper(copper)}
-    mapped = {
-        "1/H": "1/1",
-        "H/1": "1/1",
-        "H/2": "1/2",
-        "2/H": "2/1",
-    }
-    if copper in mapped:
-        aliases.add(mapped[copper])
-        aliases.add(_reverse_copper(mapped[copper]))
-    return aliases
+    groups = (
+        {"1/1", "1/H", "H/1"},
+        {"1/2", "2/1", "H/2", "2/H"},
+    )
+    for group in groups:
+        if copper in group:
+            return set(group)
+    return {copper, _reverse_copper(copper)}
 
 
-def _shengyi_thickness_matches(row: ExtCclRule, thickness_mil: float | None, thickness_mm: float | None) -> bool:
-    if thickness_mm is not None and row.thickness_mm is not None and abs(row.thickness_mm - thickness_mm) <= 0.012:
+def _shengyi_thickness_matches(
+    row: ExtCclRule,
+    thickness_mil: float | None,
+    thickness_mm: float | None,
+    tolerance_mm: float = SHENGYI_CCL_THICKNESS_FALLBACK_MM,
+) -> bool:
+    epsilon = 1e-9
+    if thickness_mm is not None and row.thickness_mm is not None and abs(row.thickness_mm - thickness_mm) <= tolerance_mm + epsilon:
         return True
-    if thickness_mil is not None and row.thickness_mil is not None and abs(row.thickness_mil - thickness_mil) <= 0.35:
+    if thickness_mil is not None and row.thickness_mil is not None and abs(row.thickness_mil - thickness_mil) <= tolerance_mm / 0.0254 + epsilon:
         return True
-    if thickness_mil is not None and row.thickness_mm is not None and abs(row.thickness_mm - thickness_mil * 0.0254) <= 0.012:
+    if thickness_mil is not None and row.thickness_mm is not None and abs(row.thickness_mm - thickness_mil * 0.0254) <= tolerance_mm + epsilon:
         return True
+    return False
+
+
+def _shengyi_thickness_exact(row: ExtCclRule, thickness_mil: float | None, thickness_mm: float | None) -> bool:
+    if thickness_mm is not None and row.thickness_mm is not None:
+        return abs(row.thickness_mm - thickness_mm) <= 0.0005
+    if thickness_mil is not None and row.thickness_mil is not None:
+        return abs(row.thickness_mil - thickness_mil) <= 0.02
     return False
 
 
@@ -1666,15 +1901,13 @@ def _shengyi_adjusted_sf(row: ExtCclRule, requested_foil: str, copper: str) -> d
         return {"ok": False, "reason": "生益CCL报价行缺少 Per SF 面积价"}
     row_foil = _shengyi_norm_foil(row.foil) if row.foil else ""
     foil = _shengyi_norm_foil(requested_foil) if requested_foil else row_foil
-    if not requested_foil or foil == row_foil:
+    if not requested_foil or _shengyi_foil_compatible(foil, row_foil):
         return {"ok": True, "sf": float(sf), "note": ""}
-    sheet = row.sheet.upper()
-    if sheet in {"NY2150", "NY2170", "NY2170H"} and row_foil == "HTE" and foil.startswith("RTF"):
-        return {"ok": True, "sf": float(sf) * 1.35, "note": "；RTF铜箔按基板价上调35%"}
-    if sheet in {"NY3170M2", "NY6180L", "NY6300S", "NY6300SN"} and row_foil == "RTF2" and foil in {"RTF", "HTE"}:
-        return {"ok": True, "sf": float(sf), "note": "；RTF/HTE按RTF2同价"}
-    if sheet == "NY6200" and row_foil == "RTF" and foil == "HTE":
-        return {"ok": True, "sf": float(sf), "note": "；HTE与RTF同价"}
+    sheet = re.sub(r"[^A-Z0-9]", "", row.sheet.upper())
+    if sheet in {"NY2150", "NY2170H", "NYA1", "NYA2"} and row_foil == "HTE" and foil.startswith("RTF"):
+        return {"ok": True, "sf": float(sf) * 1.05, "note": "；RTF铜箔按基板价上调5%"}
+    if sheet in {"NY3170M2", "NY6180L", "NY6300S", "NY6300SN"} and row_foil == "RTF2" and foil in {"RTF", "RTF1"}:
+        return {"ok": True, "sf": float(sf), "note": "；RTF按RTF2同价"}
     if sheet in {"NY3170M", "NY6200"} and row_foil == "RTF" and foil == "RTF2":
         adder = _shengyi_foil_adder(copper, half=0.56, one=0.84)
         return {"ok": True, "sf": float(sf) + adder, "note": f"；RTF2面积加价{adder:.2f}/SF"}
@@ -1713,19 +1946,60 @@ def _shengyi_foil_adder(copper: str, *, half: float, one: float) -> float:
 
 
 def _shengyi_ccl_size_price(row: ExtCclRule, length_in: float, width_in: float, sf_price: float) -> dict[str, Any]:
-    dim = _shengyi_sheet_width(length_in, width_in)
-    standard_map = [(37, "36*48", 12.0), (41, "40*48", 13.33), (43, "42*48", 14.0)]
-    for target, label, factor in standard_map:
-        if abs(dim - target) <= 0.8:
-            price = _round_money(sf_price * factor)
-            return {"ok": True, "price": price, "label": label, "formula": f"round({sf_price:.6g}*{factor:g},2)"}
-    narrow = _shengyi_narrow_price(dim, length_in, width_in, sf_price)
+    length_in, width_in = _shengyi_ccl_axes(length_in, width_in)
+    narrow = _shengyi_narrow_price(length_in, width_in, sf_price)
     if narrow["ok"]:
         return narrow
-    small = _shengyi_small_piece_price(dim, length_in, width_in, sf_price)
+    standard = _shengyi_standard_price(length_in, width_in, sf_price)
+    if standard["ok"]:
+        return standard
+    small = _shengyi_small_piece_price(length_in, width_in, sf_price)
     if small["ok"]:
         return small
     return {"ok": False, "reason": f"生益CCL未找到可明确裁切尺寸：{length_in:g}*{width_in:g}"}
+
+
+def _shengyi_ccl_axes(length_in: float, width_in: float) -> tuple[float, float]:
+    if abs(length_in - 49) <= 1.0 and abs(width_in - 49) > 1.0:
+        return width_in, length_in
+    if abs(length_in - 48) <= 1.0 and abs(width_in - 48) > 1.0:
+        return width_in, length_in
+    return length_in, width_in
+
+
+def _shengyi_near(value: float, target: float, tolerance: float = 0.8) -> bool:
+    return abs(value - target) <= tolerance
+
+
+def _shengyi_standard_price(length_in: float, width_in: float, sf_price: float) -> dict[str, Any]:
+    if not (_shengyi_near(width_in, 49, 1.0) or _shengyi_near(width_in, 48, 1.0)):
+        return {"ok": False}
+    special_map = (
+        ((24.0, 24.2, 24.5), 12.0, 2 / 3, "24*49"),
+        ((27.0, 27.2, 27.5), 13.33, 2 / 3, "27*49"),
+        ((28.0, 28.2, 28.5), 14.0, 2 / 3, "28*49"),
+    )
+    for anchors, factor, multiplier, label in special_map:
+        if min(abs(length_in - anchor) for anchor in anchors) <= 0.15:
+            base = _round_money(sf_price * factor)
+            price = _round_money(base * multiplier)
+            return {
+                "ok": True,
+                "price": price,
+                "label": label,
+                "formula": f"round(round({sf_price:.6g}*{factor:g},2)*2/3,2)",
+            }
+    standard_map = ((37.0, 12.0), (41.0, 13.333), (43.0, 14.0))
+    for target, factor in standard_map:
+        if _shengyi_near(length_in, target):
+            price = _round_money(sf_price * factor)
+            return {
+                "ok": True,
+                "price": price,
+                "label": f"{target:g}*49",
+                "formula": f"round({sf_price:.6g}*{factor:g},2)",
+            }
+    return {"ok": False}
 
 
 def _shengyi_sheet_width(length_in: float, width_in: float) -> float:
@@ -1736,32 +2010,29 @@ def _shengyi_sheet_width(length_in: float, width_in: float) -> float:
     return max(length_in, width_in)
 
 
-def _shengyi_narrow_price(dim: float, length_in: float, width_in: float, sf_price: float) -> dict[str, Any]:
-    short_side = min(length_in, width_in)
-    long_side = max(length_in, width_in)
-    if abs(long_side - 43) > 0.8:
+def _shengyi_narrow_price(length_in: float, width_in: float, sf_price: float) -> dict[str, Any]:
+    if not _shengyi_near(width_in, 43):
         return {"ok": False}
-    if abs(short_side - 37) <= 0.8:
+    if _shengyi_near(length_in, 37):
         base = _round_money(sf_price * 12)
         price = _round_money(_round_money(base * 43 / 48) * 1.07)
         return {"ok": True, "price": price, "label": "37*43", "formula": f"round(round(round({sf_price:.6g}*12,2)*43/48,2)*1.07,2)"}
-    if abs(short_side - 41) <= 0.8:
+    if _shengyi_near(length_in, 41):
         base = _round_money(sf_price * 13.33)
         price = _round_money(_round_money(base * 43 / 48) * 1.07)
         return {"ok": True, "price": price, "label": "41*43", "formula": f"round(round(round({sf_price:.6g}*13.33,2)*43/48,2)*1.07,2)"}
     return {"ok": False}
 
 
-def _shengyi_small_piece_price(dim: float, length_in: float, width_in: float, sf_price: float) -> dict[str, Any]:
-    long_side = max(length_in, width_in)
-    if not any(abs(long_side - value) <= 1.0 for value in (48.0, 49.0, 49.5)):
+def _shengyi_small_piece_price(length_in: float, width_in: float, sf_price: float) -> dict[str, Any]:
+    if length_in <= 0 or width_in <= 0 or width_in > 49.5:
         return {"ok": False}
-    axes = _shengyi_piece_axes(length_in, width_in, mother_hint=long_side)
-    radial = axes["radial"]
-    latitudinal = axes["latitudinal"]
-    price = _round_money(radial * latitudinal / 144 * sf_price)
-    formula = f"round({radial:g}*{latitudinal:g}/144*{sf_price:.6g},2)"
-    return {"ok": True, "price": price, "label": f"{radial:g}*{latitudinal:g}", "formula": formula}
+    opens = math.floor(49.5 / width_in + 1e-9)
+    if opens < 1:
+        return {"ok": False}
+    price = _round_money(sf_price * length_in * 48 / opens / 144)
+    formula = f"round({sf_price:.6g}*{length_in:g}*48/{opens}/144,2)"
+    return {"ok": True, "price": price, "label": f"{length_in:g}*{width_in:g}", "formula": formula, "opens": opens}
 
 
 def _load_zhongfu_rules(rule_path: str | Path) -> ExtRules:
@@ -3085,6 +3356,118 @@ def _calculate_taixing_ccl(desc: str, rules: ExtRules, quantity: Any = None) -> 
     return ExtCalcResult("失败", "CCL", "待确认", "", "", "", "CCL胶系、厚度找到，但结构未匹配")
 
 
+def _calculate_current_quote_spec(customer_key: str, desc: str, rules: ExtRules, quantity: Any = None) -> ExtCalcResult:
+    if _current_quote_looks_like_pp(desc):
+        return _calculate_current_quote_pp(customer_key, desc, rules)
+    if not _extract_stack(desc):
+        return ExtCalcResult("失败", "CCL", "待确认", "", "", "", f"{_current_quote_customer_label(customer_key)}CCL规格缺少叠构，需待确认")
+    return _calculate_ccl(customer_key, desc, rules, quantity=quantity)
+
+
+def _calculate_current_quote_pp(customer_key: str, desc: str, rules: ExtRules) -> ExtCalcResult:
+    label = _current_quote_customer_label(customer_key)
+    product = _extract_current_quote_pp_product(desc)
+    glass = _extract_glass(desc)
+    rc = _extract_current_quote_rc(desc)
+    length = _extract_length(desc)
+    width = _extract_width(desc)
+    if _is_current_quote_pp_small_piece(desc):
+        return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width), _fmt_length(length), f"{label}PP小片需待确认")
+    if not product or not glass or rc is None:
+        return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width), _fmt_length(length), f"{label}PP规格缺少型号、玻布或RC")
+    product_norm = _norm_product(product)
+    base_product = product_norm[:-1] if product_norm.endswith("P") else product_norm
+    products = {product_norm, base_product, f"{base_product}P"}
+    matches: list[tuple[tuple[int, int, float, int], ExtPpRule]] = []
+    relaxed_length_matches: list[tuple[tuple[int, int, float, int], ExtPpRule]] = []
+    for row in rules.pp_rows:
+        if row.product not in products or row.glass != glass:
+            continue
+        if row.rc_min is None or row.rc_max is None or not (row.rc_min - 0.001 <= rc <= row.rc_max + 0.001):
+            continue
+        if width is not None and row.width is not None and abs(row.width - width) > 0.8:
+            continue
+        product_rank = 0 if row.product == product_norm else 1
+        width_rank = 0.0 if width is None or row.width is None else abs(row.width - width)
+        length_matches = length is None or row.length is None or row.length == length
+        length_rank = 0 if length_matches else 1
+        target = matches if length_matches else relaxed_length_matches
+        target.append(((product_rank, length_rank, width_rank, row.excel_row), row))
+    best = sorted(matches, key=lambda item: item[0])[0][1] if matches else None
+    length_relaxed = False
+    if not best and relaxed_length_matches:
+        best = sorted(relaxed_length_matches, key=lambda item: item[0])[0][1]
+        length_relaxed = True
+    if not best or best.price is None:
+        return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width), _fmt_length(length), f"未命中{label}PP报价：型号、玻布、RC、卷长或宽度不匹配")
+    price = _round_money(best.price)
+    note = (
+        f"命中{label}PP报价 Sheet {best.sheet} 第 {best.excel_row} 行，"
+        f"型号={best.product}，玻布={glass}，RC={rc:g}，Per M={price:.2f}"
+    )
+    if length and not length_relaxed:
+        note += f"，卷长按{length}m匹配"
+    if length_relaxed and length and best.length:
+        note += f"，规格卷长{length}m未找到同卷长报价，按报价单卷长{best.length}m行取Per M"
+    if width or best.width:
+        note += f"，宽度={_fmt_width(width or best.width)}"
+    if best.roll_price is not None:
+        note += f"，Per Roll={best.roll_price:.2f}"
+    return ExtCalcResult("成功", "PP", price, "", _fmt_width(width or best.width), _fmt_length(length or best.length), note, best.excel_row, best.sheet)
+
+
+def _current_quote_looks_like_pp(desc: str) -> bool:
+    if _looks_like_pp(desc):
+        return True
+    product = _extract_current_quote_pp_product(desc)
+    if not product:
+        return False
+    if product.endswith("P"):
+        return bool(_extract_glass(desc) and (_extract_length(desc) is not None or _extract_current_quote_rc(desc) is not None))
+    return bool(_extract_glass(desc) and _extract_length(desc) is not None and _extract_current_quote_rc(desc) is not None)
+
+
+def _extract_current_quote_pp_product(desc: str) -> str:
+    matches = re.findall(r"NY\s*-?\s*[A-Z]?\d{3,4}[A-Z0-9]*P?", desc, re.I)
+    return _norm_product(matches[-1]) if matches else ""
+
+
+def _extract_current_quote_rc(desc: str) -> float | None:
+    rc = _extract_rc(desc)
+    if rc is not None:
+        return rc
+    matches = re.findall(r"(\d+(?:\.\d+)?)\s*%", desc)
+    if not matches:
+        return None
+    value = float(matches[-1])
+    return value * 100 if value <= 1 else value
+
+
+def _is_current_quote_pp_small_piece(desc: str) -> bool:
+    upper = desc.upper()
+    if re.search(r"\d+(?:\.\d+)?\s*MM\s*[*xX×]\s*\d+(?:\.\d+)?\s*MM", upper):
+        return True
+    for match in re.finditer(r"(\d+(?:\.\d+)?)\s*(IN|INCH|英寸|\")?\s*[*xX×]\s*(\d+(?:\.\d+)?)\s*(IN|INCH|英寸|\")?", desc, re.I):
+        if re.match(r"\s*M\b", desc[match.end() : match.end() + 4], re.I):
+            continue
+        segment = match.group(0).upper()
+        if re.search(r"\d+(?:\.\d+)?\s*M\b", segment) and "MM" not in segment:
+            continue
+        a = float(match.group(1))
+        b = float(match.group(3))
+        unit_a = (match.group(2) or "").upper()
+        unit_b = (match.group(4) or "").upper()
+        if max(a, b) > 120:
+            return True
+        if (unit_a or unit_b or "经" in desc or "纬" in desc) and max(a, b) >= 10:
+            return True
+    return False
+
+
+def _current_quote_customer_label(customer_key: str) -> str:
+    return "华兴宇" if customer_key == "huaxingyu" else "东讯"
+
+
 def _calculate_pp(customer_key: str, desc: str, rules: ExtRules) -> ExtCalcResult:
     product = _extract_product(desc)
     glass = _extract_glass(desc)
@@ -3402,7 +3785,7 @@ def _norm_taixing_glasses(value: Any) -> list[str]:
 
 
 def _extract_glass(desc: str) -> str:
-    match = re.search(r"(?<!\d)(0106|1035|1067|1078|1080|1086|1037|1506|2113|2116|2313|3313|7628|106)H?(?!\d)", desc, re.I)
+    match = re.search(r"(?<!\d)(0106|1027|1035|1037|1067|1078|1080|1086|1506|2113|2116|2313|3313|7628|106)H?(?!\d)", desc, re.I)
     return _norm_glass(match.group(1)) if match else ""
 
 
@@ -3510,7 +3893,7 @@ def _extract_foil(desc: str) -> str:
 def _norm_stack(value: Any) -> str:
     text = _text(value).upper()
     pieces: list[tuple[str, int]] = []
-    glass_pattern = r"1035|1067|1078|1080|1086|1506|2113|2116|2313|3313|7628|106"
+    glass_pattern = r"1027|1037|1035|1067|1078|1080|1086|1506|2113|2116|2313|3313|7628|106"
     for count, glass in re.findall(rf"(?<!\d)(\d+)\s*(?:张|[*xX×])\s*({glass_pattern})(?!\d)", text):
         pieces.append((glass, int(count)))
     for glass, count in re.findall(rf"(?<!\d)({glass_pattern})\s*[*xX×]\s*(\d+)(?!\d)", text):

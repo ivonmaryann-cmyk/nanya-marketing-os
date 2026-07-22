@@ -5,10 +5,13 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from threading import Lock
+from typing import Any, Callable
 
 from werkzeug.utils import secure_filename
 
@@ -22,7 +25,9 @@ from .paths import JOBS_DIR
 from .pdf_native_parser import parse_pdf_native
 from .purchase_ai_repair import audit_and_repair_purchase_document
 from .purchase_excel_writer import write_purchase_order_workbook
+from .purchase_factory_mapper import project_factory_document, safe_result_stem
 from .purchase_order_pipeline import run_purchase_order_pipeline
+from .purchase_performance import add_stage_ms, file_sha256, pipeline_fingerprint
 from .purchase_result_normalizer import normalize_purchase_document
 from .template_parser import identify_template, likely_order_number, likely_supplier
 
@@ -67,11 +72,16 @@ def queue_pdf_excel_job(
             raise ValueError(f"不支持的文件类型：{original_filename}")
         stored_path = input_dir / _safe_input_filename(original_filename, index)
         file_obj.save(stored_path)
+        hash_started = time.perf_counter()
+        content_sha256 = file_sha256(stored_path)
+        hash_ms = (time.perf_counter() - hash_started) * 1000
         manifest_files.append(
             {
                 "original_filename": original_filename,
                 "stored_path": str(stored_path),
                 "extension": suffix,
+                "content_sha256": content_sha256,
+                "hash_ms": round(hash_ms, 3),
             }
         )
 
@@ -79,6 +89,7 @@ def queue_pdf_excel_job(
     manifest = {
         "feature": FEATURE,
         "created_at": datetime.now().isoformat(timespec="seconds"),
+        "pipeline_fingerprint": pipeline_fingerprint(),
         "max_workers": max(1, min(int(max_workers or 2), 4)),
         "files": manifest_files,
     }
@@ -216,7 +227,7 @@ def _parse_pdf(file_item: dict[str, str]) -> dict[str, Any]:
     path = Path(file_item["stored_path"])
     document = _document_base(source_file, "pdf")
     native = parse_pdf_native(path)
-    docling_result = parse_pdf_with_docling(path)
+    docling_result = parse_pdf_with_docling(path, content_sha256=str(file_item.get("content_sha256") or ""))
     markdown = str(docling_result.get("markdown") or "")
     combined_text = "\n".join(part for part in [native.get("text", ""), markdown] if part)
     template = identify_template(source_file, combined_text)
@@ -444,6 +455,81 @@ def _parse_file_with_purchase_pipeline(file_item: dict[str, str], work_dir: Path
         return normalize_purchase_document(_legacy_to_purchase_document(legacy_document, fallback_reason=str(exc)))
 
 
+def _parse_repair_and_project(
+    file_item: dict[str, str],
+    work_dir: Path,
+    *,
+    log: Callable[[str], None] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    document = _parse_file_with_purchase_pipeline(file_item, work_dir)
+    ai_started = time.perf_counter()
+    document = audit_and_repair_purchase_document(document, log=log)
+    add_stage_ms(
+        "ai_repair",
+        (time.perf_counter() - ai_started) * 1000,
+        summary=document.setdefault("performance_summary", {}),
+    )
+    factory_started = time.perf_counter()
+    factory_summary = project_factory_document(document, log=log)
+    add_stage_ms(
+        "factory_projection",
+        (time.perf_counter() - factory_started) * 1000,
+        summary=document.setdefault("performance_summary", {}),
+    )
+    return document, factory_summary
+
+
+def _write_purchase_results(
+    documents: list[dict[str, Any]],
+    job_dir: Path,
+    bundle_stem: str,
+) -> tuple[Path, dict[str, int], list[Path]]:
+    if not documents:
+        raise RuntimeError("没有成功解析的采购单，未生成结果文件。")
+    result_files: list[Path] = []
+    aggregate_stats = {
+        "page_count": 0,
+        "structured_count": 0,
+        "ready_count": 0,
+        "review_count": 0,
+        "issue_count": 0,
+    }
+    result_dir = job_dir / "factory_results"
+    result_dir.mkdir(parents=True, exist_ok=True)
+    for index, document in enumerate(documents, start=1):
+        source_stem = safe_result_stem(document.get("source_file"), fallback=f"采购单_{index:03d}")
+        result_path = result_dir / f"{index:03d}_{source_stem}_采购单转换结果.xlsx"
+        excel_started = time.perf_counter()
+        document_stats = write_purchase_order_workbook([document], result_path)
+        performance_summary = document.setdefault("performance_summary", {})
+        add_stage_ms(
+            "excel_write",
+            (time.perf_counter() - excel_started) * 1000,
+            summary=performance_summary,
+        )
+        stages = performance_summary.setdefault("stage_ms", {})
+        stages["total"] = round(
+            sum(
+                float(stages.get(name, 0.0) or 0.0)
+                for name in ["pipeline_total", "ai_repair", "factory_projection", "excel_write"]
+            ),
+            3,
+        )
+        result_files.append(result_path)
+        for key in aggregate_stats:
+            aggregate_stats[key] += int(document_stats.get(key, 0) or 0)
+
+    if len(result_files) == 1:
+        output_path = job_dir / f"{bundle_stem}_采购单转换结果.xlsx"
+        shutil.copy2(result_files[0], output_path)
+    else:
+        output_path = job_dir / f"{bundle_stem}_采购单转换结果.zip"
+        with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for result_path in result_files:
+                archive.write(result_path, arcname=result_path.name)
+    return output_path, aggregate_stats, result_files
+
+
 def run_pdf_excel_job(job_id: int, employee_id: str) -> None:
     job = get_job(job_id)
     if not job or job["employee_id"] != employee_id:
@@ -465,34 +551,38 @@ def run_pdf_excel_job(job_id: int, employee_id: str) -> None:
     documents: list[dict[str, Any]] = []
     success_count = 0
     fail_count = 0
+    log_lock = Lock()
+
+    def safe_job_log(message: str, **kwargs: Any) -> None:
+        with log_lock:
+            append_job_log(job_id, message, **kwargs)
 
     try:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_map = {
                 executor.submit(
-                    _parse_file_with_purchase_pipeline,
+                    _parse_repair_and_project,
                     file_item,
                     work_dir / Path(file_item["stored_path"]).stem,
+                    log=lambda message, filename=file_item["original_filename"]: safe_job_log(
+                        f"{filename}：{message}"
+                    ),
                 ): file_item
                 for file_item in files
             }
             for future in as_completed(future_map):
                 file_item = future_map[future]
                 try:
-                    document = future.result()
-                    document = audit_and_repair_purchase_document(
-                        document,
-                        log=lambda message: append_job_log(job_id, f"{file_item['original_filename']}：{message}"),
-                    )
+                    document, factory_summary = future.result()
                     if document.get("layout_cache_hit"):
-                        append_job_log(job_id, f"{file_item['original_filename']}：已命中历史版式缓存。")
+                        safe_job_log(f"{file_item['original_filename']}：已命中历史版式缓存。")
                     documents.append(document)
                     success_count += 1
-                    json_path = json_dir / f"{Path(file_item['stored_path']).stem}.json"
-                    json_path.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
-                    append_job_log(
-                        job_id,
-                        f"完成：{file_item['original_filename']}（{document['parser_mode']}，{document['page_count']} 页）",
+                    performance = document.get("performance_summary") or {}
+                    safe_job_log(
+                        f"完成：{file_item['original_filename']}（{document['parser_mode']}，{document['page_count']} 页；"
+                        f"厂内可导入 {factory_summary.get('ready_rows', 0)} 行，需复核 {factory_summary.get('review_rows', 0)} 行；"
+                        f"解析 {float((performance.get('stage_ms') or {}).get('pipeline_total') or 0) / 1000:.2f}s）",
                         success_count=success_count,
                         fail_count=fail_count,
                         current_row=success_count + fail_count,
@@ -500,8 +590,7 @@ def run_pdf_excel_job(job_id: int, employee_id: str) -> None:
                     )
                 except Exception as exc:
                     fail_count += 1
-                    append_job_log(
-                        job_id,
+                    safe_job_log(
                         f"失败：{file_item['original_filename']}：{exc}",
                         success_count=success_count,
                         fail_count=fail_count,
@@ -510,12 +599,20 @@ def run_pdf_excel_job(job_id: int, employee_id: str) -> None:
                     )
 
         documents.sort(key=lambda document: document.get("source_file", ""))
-        output_path = job_dir / f"{manifest_path.parent.name}_PDF图片转Excel结果.xlsx"
-        output_path = job_dir / f"{manifest_path.parent.name}_采购单转换结果.xlsx"
-        stats = write_purchase_order_workbook(documents, output_path)
+        output_path, aggregate_stats, result_files = _write_purchase_results(
+            documents,
+            job_dir,
+            manifest_path.parent.name,
+        )
+        for index, document in enumerate(documents, start=1):
+            source_stem = safe_result_stem(document.get("source_file"), fallback=f"采购单_{index:03d}")
+            json_path = json_dir / f"{index:03d}_{source_stem}.json"
+            json_path.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
         append_job_log(
             job_id,
-            f"Excel 已生成：{output_path.name}，客户结果表 {stats.get('page_count', 0)} 页，明细 {stats.get('structured_count', 0)} 行。",
+            f"结果已生成：{output_path.name}，采购单 {len(result_files)} 份、"
+            f"客户结果表 {aggregate_stats['page_count']} 页、明细 {aggregate_stats['structured_count']} 行；"
+            f"厂内可导入 {aggregate_stats['ready_count']} 行，需复核 {aggregate_stats['review_count']} 行。",
         )
         update_job_status(
             job_id,
