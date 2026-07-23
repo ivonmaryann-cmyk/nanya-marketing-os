@@ -154,13 +154,6 @@ STAGE_META = {
 
 FUNCTION_CARDS = [
     {
-        "key": "fangzheng",
-        "title": "方正价格计算",
-        "desc": "上传 Excel，按方正规则批量计算价格并输出结果文件。",
-        "route": "main.fangzheng",
-        "stage": "beta",
-    },
-    {
         "key": "transcode",
         "title": "营销自动化转码",
         "desc": "上传转码需求 Excel，按当前规则自动生成内部编码并输出结果文件。",
@@ -175,30 +168,9 @@ FUNCTION_CARDS = [
         "stage": "test",
     },
     {
-        "key": "shennan",
-        "title": "深南价格计算",
-        "desc": "上传 Excel，复用方正计算公式，并按深南报价规则批量计算价格。",
-        "route": "main.shennan",
-        "stage": "test",
-    },
-    {
-        "key": "bomin",
-        "title": "博敏价格计算",
-        "desc": "上传 Excel，按博敏 CCL/PP 报价表批量计算价格并输出结果文件。",
-        "route": "main.bomin",
-        "stage": "test",
-    },
-    {
-        "key": "hushi",
-        "title": "沪士价格计算",
-        "desc": "上传 Excel，按沪士多报价单规则自动匹配胶系、规格、Rebate/Normal 价格并输出结果。",
-        "route": "main.hushi",
-        "stage": "test",
-    },
-    {
         "key": "price_calculation",
         "title": "价格计算",
-        "desc": "按客户选择价格表，上传 Excel 或粘贴单条规格后自动匹配新价格并输出刷价结果。",
+        "desc": "统一使用方正、博敏、深南、沪士及各客户价格表，支持 Excel 批量计算和单条规格即时计算。",
         "route": "main.price_calculation",
         "stage": "test",
     },
@@ -260,6 +232,100 @@ FEATURE_LABELS = {
     "order_reprice": "订单改价",
     "work_planning": "工作规划",
 }
+
+SPECIAL_PRICE_CALCULATORS = [
+    {
+        "key": "fangzheng",
+        "label": "方正",
+        "feature": "fangzheng",
+        "upload_endpoint": "main.create_job_view",
+        "quote_endpoint": "main.api_fangzheng_quote",
+        "admin_endpoint": "main.admin_rules",
+        "doc_feature": "fangzheng",
+        "panel_tag": "BETA WORKSPACE",
+        "description": "上传报价 Excel 后，系统自动识别业务 Sheet 和物料描述列，并用当前方正规则批量计算价格。",
+        "rule_source": "方正价格表 / 基板对照表",
+        "output_label": "保持 Excel 结果格式",
+        "placeholder": "粘贴一条客户规格，系统会按当前方正规则即时计算",
+    },
+    {
+        "key": "bomin",
+        "label": "博敏",
+        "feature": "bomin",
+        "upload_endpoint": "main.create_bomin_job_view",
+        "quote_endpoint": "main.api_bomin_quote",
+        "admin_endpoint": "main.admin_bomin_rules",
+        "doc_feature": None,
+        "panel_tag": "TEST WORKSPACE",
+        "description": "按当前博敏 CCL / PP 价格表计算含税价格，并输出结果文件与命中说明。",
+        "rule_source": "内置价格表 / 管理员上传",
+        "output_label": "博敏计算价格",
+        "placeholder": "粘贴一条博敏客户规格，系统会按当前博敏规则即时计算",
+    },
+    {
+        "key": "shennan",
+        "label": "深南",
+        "feature": "shennan",
+        "upload_endpoint": "main.create_shennan_job_view",
+        "quote_endpoint": "main.api_shennan_quote",
+        "admin_endpoint": "main.admin_shennan_rules",
+        "doc_feature": "shennan",
+        "panel_tag": "TEST WORKSPACE",
+        "description": "复用方正计算公式，并按深南汇总报价单中按胶系拆分的 PP / CCL 价格表取值。",
+        "rule_source": "深南报价规则 / 方正基板对照",
+        "output_label": "深南计算价格",
+        "placeholder": "粘贴一条客户规格，系统会按当前深南规则即时计算",
+    },
+    {
+        "key": "hushi",
+        "label": "沪士",
+        "feature": "hushi",
+        "upload_endpoint": "main.create_hushi_job_view",
+        "quote_endpoint": "main.api_hushi_quote",
+        "admin_endpoint": "main.admin_hushi_rules",
+        "doc_feature": "hushi",
+        "panel_tag": "TEST WORKSPACE",
+        "description": "按沪士多报价单规则自动匹配胶系、规格和 Rebate / Normal 价格并输出结果。",
+        "rule_source": "沪士 ZIP 规则包",
+        "output_label": "沪士计算价格",
+        "placeholder": "粘贴一条客户规格，系统会按当前沪士规则即时计算",
+    },
+]
+
+
+def _price_calculator_options() -> list[dict]:
+    options = [dict(item, kind="special") for item in SPECIAL_PRICE_CALCULATORS]
+    for customer in PRICE_CALCULATION_CUSTOMERS:
+        if not customer.get("enabled"):
+            continue
+        options.append(
+            {
+                "key": customer["key"],
+                "label": customer["label"],
+                "kind": "customer",
+                "feature": "price_calculation",
+                "customer_key": customer["key"],
+                "upload_endpoint": "main.create_price_calculation_job_view",
+                "quote_endpoint": "main.api_price_calculation_quote",
+                "admin_endpoint": "main.admin_price_calculation_rules",
+                "doc_feature": None,
+                "panel_tag": "TEST WORKSPACE",
+                "description": "选择客户后上传 Excel，系统按该客户当前价格表自动匹配规格并输出刷价结果。",
+                "rule_source": "客户独立报价表",
+                "output_label": "新未税价" if customer["key"] == "plin" else "注意幅宽 / 每卷米数 / 新单价 / 新总金额",
+                "placeholder": "粘贴一条客户规格，系统会按当前客户价格表即时计算",
+            }
+        )
+    return options
+
+
+def _price_calculator_page_url(calculator_key: str, *, job_id: int | None = None, quote_variant: str | None = None) -> str:
+    values = {"calculator_key": calculator_key}
+    if job_id is not None:
+        values["job_id"] = job_id
+    if calculator_key == "jingwang" and quote_variant:
+        values["quote_variant"] = quote_variant
+    return url_for("main.price_calculation", **values)
 
 ORDER_REPRICE_MODE_META = {
     "block1": {
@@ -823,13 +889,7 @@ def fangzheng():
     redirect_resp = require_login()
     if redirect_resp:
         return redirect_resp
-    jobs = list_jobs(current_employee(), limit=20, feature="fangzheng")
-    return render_template(
-        "fangzheng.html",
-        jobs=jobs,
-        active_rule_version=get_active_rule_version(),
-        active_job=_active_job_for("fangzheng", jobs),
-    )
+    return redirect(_price_calculator_page_url("fangzheng", job_id=request.args.get("job_id", type=int)))
 
 
 @bp.get("/features/transcode")
@@ -867,13 +927,7 @@ def shennan():
     redirect_resp = require_login()
     if redirect_resp:
         return redirect_resp
-    jobs = list_jobs(current_employee(), limit=20, feature="shennan")
-    return render_template(
-        "shennan.html",
-        jobs=jobs,
-        active_rule_version=get_active_shennan_rule_version(),
-        active_job=_active_job_for("shennan", jobs),
-    )
+    return redirect(_price_calculator_page_url("shennan", job_id=request.args.get("job_id", type=int)))
 
 
 @bp.get("/features/hushi")
@@ -881,13 +935,7 @@ def hushi():
     redirect_resp = require_login()
     if redirect_resp:
         return redirect_resp
-    jobs = list_jobs(current_employee(), limit=20, feature="hushi")
-    return render_template(
-        "hushi.html",
-        jobs=jobs,
-        active_rule_version=get_active_hushi_rule_version() or "未上传沪士规则",
-        active_job=_active_job_for("hushi", jobs),
-    )
+    return redirect(_price_calculator_page_url("hushi", job_id=request.args.get("job_id", type=int)))
 
 
 @bp.get("/features/bomin")
@@ -895,13 +943,7 @@ def bomin():
     redirect_resp = require_login()
     if redirect_resp:
         return redirect_resp
-    jobs = list_jobs(current_employee(), limit=20, feature="bomin")
-    return render_template(
-        "bomin.html",
-        jobs=jobs,
-        active_rule_version=get_active_bomin_rule_version() or "未初始化博敏价格表",
-        active_job=_active_job_for("bomin", jobs),
-    )
+    return redirect(_price_calculator_page_url("bomin", job_id=request.args.get("job_id", type=int)))
 
 
 @bp.get("/features/price-calculation")
@@ -909,35 +951,62 @@ def price_calculation():
     redirect_resp = require_login()
     if redirect_resp:
         return redirect_resp
-    selected_customer = request.args.get("customer_key") or default_price_customer_key()
-    try:
-        selected_customer = enabled_price_customer(selected_customer)["key"]
-    except ValueError:
-        selected_customer = default_price_customer_key()
-    selected_quote_variant = normalize_price_quote_variant(selected_customer, request.args.get("quote_variant"))
-    raw_jobs = list_jobs(current_employee(), limit=50, feature="price_calculation")
-    jobs = [
-        job
-        for job in _decorate_jobs(raw_jobs)
-        if job.get("price_customer_key", default_price_customer_key()) == selected_customer
-        and (selected_customer != "jingwang" or job.get("quote_variant", "new") == selected_quote_variant)
-    ][:20]
-    active_job = _decorate_job(_active_job_for("price_calculation", raw_jobs))
-    if active_job and (
-        active_job.get("price_customer_key") != selected_customer
-        or (selected_customer == "jingwang" and active_job.get("quote_variant", "new") != selected_quote_variant)
-    ):
-        active_job = None
+    calculators = _price_calculator_options()
+    calculator_map = {item["key"]: item for item in calculators}
+    requested_key = request.args.get("calculator_key") or request.args.get("customer_key") or "fangzheng"
+    selected_calculator = requested_key if requested_key in calculator_map else "fangzheng"
+    selected_option = calculator_map[selected_calculator]
+    selected_customer = selected_option.get("customer_key", "")
+    selected_quote_variant = (
+        normalize_price_quote_variant(selected_customer, request.args.get("quote_variant"))
+        if selected_customer
+        else ""
+    )
+
+    selected_feature = selected_option["feature"]
+    raw_jobs = list_jobs(current_employee(), limit=50 if selected_feature == "price_calculation" else 20, feature=selected_feature)
+    if selected_feature == "price_calculation":
+        jobs = [
+            job
+            for job in _decorate_jobs(raw_jobs)
+            if job.get("price_customer_key", default_price_customer_key()) == selected_customer
+            and (selected_customer != "jingwang" or job.get("quote_variant", "new") == selected_quote_variant)
+        ][:20]
+        active_job = _decorate_job(_active_job_for(selected_feature, raw_jobs))
+        if active_job and (
+            active_job.get("price_customer_key") != selected_customer
+            or (selected_customer == "jingwang" and active_job.get("quote_variant", "new") != selected_quote_variant)
+        ):
+            active_job = None
+        active_rule_version = get_active_price_rule_version(selected_customer, selected_quote_variant) or "未初始化价格计算规则"
+    else:
+        jobs = _decorate_jobs(raw_jobs)
+        active_job = _decorate_job(_active_job_for(selected_feature, raw_jobs))
+        if selected_calculator == "fangzheng":
+            active_rule_version = get_active_rule_version()
+        elif selected_calculator == "bomin":
+            active_rule_version = get_active_bomin_rule_version() or "未初始化博敏价格表"
+        elif selected_calculator == "shennan":
+            active_rule_version = get_active_shennan_rule_version()
+        else:
+            active_rule_version = get_active_hushi_rule_version() or "未上传沪士规则"
+
+    admin_values = {"customer_key": selected_customer, "quote_variant": selected_quote_variant} if selected_customer else {}
     return render_template(
         "price_calculation.html",
-        customers=PRICE_CALCULATION_CUSTOMERS,
+        calculators=calculators,
+        selected_calculator=selected_calculator,
+        selected_option=selected_option,
         selected_customer=selected_customer,
         selected_quote_variant=selected_quote_variant,
         quote_variants=JINGWANG_QUOTE_VARIANTS,
         jobs=jobs,
-        active_rule_version=get_active_price_rule_version(selected_customer, selected_quote_variant) or "未初始化价格计算规则",
+        active_rule_version=active_rule_version,
         active_job=active_job,
-        output_label="新未税价" if selected_customer == "plin" else "注意幅宽 / 每卷米数 / 新单价 / 新总金额",
+        upload_url=url_for(selected_option["upload_endpoint"]),
+        quote_url=url_for(selected_option["quote_endpoint"]),
+        admin_url=url_for(selected_option["admin_endpoint"], **admin_values),
+        doc_url=url_for("main.rule_doc", feature=selected_option["doc_feature"]) if selected_option.get("doc_feature") else None,
     )
 
 
@@ -1355,18 +1424,18 @@ def create_job_view():
     uploaded_file = request.files.get("excel_file")
     if not uploaded_file or not uploaded_file.filename:
         flash("请先上传 Excel 文件。", "error")
-        return redirect(url_for("main.fangzheng"))
+        return redirect(_price_calculator_page_url("fangzheng"))
     original_filename = (uploaded_file.filename or "").strip()
     if not original_filename.lower().endswith((".xlsx", ".xlsm", ".xls")):
         flash("仅支持 Excel 文件。", "error")
-        return redirect(url_for("main.fangzheng"))
+        return redirect(_price_calculator_page_url("fangzheng"))
     active_job = get_active_job(current_employee(), "fangzheng")
     if active_job:
         flash("当前已有方正任务正在处理，请先等待完成或停止后再上传。", "error")
-        return redirect(url_for("main.fangzheng", job_id=active_job["id"]))
+        return redirect(_price_calculator_page_url("fangzheng", job_id=active_job["id"]))
     job_id = queue_job(current_employee(), uploaded_file, original_filename, get_active_rule_version())
     flash("任务已创建，系统正在处理。", "success")
-    return redirect(url_for("main.fangzheng", job_id=job_id))
+    return redirect(_price_calculator_page_url("fangzheng", job_id=job_id))
 
 
 @bp.post("/transcode/jobs")
@@ -1421,18 +1490,18 @@ def create_shennan_job_view():
     uploaded_file = request.files.get("excel_file")
     if not uploaded_file or not uploaded_file.filename:
         flash("请先上传 Excel 文件。", "error")
-        return redirect(url_for("main.shennan"))
+        return redirect(_price_calculator_page_url("shennan"))
     original_filename = (uploaded_file.filename or "").strip()
     if not original_filename.lower().endswith((".xlsx", ".xlsm", ".xls")):
         flash("深南价格计算仅支持 .xlsx / .xlsm / .xls 文件。", "error")
-        return redirect(url_for("main.shennan"))
+        return redirect(_price_calculator_page_url("shennan"))
     active_job = get_active_job(current_employee(), "shennan")
     if active_job:
         flash("当前已有深南任务正在处理，请先等待完成或停止后再上传。", "error")
-        return redirect(url_for("main.shennan", job_id=active_job["id"]))
+        return redirect(_price_calculator_page_url("shennan", job_id=active_job["id"]))
     job_id = queue_shennan_job(current_employee(), uploaded_file, original_filename)
     flash("深南计算任务已创建，系统正在处理。", "success")
-    return redirect(url_for("main.shennan", job_id=job_id))
+    return redirect(_price_calculator_page_url("shennan", job_id=job_id))
 
 
 @bp.post("/hushi/jobs")
@@ -1443,18 +1512,18 @@ def create_hushi_job_view():
     uploaded_file = request.files.get("excel_file")
     if not uploaded_file or not uploaded_file.filename:
         flash("请先上传 Excel 文件。", "error")
-        return redirect(url_for("main.hushi"))
+        return redirect(_price_calculator_page_url("hushi"))
     original_filename = (uploaded_file.filename or "").strip()
     if not original_filename.lower().endswith((".xlsx", ".xlsm", ".xls")):
         flash("沪士价格计算仅支持 .xlsx / .xlsm / .xls 文件。", "error")
-        return redirect(url_for("main.hushi"))
+        return redirect(_price_calculator_page_url("hushi"))
     active_job = get_active_job(current_employee(), "hushi")
     if active_job:
         flash("当前已有沪士任务正在处理，请先等待完成或停止后再上传。", "error")
-        return redirect(url_for("main.hushi", job_id=active_job["id"]))
+        return redirect(_price_calculator_page_url("hushi", job_id=active_job["id"]))
     job_id = queue_hushi_job(current_employee(), uploaded_file, original_filename)
     flash("沪士计算任务已创建，系统正在处理。", "success")
-    return redirect(url_for("main.hushi", job_id=job_id))
+    return redirect(_price_calculator_page_url("hushi", job_id=job_id))
 
 
 @bp.post("/bomin/jobs")
@@ -1465,18 +1534,18 @@ def create_bomin_job_view():
     uploaded_file = request.files.get("excel_file")
     if not uploaded_file or not uploaded_file.filename:
         flash("请先上传 Excel 文件。", "error")
-        return redirect(url_for("main.bomin"))
+        return redirect(_price_calculator_page_url("bomin"))
     original_filename = (uploaded_file.filename or "").strip()
     if not original_filename.lower().endswith((".xlsx", ".xlsm", ".xls")):
         flash("博敏价格计算仅支持 .xlsx / .xlsm / .xls 文件。", "error")
-        return redirect(url_for("main.bomin"))
+        return redirect(_price_calculator_page_url("bomin"))
     active_job = get_active_job(current_employee(), "bomin")
     if active_job:
         flash("当前已有博敏任务正在处理，请先等待完成或停止后再上传。", "error")
-        return redirect(url_for("main.bomin", job_id=active_job["id"]))
+        return redirect(_price_calculator_page_url("bomin", job_id=active_job["id"]))
     job_id = queue_bomin_job(current_employee(), uploaded_file, original_filename)
     flash("博敏计算任务已创建，系统正在处理。", "success")
-    return redirect(url_for("main.bomin", job_id=job_id))
+    return redirect(_price_calculator_page_url("bomin", job_id=job_id))
 
 
 @bp.post("/price-calculation/jobs")
@@ -1489,26 +1558,26 @@ def create_price_calculation_job_view():
         quote_variant = _price_quote_variant_from_request(customer_key)
     except ValueError as exc:
         flash(str(exc), "error")
-        return redirect(url_for("main.price_calculation"))
+        return redirect(_price_calculator_page_url("fangzheng"))
     uploaded_file = request.files.get("excel_file")
     if not uploaded_file or not uploaded_file.filename:
         flash("请先上传 Excel 文件。", "error")
-        return redirect(url_for("main.price_calculation", customer_key=customer_key, quote_variant=quote_variant))
+        return redirect(_price_calculator_page_url(customer_key, quote_variant=quote_variant))
     original_filename = (uploaded_file.filename or "").strip()
     if not original_filename.lower().endswith((".xlsx", ".xlsm", ".xls")):
         flash("价格计算仅支持 .xlsx / .xlsm / .xls 文件。", "error")
-        return redirect(url_for("main.price_calculation", customer_key=customer_key, quote_variant=quote_variant))
+        return redirect(_price_calculator_page_url(customer_key, quote_variant=quote_variant))
     active_job = get_active_job(current_employee(), "price_calculation")
     if active_job:
         flash("当前已有价格计算任务正在处理，请先等待完成或停止后再上传。", "error")
-        return redirect(url_for("main.price_calculation", customer_key=customer_key, quote_variant=quote_variant, job_id=active_job["id"]))
+        return redirect(_price_calculator_page_url(customer_key, quote_variant=quote_variant, job_id=active_job["id"]))
     try:
         job_id = queue_price_calculation_job(current_employee(), customer_key, uploaded_file, original_filename, quote_variant=quote_variant)
     except Exception as exc:
         flash(f"价格计算任务创建失败：{exc}", "error")
-        return redirect(url_for("main.price_calculation", customer_key=customer_key, quote_variant=quote_variant))
+        return redirect(_price_calculator_page_url(customer_key, quote_variant=quote_variant))
     flash("价格计算任务已创建，系统正在处理。", "success")
-    return redirect(url_for("main.price_calculation", customer_key=customer_key, quote_variant=quote_variant, job_id=job_id))
+    return redirect(_price_calculator_page_url(customer_key, quote_variant=quote_variant, job_id=job_id))
 
 
 @bp.post("/in-transit/jobs")
@@ -1851,6 +1920,31 @@ def api_price_calculation_quote():
         return jsonify({"status": "失败", "price": None, "error": str(exc)}), 500
 
 
+def _job_feature_return_url(job, job_id: int) -> str:
+    if not job:
+        return url_for("main.history")
+    feature = job["feature"]
+    if feature in {"fangzheng", "bomin", "shennan", "hushi"}:
+        return _price_calculator_page_url(feature, job_id=job_id)
+    if feature == "price_calculation":
+        decorated = _decorate_job(job)
+        return _price_calculator_page_url(
+            decorated.get("price_customer_key") or default_price_customer_key(),
+            job_id=job_id,
+            quote_variant=decorated.get("quote_variant"),
+        )
+    feature_route = {
+        "transcode": "main.transcode",
+        "transcode_agent": "main.transcode_agent",
+        "in_transit": "main.in_transit",
+        "inventory_detail": "main.inventory_detail",
+        "order_reprice": "main.order_reprice",
+        "pdf_excel": "main.pdf_excel",
+        "transcode_special_import": "main.admin_transcode_special_rules",
+    }.get(feature, "main.history")
+    return url_for(feature_route, job_id=job_id)
+
+
 @bp.route("/jobs/<int:job_id>/cancel", methods=["GET", "POST"])
 def cancel_job(job_id: int):
     redirect_resp = require_login()
@@ -1858,39 +1952,11 @@ def cancel_job(job_id: int):
         return redirect_resp
     if request.method == "GET":
         job = get_job(job_id)
-        feature_route = {
-            "fangzheng": "main.fangzheng",
-            "transcode": "main.transcode",
-            "transcode_agent": "main.transcode_agent",
-            "shennan": "main.shennan",
-            "bomin": "main.bomin",
-            "hushi": "main.hushi",
-            "in_transit": "main.in_transit",
-            "inventory_detail": "main.inventory_detail",
-            "order_reprice": "main.order_reprice",
-            "price_calculation": "main.price_calculation",
-            "pdf_excel": "main.pdf_excel",
-            "transcode_special_import": "main.admin_transcode_special_rules",
-        }.get(job["feature"] if job else "", "main.history")
-        return redirect(url_for(feature_route, job_id=job_id) if job else url_for("main.history"))
+        return redirect(_job_feature_return_url(job, job_id))
     ok, message = cancel_job_process(job_id, current_employee())
     flash(message, "success" if ok else "error")
     job = get_job(job_id)
-    feature_route = {
-        "fangzheng": "main.fangzheng",
-        "transcode": "main.transcode",
-        "transcode_agent": "main.transcode_agent",
-        "shennan": "main.shennan",
-        "bomin": "main.bomin",
-        "hushi": "main.hushi",
-        "in_transit": "main.in_transit",
-        "inventory_detail": "main.inventory_detail",
-        "order_reprice": "main.order_reprice",
-        "price_calculation": "main.price_calculation",
-        "pdf_excel": "main.pdf_excel",
-        "transcode_special_import": "main.admin_transcode_special_rules",
-    }.get(job["feature"] if job else "", "main.history")
-    return redirect(url_for(feature_route, job_id=job_id) if job else url_for("main.history"))
+    return redirect(_job_feature_return_url(job, job_id))
 
 
 @bp.get("/history")

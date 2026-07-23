@@ -2,7 +2,7 @@
 {% block title %}价格计算规则管理 | {{ platform_name }} {{ platform_version }}{% endblock %}
 {% block content %}
 <div class="page-backbar">
-  <a class="back-link" href="{{ url_for('main.price_calculation', customer_key=selected_customer) }}">返回价格计算</a>
+  <a class="back-link" href="{{ url_for('main.price_calculation', calculator_key=selected_customer, quote_variant=selected_quote_variant) if selected_customer == 'jingwang' else url_for('main.price_calculation', calculator_key=selected_customer) }}">返回价格计算</a>
   <span>价格计算 / 规则管理</span>
 </div>
 

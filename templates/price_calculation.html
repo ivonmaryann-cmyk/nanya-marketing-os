@@ -9,33 +9,34 @@
 <section class="feature-hero">
   <div class="hero-watermark feature-mark">PRICE</div>
   <div class="feature-hero-copy">
-    <div class="panel-tag">TEST WORKSPACE</div>
+    <div class="panel-tag">{{ selected_option.panel_tag }}</div>
     <h1>价格计算</h1>
-    <p>选择客户后上传 Excel，系统按该客户当前价格表自动匹配规格并输出刷价结果。不同客户共用同一入口，计算规则按客户独立维护。</p>
+    <p><strong>{{ selected_option.label }}价格计算：</strong>{{ selected_option.description }} 所有计算继续使用原有独立规则和计算引擎。</p>
     <div class="hero-actions">
-      <a class="feature-action" href="{{ url_for('main.admin_price_calculation_rules', customer_key=selected_customer) }}">规则管理</a>
+      <a class="feature-action" href="{{ admin_url }}">{{ selected_option.label }}规则管理</a>
+      {% if doc_url %}
+      <a class="secondary-link" href="{{ doc_url }}">计算规则说明</a>
+      {% endif %}
     </div>
   </div>
   <div class="feature-metrics">
     <div>
-      <span>当前客户</span>
-      <strong id="active-customer-label">
-        {% for customer in customers %}{% if customer.key == selected_customer %}{{ customer.label }}{% endif %}{% endfor %}
-      </strong>
+      <span>当前计算项目</span>
+      <strong id="active-customer-label">{{ selected_option.label }}</strong>
     </div>
     <div>
       <span>当前规则版本</span>
       <strong>{{ active_rule_version }}</strong>
     </div>
     <div>
-      <span>输出列</span>
-      <strong>{{ output_label }}</strong>
+      <span>规则来源 / 输出</span>
+      <strong>{{ selected_option.rule_source }} · {{ selected_option.output_label }}</strong>
     </div>
   </div>
   <div class="single-quote-panel" id="single-quote-panel">
-    <form class="single-quote-form" id="single-quote-form" data-endpoint="{{ url_for('main.api_price_calculation_quote') }}" data-submit-text="计算单条价格" data-loading-meta="正在读取当前客户价格表">
-      <input type="hidden" name="customer_key" id="single-customer-key" value="{{ selected_customer }}">
-      {% if selected_customer == "jingwang" %}
+    <form class="single-quote-form" id="single-quote-form" data-endpoint="{{ quote_url }}" data-submit-text="计算单条价格" data-loading-meta="正在读取{{ selected_option.label }}价格规则">
+      {% if selected_customer %}<input type="hidden" name="customer_key" id="single-customer-key" value="{{ selected_customer }}">{% endif %}
+      {% if selected_calculator == "jingwang" %}
       <label for="single-quote-variant">
         <span>景旺报价单类型</span>
         <select id="single-quote-variant" name="quote_variant" class="quote-variant-select">
@@ -47,7 +48,7 @@
       {% endif %}
       <label for="single-spec">
         <span>单条客户规格</span>
-        <textarea id="single-spec" name="spec" rows="4" placeholder="粘贴一条客户规格，例如：PP NY3150HFP 2116 RC58% 24.65IN 300m 无卤"></textarea>
+        <textarea id="single-spec" name="spec" rows="4" placeholder="{{ selected_option.placeholder }}"></textarea>
       </label>
       <button type="submit" id="single-quote-submit">计算单条价格</button>
     </form>
@@ -65,16 +66,16 @@
     <article class="card task-card">
       <div class="section-head">
         <div>
-          <div class="step-tag">客户选择</div>
-          <h2>选择价格表客户</h2>
+          <div class="step-tag">计算项目</div>
+          <h2>选择价格计算项目</h2>
         </div>
         <span class="rule-chip">已接入客户可用</span>
       </div>
-      <div class="customer-selector" role="list" aria-label="客户选择">
-        {% for customer in customers if customer.enabled %}
-        <button type="button" class="customer-option {% if customer.key == selected_customer %}active{% endif %}" data-customer="{{ customer.key }}" data-enabled="{{ '1' if customer.enabled else '0' }}" {% if not customer.enabled %}disabled{% endif %}>
-          <span>{{ customer.label }}</span>
-          <em>{{ "可用" if customer.enabled else "待接入" }}</em>
+      <div class="customer-selector" role="list" aria-label="价格计算项目选择">
+        {% for calculator in calculators %}
+        <button type="button" class="customer-option {% if calculator.key == selected_calculator %}active{% endif %}" data-calculator="{{ calculator.key }}">
+          <span>{{ calculator.label }}</span>
+          <em>{{ "专用" if calculator.kind == "special" else "客户" }}</em>
         </button>
         {% endfor %}
       </div>
@@ -88,9 +89,9 @@
         </div>
         <span class="rule-chip">支持 .xlsx / .xls / .xlsm</span>
       </div>
-      <form method="post" action="{{ url_for('main.create_price_calculation_job_view') }}" enctype="multipart/form-data" class="form-grid" id="upload-form">
-        <input type="hidden" name="customer_key" id="upload-customer-key" value="{{ selected_customer }}">
-        {% if selected_customer == "jingwang" %}
+      <form method="post" action="{{ upload_url }}" enctype="multipart/form-data" class="form-grid" id="upload-form">
+        {% if selected_customer %}<input type="hidden" name="customer_key" id="upload-customer-key" value="{{ selected_customer }}">{% endif %}
+        {% if selected_calculator == "jingwang" %}
         <label>
           <span>景旺报价单类型</span>
           <select name="quote_variant" id="upload-quote-variant" class="quote-variant-select">
@@ -114,7 +115,7 @@
       <div class="section-head">
         <div>
           <div class="step-tag">第二步</div>
-          <h2>最近任务 / 当前客户历史</h2>
+          <h2>最近任务 / 当前项目历史</h2>
         </div>
         <a href="{{ url_for('main.history') }}">查看全部</a>
       </div>
@@ -122,7 +123,7 @@
         <thead>
           <tr>
             <th>ID</th>
-            <th>客户</th>
+            <th>计算项目</th>
             <th>文件</th>
             <th>状态</th>
             <th>时间</th>
@@ -133,7 +134,7 @@
           {% for job in jobs %}
           <tr>
             <td>#{{ job.id }}</td>
-            <td>{{ job.customer_label }}</td>
+            <td>{{ selected_option.label }}</td>
             <td><a href="{{ url_for('main.job_detail', job_id=job.id) }}">{{ job.source_filename }}</a></td>
             <td><span class="status {{ job.status }}">{{ job.status }}</span></td>
             <td>{{ job.created_at }}</td>
@@ -146,7 +147,7 @@
             </td>
           </tr>
           {% else %}
-          <tr><td colspan="6">还没有当前客户的价格计算记录。</td></tr>
+          <tr><td colspan="6">还没有{{ selected_option.label }}价格计算记录。</td></tr>
           {% endfor %}
         </tbody>
       </table>
@@ -198,15 +199,17 @@
         </div>
       </div>
       {% else %}
-      <div class="empty-log">还没有当前客户的价格计算任务，上传 Excel 后这里会实时显示处理动态。</div>
+      <div class="empty-log">还没有{{ selected_option.label }}价格计算任务，上传 Excel 后这里会实时显示处理动态。</div>
       {% endif %}
     </article>
   </aside>
 </section>
 
 <script>
+  const selectedCalculator = "{{ selected_calculator }}";
   const selectedCustomer = "{{ selected_customer }}";
   const selectedQuoteVariant = "{{ selected_quote_variant }}";
+  const calculatorStorageKey = "price-calculation-calculator-key";
   const allowedExtensions = [".xlsx", ".xls", ".xlsm"];
   const uploadForm = document.getElementById("upload-form");
   const dropzone = document.getElementById("upload-dropzone");
@@ -215,16 +218,29 @@
   const uploadFilename = document.getElementById("upload-filename");
   const uploadSubmit = uploadForm.querySelector('button[type="submit"]');
 
-  document.querySelectorAll(".customer-option").forEach(button => {
+  const calculatorButtons = Array.from(document.querySelectorAll(".customer-option"));
+  const calculatorKeys = new Set(calculatorButtons.map(button => button.dataset.calculator));
+  const searchParams = new URLSearchParams(window.location.search);
+  const hasExplicitCalculator = searchParams.has("calculator_key") || searchParams.has("customer_key");
+  if (hasExplicitCalculator) {
+    window.localStorage.setItem(calculatorStorageKey, selectedCalculator);
+  } else {
+    const savedCalculator = window.localStorage.getItem(calculatorStorageKey);
+    if (savedCalculator && calculatorKeys.has(savedCalculator) && savedCalculator !== selectedCalculator) {
+      window.location.replace(`{{ url_for('main.price_calculation') }}?calculator_key=${encodeURIComponent(savedCalculator)}`);
+    }
+  }
+
+  calculatorButtons.forEach(button => {
     button.addEventListener("click", () => {
-      if (button.dataset.enabled !== "1") return;
-      window.location.href = `{{ url_for('main.price_calculation') }}?customer_key=${button.dataset.customer}`;
+      window.localStorage.setItem(calculatorStorageKey, button.dataset.calculator);
+      window.location.href = `{{ url_for('main.price_calculation') }}?calculator_key=${encodeURIComponent(button.dataset.calculator)}`;
     });
   });
 
   document.querySelectorAll(".quote-variant-select").forEach(select => {
     select.addEventListener("change", () => {
-      window.location.href = `{{ url_for('main.price_calculation') }}?customer_key=${selectedCustomer}&quote_variant=${select.value}`;
+      window.location.href = `{{ url_for('main.price_calculation') }}?calculator_key=${encodeURIComponent(selectedCalculator)}&quote_variant=${encodeURIComponent(select.value)}`;
     });
   });
 

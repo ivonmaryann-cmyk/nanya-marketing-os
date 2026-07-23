@@ -6,13 +6,13 @@
   <a class="back-link" href="{{ url_for('main.transcode') }}">返回营销自动化转码</a>
   <span>营销自动化转码 / 规则说明</span>
   {% elif feature == 'shennan' %}
-  <a class="back-link" href="{{ url_for('main.shennan') }}">返回深南价格计算</a>
+  <a class="back-link" href="{{ url_for('main.price_calculation', calculator_key='shennan') }}">返回深南价格计算</a>
   <span>深南价格计算 / 规则说明</span>
   {% elif feature == 'hushi' %}
-  <a class="back-link" href="{{ url_for('main.hushi') }}">返回沪士价格计算</a>
+  <a class="back-link" href="{{ url_for('main.price_calculation', calculator_key='hushi') }}">返回沪士价格计算</a>
   <span>沪士价格计算 / 规则说明</span>
   {% else %}
-  <a class="back-link" href="{{ url_for('main.fangzheng') }}">返回方正价格计算</a>
+  <a class="back-link" href="{{ url_for('main.price_calculation', calculator_key='fangzheng') }}">返回方正价格计算</a>
   <span>方正价格计算 / 规则说明</span>
   {% endif %}
 </div>
