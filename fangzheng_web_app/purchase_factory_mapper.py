@@ -7,7 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
 
-from .ai_repair_config import get_ai_repair_config
+from .ai_repair_config import AiRepairConfig, get_ai_repair_config
 from .deepseek_repair_client import request_repair_json
 from .purchase_field_rules import clean_text, decimal_or_none, normalize_date, normalize_number
 
@@ -454,9 +454,10 @@ def _ai_header_candidates(document: dict[str, Any]) -> list[dict[str, Any]]:
 def _request_ai_header_mapping(
     document: dict[str, Any],
     *,
+    config: AiRepairConfig | None = None,
     log: Callable[[str], None] | None = None,
 ) -> tuple[dict[str, str], dict[str, Any]]:
-    config = get_ai_repair_config()
+    config = config or get_ai_repair_config()
     summary = {"available": bool(config.available), "requested": False, "returned": 0, "accepted": 0, "rejected": 0}
     if not config.available:
         return {}, summary
@@ -476,6 +477,7 @@ def _request_ai_header_mapping(
             "只有明确写税前、未税或不含税时才能映射为 pre_tax_price；普通单价映射为 tax_price。",
             "返回严格 JSON：{\"mappings\":[{\"source_header\":\"...\",\"target_field\":\"...\",\"confidence\":0.0,\"reason\":\"...\"}]}。",
         ],
+        "business_instruction": getattr(config, "header_mapping_instruction", ""),
         "source_headers": source_headers,
     }
     summary["requested"] = True
@@ -558,8 +560,10 @@ def _typed_identifier(value: Any) -> str:
 def project_factory_document(
     document: dict[str, Any],
     *,
+    config: AiRepairConfig | None = None,
     log: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
+    config = config or get_ai_repair_config()
     template_id = clean_text(document.get("template_id"))
     order_number, order_source = _order_number(document)
     details = document.get("mapped_detail_rows") or []
@@ -572,7 +576,14 @@ def project_factory_document(
     ai_mapping: dict[str, str] = {}
     ai_summary: dict[str, Any] = {"available": False, "requested": False, "returned": 0, "accepted": 0, "rejected": 0}
     if needs_ai:
-        ai_mapping, ai_summary = _request_ai_header_mapping(document, log=log)
+        ai_mapping, ai_summary = _request_ai_header_mapping(document, config=config, log=log)
+    ai_summary.update(
+        {
+            "config_version": getattr(config, "version_id", None),
+            "config_fingerprint": getattr(config, "fingerprint", ""),
+            "prompt_digest": getattr(config, "prompt_digest", ""),
+        }
+    )
 
     factory_rows: list[dict[str, Any]] = []
     evidence_rows: list[dict[str, Any]] = []

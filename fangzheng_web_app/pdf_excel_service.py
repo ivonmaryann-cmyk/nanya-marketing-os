@@ -15,7 +15,7 @@ from typing import Any, Callable
 
 from werkzeug.utils import secure_filename
 
-from .ai_repair_config import get_ai_repair_config
+from .ai_repair_config import AiRepairConfig, config_from_manifest_snapshot, get_ai_repair_config
 from .db import append_job_log, create_job, get_job, update_job_status
 from .docling_parser import parse_pdf_with_docling
 from .image_table_parser import parse_image_tables
@@ -85,12 +85,14 @@ def queue_pdf_excel_job(
             }
         )
 
+    ai_config = get_ai_repair_config()
     manifest_path = job_dir / "manifest.json"
     manifest = {
         "feature": FEATURE,
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "pipeline_fingerprint": pipeline_fingerprint(),
         "max_workers": max(1, min(int(max_workers or 2), 4)),
+        "ai_config": ai_config.safe_metadata(),
         "files": manifest_files,
     }
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -459,18 +461,20 @@ def _parse_repair_and_project(
     file_item: dict[str, str],
     work_dir: Path,
     *,
+    ai_config: AiRepairConfig,
     log: Callable[[str], None] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     document = _parse_file_with_purchase_pipeline(file_item, work_dir)
     ai_started = time.perf_counter()
-    document = audit_and_repair_purchase_document(document, log=log)
+    document = audit_and_repair_purchase_document(document, config=ai_config, log=log)
+    document["ai_config_summary"] = ai_config.safe_metadata()
     add_stage_ms(
         "ai_repair",
         (time.perf_counter() - ai_started) * 1000,
         summary=document.setdefault("performance_summary", {}),
     )
     factory_started = time.perf_counter()
-    factory_summary = project_factory_document(document, log=log)
+    factory_summary = project_factory_document(document, config=ai_config, log=log)
     add_stage_ms(
         "factory_projection",
         (time.perf_counter() - factory_started) * 1000,
@@ -540,6 +544,7 @@ def run_pdf_excel_job(job_id: int, employee_id: str) -> None:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     files = manifest.get("files") or []
     max_workers = max(1, min(int(manifest.get("max_workers") or 2), 4))
+    ai_config = config_from_manifest_snapshot(manifest.get("ai_config"))
     job_dir = manifest_path.parent
     json_dir = job_dir / "json"
     work_dir = job_dir / "purchase_pipeline"
@@ -547,7 +552,7 @@ def run_pdf_excel_job(job_id: int, employee_id: str) -> None:
     work_dir.mkdir(parents=True, exist_ok=True)
 
     append_job_log(job_id, f"开始 PDF/图片转Excel任务，共 {len(files)} 个文件。", total_rows=len(files), current_row=0)
-    append_job_log(job_id, get_ai_repair_config().safe_status())
+    append_job_log(job_id, ai_config.safe_status())
     documents: list[dict[str, Any]] = []
     success_count = 0
     fail_count = 0
@@ -564,6 +569,7 @@ def run_pdf_excel_job(job_id: int, employee_id: str) -> None:
                     _parse_repair_and_project,
                     file_item,
                     work_dir / Path(file_item["stored_path"]).stem,
+                    ai_config=ai_config,
                     log=lambda message, filename=file_item["original_filename"]: safe_job_log(
                         f"{filename}：{message}"
                     ),

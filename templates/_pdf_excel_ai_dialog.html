@@ -1,0 +1,136 @@
+<dialog
+  class="ai-config-dialog"
+  id="pdf-ai-config-dialog"
+  data-auto-open="{{ 'true' if open_ai_dialog else 'false' }}"
+  aria-labelledby="pdf-ai-config-title">
+  <div class="ai-config-dialog-shell">
+    <header class="ai-config-dialog-header">
+      <div>
+        <div class="panel-tag">管理员</div>
+        <h2 id="pdf-ai-config-title">PDF/Excel AI 配置</h2>
+        <p>{{ ai_admin.current_status }}</p>
+      </div>
+      <button type="button" class="ai-config-close" data-ai-dialog-close aria-label="关闭" title="关闭">×</button>
+    </header>
+
+    <div class="ai-config-statusbar">
+      <span>版本 <strong>{% if ai_admin.active_version_id %}v{{ ai_admin.active_version_id }}{% else %}环境变量{% endif %}</strong></span>
+      <span>主密钥 <strong>{{ "已配置" if ai_admin.master_key_ready else "未配置" }}</strong></span>
+      <span>API Key <strong>{{ "已配置" if ai_admin.key_configured else "未配置" }}</strong></span>
+      <span>指纹 <strong>{{ ai_admin.current_config.fingerprint }}</strong></span>
+    </div>
+
+    {% if ai_admin.result %}
+    <div class="flash {{ ai_admin.result.category }}">{{ ai_admin.result.message }}</div>
+    {% endif %}
+
+    <div class="ai-config-tabs" role="tablist" aria-label="AI 配置视图">
+      <button type="button" class="active" data-ai-tab="config" role="tab" aria-selected="true">配置</button>
+      <button type="button" data-ai-tab="versions" role="tab" aria-selected="false">版本</button>
+    </div>
+
+    <section class="ai-config-panel" data-ai-panel="config" role="tabpanel">
+      <form method="post" action="{{ url_for('main.admin_pdf_excel_ai') }}" class="ai-config-form">
+        <input type="hidden" name="csrf_token" value="{{ ai_admin.csrf_token }}">
+        <input type="hidden" name="expected_active_version_id" value="{{ ai_admin.active_version_id or '' }}">
+
+        <div class="ai-config-fields">
+          <label class="ai-config-toggle">
+            <input type="checkbox" name="enabled" value="1" {% if ai_admin.form_values.enabled %}checked{% endif %}>
+            <span>启用 AI 补缺</span>
+          </label>
+          <label>
+            <span>接口地址</span>
+            <input type="url" name="base_url" value="{{ ai_admin.form_values.base_url }}" required>
+          </label>
+          <label>
+            <span>模型</span>
+            <input type="text" name="model" value="{{ ai_admin.form_values.model }}" maxlength="120" required>
+          </label>
+          <label>
+            <span>API Key</span>
+            <input type="password" name="api_key" value="" autocomplete="new-password" placeholder="留空沿用现有密钥">
+          </label>
+          <label>
+            <span>超时时间（秒）</span>
+            <input type="number" name="timeout_seconds" value="{{ ai_admin.form_values.timeout_seconds }}" min="5" max="300" required>
+          </label>
+          <label>
+            <span>最大候选行数</span>
+            <input type="number" name="max_rows" value="{{ ai_admin.form_values.max_rows }}" min="1" max="50" required>
+          </label>
+        </div>
+
+        <div class="ai-config-prompts">
+          <label>
+            <span>缺失或异常字段修复</span>
+            <textarea name="repair_instruction" rows="4" maxlength="4000">{{ ai_admin.form_values.repair_instruction }}</textarea>
+          </label>
+          <label>
+            <span>订单正文重建</span>
+            <textarea name="rebuild_instruction" rows="4" maxlength="4000">{{ ai_admin.form_values.rebuild_instruction }}</textarea>
+          </label>
+          <label>
+            <span>厂内表头映射</span>
+            <textarea name="header_mapping_instruction" rows="4" maxlength="4000">{{ ai_admin.form_values.header_mapping_instruction }}</textarea>
+          </label>
+        </div>
+
+        <footer class="ai-config-dialog-actions">
+          <label>
+            <span>管理员登录密码</span>
+            <input type="password" name="current_password" autocomplete="current-password" placeholder="保存时必填">
+          </label>
+          <button type="submit" name="action" value="test" class="secondary-button">测试连接</button>
+          <button type="submit" name="action" value="save" {% if not ai_admin.master_key_ready %}disabled{% endif %}>保存新版本</button>
+        </footer>
+      </form>
+    </section>
+
+    <section class="ai-config-panel" data-ai-panel="versions" role="tabpanel" hidden>
+      <div class="ai-config-history">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>版本</th>
+              <th>状态</th>
+              <th>模型</th>
+              <th>限制</th>
+              <th>测试时间</th>
+              <th>创建信息</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in ai_admin.versions %}
+            <tr>
+              <td>v{{ item.id }}{% if item.source_version_id %}<small>来自 v{{ item.source_version_id }}</small>{% endif %}</td>
+              <td>{{ "活动" if item.active else ("启用" if item.enabled else "禁用") }}</td>
+              <td>{{ item.model }}</td>
+              <td>{{ item.timeout_seconds }}s / {{ item.max_rows }}行</td>
+              <td>{{ item.tested_at or "-" }}</td>
+              <td>{{ item.created_by }}<small>{{ item.created_at }}</small></td>
+              <td>
+                {% if not item.active %}
+                <form method="post" action="{{ url_for('main.admin_pdf_excel_ai') }}" class="ai-config-rollback-form">
+                  <input type="hidden" name="csrf_token" value="{{ ai_admin.csrf_token }}">
+                  <input type="hidden" name="action" value="rollback">
+                  <input type="hidden" name="version_id" value="{{ item.id }}">
+                  <input type="hidden" name="expected_active_version_id" value="{{ ai_admin.active_version_id or '' }}">
+                  <input type="password" name="current_password" autocomplete="current-password" placeholder="登录密码" required>
+                  <button type="submit" {% if not ai_admin.master_key_ready %}disabled{% endif %}>回滚</button>
+                </form>
+                {% else %}
+                <span>当前使用</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="7">尚未创建网页配置。</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</dialog>

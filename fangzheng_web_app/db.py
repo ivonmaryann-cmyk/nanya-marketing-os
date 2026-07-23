@@ -73,6 +73,30 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS pdf_excel_ai_config_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                base_url TEXT NOT NULL,
+                model TEXT NOT NULL,
+                timeout_seconds INTEGER NOT NULL,
+                max_rows INTEGER NOT NULL,
+                api_key_ciphertext TEXT NOT NULL DEFAULT '',
+                repair_instruction TEXT NOT NULL DEFAULT '',
+                rebuild_instruction TEXT NOT NULL DEFAULT '',
+                header_mapping_instruction TEXT NOT NULL DEFAULT '',
+                config_fingerprint TEXT NOT NULL,
+                prompt_digest TEXT NOT NULL,
+                test_status TEXT NOT NULL DEFAULT '',
+                test_message TEXT NOT NULL DEFAULT '',
+                tested_at TEXT,
+                created_by TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                activated_by TEXT NOT NULL,
+                activated_at TEXT NOT NULL,
+                source_version_id INTEGER,
+                FOREIGN KEY(source_version_id) REFERENCES pdf_excel_ai_config_versions(id)
+            );
+
             CREATE TABLE IF NOT EXISTS feedback (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 employee_id TEXT NOT NULL,
@@ -149,6 +173,17 @@ def init_db() -> None:
             if column not in user_cols:
                 conn.execute(sql)
 
+        ai_config_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(pdf_excel_ai_config_versions)").fetchall()
+        }
+        ai_config_migrations = {
+            "activated_by": "ALTER TABLE pdf_excel_ai_config_versions ADD COLUMN activated_by TEXT NOT NULL DEFAULT ''",
+            "activated_at": "ALTER TABLE pdf_excel_ai_config_versions ADD COLUMN activated_at TEXT NOT NULL DEFAULT ''",
+        }
+        for column, sql in ai_config_migrations.items():
+            if column not in ai_config_cols:
+                conn.execute(sql)
+
         task_cols = {row["name"] for row in conn.execute("PRAGMA table_info(personal_tasks)").fetchall()}
         task_migrations = {
             "sort_order": "ALTER TABLE personal_tasks ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
@@ -202,6 +237,8 @@ def init_db() -> None:
         set_setting("admin_password_hash", generate_password_hash("admin123"))
     if get_setting("active_rule_version") is None:
         set_setting("active_rule_version", "")
+    if get_setting("active_pdf_excel_ai_config_version") is None:
+        set_setting("active_pdf_excel_ai_config_version", "")
 
 
 def get_setting(key: str, default: str | None = None) -> str | None:

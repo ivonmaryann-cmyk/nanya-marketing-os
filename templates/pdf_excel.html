@@ -12,6 +12,9 @@
     <div class="panel-tag">TEST WORKSPACE</div>
     <h1>PDF/图片转Excel</h1>
     <p>批量上传采购订单 PDF 或图片，系统统一转成页面图片，先做分区和表格线检测，再按单元格识别明细，生成采购单和明细数据。</p>
+    {% if ai_admin %}
+    <button class="feature-action" type="button" id="open-pdf-ai-config">AI 配置</button>
+    {% endif %}
   </div>
   <div class="feature-metrics">
     <div>
@@ -143,6 +146,10 @@
   </aside>
 </section>
 
+{% if ai_admin %}
+  {% include "_pdf_excel_ai_dialog.html" %}
+{% endif %}
+
 <script>
   const form = document.getElementById("pdf-excel-form");
   const dropzone = document.getElementById("pdf-excel-dropzone");
@@ -236,6 +243,43 @@
     }
     const timer = setInterval(refreshJob, 1500);
     refreshJob();
+  }
+
+  const aiDialog = document.getElementById("pdf-ai-config-dialog");
+  const aiOpenButton = document.getElementById("open-pdf-ai-config");
+  if (aiDialog && aiOpenButton) {
+    const aiCloseButtons = aiDialog.querySelectorAll("[data-ai-dialog-close]");
+    const aiTabButtons = aiDialog.querySelectorAll("[data-ai-tab]");
+    const aiPanels = aiDialog.querySelectorAll("[data-ai-panel]");
+
+    function openAiDialog() {
+      if (!aiDialog.open) aiDialog.showModal();
+      document.body.classList.add("ai-dialog-open");
+    }
+
+    function closeAiDialog() {
+      if (aiDialog.open) aiDialog.close();
+    }
+
+    function selectAiTab(tabName) {
+      aiTabButtons.forEach(button => {
+        const selected = button.dataset.aiTab === tabName;
+        button.classList.toggle("active", selected);
+        button.setAttribute("aria-selected", selected ? "true" : "false");
+      });
+      aiPanels.forEach(panel => {
+        panel.hidden = panel.dataset.aiPanel !== tabName;
+      });
+    }
+
+    aiOpenButton.addEventListener("click", openAiDialog);
+    aiCloseButtons.forEach(button => button.addEventListener("click", closeAiDialog));
+    aiTabButtons.forEach(button => button.addEventListener("click", () => selectAiTab(button.dataset.aiTab)));
+    aiDialog.addEventListener("click", event => {
+      if (event.target === aiDialog) closeAiDialog();
+    });
+    aiDialog.addEventListener("close", () => document.body.classList.remove("ai-dialog-open"));
+    if (aiDialog.dataset.autoOpen === "true") openAiDialog();
   }
 </script>
 {% endblock %}

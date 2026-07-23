@@ -4,7 +4,7 @@ import copy
 from decimal import Decimal
 from typing import Any, Callable
 
-from .ai_repair_config import get_ai_repair_config
+from .ai_repair_config import AiRepairConfig, get_ai_repair_config
 from .deepseek_repair_client import DeepSeekRepairError, request_repair_json
 from .purchase_field_rules import STANDARD_HEADERS, clean_text, decimal_or_none, normalize_date, normalize_number
 
@@ -132,7 +132,11 @@ def _nearby_raw_rows(document: dict[str, Any], row: dict[str, Any]) -> list[list
     return []
 
 
-def _build_repair_payload(document: dict[str, Any], candidates: list[dict[str, Any]]) -> dict[str, Any]:
+def _build_repair_payload(
+    document: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    config: AiRepairConfig,
+) -> dict[str, Any]:
     rows = []
     for item in candidates:
         row = item["row"]
@@ -162,6 +166,7 @@ def _build_repair_payload(document: dict[str, Any], candidates: list[dict[str, A
             "金额以原文金额优先；原文金额缺失但数量和单价明确时，可以给出金额建议。",
             "返回严格 JSON，格式为 {\"repairs\":[{\"row_key\":0,\"set_fields\":{\"字段\":\"值\"},\"confidence\":0.0,\"source_evidence\":\"证据\",\"reason\":\"原因\"}]}。",
         ],
+        "business_instruction": getattr(config, "repair_instruction", ""),
         "rows": rows,
     }
 
@@ -218,7 +223,11 @@ def _page_lines_for_body_repair(document: dict[str, Any]) -> list[dict[str, Any]
     return pages[:3]
 
 
-def _body_missing_payload(document: dict[str, Any], max_rows: int) -> dict[str, Any] | None:
+def _body_missing_payload(
+    document: dict[str, Any],
+    max_rows: int,
+    config: AiRepairConfig,
+) -> dict[str, Any] | None:
     raw_tables = _raw_table_rows_for_body_repair(document)
     page_lines = _page_lines_for_body_repair(document)
     if not raw_tables and not page_lines:
@@ -246,6 +255,7 @@ def _body_missing_payload(document: dict[str, Any], max_rows: int) -> dict[str, 
             "\u6700\u591a\u8fd4\u56de max_rows \u6761\u660e\u7ec6\uff0c\u6bcf\u6761\u9700\u8981 confidence>=0.65 \u548c source_evidence\u3002",
             "\u8fd4\u56de\u4e25\u683c JSON\uff1a{\"rows\":[{\"standard\":{\"\u5b57\u6bb5\":\"\u503c\"},\"original\":{\"raw\":\"\u539f\u6587\"},\"confidence\":0.0,\"source_evidence\":\"\u8bc1\u636e\",\"reason\":\"\u539f\u56e0\"}]}",
         ],
+        "business_instruction": getattr(config, "rebuild_instruction", ""),
         "max_rows": max_rows,
         "raw_detail_tables": raw_tables,
         "page_text_lines": page_lines,
@@ -488,7 +498,7 @@ def _try_repair_missing_body(
 ) -> bool:
     if document.get("mapped_detail_rows"):
         return False
-    payload = _body_missing_payload(document, config.max_rows)
+    payload = _body_missing_payload(document, config.max_rows, config)
     if not payload:
         return False
     if log:
@@ -520,15 +530,19 @@ def _try_repair_missing_body(
 def audit_and_repair_purchase_document(
     document: dict[str, Any],
     *,
+    config: AiRepairConfig | None = None,
     log: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     repaired = copy.deepcopy(document)
-    config = get_ai_repair_config()
+    config = config or get_ai_repair_config()
     summary = repaired.setdefault("ai_repair_summary", {})
     summary.update(
         {
             "available": bool(config.available),
             "model": config.model if config.available else "",
+            "config_version": getattr(config, "version_id", None),
+            "config_fingerprint": getattr(config, "fingerprint", ""),
+            "prompt_digest": getattr(config, "prompt_digest", ""),
             "candidate_rows": 0,
             "returned_repairs": 0,
             "applied_fields": 0,
@@ -553,7 +567,7 @@ def audit_and_repair_purchase_document(
 
     if log:
         log(f"AI补缺检查：发现 {len(candidates)} 行明细需要补缺/复核，开始调用 {config.model}。")
-    payload = _build_repair_payload(repaired, candidates)
+    payload = _build_repair_payload(repaired, candidates, config)
     try:
         response = request_repair_json(config, payload)
     except DeepSeekRepairError as exc:

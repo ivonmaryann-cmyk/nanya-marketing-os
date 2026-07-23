@@ -61,3 +61,17 @@ def request_repair_json(config: AiRepairConfig, payload: dict[str, Any]) -> dict
         return json.loads(content)
     except Exception as exc:
         raise DeepSeekRepairError("DeepSeek did not return valid repair JSON.") from exc
+
+
+def test_repair_connection(config: AiRepairConfig) -> str:
+    response = request_repair_json(
+        config,
+        {
+            "task": "connection_test",
+            "rules": ["只返回严格 JSON：{\"ok\":true}。"],
+            "expected": {"ok": True},
+        },
+    )
+    if response.get("ok") is not True:
+        raise DeepSeekRepairError("模型已响应，但未按要求返回 JSON 测试结果。")
+    return f"连接测试通过：{config.model}"

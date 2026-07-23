@@ -3,11 +3,12 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import secrets
 import sqlite3
 from datetime import date
 from pathlib import Path
 
-from flask import Blueprint, flash, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask import Blueprint, abort, flash, jsonify, redirect, render_template, request, send_file, session, url_for
 from openpyxl import load_workbook
 
 from .bomin_rules import (
@@ -18,6 +19,16 @@ from .bomin_rules import (
 )
 from .bomin_service import calculate_bomin_quote, queue_bomin_job
 from .calculator_service import calculate_fangzheng_quote, queue_job
+from .ai_repair_config import (
+    AiConfigError,
+    ai_config_form_values,
+    get_active_ai_config_version_id,
+    get_ai_repair_config,
+    list_ai_config_versions,
+    master_key_configured,
+    save_ai_config_version,
+    validate_ai_config_input,
+)
 from .db import (
     change_user_password,
     create_feedback,
@@ -35,6 +46,7 @@ from .db import (
     get_rule_history,
     get_task_category,
     get_user,
+    is_admin_user,
     list_feedback,
     list_jobs,
     list_personal_tasks,
@@ -53,6 +65,7 @@ from .db import (
     verify_user_password,
 )
 from .file_utils import safe_unlink
+from .deepseek_repair_client import DeepSeekRepairError, test_repair_connection
 from .hushi_rules import (
     get_active_hushi_rule_version,
     get_hushi_rule_dir,
@@ -435,6 +448,28 @@ def require_login():
     if user and user["must_change_password"] and request.endpoint not in {"main.change_password", "main.logout"}:
         return redirect(url_for("main.change_password"))
     return None
+
+
+def require_admin_role():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    if not is_admin_user(current_employee()):
+        abort(403)
+    return None
+
+
+def _pdf_ai_csrf_token() -> str:
+    token = str(session.get("pdf_ai_csrf_token") or "")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["pdf_ai_csrf_token"] = token
+    return token
+
+
+def _valid_pdf_ai_csrf_token(value: str) -> bool:
+    expected = str(session.get("pdf_ai_csrf_token") or "")
+    return bool(expected and value and hmac.compare_digest(expected, value))
 
 
 def _env_flag_enabled(name: str) -> bool:
@@ -1060,18 +1095,179 @@ def order_reprice():
     )
 
 
-@bp.get("/features/pdf-excel")
-def pdf_excel():
-    redirect_resp = require_login()
-    if redirect_resp:
-        return redirect_resp
+def _render_pdf_excel_page(
+    *,
+    ai_form_values: dict[str, object] | None = None,
+    ai_result: dict[str, str] | None = None,
+    open_ai_dialog: bool = False,
+):
     jobs = list_jobs(current_employee(), limit=20, feature=PDF_EXCEL_FEATURE)
+    ai_admin = None
+    if is_admin_user(current_employee()):
+        if ai_result is None:
+            stored_result = session.pop("pdf_ai_modal_result", None)
+            if isinstance(stored_result, dict):
+                ai_result = stored_result
+        ai_admin = _pdf_ai_admin_context(form_values=ai_form_values, result=ai_result)
     return render_template(
         "pdf_excel.html",
         jobs=_decorate_jobs(jobs),
         active_rule_version="PDF/图片转Excel 内置解析规则 v1",
         active_job=_decorate_job(_active_job_for(PDF_EXCEL_FEATURE, jobs)),
+        ai_admin=ai_admin,
+        open_ai_dialog=open_ai_dialog,
     )
+
+
+@bp.get("/features/pdf-excel")
+def pdf_excel():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    return _render_pdf_excel_page(open_ai_dialog=request.args.get("ai_config") == "1")
+
+
+def _pdf_ai_submitted_values() -> dict[str, object]:
+    return {
+        "enabled": bool(request.form.get("enabled")),
+        "api_key": request.form.get("api_key", "").strip(),
+        "base_url": request.form.get("base_url", "").strip(),
+        "model": request.form.get("model", "").strip(),
+        "timeout_seconds": request.form.get("timeout_seconds", "").strip(),
+        "max_rows": request.form.get("max_rows", "").strip(),
+        "repair_instruction": request.form.get("repair_instruction", "").strip(),
+        "rebuild_instruction": request.form.get("rebuild_instruction", "").strip(),
+        "header_mapping_instruction": request.form.get("header_mapping_instruction", "").strip(),
+    }
+
+
+def _pdf_ai_expected_version() -> int | None:
+    raw_value = request.form.get("expected_active_version_id", "").strip()
+    if not raw_value:
+        return None
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise AiConfigError("页面配置版本无效，请刷新后重试。") from exc
+    if value <= 0:
+        raise AiConfigError("页面配置版本无效，请刷新后重试。")
+    return value
+
+
+def _pdf_ai_admin_context(
+    *,
+    form_values: dict[str, object] | None = None,
+    result: dict[str, str] | None = None,
+) -> dict[str, object]:
+    current_config = get_ai_repair_config()
+    versions = list_ai_config_versions()
+    active_id = get_active_ai_config_version_id()
+    active_history = next((item for item in versions if item["id"] == active_id), None)
+    key_configured = (
+        bool(active_history and active_history["key_configured"])
+        if active_id is not None
+        else bool(current_config.api_key)
+    )
+    values = form_values or ai_config_form_values(current_config)
+    values["api_key"] = ""
+    return {
+        "form_values": values,
+        "current_config": current_config.safe_metadata(),
+        "current_status": current_config.safe_status(),
+        "key_configured": key_configured,
+        "master_key_ready": master_key_configured(),
+        "active_version_id": active_id,
+        "versions": versions,
+        "csrf_token": _pdf_ai_csrf_token(),
+        "result": result,
+    }
+
+
+@bp.route("/admin/pdf-excel-ai", methods=["GET", "POST"])
+def admin_pdf_excel_ai():
+    access_response = require_admin_role()
+    if access_response:
+        return access_response
+    if request.method == "GET":
+        return redirect(url_for("main.pdf_excel", ai_config="1"))
+    if not _valid_pdf_ai_csrf_token(request.form.get("csrf_token", "")):
+        abort(400)
+
+    action = request.form.get("action", "test").strip()
+    submitted = _pdf_ai_submitted_values()
+    current_config = get_ai_repair_config()
+    try:
+        if action == "test":
+            candidate = validate_ai_config_input(submitted, current_config)
+            if candidate.enabled:
+                message = test_repair_connection(candidate)
+            else:
+                message = "AI 当前为禁用状态，无需连接测试。"
+            return _render_pdf_excel_page(
+                ai_form_values=submitted,
+                ai_result={"category": "success", "message": message},
+                open_ai_dialog=True,
+            )
+
+        employee_id = current_employee() or ""
+        if not verify_user_password(employee_id, request.form.get("current_password", "")):
+            raise AiConfigError("当前管理员登录密码错误。")
+        expected_version = _pdf_ai_expected_version()
+
+        if action == "save":
+            candidate = validate_ai_config_input(submitted, current_config)
+            if candidate.enabled:
+                test_message = test_repair_connection(candidate)
+                test_status = "passed"
+            else:
+                test_message = "AI 已禁用，未执行连接测试。"
+                test_status = "not_required"
+            saved = save_ai_config_version(
+                candidate,
+                employee_id=employee_id,
+                expected_active_version_id=expected_version,
+                test_status=test_status,
+                test_message=test_message,
+            )
+            session["pdf_ai_modal_result"] = {
+                "category": "success",
+                "message": f"PDF/Excel AI 配置 v{saved.version_id} 已启用。",
+            }
+            return redirect(url_for("main.pdf_excel", ai_config="1"))
+
+        if action == "rollback":
+            try:
+                target_version = int(request.form.get("version_id", ""))
+            except ValueError as exc:
+                raise AiConfigError("回滚版本无效。") from exc
+            target = get_ai_repair_config(target_version, strict=True)
+            if target.enabled:
+                test_message = test_repair_connection(target)
+                test_status = "passed"
+            else:
+                test_message = "AI 已禁用，未执行连接测试。"
+                test_status = "not_required"
+            saved = save_ai_config_version(
+                target,
+                employee_id=employee_id,
+                expected_active_version_id=expected_version,
+                test_status=test_status,
+                test_message=test_message,
+                source_version_id=target_version,
+            )
+            session["pdf_ai_modal_result"] = {
+                "category": "success",
+                "message": f"已从 v{target_version} 创建并启用回滚版本 v{saved.version_id}。",
+            }
+            return redirect(url_for("main.pdf_excel", ai_config="1"))
+
+        raise AiConfigError("未知的 AI 配置操作。")
+    except (AiConfigError, DeepSeekRepairError) as exc:
+        return _render_pdf_excel_page(
+            ai_form_values=submitted if action != "rollback" else None,
+            ai_result={"category": "error", "message": str(exc)},
+            open_ai_dialog=True,
+        )
 
 
 def _today_iso() -> str:
