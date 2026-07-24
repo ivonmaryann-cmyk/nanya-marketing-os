@@ -706,8 +706,6 @@ def _calculate_jingwang_ccl(desc: str, rules: JingwangRules, quantity: Any = Non
     size_key, size_column = _standard_ccl_size_column(length_in, width_in)
     if not product or thickness is None or not copper_left or not copper_right or not state or not stack or not foil or length_in is None or width_in is None:
         return CalcResult("失败", "CCL", "待确认", "待确认", "", "", "CCL规格缺少型号、厚度、铜厚、含铜状态、尺寸或叠构")
-    if _jingwang_ccl_force_pending(product, thickness, copper_left, copper_right, state, stack, foil):
-        return CalcResult("失败", "CCL", "待确认", "待确认", "", "", "该规格在测试数据中标记为待确认")
     def _matching_ccl_rows(left: str, right: str) -> list[CclRule]:
         return [
             row
@@ -1689,26 +1687,6 @@ def _jingwang_pp_price_exception(product: str, glass: str, rc: float, price: flo
     if product == "NY6300SP" and glass == "1078" and abs(rc - 64) <= 0.001:
         return 62.92
     return price
-
-
-def _jingwang_ccl_force_pending(
-    product: str,
-    thickness: float,
-    copper_left: str,
-    copper_right: str,
-    state: str,
-    stack: str,
-    foil: str,
-) -> bool:
-    return (
-        product == "NY3150HC"
-        and abs(thickness - 0.2) <= 0.001
-        and copper_left == "2"
-        and copper_right == "2"
-        and state == "不含铜"
-        and stack == "7628*1"
-        and foil == "HTE"
-    )
 
 
 def _result_equal(actual: Any, expected: Any) -> bool:
