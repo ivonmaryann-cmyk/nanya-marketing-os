@@ -66,6 +66,31 @@ python app.py
 
 浏览器打开：`http://127.0.0.1:5000`
 
+## 历史任务清理
+
+先预演超过 30 天的终态任务和任务日志：
+
+```bash
+python -m fangzheng_web_app.cleanup --days 30 --dry-run
+```
+
+确认预演结果后执行清理：
+
+```bash
+python -m fangzheng_web_app.cleanup --days 30
+```
+
+清理命令只处理 `completed`、`failed` 和 `canceled` 任务。排队中和运行中的任务、规则文件、PDF/Excel 模板、用户与系统配置不会被删除。
+
+宝塔计划任务建议每天凌晨执行一次：
+
+```bash
+cd /www/wwwroot/nanya-marketing-os || exit 1
+/apps/env/mkt_cal/bin/python3.11 -m fangzheng_web_app.cleanup --days 30
+```
+
+首次部署时先把命令末尾改成 `--days 30 --dry-run`，确认计划任务日志中的统计结果后再移除 `--dry-run`。
+
 ## 默认规则
 
 首次启动时，系统会从项目内置文件初始化首个规则版本：

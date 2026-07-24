@@ -533,6 +533,40 @@ def delete_job(job_id: int) -> sqlite3.Row | None:
     return row
 
 
+def list_expired_terminal_jobs(cutoff: str) -> list[sqlite3.Row]:
+    with db_cursor() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM jobs
+            WHERE status IN ('completed', 'failed', 'canceled')
+              AND datetime(COALESCE(completed_at, created_at)) < datetime(?)
+            ORDER BY id
+            """,
+            (cutoff,),
+        ).fetchall()
+
+
+def delete_terminal_jobs(job_ids: list[int]) -> int:
+    if not job_ids:
+        return 0
+    placeholders = ", ".join("?" for _ in job_ids)
+    with db_cursor() as conn:
+        cursor = conn.execute(
+            f"""
+            DELETE FROM jobs
+            WHERE id IN ({placeholders})
+              AND status IN ('completed', 'failed', 'canceled')
+            """,
+            job_ids,
+        )
+        return cursor.rowcount
+
+
+def list_job_ids() -> set[int]:
+    with db_cursor() as conn:
+        return {int(row["id"]) for row in conn.execute("SELECT id FROM jobs").fetchall()}
+
+
 def create_feedback(
     employee_id: str,
     feedback_type: str,
