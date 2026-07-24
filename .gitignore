@@ -23,6 +23,9 @@ server_stdout.log
 server_stderr.log
 workplan_server_*.log
 
+# Local-only test suites.
+/tests_*/
+
 # Local backups and temporary merge artifacts.
 *.bak
 *.bak_*
