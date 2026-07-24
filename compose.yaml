@@ -1,0 +1,34 @@
+services:
+  web:
+    build:
+      context: .
+    container_name: nanya-marketing-os
+    restart: unless-stopped
+    init: true
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    env_file:
+      - .env
+    environment:
+      HOME: /app/storage/home
+      HF_HOME: /app/storage/model_cache/huggingface
+      WORK_PLANNING_BACKUP_ROOT: /app/storage/work_planning_backups
+    volumes:
+      - ./storage:/app/storage
+    ports:
+      - "127.0.0.1:5000:5000"
+    stop_grace_period: 90s
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/login', timeout=5)"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
