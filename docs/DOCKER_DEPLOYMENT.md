@@ -60,7 +60,7 @@ chmod 600 .env
 
 ```bash
 cd /www/wwwroot/nanya-marketing-os
-docker compose build
+docker compose build --build-arg PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 ```
 
 首次构建需要下载 Python、Docling 和 OCR 依赖，时间较长属于正常情况。构建完成后检查：
@@ -104,7 +104,7 @@ http://127.0.0.1:5000
 cd /www/wwwroot/nanya-marketing-os
 git checkout dev
 git pull
-docker compose build
+docker compose build --build-arg PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 docker compose up -d
 docker compose ps
 docker compose logs --tail=100 web
