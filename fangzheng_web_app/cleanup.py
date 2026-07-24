@@ -61,13 +61,71 @@ def _remove_path(path: Path) -> None:
         shutil.rmtree(path)
 
 
+def _job_target(candidate: Path, employee_dir: Path, job_id: int, label: str) -> Path:
+    candidate = _resolved(candidate)
+    if not candidate.is_relative_to(employee_dir):
+        raise UnsafeCleanupPath(f"{label} is outside the employee job directory for job {job_id}")
+
+    relative = candidate.relative_to(employee_dir)
+    if not relative.parts:
+        raise UnsafeCleanupPath(f"{label} points to the employee directory for job {job_id}")
+    return employee_dir / relative.parts[0] if len(relative.parts) > 1 else candidate
+
+
+def _manifest_path_values(value: Any, key: str = "") -> list[str]:
+    if isinstance(value, dict):
+        paths: list[str] = []
+        for child_key, child_value in value.items():
+            paths.extend(_manifest_path_values(child_value, str(child_key).lower()))
+        return paths
+    if isinstance(value, list):
+        paths = []
+        for item in value:
+            paths.extend(_manifest_path_values(item, key))
+        return paths
+    if isinstance(value, str) and value.strip() and (
+        key == "stored_path"
+        or key.endswith("_path")
+        or key.endswith("_paths")
+    ):
+        return [value]
+    return []
+
+
+def _manifest_targets(job: Any, employee_dir: Path) -> set[Path]:
+    input_value = job["stored_input_path"]
+    if not input_value:
+        return set()
+    manifest_path = Path(str(input_value))
+    if not manifest_path.is_absolute():
+        manifest_path = PROJECT_DIR / manifest_path
+    manifest_path = _resolved(manifest_path)
+    if manifest_path.suffix.lower() != ".json" or not manifest_path.is_file():
+        return set()
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return set()
+
+    job_id = int(job["id"])
+    targets: set[Path] = set()
+    for path_value in _manifest_path_values(manifest):
+        candidate = Path(path_value)
+        if not candidate.is_absolute():
+            candidate = PROJECT_DIR / candidate
+        targets.add(_job_target(candidate, employee_dir, job_id, "manifest path"))
+    return targets
+
+
 def _job_targets(job: Any, jobs_root: Path) -> set[Path]:
     root = _resolved(jobs_root)
+    job_id = int(job["id"])
     employee_dir = _resolved(root / str(job["employee_id"]))
     if employee_dir == root or not employee_dir.is_relative_to(root):
-        raise UnsafeCleanupPath(f"unsafe employee directory for job {job['id']}")
+        raise UnsafeCleanupPath(f"unsafe employee directory for job {job_id}")
 
-    targets: set[Path] = {employee_dir / f"job_{int(job['id'])}_worker.log"}
+    targets: set[Path] = {employee_dir / f"job_{job_id}_worker.log"}
     for key in ("stored_input_path", "stored_result_path"):
         value = job[key]
         if not value:
@@ -75,18 +133,24 @@ def _job_targets(job: Any, jobs_root: Path) -> set[Path]:
         candidate = Path(str(value))
         if not candidate.is_absolute():
             candidate = PROJECT_DIR / candidate
-        candidate = _resolved(candidate)
-        if not candidate.is_relative_to(employee_dir):
-            raise UnsafeCleanupPath(f"{key} is outside the employee job directory for job {job['id']}")
-
-        relative = candidate.relative_to(employee_dir)
-        if not relative.parts:
-            raise UnsafeCleanupPath(f"{key} points to the employee directory for job {job['id']}")
-        if len(relative.parts) > 1:
-            targets.add(employee_dir / relative.parts[0])
-        else:
-            targets.add(candidate)
+        targets.add(_job_target(candidate, employee_dir, job_id, key))
+    targets.update(_manifest_targets(job, employee_dir))
     return targets
+
+
+def cleanup_job_artifacts(job: Any, *, jobs_root: Path | None = None) -> int:
+    root = _resolved(jobs_root or JOBS_DIR)
+    targets = _job_targets(job, root)
+    existing_targets = {path for path in targets if path.exists() or path.is_symlink()}
+    for target in sorted(existing_targets, key=lambda item: len(item.parts), reverse=True):
+        _remove_path(target)
+
+    employee_dir = root / str(job["employee_id"])
+    try:
+        employee_dir.rmdir()
+    except OSError:
+        pass
+    return len(existing_targets)
 
 
 def _cleanup_orphan_worker_logs(
@@ -146,14 +210,7 @@ def cleanup_expired_jobs(
         if dry_run:
             continue
         try:
-            for target in sorted(existing_targets, key=lambda item: len(item.parts), reverse=True):
-                _remove_path(target)
-                report.paths_deleted += 1
-            employee_dir = root / str(job["employee_id"])
-            try:
-                employee_dir.rmdir()
-            except OSError:
-                pass
+            report.paths_deleted += cleanup_job_artifacts(job, jobs_root=root)
             deleted_ids.append(int(job["id"]))
         except OSError as exc:
             report.errors.append(f"job {job['id']}: {exc}")

@@ -144,6 +144,7 @@
               {% else %}
               -
               {% endif %}
+              {% include "_job_delete_form.html" %}
             </td>
           </tr>
           {% else %}
@@ -151,6 +152,7 @@
           {% endfor %}
         </tbody>
       </table>
+      {% include "_pagination.html" %}
     </article>
   </div>
 

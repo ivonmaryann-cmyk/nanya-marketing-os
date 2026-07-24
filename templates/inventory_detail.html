@@ -78,6 +78,7 @@
               <a class="primary-link compact" href="{{ url_for('main.download_inventory_detail', job_id=job.id, grade=result.key) }}">{{ result.label }}</a>
               {% endfor %}
               {% else %}-{% endif %}
+              {% include "_job_delete_form.html" %}
             </td>
           </tr>
           {% else %}
@@ -85,6 +86,7 @@
           {% endfor %}
         </tbody>
       </table>
+      {% include "_pagination.html" %}
     </article>
   </div>
 

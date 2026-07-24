@@ -5,7 +5,7 @@ import json
 import os
 import secrets
 import sqlite3
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from flask import Blueprint, abort, flash, jsonify, redirect, render_template, request, send_file, session, url_for
@@ -19,6 +19,7 @@ from .bomin_rules import (
 )
 from .bomin_service import calculate_bomin_quote, queue_bomin_job
 from .calculator_service import calculate_fangzheng_quote, queue_job
+from .cleanup import UnsafeCleanupPath, cleanup_job_artifacts
 from .ai_repair_config import (
     AiConfigError,
     ai_config_form_values,
@@ -31,6 +32,7 @@ from .ai_repair_config import (
 )
 from .db import (
     change_user_password,
+    count_jobs,
     create_feedback,
     create_personal_task,
     create_task_category,
@@ -64,7 +66,6 @@ from .db import (
     verify_admin_password,
     verify_user_password,
 )
-from .file_utils import safe_unlink
 from .deepseek_repair_client import DeepSeekRepairError, test_repair_connection
 from .hushi_rules import (
     get_active_hushi_rule_version,
@@ -77,7 +78,6 @@ from .in_transit_service import queue_in_transit_job
 from .inventory_detail_service import (
     FEATURE as INVENTORY_DETAIL_FEATURE,
     PLAN_A_MODE,
-    cleanup_inventory_detail_job_files,
     get_inventory_result_path,
     load_inventory_input_manifest,
     load_inventory_result_manifest,
@@ -157,6 +157,7 @@ from .transcode_special_rules import (
 bp = Blueprint("main", __name__)
 PLATFORM_NAME = "南亚营销自动化平台"
 PLATFORM_VERSION = "v1.10.0"
+HISTORY_PAGE_SIZE = 10
 
 STAGE_META = {
     "online": {"label": "已上线", "desc": "功能已完成主要验证，可作为正式工具使用。"},
@@ -244,6 +245,14 @@ FEATURE_LABELS = {
     "inventory_detail": "库存明细",
     "order_reprice": "订单改价",
     "work_planning": "工作规划",
+}
+
+HISTORY_STATUS_LABELS = {
+    "completed": "已完成",
+    "failed": "失败",
+    "canceled": "已取消",
+    "running": "运行中",
+    "queued": "排队中",
 }
 
 SPECIAL_PRICE_CALCULATORS = [
@@ -441,6 +450,129 @@ def current_user():
     return get_user(employee_id) if employee_id else None
 
 
+def _history_employee_scope() -> str | None:
+    employee_id = current_employee()
+    return None if employee_id and is_admin_user(employee_id) else employee_id
+
+
+def _can_access_job(job) -> bool:
+    employee_id = current_employee()
+    if not job or not employee_id:
+        return False
+    return job["employee_id"] == employee_id or is_admin_user(employee_id)
+
+
+def _safe_next_url(value: str | None) -> str:
+    if value and value.startswith("/") and not value.startswith("//"):
+        return value
+    return url_for("main.history")
+
+
+def _valid_history_date(value: str | None) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+    try:
+        return date.fromisoformat(text).isoformat()
+    except ValueError:
+        return ""
+
+
+def _history_filter_state() -> dict[str, str]:
+    keyword = (request.args.get("q") or "").strip()[:200]
+    selected_feature = (request.args.get("feature") or "").strip()
+    if selected_feature not in FEATURE_LABELS or selected_feature == "work_planning":
+        selected_feature = ""
+
+    selected_status = (request.args.get("status") or "").strip()
+    if selected_status not in HISTORY_STATUS_LABELS:
+        selected_status = ""
+
+    date_range = (request.args.get("date_range") or "").strip()
+    start_date = _valid_history_date(request.args.get("start_date"))
+    end_date = _valid_history_date(request.args.get("end_date"))
+    today = date.today()
+    if date_range == "today":
+        start_date = end_date = today.isoformat()
+    elif date_range == "7":
+        start_date = (today - timedelta(days=6)).isoformat()
+        end_date = today.isoformat()
+    elif date_range == "30":
+        start_date = (today - timedelta(days=29)).isoformat()
+        end_date = today.isoformat()
+    elif date_range == "custom":
+        date_range = "custom"
+    elif "date_range" not in request.args and (start_date or end_date):
+        date_range = "custom"
+    else:
+        date_range = ""
+        start_date = ""
+        end_date = ""
+    if start_date and end_date and start_date > end_date:
+        start_date, end_date = end_date, start_date
+
+    selected_employee = ""
+    if is_admin_user(current_employee()):
+        selected_employee = (request.args.get("employee_id") or "").strip()[:100]
+
+    return {
+        "q": keyword,
+        "feature": selected_feature,
+        "status": selected_status,
+        "employee_id": selected_employee,
+        "date_range": date_range,
+        "start_date": start_date,
+        "end_date": end_date,
+    }
+
+
+def _delete_terminal_job(job) -> tuple[bool, str]:
+    if job["status"] in {"queued", "running"}:
+        return False, "active"
+    try:
+        cleanup_job_artifacts(job)
+    except (OSError, UnsafeCleanupPath):
+        return False, "cleanup_failed"
+    return (delete_job(int(job["id"])) is not None, "deleted")
+
+
+def _pagination_state(total: int, *, per_page: int = HISTORY_PAGE_SIZE) -> tuple[int, int, dict]:
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = request.args.get("page", 1, type=int) or 1
+    page = min(max(page, 1), total_pages)
+    offset = (page - 1) * per_page
+
+    base_args = request.args.to_dict(flat=True)
+    base_args.pop("page", None)
+    view_args = dict(request.view_args or {})
+
+    def page_url(target_page: int) -> str:
+        args = {**view_args, **base_args, "page": target_page}
+        return url_for(request.endpoint or "main.dashboard", **args)
+
+    start = max(1, page - 2)
+    end = min(total_pages, page + 2)
+    if end - start < 4:
+        start = max(1, end - 4)
+        end = min(total_pages, start + 4)
+
+    pagination = {
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "total_pages": total_pages,
+        "has_prev": page > 1,
+        "has_next": page < total_pages,
+        "prev_url": page_url(page - 1) if page > 1 else "",
+        "next_url": page_url(page + 1) if page < total_pages else "",
+        "pages": [
+            {"number": number, "url": page_url(number), "current": number == page}
+            for number in range(start, end + 1)
+        ],
+    }
+    return page, offset, pagination
+
+
 def require_login():
     if not current_employee():
         return redirect(url_for("main.login"))
@@ -512,6 +644,8 @@ def inject_platform_meta():
         "platform_version": PLATFORM_VERSION,
         "stage_meta": STAGE_META,
         "feature_labels": FEATURE_LABELS,
+        "current_employee_id": current_employee(),
+        "current_is_admin": bool(current_employee() and is_admin_user(current_employee())),
     }
 
 
@@ -589,7 +723,7 @@ def _active_job_for(feature: str, jobs):
     requested_job_id = request.args.get("job_id", type=int)
     if requested_job_id:
         job = get_job(requested_job_id)
-        if job and job["employee_id"] == current_employee() and job["feature"] == feature:
+        if job and _can_access_job(job) and job["feature"] == feature:
             return job
     return jobs[0] if jobs else None
 
@@ -725,6 +859,27 @@ def _decorate_job(job) -> dict:
 
 def _decorate_jobs(jobs) -> list[dict]:
     return [_decorate_job(job) for job in jobs]
+
+
+def _paginated_feature_jobs(feature: str):
+    employee_scope = _history_employee_scope()
+    total = count_jobs(employee_scope, feature=feature)
+    _page, offset, pagination = _pagination_state(total)
+    jobs = list_jobs(employee_scope, limit=HISTORY_PAGE_SIZE, feature=feature, offset=offset)
+    return jobs, pagination
+
+
+def _paginated_price_calculation_jobs(selected_customer: str, selected_quote_variant: str):
+    employee_scope = _history_employee_scope()
+    raw_jobs = list_jobs(employee_scope, limit=10000, feature="price_calculation")
+    decorated_jobs = [
+        job
+        for job in _decorate_jobs(raw_jobs)
+        if job.get("price_customer_key", default_price_customer_key()) == selected_customer
+        and (selected_customer != "jingwang" or job.get("quote_variant", "new") == selected_quote_variant)
+    ]
+    _page, offset, pagination = _pagination_state(len(decorated_jobs))
+    return decorated_jobs[offset : offset + HISTORY_PAGE_SIZE], raw_jobs, pagination
 
 
 def _order_reprice_stats(job: dict, mode: str) -> dict:
@@ -932,10 +1087,11 @@ def transcode():
     redirect_resp = require_login()
     if redirect_resp:
         return redirect_resp
-    jobs = list_jobs(current_employee(), limit=20, feature="transcode")
+    jobs, pagination = _paginated_feature_jobs("transcode")
     return render_template(
         "transcode.html",
         jobs=jobs,
+        pagination=pagination,
         active_rule_version=get_active_transcode_rule_version(),
         active_job=_active_job_for("transcode", jobs),
     )
@@ -946,10 +1102,11 @@ def transcode_agent():
     redirect_resp = require_login()
     if redirect_resp:
         return redirect_resp
-    jobs = list_jobs(current_employee(), limit=20, feature=TRANSCODE_AGENT_FEATURE)
+    jobs, pagination = _paginated_feature_jobs(TRANSCODE_AGENT_FEATURE)
     return render_template(
         "transcode_agent.html",
         jobs=jobs,
+        pagination=pagination,
         active_rule_version=get_active_transcode_rule_version(),
         active_agent_rule_version=get_active_transcode_agent_rule_version() or "未上传Agent规则",
         agent_rule_count=get_transcode_agent_rule_count(),
@@ -999,14 +1156,8 @@ def price_calculation():
     )
 
     selected_feature = selected_option["feature"]
-    raw_jobs = list_jobs(current_employee(), limit=50 if selected_feature == "price_calculation" else 20, feature=selected_feature)
     if selected_feature == "price_calculation":
-        jobs = [
-            job
-            for job in _decorate_jobs(raw_jobs)
-            if job.get("price_customer_key", default_price_customer_key()) == selected_customer
-            and (selected_customer != "jingwang" or job.get("quote_variant", "new") == selected_quote_variant)
-        ][:20]
+        jobs, raw_jobs, pagination = _paginated_price_calculation_jobs(selected_customer, selected_quote_variant)
         active_job = _decorate_job(_active_job_for(selected_feature, raw_jobs))
         if active_job and (
             active_job.get("price_customer_key") != selected_customer
@@ -1015,6 +1166,7 @@ def price_calculation():
             active_job = None
         active_rule_version = get_active_price_rule_version(selected_customer, selected_quote_variant) or "未初始化价格计算规则"
     else:
+        raw_jobs, pagination = _paginated_feature_jobs(selected_feature)
         jobs = _decorate_jobs(raw_jobs)
         active_job = _decorate_job(_active_job_for(selected_feature, raw_jobs))
         if selected_calculator == "fangzheng":
@@ -1036,6 +1188,7 @@ def price_calculation():
         selected_quote_variant=selected_quote_variant,
         quote_variants=JINGWANG_QUOTE_VARIANTS,
         jobs=jobs,
+        pagination=pagination,
         active_rule_version=active_rule_version,
         active_job=active_job,
         upload_url=url_for(selected_option["upload_endpoint"]),
@@ -1051,10 +1204,11 @@ def in_transit():
     if redirect_resp:
         return redirect_resp
     reconcile_interrupted_jobs()
-    jobs = list_jobs(current_employee(), limit=20, feature="in_transit")
+    jobs, pagination = _paginated_feature_jobs("in_transit")
     return render_template(
         "in_transit.html",
         jobs=jobs,
+        pagination=pagination,
         active_rule_version="内置核对规则 v1",
         active_job=_active_job_for("in_transit", jobs),
     )
@@ -1066,11 +1220,12 @@ def inventory_detail():
     if redirect_resp:
         return redirect_resp
     reconcile_interrupted_jobs()
-    raw_jobs = list_jobs(current_employee(), limit=20, feature=INVENTORY_DETAIL_FEATURE)
+    raw_jobs, pagination = _paginated_feature_jobs(INVENTORY_DETAIL_FEATURE)
     active_job = _active_job_for(INVENTORY_DETAIL_FEATURE, raw_jobs)
     return render_template(
         "inventory_detail.html",
         jobs=_decorate_jobs(raw_jobs),
+        pagination=pagination,
         active_rule_version="库存明细内置规则 v1",
         active_job=_decorate_job(active_job) if active_job else None,
     )
@@ -1081,12 +1236,13 @@ def order_reprice():
     redirect_resp = require_login()
     if redirect_resp:
         return redirect_resp
-    raw_jobs = list_jobs(current_employee(), limit=20, feature="order_reprice")
+    raw_jobs, pagination = _paginated_feature_jobs("order_reprice")
     active_raw_job = _active_job_for("order_reprice", raw_jobs)
     jobs = _decorate_jobs(raw_jobs)
     return render_template(
         "order_reprice.html",
         jobs=jobs,
+        pagination=pagination,
         active_rule_version="订单改价内置规则 v1",
         active_job=_decorate_job(active_raw_job) if active_raw_job else None,
         mode_labels=ORDER_REPRICE_MODE_LABELS,
@@ -1101,7 +1257,7 @@ def _render_pdf_excel_page(
     ai_result: dict[str, str] | None = None,
     open_ai_dialog: bool = False,
 ):
-    jobs = list_jobs(current_employee(), limit=20, feature=PDF_EXCEL_FEATURE)
+    jobs, pagination = _paginated_feature_jobs(PDF_EXCEL_FEATURE)
     ai_admin = None
     if is_admin_user(current_employee()):
         if ai_result is None:
@@ -1112,6 +1268,7 @@ def _render_pdf_excel_page(
     return render_template(
         "pdf_excel.html",
         jobs=_decorate_jobs(jobs),
+        pagination=pagination,
         active_rule_version="PDF/图片转Excel 内置解析规则 v1",
         active_job=_decorate_job(_active_job_for(PDF_EXCEL_FEATURE, jobs)),
         ai_admin=ai_admin,
@@ -2011,7 +2168,7 @@ def job_detail(job_id: int):
     if redirect_resp:
         return redirect_resp
     job = get_job(job_id)
-    if not job or job["employee_id"] != current_employee():
+    if not _can_access_job(job):
         flash("未找到该任务。", "error")
         return redirect(url_for("main.history"))
     return render_template("job_detail.html", job=_decorate_job(job))
@@ -2023,7 +2180,7 @@ def api_job_detail(job_id: int):
     if redirect_resp:
         return jsonify({"error": "unauthorized"}), 401
     job = get_job(job_id)
-    if not job or job["employee_id"] != current_employee():
+    if not _can_access_job(job):
         return jsonify({"error": "not_found"}), 404
     return jsonify(_decorate_job(job))
 
@@ -2160,10 +2317,41 @@ def history():
     redirect_resp = require_login()
     if redirect_resp:
         return redirect_resp
-    start_date = request.args.get("start_date") or None
-    end_date = request.args.get("end_date") or None
-    jobs = _decorate_jobs(list_jobs(current_employee(), start_date=start_date, end_date=end_date, limit=100))
-    return render_template("history.html", jobs=jobs, start_date=start_date, end_date=end_date)
+    is_admin_history = is_admin_user(current_employee())
+    filters = _history_filter_state()
+    employee_scope = filters["employee_id"] if is_admin_history and filters["employee_id"] else _history_employee_scope()
+    query_filters = {
+        "start_date": filters["start_date"] or None,
+        "end_date": filters["end_date"] or None,
+        "feature": filters["feature"] or None,
+        "status": filters["status"] or None,
+        "keyword": filters["q"] or None,
+    }
+    total = count_jobs(employee_scope, **query_filters)
+    _page, offset, pagination = _pagination_state(total)
+    jobs = _decorate_jobs(
+        list_jobs(
+            employee_scope,
+            limit=HISTORY_PAGE_SIZE,
+            offset=offset,
+            **query_filters,
+        )
+    )
+    return render_template(
+        "history.html",
+        jobs=jobs,
+        pagination=pagination,
+        filters=filters,
+        feature_options=[
+            (key, label)
+            for key, label in FEATURE_LABELS.items()
+            if key != "work_planning"
+        ],
+        status_options=HISTORY_STATUS_LABELS.items(),
+        status_labels=HISTORY_STATUS_LABELS,
+        employee_options=list_users() if is_admin_history else [],
+        is_admin_history=is_admin_history,
+    )
 
 
 @bp.post("/history/<int:job_id>/delete")
@@ -2172,18 +2360,65 @@ def delete_history(job_id: int):
     if redirect_resp:
         return redirect_resp
     job = get_job(job_id)
-    if not job or job["employee_id"] != current_employee():
+    next_url = _safe_next_url(request.form.get("next") or request.referrer)
+    if not _can_access_job(job):
         flash("未找到该任务。", "error")
-        return redirect(url_for("main.history"))
-    deleted = delete_job(job_id)
+        return redirect(next_url)
+    deleted, reason = _delete_terminal_job(job)
+    if reason == "active":
+        flash("任务正在运行，请先停止任务后再删除。", "error")
+        return redirect(next_url)
     if deleted:
-        if deleted["feature"] == INVENTORY_DETAIL_FEATURE:
-            cleanup_inventory_detail_job_files(deleted)
-        else:
-            for path_key in ["stored_input_path", "stored_result_path"]:
-                safe_unlink(deleted[path_key])
         flash("历史记录已删除。", "success")
-    return redirect(url_for("main.history"))
+    else:
+        flash("文件清理失败，历史记录已保留，请检查任务文件权限。", "error")
+    return redirect(next_url)
+
+
+@bp.post("/history/bulk-delete")
+def bulk_delete_history():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    next_url = _safe_next_url(request.form.get("next") or request.referrer)
+    job_ids: list[int] = []
+    for raw_value in request.form.getlist("job_ids")[:100]:
+        try:
+            job_id = int(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if job_id > 0 and job_id not in job_ids:
+            job_ids.append(job_id)
+    if not job_ids:
+        flash("请先勾选要删除的历史记录。", "error")
+        return redirect(next_url)
+
+    deleted_count = 0
+    active_count = 0
+    unauthorized_count = 0
+    failed_count = 0
+    for job_id in job_ids:
+        job = get_job(job_id)
+        if not _can_access_job(job):
+            unauthorized_count += 1
+            continue
+        deleted, reason = _delete_terminal_job(job)
+        if deleted:
+            deleted_count += 1
+        elif reason == "active":
+            active_count += 1
+        else:
+            failed_count += 1
+
+    summary = [f"成功删除 {deleted_count} 条"]
+    if active_count:
+        summary.append(f"运行中跳过 {active_count} 条")
+    if unauthorized_count:
+        summary.append(f"无权限或不存在 {unauthorized_count} 条")
+    if failed_count:
+        summary.append(f"文件清理失败 {failed_count} 条")
+    flash("；".join(summary) + "。", "success" if deleted_count and not failed_count else "error")
+    return redirect(next_url)
 
 
 @bp.get("/inventory-detail/jobs/<int:job_id>/download/<grade>")
@@ -2192,7 +2427,7 @@ def download_inventory_detail(job_id: int, grade: str):
     if redirect_resp:
         return redirect_resp
     job = get_job(job_id)
-    if not job or job["employee_id"] != current_employee() or job["feature"] != INVENTORY_DETAIL_FEATURE:
+    if not _can_access_job(job) or job["feature"] != INVENTORY_DETAIL_FEATURE:
         flash("未找到该库存明细任务。", "error")
         return redirect(url_for("main.history"))
     file_path = get_inventory_result_path(job, grade)
@@ -2208,7 +2443,7 @@ def download(job_id: int, kind: str):
     if redirect_resp:
         return redirect_resp
     job = get_job(job_id)
-    if not job or job["employee_id"] != current_employee():
+    if not _can_access_job(job):
         flash("未找到该任务。", "error")
         return redirect(url_for("main.history"))
     if job["feature"] == INVENTORY_DETAIL_FEATURE and kind == "result":

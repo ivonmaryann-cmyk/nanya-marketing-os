@@ -200,6 +200,7 @@
               {% if job.status == 'completed' %}
               <a href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载文件</a>
               {% endif %}
+              {% include "_job_delete_form.html" %}
             </td>
           </tr>
           {% else %}
@@ -207,6 +208,7 @@
           {% endfor %}
         </tbody>
       </table>
+      {% include "_pagination.html" %}
     </article>
   </div>
 

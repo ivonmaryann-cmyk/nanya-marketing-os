@@ -470,18 +470,32 @@ def get_job(job_id: int):
 
 
 def list_jobs(
-    employee_id: str,
+    employee_id: str | None,
     start_date: str | None = None,
     end_date: str | None = None,
     limit: int = 100,
     feature: str | None = None,
+    status: str | None = None,
+    keyword: str | None = None,
+    offset: int = 0,
 ):
-    query = "SELECT * FROM jobs WHERE employee_id = ?"
-    params: list[object] = [employee_id]
+    query = "SELECT * FROM jobs WHERE 1 = 1"
+    params: list[object] = []
+
+    if employee_id is not None:
+        query += " AND employee_id = ?"
+        params.append(employee_id)
 
     if feature:
         query += " AND feature = ?"
         params.append(feature)
+    if status:
+        query += " AND status = ?"
+        params.append(status)
+    if keyword:
+        query += " AND (CAST(id AS TEXT) LIKE ? OR source_filename LIKE ?)"
+        pattern = f"%{keyword}%"
+        params.extend([pattern, pattern])
     if start_date:
         query += " AND date(created_at) >= date(?)"
         params.append(start_date)
@@ -489,11 +503,47 @@ def list_jobs(
         query += " AND date(created_at) <= date(?)"
         params.append(end_date)
 
-    query += " ORDER BY id DESC LIMIT ?"
-    params.append(limit)
+    query += " ORDER BY id DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
 
     with db_cursor() as conn:
         return conn.execute(query, params).fetchall()
+
+
+def count_jobs(
+    employee_id: str | None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    feature: str | None = None,
+    status: str | None = None,
+    keyword: str | None = None,
+) -> int:
+    query = "SELECT COUNT(*) AS total FROM jobs WHERE 1 = 1"
+    params: list[object] = []
+
+    if employee_id is not None:
+        query += " AND employee_id = ?"
+        params.append(employee_id)
+    if feature:
+        query += " AND feature = ?"
+        params.append(feature)
+    if status:
+        query += " AND status = ?"
+        params.append(status)
+    if keyword:
+        query += " AND (CAST(id AS TEXT) LIKE ? OR source_filename LIKE ?)"
+        pattern = f"%{keyword}%"
+        params.extend([pattern, pattern])
+    if start_date:
+        query += " AND date(created_at) >= date(?)"
+        params.append(start_date)
+    if end_date:
+        query += " AND date(created_at) <= date(?)"
+        params.append(end_date)
+
+    with db_cursor() as conn:
+        row = conn.execute(query, params).fetchone()
+    return int(row["total"] if row else 0)
 
 
 def get_active_job(employee_id: str, feature: str):

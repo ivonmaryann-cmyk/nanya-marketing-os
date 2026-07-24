@@ -1,0 +1,30 @@
+{% if pagination and pagination.total_pages > 1 %}
+<nav class="pagination" aria-label="历史记录分页">
+  <span>共 {{ pagination.total }} 条，每页 {{ pagination.per_page }} 条</span>
+  <div class="pagination-links">
+    {% if pagination.has_prev %}
+    <a href="{{ pagination.prev_url }}">上一页</a>
+    {% else %}
+    <span class="disabled">上一页</span>
+    {% endif %}
+
+    {% for item in pagination.pages %}
+    {% if item.current %}
+    <span class="current">{{ item.number }}</span>
+    {% else %}
+    <a href="{{ item.url }}">{{ item.number }}</a>
+    {% endif %}
+    {% endfor %}
+
+    {% if pagination.has_next %}
+    <a href="{{ pagination.next_url }}">下一页</a>
+    {% else %}
+    <span class="disabled">下一页</span>
+    {% endif %}
+  </div>
+</nav>
+{% elif pagination %}
+<div class="pagination compact">
+  <span>共 {{ pagination.total }} 条记录</span>
+</div>
+{% endif %}

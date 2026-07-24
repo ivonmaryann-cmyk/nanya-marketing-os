@@ -682,6 +682,58 @@ button,
   padding: 0;
 }
 
+.inline-delete-form {
+  display: inline;
+}
+
+.pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  color: var(--muted);
+  font-size: .92rem;
+}
+
+.pagination.compact {
+  justify-content: flex-end;
+}
+
+.pagination-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.pagination-links a,
+.pagination-links span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(24, 92, 67, .12);
+  background: #fff;
+  color: var(--text);
+}
+
+.pagination-links .current {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 700;
+}
+
+.pagination-links .disabled {
+  color: var(--muted);
+  background: #f5f0e5;
+}
+
 .flash-stack {
   display: grid;
   gap: 12px;
@@ -4607,5 +4659,200 @@ body.ai-dialog-open {
 
   .ai-config-dialog-actions label {
     grid-column: auto;
+  }
+}
+
+/* History filters, current-page selection, and destructive record actions. */
+.history-card > .section-head {
+  align-items: flex-start;
+}
+
+.history-card > .section-head h1 {
+  margin-bottom: 4px;
+}
+
+.history-card > .section-head p {
+  margin: 0;
+}
+
+.history-filter-panel {
+  display: grid;
+  gap: 12px;
+  margin: 18px 0;
+  padding: 16px;
+  border: 1px solid #dce3ea;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.history-filter-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.6fr) repeat(4, minmax(140px, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+.history-filter-grid label,
+.history-custom-dates label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.history-filter-grid input,
+.history-filter-grid select,
+.history-custom-dates input {
+  width: 100%;
+  min-width: 0;
+}
+
+.history-custom-dates {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 240px));
+  gap: 12px;
+}
+
+.history-custom-dates[hidden] {
+  display: none;
+}
+
+.history-filter-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.history-filter-actions button {
+  min-height: 40px;
+}
+
+.history-bulk-form {
+  display: grid;
+}
+
+.history-bulk-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  border-bottom: 0;
+  background: #ffffff;
+}
+
+.history-bulk-toolbar > div {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.history-bulk-toolbar span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.history-bulk-delete {
+  min-height: 36px;
+  padding: 8px 14px;
+  border-radius: 6px;
+}
+
+.history-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #e5e7eb;
+}
+
+.history-table {
+  min-width: 980px;
+}
+
+.history-table th:first-child,
+.history-table td:first-child {
+  border-left: 0;
+}
+
+.history-select-cell {
+  width: 42px;
+  padding-left: 12px !important;
+  padding-right: 6px !important;
+  text-align: center !important;
+  vertical-align: middle !important;
+}
+
+.history-select-cell input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: #0f6a49;
+}
+
+.record-delete-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 4px 9px;
+  border: 1px solid #dc2626;
+  border-radius: 6px;
+  color: #b91c1c;
+  background: #ffffff;
+  box-shadow: none;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.record-delete-button:hover {
+  color: #ffffff;
+  background: #dc2626;
+}
+
+.record-delete-disabled {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 4px 9px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  color: #6b7280;
+  background: #f3f4f6;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+@media (max-width: 1200px) {
+  .history-filter-grid {
+    grid-template-columns: repeat(3, minmax(160px, 1fr));
+  }
+
+  .history-keyword-filter {
+    grid-column: span 2;
+  }
+}
+
+@media (max-width: 720px) {
+  .history-filter-grid,
+  .history-custom-dates {
+    grid-template-columns: 1fr;
+  }
+
+  .history-keyword-filter {
+    grid-column: auto;
+  }
+
+  .history-filter-actions,
+  .history-bulk-toolbar,
+  .history-bulk-toolbar > div {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .history-filter-actions button,
+  .history-bulk-delete {
+    width: 100%;
   }
 }

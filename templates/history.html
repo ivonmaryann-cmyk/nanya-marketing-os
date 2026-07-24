@@ -1,68 +1,210 @@
 {% extends "base.html" %}
 {% block title %}历史记录 | {{ platform_name }} {{ platform_version }}{% endblock %}
 {% block content %}
-<section class="card">
+<section class="card history-card">
   <div class="section-head">
-    <h1>历史记录</h1>
+    <div>
+      <h1>历史记录</h1>
+      {% if is_admin_history %}
+      <p class="muted-small">管理员视图：可筛选并管理所有员工上传和生成的历史记录。</p>
+      {% endif %}
+    </div>
     <a href="{{ url_for('main.dashboard') }}">返回功能中心</a>
   </div>
 
-  <form method="get" class="filter-row">
-    <label>
-      <span>开始日期</span>
-      <input type="date" name="start_date" value="{{ start_date or '' }}">
-    </label>
-    <label>
-      <span>结束日期</span>
-      <input type="date" name="end_date" value="{{ end_date or '' }}">
-    </label>
-    <button type="submit">筛选</button>
+  <form method="get" class="history-filter-panel" id="history-filter-form">
+    <div class="history-filter-grid">
+      <label class="history-keyword-filter">
+        <span>关键词</span>
+        <input type="search" name="q" value="{{ filters.q }}" placeholder="任务 ID 或上传文件名">
+      </label>
+      <label>
+        <span>功能类型</span>
+        <select name="feature">
+          <option value="">全部功能</option>
+          {% for key, label in feature_options %}
+          <option value="{{ key }}" {% if filters.feature == key %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span>任务状态</span>
+        <select name="status">
+          <option value="">全部状态</option>
+          {% for key, label in status_options %}
+          <option value="{{ key }}" {% if filters.status == key %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      {% if is_admin_history %}
+      <label>
+        <span>员工</span>
+        <select name="employee_id">
+          <option value="">全部员工</option>
+          {% for user in employee_options %}
+          <option value="{{ user.employee_id }}" {% if filters.employee_id == user.employee_id %}selected{% endif %}>
+            {{ user.employee_id }}{% if user.display_name %} · {{ user.display_name }}{% endif %}
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+      {% endif %}
+      <label>
+        <span>时间范围</span>
+        <select name="date_range" id="history-date-range">
+          <option value="" {% if not filters.date_range %}selected{% endif %}>全部时间</option>
+          <option value="today" {% if filters.date_range == 'today' %}selected{% endif %}>今天</option>
+          <option value="7" {% if filters.date_range == '7' %}selected{% endif %}>近 7 天</option>
+          <option value="30" {% if filters.date_range == '30' %}selected{% endif %}>近 30 天</option>
+          <option value="custom" {% if filters.date_range == 'custom' %}selected{% endif %}>自定义日期</option>
+        </select>
+      </label>
+    </div>
+    <div class="history-custom-dates" id="history-custom-dates" {% if filters.date_range != 'custom' %}hidden{% endif %}>
+      <label>
+        <span>开始日期</span>
+        <input type="date" name="start_date" value="{{ filters.start_date }}">
+      </label>
+      <label>
+        <span>结束日期</span>
+        <input type="date" name="end_date" value="{{ filters.end_date }}">
+      </label>
+    </div>
+    <div class="history-filter-actions">
+      <button type="submit">应用筛选</button>
+      <a class="secondary-link" href="{{ url_for('main.history') }}">清除筛选</a>
+    </div>
   </form>
 
-  <table class="table">
-    <thead>
-      <tr>
-        <th>时间</th>
-        <th>客户</th>
-        <th>功能类型</th>
-        <th>状态</th>
-        <th>总记录数</th>
-        <th>异常数 / 未匹配数</th>
-        <th>操作</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for job in jobs %}
-      <tr>
-        <td>{{ job.created_at }}</td>
-        <td>{{ job.customer_label or '-' }}</td>
-        <td>
-          <strong>{{ job.function_type or job.feature_label }}</strong>
-          <div class="muted-small">#{{ job.id }} {{ job.source_filename }}</div>
-        </td>
-        <td><span class="status {{ job.status }}">{{ job.status }}</span></td>
-        <td>{{ job.display_total }}</td>
-        <td>{{ job.display_issue_count }}</td>
-        <td class="actions">
-          <a href="{{ url_for('main.job_detail', job_id=job.id) }}">查看结果</a>
-          {% if job.status == 'completed' %}
-          {% if job.feature == 'inventory_detail' %}
-          {% for result in job.inventory_results %}
-          <a href="{{ url_for('main.download_inventory_detail', job_id=job.id, grade=result.key) }}">{{ result.label }}</a>
-          {% endfor %}
+  <form method="post" action="{{ url_for('main.bulk_delete_history') }}" class="history-bulk-form" id="history-bulk-form">
+    <input type="hidden" name="next" value="{{ request.full_path }}">
+    <div class="history-bulk-toolbar">
+      <div>
+        <strong>记录管理</strong>
+        <span>已选 <b id="history-selected-count">0</b> 条，仅选择当前页</span>
+      </div>
+      <button type="submit" class="danger-button history-bulk-delete" data-delete-kind="bulk" disabled>批量删除</button>
+    </div>
+
+    <div class="history-table-wrap">
+      <table class="table history-table">
+        <thead>
+          <tr>
+            <th class="history-select-cell">
+              <input type="checkbox" id="history-select-all" aria-label="全选当前页可删除记录">
+            </th>
+            <th>时间</th>
+            {% if is_admin_history %}<th>工号</th>{% endif %}
+            <th>客户</th>
+            <th>功能类型</th>
+            <th>状态</th>
+            <th>总记录数</th>
+            <th>异常数 / 未匹配数</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for job in jobs %}
+          {% set can_delete = job.status not in ['queued', 'running'] %}
+          <tr>
+            <td class="history-select-cell">
+              <input
+                type="checkbox"
+                class="history-row-checkbox"
+                name="job_ids"
+                value="{{ job.id }}"
+                aria-label="选择任务 {{ job.id }}"
+                {% if not can_delete %}disabled title="任务正在运行，不能删除"{% endif %}
+              >
+            </td>
+            <td>{{ job.created_at }}</td>
+            {% if is_admin_history %}<td>{{ job.employee_id }}</td>{% endif %}
+            <td>{{ job.customer_label or '-' }}</td>
+            <td>
+              <strong>{{ job.function_type or job.feature_label }}</strong>
+              <div class="muted-small">#{{ job.id }} {{ job.source_filename }}</div>
+            </td>
+            <td><span class="status {{ job.status }}">{{ status_labels.get(job.status, job.status) }}</span></td>
+            <td>{{ job.display_total }}</td>
+            <td>{{ job.display_issue_count }}</td>
+            <td class="actions">
+              <a href="{{ url_for('main.job_detail', job_id=job.id) }}">查看结果</a>
+              {% if job.status == 'completed' %}
+              {% if job.feature == 'inventory_detail' %}
+              {% for result in job.inventory_results %}
+              <a href="{{ url_for('main.download_inventory_detail', job_id=job.id, grade=result.key) }}">{{ result.label }}</a>
+              {% endfor %}
+              {% else %}
+              <a href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载文件</a>
+              {% endif %}
+              {% endif %}
+              {% if can_delete %}
+              <button
+                type="submit"
+                class="record-delete-button"
+                formaction="{{ url_for('main.delete_history', job_id=job.id) }}"
+                data-delete-kind="single"
+              >删除</button>
+              {% else %}
+              <span class="record-delete-disabled" title="请先停止任务，再删除记录">运行中不可删除</span>
+              {% endif %}
+            </td>
+          </tr>
           {% else %}
-          <a href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载文件</a>
-          {% endif %}
-          {% endif %}
-          <form method="post" action="{{ url_for('main.delete_history', job_id=job.id) }}">
-            <button type="submit" class="link-button">删除</button>
-          </form>
-        </td>
-      </tr>
-      {% else %}
-      <tr><td colspan="7">没有符合条件的记录。</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
+          <tr><td colspan="{{ 9 if is_admin_history else 8 }}">没有符合条件的记录。</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </form>
+  {% include "_pagination.html" %}
 </section>
+
+<script>
+  const historyDateRange = document.getElementById("history-date-range");
+  const historyCustomDates = document.getElementById("history-custom-dates");
+  if (historyDateRange && historyCustomDates) {
+    historyDateRange.addEventListener("change", () => {
+      historyCustomDates.hidden = historyDateRange.value !== "custom";
+    });
+  }
+
+  const historyBulkForm = document.getElementById("history-bulk-form");
+  const historySelectAll = document.getElementById("history-select-all");
+  const historyRowCheckboxes = Array.from(document.querySelectorAll(".history-row-checkbox:not(:disabled)"));
+  const historySelectedCount = document.getElementById("history-selected-count");
+  const historyBulkDelete = document.querySelector(".history-bulk-delete");
+
+  function updateHistorySelection() {
+    const selectedCount = historyRowCheckboxes.filter(checkbox => checkbox.checked).length;
+    historySelectedCount.textContent = String(selectedCount);
+    historyBulkDelete.disabled = selectedCount === 0;
+    historySelectAll.checked = historyRowCheckboxes.length > 0 && selectedCount === historyRowCheckboxes.length;
+    historySelectAll.indeterminate = selectedCount > 0 && selectedCount < historyRowCheckboxes.length;
+    historySelectAll.disabled = historyRowCheckboxes.length === 0;
+  }
+
+  historySelectAll.addEventListener("change", () => {
+    historyRowCheckboxes.forEach(checkbox => {
+      checkbox.checked = historySelectAll.checked;
+    });
+    updateHistorySelection();
+  });
+  historyRowCheckboxes.forEach(checkbox => checkbox.addEventListener("change", updateHistorySelection));
+  updateHistorySelection();
+
+  historyBulkForm.addEventListener("submit", event => {
+    const submitter = event.submitter;
+    if (submitter && submitter.dataset.deleteKind === "single") {
+      if (!window.confirm("确认删除这条历史记录、上传原件和生成文件吗？删除后无法恢复。")) {
+        event.preventDefault();
+      }
+      return;
+    }
+    const selectedCount = historyRowCheckboxes.filter(checkbox => checkbox.checked).length;
+    if (!selectedCount || !window.confirm(`确认删除选中的 ${selectedCount} 条记录吗？上传原件和生成文件也会一起删除，且无法恢复。`)) {
+      event.preventDefault();
+    }
+  });
+</script>
 {% endblock %}

@@ -1,0 +1,10 @@
+{% if current_is_admin or job.employee_id == current_employee_id %}
+{% if job.status in ['queued', 'running'] %}
+<span class="record-delete-disabled" title="请先停止任务，再删除记录">运行中不可删除</span>
+{% else %}
+<form method="post" action="{{ url_for('main.delete_history', job_id=job.id) }}" class="inline-delete-form" onsubmit="return confirm('确认删除这条历史记录、上传原件和生成文件吗？删除后无法恢复。');">
+  <input type="hidden" name="next" value="{{ request.full_path }}">
+  <button type="submit" class="record-delete-button">删除</button>
+</form>
+{% endif %}
+{% endif %}
