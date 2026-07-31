@@ -53,6 +53,24 @@ def clean_text(value: Any) -> str:
     return text.strip()
 
 
+def normalize_pdf_table_cell(value: Any) -> str:
+    """Flatten PDF table cell line wraps without joining separate Chinese terms."""
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in str(value or "").replace("\r", "\n").split("\n")]
+    lines = [line for line in lines if line]
+    if not lines:
+        return ""
+
+    normalized = lines[0]
+    for line in lines[1:]:
+        previous_token = re.search(r"([\u4e00-\u9fff]+)$", normalized)
+        next_token = re.match(r"[\u4e00-\u9fff]+", line)
+        # PDF layout can split a word such as "高\n速材料".  Only repair a
+        # one-character trailing fragment so "材料\n半固化片" stays separated.
+        separator = "" if previous_token and next_token and len(previous_token.group(1)) == 1 else " "
+        normalized = f"{normalized}{separator}{line}"
+    return clean_text(normalized)
+
+
 def compact(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or "")).lower()
 
@@ -116,7 +134,7 @@ def classify_header_cell(value: Any) -> str:
         return ""
     if any(keyword in text for keyword in ["goodsno", "partno", "p/n", "物料编码", "原料编码", "料号", "品号"]):
         return "物料编码"
-    if any(keyword in text for keyword in ["unitprice", "含税单价", "单价rmb"]):
+    if any(keyword in text for keyword in ["unitprice", "含税单价", "单价rmb", "单价"]):
         return "含税单价"
     for standard, aliases in DETAIL_ALIASES.items():
         if any(compact(alias) in text for alias in aliases):

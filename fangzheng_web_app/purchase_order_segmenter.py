@@ -749,8 +749,9 @@ def _looks_like_structured_detail_row(row: list[str]) -> bool:
     leading = " ".join(values[:4])
     has_sequence = bool(re.fullmatch(r"\d+(?:\.\d+)?", first))
     has_code = bool(re.search(r"[A-Za-z]{1,8}\d{2,}|\d{3,}[A-Za-z]", leading))
+    has_numeric_code = bool(re.search(r"\b\d{5,}\b", leading))
     numeric_tokens = re.findall(r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?", " ".join(values))
-    return (has_sequence or has_code) and len(numeric_tokens) >= 2
+    return (has_sequence or has_code or has_numeric_code) and len(numeric_tokens) >= 2
 
 
 def segment_purchase_page(page: dict[str, Any]) -> dict[str, Any]:

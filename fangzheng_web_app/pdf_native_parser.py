@@ -159,19 +159,27 @@ def parse_pdf_native(path: Path) -> dict[str, Any]:
             text = page.extract_text() or ""
             all_text_parts.append(text)
             words = page.extract_words(x_tolerance=2, y_tolerance=3, keep_blank_chars=False)
-            table_settings = [
-                {"vertical_strategy": "lines", "horizontal_strategy": "text"},
-                {"vertical_strategy": "text", "horizontal_strategy": "lines"},
-                {"vertical_strategy": "text", "horizontal_strategy": "text"},
-            ]
             tables: list[list[list[str | None]]] = []
-            for settings in table_settings:
-                try:
-                    tables = page.extract_tables(table_settings=settings)
-                except Exception:
-                    tables = []
-                if tables:
-                    break
+            try:
+                for table in page.find_tables():
+                    extracted = table.extract()
+                    if extracted:
+                        tables.append(extracted)
+            except Exception:
+                tables = []
+            if not tables:
+                table_settings = [
+                    {"vertical_strategy": "lines", "horizontal_strategy": "text"},
+                    {"vertical_strategy": "text", "horizontal_strategy": "lines"},
+                    {"vertical_strategy": "text", "horizontal_strategy": "text"},
+                ]
+                for settings in table_settings:
+                    try:
+                        tables = page.extract_tables(table_settings=settings)
+                    except Exception:
+                        tables = []
+                    if tables:
+                        break
             if tables:
                 cells = _tables_to_cells(tables, page_index=page_index, method="pdf_text")
             else:

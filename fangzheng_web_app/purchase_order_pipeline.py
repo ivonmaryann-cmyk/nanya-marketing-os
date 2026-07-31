@@ -12,7 +12,7 @@ from .docling_parser import parse_pdf_with_docling
 from .image_preprocess import preprocess_page_image
 from .page_image_renderer import render_input_pages
 from .pdf_native_parser import parse_pdf_native
-from .purchase_field_rules import clean_text, classify_section_line, extract_key_values, find_detail_header_row, looks_like_detail_data, normalize_date, normalize_number
+from .purchase_field_rules import clean_text, classify_section_line, extract_key_values, find_detail_header_row, looks_like_detail_data, normalize_date, normalize_number, normalize_pdf_table_cell
 from .purchase_layout_cache import load_layout_cache, save_layout_cache
 from .purchase_order_segmenter import _cached_grids, _cached_ocr_regions, build_detail_rows_from_table, segment_purchase_page, segment_purchase_page_with_layout
 from .purchase_performance import (
@@ -114,7 +114,7 @@ def _detail_tables_from_pages(pages: list[dict[str, Any]]) -> tuple[list[dict[st
     return raw_detail_tables, mapped_rows, issues
 
 
-def _matrix_from_native_cells(cells: list[dict[str, Any]]) -> list[list[str]]:
+def _matrix_from_native_cells(cells: list[dict[str, Any]], *, drop_trailing_sparse: bool = True) -> list[list[str]]:
     if not cells:
         return []
     row_indexes = sorted({int(cell.get("row_index") or 0) for cell in cells})
@@ -125,7 +125,7 @@ def _matrix_from_native_cells(cells: list[dict[str, Any]]) -> list[list[str]]:
         for column_index in column_indexes:
             value = next(
                 (
-                    clean_text(cell.get("text"))
+                    normalize_pdf_table_cell(cell.get("text"))
                     for cell in cells
                     if int(cell.get("row_index") or 0) == row_index and int(cell.get("column_index") or 0) == column_index
                 ),
@@ -134,9 +134,30 @@ def _matrix_from_native_cells(cells: list[dict[str, Any]]) -> list[list[str]]:
             row.append(value)
         if any(row):
             rows.append(row)
-    while rows and sum(1 for value in rows[-1] if clean_text(value)) <= 1:
+    while drop_trailing_sparse and rows and sum(1 for value in rows[-1] if clean_text(value)) <= 1:
         rows.pop()
     return rows
+
+
+def _repair_split_native_headers(rows: list[list[str]]) -> list[list[str]]:
+    """Restore headers that pdfplumber splits over adjacent table columns."""
+    repaired = [list(row) for row in rows]
+    for row in repaired:
+        for index in range(len(row) - 1):
+            if clean_text(row[index]) == "单" and clean_text(row[index + 1]) == "位":
+                row[index] = "单位"
+                row[index + 1] = ""
+    return repaired
+
+
+def _compact_native_material_code_column(rows: list[list[str]], header_index: int, mapping: dict[int, str]) -> list[list[str]]:
+    """PDF table cells may wrap one material code across several visual lines."""
+    repaired = [list(row) for row in rows]
+    for row in repaired[header_index + 1 :]:
+        for column, field in mapping.items():
+            if field == "物料编码" and column < len(row):
+                row[column] = re.sub(r"\s+", "", clean_text(row[column]))
+    return repaired
 
 
 def _native_coordinate_rows(rows: list[list[str]]) -> tuple[list[list[str]], str]:
@@ -755,6 +776,162 @@ def _native_purchase_document(file_item: dict[str, str], native: dict[str, Any])
     }
 
 
+def _native_table_has_required_fields(mapping: dict[int, str]) -> bool:
+    required_fields = {
+        "\u7269\u6599\u7f16\u7801",
+        "\u6570\u91cf",
+        "\u5355\u4f4d",
+        "\u542b\u7a0e\u5355\u4ef7",
+        "\u91d1\u989d",
+        "\u4ea4\u8d27\u65e5\u671f",
+    }
+    return required_fields.issubset(set(mapping.values()))
+
+
+def _native_table_rows_reliable(rows: list[dict[str, Any]], *, minimum_rows: int = 2) -> bool:
+    if len(rows) < minimum_rows:
+        return False
+    for row in rows:
+        standard = row.get("standard") or {}
+        code = clean_text(standard.get("\u7269\u6599\u7f16\u7801"))
+        description = clean_text(standard.get("\u7269\u6599\u540d\u79f0")) or clean_text(standard.get("\u8bf4\u660e"))
+        quantity = _decimal_value(standard.get("\u6570\u91cf"))
+        price = _decimal_value(standard.get("\u542b\u7a0e\u5355\u4ef7"))
+        amount = _decimal_value(standard.get("\u91d1\u989d"))
+        delivery_date = clean_text(standard.get("\u4ea4\u8d27\u65e5\u671f"))
+        if not code or not description or quantity is None or price is None or amount is None or not delivery_date:
+            return False
+        if quantity <= 0 or price < 0 or amount < 0 or abs(quantity * price - amount) > Decimal("0.05"):
+            return False
+    return True
+
+
+def _native_table_grand_total(raw_tables: list[dict[str, Any]]) -> Decimal | None:
+    for table in raw_tables:
+        for row in table.get("rows") or []:
+            text = " ".join(clean_text(value) for value in row)
+            if not re.search(r"grand\s+amount|amount\s+total|(?:合计|总计).*(?:金额|amount)|(?:金额|amount).*(?:合计|总计)", text, flags=re.I):
+                continue
+            values = [
+                _decimal_value(value)
+                for value in re.findall(r"-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?", text)
+            ]
+            values = [value for value in values if value is not None]
+            if values:
+                return values[-1]
+    return None
+
+
+def _native_table_purchase_document(file_item: dict[str, str], native: dict[str, Any]) -> dict[str, Any] | None:
+    quality = native.get("text_quality") or {}
+    if not quality.get("has_text") or not quality.get("readable"):
+        return None
+
+    input_path = Path(file_item["stored_path"])
+    source_file = file_item.get("original_filename") or input_path.name
+    raw_detail_tables: list[dict[str, Any]] = []
+    mapped_rows: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = []
+    reusable_headers: list[str] | None = None
+
+    for page in native.get("pages") or []:
+        for table in page.get("tables") or []:
+            source_rows = _repair_split_native_headers(
+                _matrix_from_native_cells(table.get("cells") or [], drop_trailing_sparse=False)
+            )
+            if not source_rows:
+                continue
+            header_index, mapping = find_detail_header_row(source_rows)
+            if header_index is not None and _native_table_has_required_fields(mapping):
+                source_rows = _compact_native_material_code_column(source_rows, header_index, mapping)
+                reusable_headers = list(source_rows[header_index])
+                table_rows = [list(row) for row in source_rows[header_index:]]
+            elif reusable_headers is not None and max((len(row) for row in source_rows), default=0) == len(reusable_headers):
+                table_rows = [list(reusable_headers), *[list(row) for row in source_rows]]
+            else:
+                continue
+
+            table_document = {
+                "page_index": page.get("page_index", 0),
+                "table_index": table.get("table_index", len(raw_detail_tables)),
+                "table_type": "detail_table",
+                "raw_rows": table_rows,
+                "rows": table_rows,
+                "bbox": [],
+                "method": "pdf_native_table_fast",
+                "confidence": 1.0,
+            }
+            table_rows_mapped, table_issues = build_detail_rows_from_table(table_document)
+            if not _native_table_rows_reliable(table_rows_mapped, minimum_rows=1):
+                return None
+            for row in table_rows_mapped:
+                row["method"] = "pdf_native_table_fast"
+            raw_detail_tables.append(
+                {
+                    "page_index": table_document["page_index"],
+                    "table_index": len(raw_detail_tables),
+                    "bbox": [],
+                    "rows": table_rows,
+                    "method": "pdf_native_table_fast",
+                    "confidence": 1.0,
+                }
+            )
+            mapped_rows.extend(table_rows_mapped)
+            issues.extend(table_issues)
+
+    if not _native_table_rows_reliable(mapped_rows):
+        return None
+    grand_total = _native_table_grand_total(raw_detail_tables)
+    if grand_total is not None:
+        parsed_total = sum((_decimal_value((row.get("standard") or {}).get("\u91d1\u989d")) or Decimal(0) for row in mapped_rows), Decimal(0))
+        if parsed_total != grand_total:
+            return None
+
+    lines = [line.strip() for line in clean_text(native.get("text")).splitlines() if line.strip()]
+    header_info = extract_key_values(lines)
+    template = identify_template(source_file, "\n".join(lines))
+    sections = {"\u5907\u6ce8": [], "\u6761\u6b3e": [], "\u4ed8\u6b3e\u4fe1\u606f": [], "\u6536\u8d27\u4fe1\u606f": [], "\u7b7e\u6838\u533a": []}
+    for line in lines:
+        section = classify_section_line(line)
+        if section:
+            sections.setdefault(section, []).append(line)
+
+    warnings = list(native.get("warnings") or [])
+    warnings.append("PDF used validated native table extraction across pages.")
+    return {
+        "pipeline_version": "purchase_order_v1",
+        "source_file": source_file,
+        "file_type": "pdf",
+        "parser_mode": "template_pdf_native_table_fast" if template else "pdf_native_table_fast",
+        "template_id": template.template_id if template else "",
+        "template_label": template.label if template else "",
+        "page_count": int(native.get("page_count") or 1),
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "header_info": header_info,
+        "pages": [],
+        "regions": [
+            {
+                "page_index": table.get("page_index"),
+                "tables": [
+                    {
+                        "table_index": table.get("table_index"),
+                        "table_type": "detail_table",
+                        "bbox": table.get("bbox"),
+                        "row_count": max(0, len(table.get("rows") or []) - 1),
+                        "method": table.get("method"),
+                    }
+                ],
+            }
+            for table in raw_detail_tables
+        ],
+        "raw_detail_tables": raw_detail_tables,
+        "mapped_detail_rows": mapped_rows,
+        "sections": sections,
+        "issues": issues,
+        "warnings": warnings,
+    }
+
+
 def _native_pdf_summary(path: Path) -> dict[str, Any]:
     try:
         return parse_pdf_native(path)
@@ -977,6 +1154,14 @@ def run_purchase_order_pipeline(file_item: dict[str, str], work_dir: Path | None
             with performance_stage("pdf_native"):
                 native = _native_pdf_summary(input_path)
             native_text = str(native.get("text") or "")
+            with performance_stage("pdf_native_table_fast_path"):
+                native_table_document = _native_table_purchase_document(file_item, native)
+            if native_table_document:
+                set_fast_path("pdf_native_table_fast")
+                with performance_stage("normalize"):
+                    normalized = normalize_purchase_document(native_table_document, source_text=native_text)
+                return finish(normalized)
+            append_fallback_reason("pdf_native_table_fast_not_reliable")
             with performance_stage("pdf_native_fast_path"):
                 native_text_document = _native_text_purchase_document(file_item, native)
             if native_text_document:

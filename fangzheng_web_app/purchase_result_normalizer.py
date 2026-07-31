@@ -1139,7 +1139,7 @@ def _is_mapped_non_detail_row(row: dict[str, Any]) -> bool:
     seq = clean_text(standard.get(SEQ))
     name = clean_text(standard.get(NAME))
     has_sequence = bool(re.fullmatch(r"\d+(?:\.\d+)?", seq))
-    has_code = bool(re.search(r"[A-Za-z]{1,8}\d{2,}|\d{3,}[A-Za-z]", code))
+    has_code = bool(re.search(r"[A-Za-z]{1,8}\d{2,}|\d{3,}[A-Za-z]", code)) or bool(re.fullmatch(r"\d{5,}", code))
     qty = _money(standard.get(QTY))
     price = _money(standard.get(PRICE))
     amount = _money(standard.get(AMOUNT))
