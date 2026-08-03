@@ -289,6 +289,13 @@ FUNCTION_CARDS = [
         "stage": "test",
     },
     {
+        "key": "pdf_excel",
+        "title": "PDF/图片转Excel",
+        "desc": "批量上传 PDF 或图片，通用识别采购单版式和明细表，输出采购单与明细数据 Excel。",
+        "route": "main.pdf_excel",
+        "stage": "test",
+    },
+    {
         "key": "work_planning",
         "title": "工作规划",
         "desc": "按自定义任务类型管理个人私有待办，支持优先级、进展、截止日期和任务描述。",
@@ -305,6 +312,7 @@ FUNCTION_CARDS = [
 ]
 
 FEATURE_LABELS = {
+    "pdf_excel": "PDF/图片转Excel",
     "fangzheng": "方正价格计算",
     "transcode": "营销自动化转码",
     "transcode_agent": "营销转码Agent",
@@ -746,6 +754,18 @@ def _order_reprice_manifest(job: dict) -> dict:
 
 def _price_calculation_manifest(job: dict) -> dict:
     if not job or job.get("feature") != "price_calculation":
+        return {}
+    manifest_path = Path(job.get("stored_input_path") or "")
+    if not manifest_path.exists():
+        return {}
+    try:
+        return json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _pdf_excel_manifest(job: dict) -> dict:
+    if not job or job.get("feature") != PDF_EXCEL_FEATURE:
         return {}
     manifest_path = Path(job.get("stored_input_path") or "")
     if not manifest_path.exists():
