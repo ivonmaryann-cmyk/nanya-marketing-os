@@ -87,6 +87,9 @@ from .inventory_detail_service import (
 from .job_control import cancel_job_process, reconcile_interrupted_jobs
 from .order_reprice_service import MODE_LABELS as ORDER_REPRICE_MODE_LABELS
 from .order_reprice_service import queue_order_reprice_job
+from .pdf_excel_service import ALLOWED_EXTENSIONS as PDF_EXCEL_ALLOWED_EXTENSIONS
+from .pdf_excel_service import FEATURE as PDF_EXCEL_FEATURE
+from .pdf_excel_service import queue_pdf_excel_job
 from .price_calculation_customers import (
     PRICE_CALCULATION_CUSTOMERS,
     default_price_customer_key,
