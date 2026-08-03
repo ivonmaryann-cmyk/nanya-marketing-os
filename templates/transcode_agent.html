@@ -10,7 +10,7 @@
   <div>
     <div class="panel-tag">可信转码</div>
     <h1>营销转码Agent</h1>
-    <p>先生成候选编码，再按字段证据链和置信度评分决定是否正式出码。低置信结果只进入待确认，不写制造编码。</p>
+    <p>先按统一规则解析8个关键字段；只有全部字段达到100分才生成正式码，其余结果进入逐行人工确认。</p>
   </div>
   <div class="hero-note">
     <div>当前规则</div>
@@ -20,13 +20,16 @@
 </section>
 
 <section class="feature-tools">
-  <a class="feature-action" href="{{ url_for('main.admin_transcode_agent_rules') }}">Agent规则管理</a>
+  <a class="feature-action model-config-link" href="{{ url_for('main.transcode_agent_model_config') }}">
+    模型配置·{{ '已启用' if model_config.enabled else '未启用' }}
+  </a>
+  <a class="feature-action" href="{{ url_for('main.admin_transcode_rule_center') }}">规则配置</a>
   <a class="secondary-link" href="{{ url_for('main.rule_doc', feature='transcode_agent') }}">Agent规则说明</a>
   <a class="secondary-link" href="{{ url_for('main.transcode') }}">旧版转码</a>
 </section>
 
 <section class="agent-quote-panel" id="agent-quote-panel">
-  <form class="agent-quote-form" id="agent-quote-form" data-endpoint="{{ url_for('main.api_transcode_agent_quote') }}">
+  <form class="agent-quote-form" id="agent-quote-form" data-endpoint="{{ url_for('main.api_create_transcode_agent_single_job') }}">
     <div class="agent-form-row">
       <label>
         <span>客户代码</span>
@@ -42,18 +45,16 @@
       <textarea name="spec" rows="3" placeholder="粘贴一条 CCL 客户规格"></textarea>
     </label>
     <label>
-      <span>备注/整行上下文</span>
-      <textarea name="order_text" rows="2" placeholder="可选：订单备注、客户物料描述、特殊关键词"></textarea>
+      <span>订单备注</span>
+      <textarea name="order_remark" rows="5" placeholder="填写订单备注；有内容且当前用户已启用模型时，进行语义标准化"></textarea>
     </label>
-    <button type="submit" id="agent-quote-submit">诊断单条转码</button>
+    <button type="submit" id="agent-quote-submit">开始单条Agent转码</button>
   </form>
   <div class="agent-quote-result" id="agent-quote-result" aria-live="polite">
     <div class="agent-result-head">
       <span id="agent-result-status">等待输入</span>
-      <strong id="agent-result-code">-</strong>
     </div>
-    <p id="agent-result-note">单条诊断会显示候选编码、置信度和字段证据，不写入任务历史。</p>
-    <div class="agent-evidence-grid" id="agent-evidence-grid"></div>
+    <p id="agent-result-note">单条数据会创建 1 行Agent任务，与Excel批量处理共用解析、语义规则、100分门禁和人工确认中心。</p>
   </div>
 </section>
 
@@ -94,11 +95,16 @@
           <tr>
             <td>#{{ job.id }}</td>
             <td><a href="{{ url_for('main.job_detail', job_id=job.id) }}">{{ job.source_filename }}</a></td>
-            <td><span class="status {{ job.status }}">{{ job.status }}</span></td>
+            <td><span class="status {{ job.status }}">{{ '待人工确认' if job.status == 'awaiting_confirmation' else job.status }}</span></td>
             <td>{{ job.created_at }}</td>
             <td>
-              {% if job.status == 'completed' %}
+              {% if job.status == 'awaiting_confirmation' %}
               <div class="result-actions">
+                <a class="primary-link compact" href="{{ url_for('main.transcode_agent_confirmation_center', job_id=job.id) }}">进入确认中心</a>
+              </div>
+              {% elif job.status == 'completed' %}
+              <div class="result-actions">
+                <a class="primary-link compact" href="{{ url_for('main.transcode_agent_confirmation_center', job_id=job.id) }}">查看转码记录</a>
                 <a class="primary-link compact" href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载结果</a>
               </div>
               {% else %}
@@ -123,7 +129,13 @@
         {% endif %}
       </div>
       {% if active_job %}
-      <div id="live-panel" data-job-id="{{ active_job.id }}">
+      <div
+        id="live-panel"
+        data-job-id="{{ active_job.id }}"
+        data-confirmation-url="{{ url_for('main.transcode_agent_confirmation_center', job_id=active_job.id) }}"
+        data-auto-confirm="{{ '1' if auto_confirm else '0' }}"
+        data-initial-status="{{ active_job.status }}"
+      >
         <div class="progress-meta">
           <div>
             <span>当前任务</span>
@@ -149,8 +161,13 @@
           <button type="submit" class="danger-button">停止任务</button>
         </form>
         {% endif %}
-        <div id="live-download" class="{% if active_job.status != 'completed' %}hidden{% endif %}">
+        <div id="live-download" class="{% if active_job.status not in ['completed', 'awaiting_confirmation'] %}hidden{% endif %}">
           <div class="result-ready">
+            {% if active_job.status == 'awaiting_confirmation' %}
+            <a class="primary-link" id="live-confirmation-link" href="{{ url_for('main.transcode_agent_confirmation_center', job_id=active_job.id) }}">进入确认中心</a>
+            {% else %}
+            <a class="primary-link" href="{{ url_for('main.transcode_agent_confirmation_center', job_id=active_job.id) }}">查看转码记录</a>
+            {% endif %}
             <a class="primary-link" href="{{ url_for('main.download', job_id=active_job.id, kind='result') }}">下载结果文件</a>
           </div>
         </div>
@@ -167,16 +184,13 @@
   const quoteSubmit = document.getElementById("agent-quote-submit");
   const resultBox = document.getElementById("agent-quote-result");
   const statusEl = document.getElementById("agent-result-status");
-  const codeEl = document.getElementById("agent-result-code");
   const noteEl = document.getElementById("agent-result-note");
-  const evidenceGrid = document.getElementById("agent-evidence-grid");
 
   quoteForm.addEventListener("submit", event => {
     event.preventDefault();
     const payload = Object.fromEntries(new FormData(quoteForm).entries());
     if (!payload.spec || !payload.spec.trim()) {
       statusEl.textContent = "请输入客户规格";
-      codeEl.textContent = "-";
       return;
     }
     quoteSubmit.disabled = true;
@@ -187,29 +201,25 @@
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify(payload)
     })
-      .then(res => res.json())
+      .then(async res => {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "单条任务创建失败");
+        return data;
+      })
       .then(data => {
-        resultBox.className = `agent-quote-result ${data.status === "成功" ? "is-success" : "is-warning"}`;
-        statusEl.textContent = `${data.status || "失败"} / 置信度 ${data.confidence ?? 0}`;
-        codeEl.textContent = data.result || data.candidate_code || "-";
-        noteEl.textContent = data.note || data.error || "";
-        evidenceGrid.innerHTML = "";
-        (data.field_evidence || []).forEach(item => {
-          const card = document.createElement("div");
-          card.className = `agent-evidence-card ${Number(item.score) >= 85 || !item.gate ? "ok" : "warn"}`;
-          card.innerHTML = `<strong>${item.field}</strong><span>${item.code || "-"}</span><em>${item.score} · ${item.hit_type}</em><p>${item.evidence || item.source || ""}</p>`;
-          evidenceGrid.appendChild(card);
-        });
+        resultBox.className = "agent-quote-result is-success";
+        statusEl.textContent = `已创建单条任务 #${data.job_id}`;
+        noteEl.textContent = "正在进入与批量转码相同的处理与确认流程...";
+        window.location.assign(data.task_url);
       })
       .catch(error => {
         resultBox.className = "agent-quote-result is-warning";
-        statusEl.textContent = "诊断失败";
-        codeEl.textContent = "-";
+        statusEl.textContent = "单条任务创建失败";
         noteEl.textContent = error.message;
       })
       .finally(() => {
         quoteSubmit.disabled = false;
-        quoteSubmit.textContent = "诊断单条转码";
+        quoteSubmit.textContent = "开始单条Agent转码";
       });
   });
 
@@ -279,6 +289,10 @@
   const skipEl = document.getElementById("live-skip");
   const logEl = document.getElementById("live-log");
   const downloadEl = document.getElementById("live-download");
+  let redirectedToConfirmation = false;
+  let terminalRefreshScheduled = false;
+  const autoRedirectToConfirmation = panel.dataset.autoConfirm === "1";
+  const refreshAfterTerminal = ["queued", "running"].includes(panel.dataset.initialStatus);
 
   function render(data) {
     liveStatusEl.textContent = data.status;
@@ -290,8 +304,19 @@
     logEl.scrollTop = logEl.scrollHeight;
     const percent = data.total_rows ? Math.min(100, Math.round(data.current_row * 100 / data.total_rows)) : 0;
     bar.style.width = `${percent}%`;
-    if (data.status === "completed") {
+    if (data.status === "completed" || data.status === "awaiting_confirmation") {
       downloadEl.classList.remove("hidden");
+    }
+    if (data.status === "awaiting_confirmation" && autoRedirectToConfirmation && !redirectedToConfirmation) {
+      redirectedToConfirmation = true;
+      window.location.assign(panel.dataset.confirmationUrl);
+    } else if (
+      (data.status === "completed" || data.status === "awaiting_confirmation")
+      && refreshAfterTerminal
+      && !terminalRefreshScheduled
+    ) {
+      terminalRefreshScheduled = true;
+      window.setTimeout(() => window.location.reload(), 350);
     }
   }
 

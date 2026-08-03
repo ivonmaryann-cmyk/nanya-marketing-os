@@ -20,6 +20,12 @@ IN_SCOPE_FIELDS = (
 )
 OUT_OF_SCOPE_FIELDS = ("组合结构", "铜箔厂商", "玻布厂商", "配方代码")
 ALL_RULE_FIELDS = IN_SCOPE_FIELDS + OUT_OF_SCOPE_FIELDS
+SOURCE_COLUMNS = ("CCL特殊规则", "通用特殊规则", "非影响转码备注")
+SOURCE_COLUMN_CODES = {
+    "CCL特殊规则": "",
+    "通用特殊规则": "G",
+    "非影响转码备注": "N",
+}
 
 FIELD_PATTERN = re.compile(
     r"(铜箔类型\s*\+\s*印字\s*/\s*非印字|胶水类别|基板厚度|铜箔规格|基板尺寸|基板级别|总\s*/\s*芯厚|组合结构|铜箔厂商|玻布厂商|配方代码|胶系)\s*[:：]",
@@ -39,6 +45,13 @@ SEMANTIC_POSITION_PATTERN = re.compile(r"第\s*\d+\s*码|最后一位|末位", f
 CUSTOMER_SPEC_SEMANTIC_PATTERN = re.compile(
     r"客户规格.{0,16}(没有|未|字样|描述|包含|带有|有[^卤铜厚])",
     flags=re.IGNORECASE,
+)
+UNSTRUCTURED_TARGET_PATTERNS = (
+    ("基板级别", re.compile(r"汽车板|电源板|能源板|MINI\s*LED|基板级别|\b(?:A[1-9C-Z]|F1|PG)\s*等级", re.IGNORECASE)),
+    ("铜箔类型+印字/非印字", re.compile(r"水印|印字|非印字|(?<![A-Z0-9])(?:HTE|RTF\d*|HVLP\d*|VLP|IGAV)(?![A-Z0-9])", re.IGNORECASE)),
+    ("总/芯厚", re.compile(r"总厚|芯厚|含铜|不含铜|不连铜", re.IGNORECASE)),
+    ("基板尺寸", re.compile(r"尺寸.{0,12}(?:放大|映射|录入)|(?:放大|录入).{0,12}尺寸", re.IGNORECASE)),
+    ("铜箔规格", re.compile(r"(?:R\s*/\s*R|H\s*/\s*H|1\s*/\s*1).{0,18}(?:对应|=)", re.IGNORECASE)),
 )
 
 
@@ -99,6 +112,15 @@ def split_atomic_clauses(value: str) -> list[str]:
     text = re.sub(r"[,，](?=\s*客户订单)", "；", text)
     clauses = [item.strip(" \t\r\n;；") for item in re.split(r"[;；\n]+", text)]
     return [item for item in clauses if is_meaningful_rule_text(item)]
+
+
+def infer_unstructured_rule_clauses(value: str) -> list[tuple[str, str]]:
+    clauses: list[tuple[str, str]] = []
+    for clause in split_atomic_clauses(value):
+        for field, pattern in UNSTRUCTURED_TARGET_PATTERNS:
+            if pattern.search(clause):
+                clauses.append((field, clause))
+    return clauses
 
 
 def requires_semantic_model(clause: str) -> bool:
@@ -172,6 +194,7 @@ def build_semantic_candidates(
     customer_name: str,
     source_row: int,
     ccl_rule: str,
+    source_column: str = "CCL特殊规则",
 ) -> list[SemanticRuleCandidate]:
     fields = split_ccl_rule_fields(ccl_rule)
     raw_candidates: list[tuple[str, str]] = []
@@ -180,16 +203,24 @@ def build_semantic_candidates(
             if requires_semantic_model(clause):
                 raw_candidates.append((field, clause))
 
+    if source_column != "CCL特殊规则":
+        for field, clause in infer_unstructured_rule_clauses(ccl_rule):
+            item = (field, clause)
+            if item not in raw_candidates:
+                raw_candidates.append(item)
+
     candidates: list[SemanticRuleCandidate] = []
     for index, (field, clause) in enumerate(raw_candidates, start=1):
-        candidate_id = f"MSR-{int(source_row):04d}-{index:02d}"
+        source_code = SOURCE_COLUMN_CODES.get(source_column, "X")
+        suffix = f"-{source_code}" if source_code else ""
+        candidate_id = f"MSR-{int(source_row):04d}{suffix}-{index:02d}"
         candidates.append(
             SemanticRuleCandidate(
                 candidate_id=candidate_id,
                 customer_code=str(customer_code or "").strip(),
                 customer_name=str(customer_name or "").strip(),
                 source_row=int(source_row),
-                source_column="CCL特殊规则",
+                source_column=source_column,
                 business_field=field,
                 source_text=clause,
                 semantic_type=infer_semantic_type(clause),
@@ -202,13 +233,21 @@ def build_semantic_candidates(
 
 def classify_draft_row(row: dict[str, Any]) -> dict[str, Any]:
     source_row = _to_int(row.get("来源行号"))
-    candidates = build_semantic_candidates(
-        customer_code=str(row.get("客户代码") or ""),
-        customer_name=str(row.get("客户简称") or ""),
-        source_row=source_row,
-        ccl_rule=str(row.get("CCL特殊规则") or ""),
+    candidates: list[SemanticRuleCandidate] = []
+    for source_column in SOURCE_COLUMNS:
+        candidates.extend(
+            build_semantic_candidates(
+                customer_code=str(row.get("客户代码") or ""),
+                customer_name=str(row.get("客户简称") or ""),
+                source_row=source_row,
+                ccl_rule=str(row.get(source_column) or ""),
+                source_column=source_column,
+            )
+        )
+    has_standard = any(
+        is_meaningful_rule_text(row.get(column))
+        for column in ("CCL特殊规则_结构化", "通用特殊规则_结构化")
     )
-    has_standard = is_meaningful_rule_text(row.get("CCL特殊规则_结构化"))
     current_status = str(row.get("结构化处理状态") or "").strip()
     if candidates and has_standard:
         execution_path = "标准规则+模型语义"

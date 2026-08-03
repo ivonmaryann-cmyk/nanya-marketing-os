@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}模型配置 | 营销转码Agent{% endblock %}
+{% block content %}
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('main.transcode_agent') }}">返回营销转码Agent</a>
+  <span>营销转码Agent / 模型配置</span>
+</div>
+
+<section class="hero compact-hero">
+  <div>
+    <div class="panel-tag">用户级配置</div>
+    <h1>订单备注语义模型</h1>
+    <p>配置只对当前登录用户生效。模型只做语义标准化，不直接生成制造编码。</p>
+  </div>
+  <div class="hero-note">
+    <div>当前状态</div>
+    <strong>{{ '已启用' if model_config.enabled else '未启用' }}</strong>
+    <em>{{ model_config.model }} / {{ '已配置Key' if model_config.key_configured else '未配置Key' }}</em>
+  </div>
+</section>
+
+<section class="card model-config-card">
+  <form method="post" class="form-grid model-config-form">
+    <label class="model-switch-row">
+      <span>启用订单备注语义模型</span>
+      <input type="checkbox" name="enabled" value="1" {% if model_config.enabled %}checked{% endif %}>
+    </label>
+    <label>
+      <span>API URL</span>
+      <input type="url" name="base_url" value="{{ model_config.base_url }}" required>
+    </label>
+    <label>
+      <span>模型名称</span>
+      <input type="text" name="model" value="{{ model_config.model }}" required>
+    </label>
+    <label>
+      <span>API Key</span>
+      <input type="password" name="api_key" autocomplete="new-password" placeholder="{% if model_config.key_configured %}已配置，留空表示不修改{% else %}请输入 API Key{% endif %}">
+    </label>
+    {% if model_config.key_configured %}
+    <label class="model-clear-key">
+      <input type="checkbox" name="clear_api_key" value="1">
+      <span>清除已保存的 API Key</span>
+    </label>
+    {% endif %}
+    <div class="model-config-actions">
+      <button type="submit" name="action" value="save">保存配置</button>
+      <button type="submit" name="action" value="test" class="secondary-button">测试连接</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

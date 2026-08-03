@@ -1,0 +1,537 @@
+{% extends "base.html" %}
+{% block title %}转码记录 | 营销转码Agent{% endblock %}
+{% block content %}
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('main.transcode_agent') }}">返回营销转码Agent</a>
+  <span>营销转码Agent / 任务 #{{ job.id }} / 转码记录</span>
+</div>
+
+<section class="confirmation-header">
+  <div>
+    <div class="panel-tag">转码记录与人工确认</div>
+    <h1>{{ job.source_filename }}</h1>
+  </div>
+  <div class="confirmation-summary" aria-label="确认进度">
+    <div><span>待确认行</span><strong id="confirm-pending-rows">{{ confirmation_data.confirm_count }}</strong></div>
+    <div><span>正式出码</span><strong id="confirm-success-count">{{ job.success_count }}</strong></div>
+    <div><span>任务状态</span><strong id="confirm-job-status">{{ '待人工确认' if job.status == 'awaiting_confirmation' else '已完成' if job.status == 'completed' else job.status }}</strong></div>
+  </div>
+</section>
+
+<section class="confirmation-workspace">
+  <aside class="confirmation-row-panel">
+    <div class="confirmation-row-head">
+      <h2>转码记录</h2>
+      <span id="confirm-row-position">0 / 0</span>
+    </div>
+    <div class="confirmation-scope-tabs" aria-label="转码记录筛选">
+      <a href="{{ url_for('main.transcode_agent_confirmation_center', job_id=job.id, scope='all') }}" data-record-scope="all">全部</a>
+      <a href="{{ url_for('main.transcode_agent_confirmation_center', job_id=job.id, scope='pending') }}" data-record-scope="pending">待确认</a>
+      <a href="{{ url_for('main.transcode_agent_confirmation_center', job_id=job.id, scope='confirmed') }}" data-record-scope="confirmed">已人工确认</a>
+      <a href="{{ url_for('main.transcode_agent_confirmation_center', job_id=job.id, scope='automatic') }}" data-record-scope="automatic">无需人工确认</a>
+      <a href="{{ url_for('main.transcode_agent_confirmation_center', job_id=job.id, scope='exceptions') }}" data-record-scope="exceptions">异常/跳过</a>
+    </div>
+    <p id="confirmation-filter-message" class="confirmation-filter-message" aria-live="polite"></p>
+    <div id="confirmation-row-list" class="confirmation-row-list"></div>
+    <div class="confirmation-page-nav">
+      <button type="button" class="icon-command" id="confirm-page-prev" title="上一页" aria-label="上一页">←</button>
+      <span id="confirm-page-position">1 / 1</span>
+      <button type="button" class="icon-command" id="confirm-page-next" title="下一页" aria-label="下一页">→</button>
+    </div>
+  </aside>
+
+  <main class="confirmation-detail">
+    <div id="confirmation-empty" class="confirmation-empty hidden">
+      <h2>当前筛选下没有转码记录</h2>
+      <a class="primary-link" href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载结果文件</a>
+    </div>
+
+    <div id="confirmation-form">
+      <div class="confirmation-detail-head">
+        <div>
+          <span id="confirm-excel-row">Excel 行 -</span>
+          <h2 id="confirm-customer">-</h2>
+        </div>
+        <code id="confirm-pending-code">-</code>
+      </div>
+
+      <div class="confirmation-source-grid">
+        <div>
+          <span>客户规格</span>
+          <p id="confirm-spec">-</p>
+        </div>
+        <div>
+          <span>备注/整行上下文</span>
+          <p id="confirm-context">-</p>
+        </div>
+      </div>
+
+      <div class="confirmation-fields-head">
+        <h3 id="confirmation-fields-title">字段证据与处理记录</h3>
+        <label id="confirmation-basis-wrap">
+          <span>本次确认依据</span>
+          <input id="confirmation-basis" type="text" placeholder="填写业务判断依据">
+        </label>
+      </div>
+      <div id="confirmation-fields" class="confirmation-fields"></div>
+
+      <div class="confirmation-actions">
+        <div class="confirmation-nav">
+          <button type="button" class="icon-command" id="confirm-prev" title="上一行" aria-label="上一行">←</button>
+          <button type="button" class="icon-command" id="confirm-next" title="下一行" aria-label="下一行">→</button>
+        </div>
+        <button type="button" class="secondary-button" id="confirm-skip-row">暂不处理当前行</button>
+        <button type="button" id="confirm-save-row">确认当前行</button>
+      </div>
+      <p id="confirmation-message" class="confirmation-message" aria-live="polite"></p>
+    </div>
+  </main>
+</section>
+
+<div class="confirmation-footer">
+  <span>任务 #{{ job.id }}</span>
+  <div>
+    <button type="button" class="secondary-button" id="confirm-reevaluate">按当前规则重新评估</button>
+    <a class="secondary-link" href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载当前结果</a>
+    <button type="button" class="secondary-button" id="confirm-finalize">暂不处理剩余项并生成结果</button>
+  </div>
+</div>
+
+<script>
+  const confirmationJobId = {{ job.id }};
+  const confirmationApi = `/api/transcode-agent/jobs/${confirmationJobId}/confirmations`;
+  const longTermConditionFields = {{ condition_fields | tojson }};
+  const longTermConditionOperators = {{ condition_operators | tojson }};
+  const longTermOperatorLabels = {
+    contains_any: "包含任一",
+    contains_all: "同时包含",
+    not_contains: "不包含",
+    equals: "等于",
+    not_equals: "不等于",
+    in: "属于",
+    not_in: "不属于",
+    lt: "小于",
+    lte: "小于等于",
+    gt: "大于",
+    gte: "大于等于",
+    missing: "为空",
+    present: "有值"
+  };
+  let confirmationData = {{ confirmation_data | tojson }};
+  let confirmationRows = [];
+  let confirmationIndex = 0;
+  let recordScope = confirmationData.record_scope || "all";
+  let recordPage = confirmationData.record_page || 1;
+
+  const rowListEl = document.getElementById("confirmation-row-list");
+  const rowPositionEl = document.getElementById("confirm-row-position");
+  const pendingRowsEl = document.getElementById("confirm-pending-rows");
+  const jobStatusEl = document.getElementById("confirm-job-status");
+  const successCountEl = document.getElementById("confirm-success-count");
+  const emptyEl = document.getElementById("confirmation-empty");
+  const formEl = document.getElementById("confirmation-form");
+  const fieldsEl = document.getElementById("confirmation-fields");
+  const messageEl = document.getElementById("confirmation-message");
+  const basisEl = document.getElementById("confirmation-basis");
+  const basisWrapEl = document.getElementById("confirmation-basis-wrap");
+  const pagePositionEl = document.getElementById("confirm-page-position");
+  const filterMessageEl = document.getElementById("confirmation-filter-message");
+
+  const recordStateLabels = {
+    pending: "待确认",
+    confirmed: "已人工确认",
+    deferred: "暂不处理",
+    automatic: "无需人工确认",
+    failed: "未出码",
+    skipped: "跳过"
+  };
+
+  function groupRows(data) {
+    const grouped = new Map();
+    (data.records || []).forEach(record => {
+      grouped.set(record.excel_row, {
+        ...record,
+        items: [...(record.trace_items || [])]
+      });
+    });
+    (data.items || []).forEach(item => {
+      if (grouped.has(item.excel_row)) grouped.get(item.excel_row).items.unshift(item);
+    });
+    return Array.from(grouped.values());
+  }
+
+  function rowState(row) {
+    return row.record_state || "automatic";
+  }
+
+  function renderRowList() {
+    rowListEl.innerHTML = "";
+    let previousState = "";
+    confirmationRows.forEach((row, index) => {
+      const stateName = rowState(row);
+      if (stateName !== previousState) {
+        const section = document.createElement("div");
+        section.className = "confirmation-row-section";
+        section.textContent = recordStateLabels[stateName] || stateName;
+        rowListEl.appendChild(section);
+        previousState = stateName;
+      }
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `confirmation-row-button ${index === confirmationIndex ? "active" : ""} ${stateName}`;
+      const rowNumber = document.createElement("strong");
+      rowNumber.textContent = `第 ${row.excel_row} 行`;
+      const customer = document.createElement("span");
+      customer.textContent = row.customer_name || row.customer_code || "未识别客户";
+      const state = document.createElement("em");
+      state.textContent = recordStateLabels[stateName] || stateName;
+      button.append(rowNumber, customer, state);
+      button.addEventListener("click", () => {
+        confirmationIndex = index;
+        render();
+      });
+      rowListEl.appendChild(button);
+    });
+  }
+
+  function renderField(item) {
+    const wrapper = document.createElement("div");
+    wrapper.className = `confirmation-field ${item.status}`;
+    wrapper.dataset.itemId = item.id;
+
+    const heading = document.createElement("div");
+    heading.className = "confirmation-field-heading";
+    const title = document.createElement("strong");
+    title.textContent = item.status === "pending" && item.decision_state
+      ? `${item.field_label} · ${item.decision_state}`
+      : item.field_label;
+    const score = document.createElement("span");
+    score.textContent = item.status === "pending" && item.decision_score
+      ? `${item.decision_score} 分（整行决策）`
+      : item.score ? `${item.score} 分` : "仅记录";
+    heading.append(title, score);
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = item.confirmed_code || item.current_code || "";
+    input.disabled = item.status !== "pending";
+    input.dataset.confirmationCode = "true";
+    if ((item.options || []).length) {
+      const listId = `confirm-options-${item.id}`;
+      input.setAttribute("list", listId);
+      const datalist = document.createElement("datalist");
+      datalist.id = listId;
+      item.options.forEach(value => {
+        const option = document.createElement("option");
+        option.value = value;
+        datalist.appendChild(option);
+      });
+      wrapper.appendChild(datalist);
+    }
+
+    const reason = document.createElement("p");
+    if (item.status === "confirmed") {
+      reason.textContent = `人工已确认：${item.confirmation_basis || "未填写依据"}；操作人：${item.confirmed_by || "-"}；时间：${item.confirmed_at || "-"}`;
+    } else if (item.status === "auto_resolved") {
+      reason.textContent = `系统重评通过：${item.confirmation_basis || "当前规则达到100分"}；时间：${item.confirmed_at || "-"}`;
+    } else if (item.status === "skipped") {
+      reason.textContent = `暂不处理：${item.confirmation_basis || item.reason || "保留待人工确认码值"}`;
+    } else if (item.status === "pending" && item.decision_reason) {
+      const options = (item.decision_options || []).length
+        ? `；待选择候选：${item.decision_options.join(" / ")}`
+        : "";
+      reason.textContent = `${item.decision_reason}${options}`;
+    } else {
+      reason.textContent = item.reason || item.evidence?.evidence || "转码处理记录";
+    }
+    wrapper.append(heading, input, reason);
+
+    if (item.status === "pending" && item.field_key !== "row_review") {
+      const longTerm = document.createElement("div");
+      longTerm.className = "confirmation-long-term";
+      const toggleLabel = document.createElement("label");
+      toggleLabel.className = "confirmation-long-term-toggle";
+      const toggle = document.createElement("input");
+      toggle.type = "checkbox";
+      toggle.dataset.longTermToggle = "true";
+      const toggleText = document.createElement("span");
+      toggleText.textContent = "同时保存为长期规则";
+      toggleLabel.append(toggle, toggleText);
+
+      const config = document.createElement("div");
+      config.className = "confirmation-long-term-config hidden";
+      const fieldSelect = document.createElement("select");
+      fieldSelect.dataset.longTermConditionField = "true";
+      longTermConditionFields.forEach(value => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = value;
+        fieldSelect.appendChild(option);
+      });
+      const operatorSelect = document.createElement("select");
+      operatorSelect.dataset.longTermConditionOperator = "true";
+      longTermConditionOperators.forEach(value => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = longTermOperatorLabels[value] || value;
+        operatorSelect.appendChild(option);
+      });
+      operatorSelect.value = "contains_any";
+      const conditionValue = document.createElement("input");
+      conditionValue.type = "text";
+      conditionValue.placeholder = "长期规则触发值";
+      conditionValue.dataset.longTermConditionValue = "true";
+      config.append(fieldSelect, operatorSelect, conditionValue);
+      toggle.addEventListener("change", () => {
+        config.classList.toggle("hidden", !toggle.checked);
+      });
+      longTerm.append(toggleLabel, config);
+      wrapper.appendChild(longTerm);
+    }
+    return wrapper;
+  }
+
+  function renderDetail() {
+    if (!confirmationRows.length) {
+      emptyEl.classList.remove("hidden");
+      formEl.classList.add("hidden");
+      rowPositionEl.textContent = "0 / 0";
+      return;
+    }
+    emptyEl.classList.add("hidden");
+    formEl.classList.remove("hidden");
+    confirmationIndex = Math.max(0, Math.min(confirmationIndex, confirmationRows.length - 1));
+    const row = confirmationRows[confirmationIndex];
+    const absolutePosition = ((confirmationData.record_page || 1) - 1) * (confirmationData.record_page_size || 200) + confirmationIndex + 1;
+    rowPositionEl.textContent = `${absolutePosition} / ${confirmationData.record_total || confirmationRows.length}`;
+    document.getElementById("confirm-excel-row").textContent = `Excel 第 ${row.excel_row} 行`;
+    document.getElementById("confirm-customer").textContent = row.customer_name || row.customer_code || "未识别客户";
+    const codeEl = document.getElementById("confirm-pending-code");
+    codeEl.textContent = row.display_code || row.pending_code || "-";
+    codeEl.className = rowState(row);
+    document.getElementById("confirm-spec").textContent = row.spec || "-";
+    document.getElementById("confirm-context").textContent = row.context_text || "-";
+    fieldsEl.innerHTML = "";
+    const detailItems = row.items.length ? row.items : [{
+      id: `summary-${row.excel_row}`,
+      status: "record",
+      field_label: "转码结果",
+      current_code: row.display_code || "-",
+      score: row.score || 0,
+      reason: row.confirmation_note || row.system_reason || row.transcode_status || "已记录"
+    }];
+    detailItems.forEach(item => fieldsEl.appendChild(renderField(item)));
+    const pending = row.items.some(item => item.status === "pending");
+    document.getElementById("confirmation-fields-title").textContent = pending ? "待确认字段与首次解析证据" : "字段证据与处理记录";
+    basisWrapEl.classList.toggle("hidden", !pending);
+    document.getElementById("confirm-save-row").classList.toggle("hidden", !pending);
+    document.getElementById("confirm-skip-row").classList.toggle("hidden", !pending);
+    document.getElementById("confirm-prev").disabled = confirmationIndex === 0;
+    document.getElementById("confirm-next").disabled = confirmationIndex >= confirmationRows.length - 1;
+  }
+
+  function render() {
+    pendingRowsEl.textContent = confirmationData.confirm_count || 0;
+    successCountEl.textContent = confirmationData.success_count || 0;
+    jobStatusEl.textContent = {
+      awaiting_confirmation: "待人工确认",
+      completed: "已完成",
+      failed: "失败"
+    }[confirmationData.status] || confirmationData.status || "-";
+    document.getElementById("confirm-finalize").disabled = !(confirmationData.confirm_count > 0);
+    document.getElementById("confirm-reevaluate").disabled = !(confirmationData.confirm_count > 0);
+    document.querySelectorAll("[data-record-scope]").forEach(button => {
+      button.classList.toggle("active", button.dataset.recordScope === recordScope);
+    });
+    pagePositionEl.textContent = `${confirmationData.record_page || 1} / ${confirmationData.record_page_count || 1}`;
+    document.getElementById("confirm-page-prev").disabled = (confirmationData.record_page || 1) <= 1;
+    document.getElementById("confirm-page-next").disabled = (confirmationData.record_page || 1) >= (confirmationData.record_page_count || 1);
+    confirmationRows = groupRows(confirmationData);
+    renderRowList();
+    renderDetail();
+  }
+
+  async function refreshData(preferredRow, advanceToPending = false) {
+    if (advanceToPending) recordPage = 1;
+    const query = new URLSearchParams({scope: recordScope, page: String(recordPage), page_size: "200"});
+    const response = await fetch(`${confirmationApi}?${query.toString()}`);
+    const responseData = await response.json();
+    if (!response.ok) throw new Error(responseData.error || `查询失败（${response.status}）`);
+    confirmationData = responseData;
+    if (confirmationData.error) throw new Error(confirmationData.error);
+    recordPage = confirmationData.record_page || recordPage;
+    confirmationRows = groupRows(confirmationData);
+    if (advanceToPending) {
+      const nextIndex = confirmationRows.findIndex(
+        row => row.excel_row > preferredRow && rowState(row) === "pending"
+      );
+      const fallbackIndex = confirmationRows.findIndex(row => rowState(row) === "pending");
+      confirmationIndex = nextIndex >= 0 ? nextIndex : Math.max(0, fallbackIndex);
+    } else if (preferredRow) {
+      const nextIndex = confirmationRows.findIndex(row => row.excel_row === preferredRow);
+      if (nextIndex >= 0) confirmationIndex = nextIndex;
+    }
+    render();
+  }
+
+  document.getElementById("confirm-save-row").addEventListener("click", async () => {
+    const row = confirmationRows[confirmationIndex];
+    const pendingItems = row.items.filter(item => item.status === "pending");
+    const fieldElements = Array.from(fieldsEl.querySelectorAll(".confirmation-field.pending"));
+    const longTermRequests = fieldElements.map((element, index) => {
+      const toggle = element.querySelector("[data-long-term-toggle]");
+      if (!toggle || !toggle.checked) return null;
+      return {
+        item: pendingItems[index],
+        code: element.querySelector("[data-confirmation-code]").value,
+        condition_field: element.querySelector("[data-long-term-condition-field]").value,
+        condition_operator: element.querySelector("[data-long-term-condition-operator]").value,
+        condition_value: element.querySelector("[data-long-term-condition-value]").value.trim()
+      };
+    });
+    const selectedLongTerm = longTermRequests.filter(Boolean);
+    if (selectedLongTerm.length && !basisEl.value.trim()) {
+      messageEl.textContent = "保存长期规则必须填写本次确认依据。";
+      return;
+    }
+    for (const requestItem of selectedLongTerm) {
+      if (!["missing", "present"].includes(requestItem.condition_operator) && !requestItem.condition_value) {
+        messageEl.textContent = `保存${requestItem.item.field_label}长期规则必须填写触发值。`;
+        return;
+      }
+    }
+    if (selectedLongTerm.length) {
+      const details = selectedLongTerm.map(item =>
+        `${item.item.field_label}=${item.code}；${item.condition_field} ${longTermOperatorLabels[item.condition_operator] || item.condition_operator} ${item.condition_value}`
+      ).join("\n");
+      if (!window.confirm(`以下规则将对该客户后续订单立即生效：\n${details}\n\n确认保存为长期规则？`)) {
+        messageEl.textContent = "已取消长期规则保存。";
+        return;
+      }
+    }
+    messageEl.textContent = "正在保存当前行...";
+    try {
+      for (let index = 0; index < pendingItems.length; index += 1) {
+        const input = fieldElements[index].querySelector("[data-confirmation-code]");
+        const response = await fetch(`/api/transcode-agent/confirmations/${pendingItems[index].id}/confirm`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            confirmed_code: input.value,
+            basis: basisEl.value,
+            save_long_term: Boolean(longTermRequests[index]),
+            long_term_rule: longTermRequests[index] ? {
+              condition_field: longTermRequests[index].condition_field,
+              condition_operator: longTermRequests[index].condition_operator,
+              condition_value: longTermRequests[index].condition_value,
+              second_confirmed: true
+            } : null
+          })
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "确认失败");
+      }
+      messageEl.textContent = "当前行已确认。";
+      basisEl.value = "";
+      await refreshData(row.excel_row, true);
+    } catch (error) {
+      messageEl.textContent = error.message;
+    }
+  });
+
+  document.getElementById("confirm-skip-row").addEventListener("click", async () => {
+    const row = confirmationRows[confirmationIndex];
+    const item = row.items.find(entry => entry.status === "pending");
+    if (!item || !window.confirm(`暂不处理 Excel 第 ${row.excel_row} 行？`)) return;
+    const response = await fetch(`/api/transcode-agent/confirmations/${item.id}/skip`, {method: "POST"});
+    const result = await response.json();
+    if (!response.ok) {
+      messageEl.textContent = result.error || "操作失败";
+      return;
+    }
+    messageEl.textContent = "当前行已保留为待人工确认码值。";
+    await refreshData(row.excel_row, true);
+  });
+
+  document.getElementById("confirm-finalize").addEventListener("click", async () => {
+    if (!window.confirm("暂不处理所有剩余项并生成结果？正式码将保持为空。")) return;
+    const response = await fetch(`/api/transcode-agent/jobs/${confirmationJobId}/finalize-pending`, {method: "POST"});
+    const result = await response.json();
+    if (!response.ok) {
+      messageEl.textContent = result.error || "操作失败";
+      return;
+    }
+    await refreshData();
+  });
+
+  document.getElementById("confirm-reevaluate").addEventListener("click", async () => {
+    if (!window.confirm("按当前活动规则重新评估所有待确认行？达到100分的行将自动写入正式码，并保留重评审计记录。")) return;
+    messageEl.textContent = "正在按当前规则重新评估...";
+    const response = await fetch(`/api/transcode-agent/jobs/${confirmationJobId}/reevaluate-pending`, {method: "POST"});
+    const result = await response.json();
+    if (!response.ok) {
+      messageEl.textContent = result.error || "重新评估失败";
+      return;
+    }
+    messageEl.textContent = `重新评估完成：${result.resolved_rows}行达到100分，${result.unresolved_rows}行仍待确认。`;
+    recordScope = "all";
+    recordPage = 1;
+    confirmationIndex = 0;
+    await refreshData();
+  });
+
+  document.getElementById("confirm-prev").addEventListener("click", () => {
+    if (confirmationIndex > 0) {
+      confirmationIndex -= 1;
+      render();
+    }
+  });
+  document.getElementById("confirm-next").addEventListener("click", () => {
+    if (confirmationIndex < confirmationRows.length - 1) {
+      confirmationIndex += 1;
+      render();
+    }
+  });
+
+  document.querySelectorAll("[data-record-scope]").forEach(button => {
+    button.addEventListener("click", async event => {
+      event.preventDefault();
+      const targetScope = button.dataset.recordScope || "all";
+      filterMessageEl.textContent = "正在查询...";
+      document.querySelectorAll("[data-record-scope]").forEach(item => item.classList.add("loading"));
+      try {
+        recordScope = targetScope;
+        recordPage = 1;
+        confirmationIndex = 0;
+        await refreshData();
+        const stateLabel = button.textContent.trim();
+        filterMessageEl.textContent = `${stateLabel}：${confirmationData.record_total || 0} 行`;
+        if (window.history && window.history.replaceState) {
+          window.history.replaceState(null, "", button.href);
+        }
+      } catch (error) {
+        filterMessageEl.textContent = `${error.message}，正在使用页面查询...`;
+        window.location.assign(button.href);
+      } finally {
+        document.querySelectorAll("[data-record-scope]").forEach(item => item.classList.remove("loading"));
+      }
+    });
+  });
+
+  document.getElementById("confirm-page-prev").addEventListener("click", async () => {
+    if (recordPage <= 1) return;
+    recordPage -= 1;
+    confirmationIndex = 0;
+    await refreshData();
+  });
+
+  document.getElementById("confirm-page-next").addEventListener("click", async () => {
+    if (recordPage >= (confirmationData.record_page_count || 1)) return;
+    recordPage += 1;
+    confirmationIndex = 0;
+    await refreshData();
+  });
+
+  render();
+</script>
+{% endblock %}

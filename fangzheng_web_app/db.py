@@ -50,6 +50,7 @@ def init_db() -> None:
                 success_count INTEGER NOT NULL DEFAULT 0,
                 fail_count INTEGER NOT NULL DEFAULT 0,
                 skip_count INTEGER NOT NULL DEFAULT 0,
+                confirm_count INTEGER NOT NULL DEFAULT 0,
                 current_row INTEGER NOT NULL DEFAULT 0,
                 total_rows INTEGER NOT NULL DEFAULT 0,
                 worker_pid INTEGER,
@@ -96,6 +97,67 @@ def init_db() -> None:
                 source_version_id INTEGER,
                 FOREIGN KEY(source_version_id) REFERENCES pdf_excel_ai_config_versions(id)
             );
+
+            CREATE TABLE IF NOT EXISTS transcode_model_configs (
+                employee_id TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                base_url TEXT NOT NULL DEFAULT 'https://api.deepseek.com',
+                api_key TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT 'deepseek-v4-pro',
+                timeout_seconds REAL NOT NULL DEFAULT 60,
+                max_order_calls INTEGER NOT NULL DEFAULT 50,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(employee_id) REFERENCES users(employee_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS transcode_agent_confirmation_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id INTEGER NOT NULL,
+                employee_id TEXT NOT NULL,
+                excel_row INTEGER NOT NULL,
+                customer_code TEXT NOT NULL DEFAULT '',
+                customer_name TEXT NOT NULL DEFAULT '',
+                spec TEXT NOT NULL DEFAULT '',
+                context_text TEXT NOT NULL DEFAULT '',
+                field_key TEXT NOT NULL,
+                field_label TEXT NOT NULL,
+                current_code TEXT NOT NULL DEFAULT '',
+                options_json TEXT NOT NULL DEFAULT '[]',
+                pending_code TEXT NOT NULL DEFAULT '',
+                score INTEGER NOT NULL DEFAULT 0,
+                reason TEXT NOT NULL DEFAULT '',
+                evidence_json TEXT NOT NULL DEFAULT '{}',
+                analysis_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'pending',
+                confirmed_code TEXT,
+                confirmation_basis TEXT,
+                confirmed_by TEXT,
+                confirmed_at TEXT,
+                long_term_rule_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(job_id, excel_row, field_key),
+                FOREIGN KEY(job_id) REFERENCES jobs(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS transcode_agent_confirmation_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id INTEGER,
+                job_id INTEGER NOT NULL,
+                employee_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                before_json TEXT NOT NULL DEFAULT '{}',
+                after_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(item_id) REFERENCES transcode_agent_confirmation_items(id),
+                FOREIGN KEY(job_id) REFERENCES jobs(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_transcode_agent_confirm_job_status
+            ON transcode_agent_confirmation_items(job_id, status, excel_row);
+
+            CREATE INDEX IF NOT EXISTS idx_transcode_agent_confirm_owner
+            ON transcode_agent_confirmation_items(employee_id, job_id);
 
             CREATE TABLE IF NOT EXISTS feedback (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -154,10 +216,22 @@ def init_db() -> None:
             "log_text": "ALTER TABLE jobs ADD COLUMN log_text TEXT NOT NULL DEFAULT ''",
             "worker_pid": "ALTER TABLE jobs ADD COLUMN worker_pid INTEGER",
             "worker_started_at": "ALTER TABLE jobs ADD COLUMN worker_started_at TEXT",
+            "confirm_count": "ALTER TABLE jobs ADD COLUMN confirm_count INTEGER NOT NULL DEFAULT 0",
         }
         for column, sql in migrations.items():
             if column not in existing_cols:
                 conn.execute(sql)
+
+        confirmation_cols = {
+            row["name"]
+            for row in conn.execute(
+                "PRAGMA table_info(transcode_agent_confirmation_items)"
+            ).fetchall()
+        }
+        if "long_term_rule_id" not in confirmation_cols:
+            conn.execute(
+                "ALTER TABLE transcode_agent_confirmation_items ADD COLUMN long_term_rule_id TEXT"
+            )
 
         user_cols = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
         user_migrations = {
@@ -343,6 +417,57 @@ def is_admin_user(employee_id: str | None) -> bool:
     return bool(user and user["enabled"] and user["role"] == "admin")
 
 
+def get_transcode_model_config(employee_id: str):
+    with db_cursor() as conn:
+        return conn.execute(
+            "SELECT * FROM transcode_model_configs WHERE employee_id = ?",
+            (employee_id,),
+        ).fetchone()
+
+
+def save_transcode_model_config(
+    employee_id: str,
+    *,
+    enabled: bool,
+    base_url: str,
+    api_key: str | None,
+    model: str,
+    timeout_seconds: float = 60,
+    max_order_calls: int = 50,
+) -> None:
+    existing = get_transcode_model_config(employee_id)
+    stored_key = str(existing["api_key"] or "") if existing else ""
+    if api_key is not None:
+        stored_key = str(api_key).strip()
+    with db_cursor() as conn:
+        conn.execute(
+            """
+            INSERT INTO transcode_model_configs (
+                employee_id, enabled, base_url, api_key, model,
+                timeout_seconds, max_order_calls, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(employee_id) DO UPDATE SET
+                enabled = excluded.enabled,
+                base_url = excluded.base_url,
+                api_key = excluded.api_key,
+                model = excluded.model,
+                timeout_seconds = excluded.timeout_seconds,
+                max_order_calls = excluded.max_order_calls,
+                updated_at = excluded.updated_at
+            """,
+            (
+                employee_id,
+                1 if enabled else 0,
+                base_url,
+                stored_key,
+                model,
+                timeout_seconds,
+                max_order_calls,
+                utcnow(),
+            ),
+        )
+
+
 def ensure_bootstrap_user(employee_id: str, password: str) -> bool:
     """Allow first legacy login only when no users exist yet."""
     with db_cursor() as conn:
@@ -374,6 +499,7 @@ def update_job_status(
     success_count: int | None = None,
     fail_count: int | None = None,
     skip_count: int | None = None,
+    confirm_count: int | None = None,
     current_row: int | None = None,
     total_rows: int | None = None,
     log_text: str | None = None,
@@ -395,6 +521,9 @@ def update_job_status(
     if skip_count is not None:
         fields.append("skip_count = ?")
         params.append(skip_count)
+    if confirm_count is not None:
+        fields.append("confirm_count = ?")
+        params.append(confirm_count)
     if current_row is not None:
         fields.append("current_row = ?")
         params.append(current_row)
@@ -435,6 +564,7 @@ def append_job_log(
     success_count: int | None = None,
     fail_count: int | None = None,
     skip_count: int | None = None,
+    confirm_count: int | None = None,
     current_row: int | None = None,
     total_rows: int | None = None,
 ) -> None:
@@ -454,6 +584,9 @@ def append_job_log(
         if skip_count is not None:
             fields.append("skip_count = ?")
             params.append(skip_count)
+        if confirm_count is not None:
+            fields.append("confirm_count = ?")
+            params.append(confirm_count)
         if current_row is not None:
             fields.append("current_row = ?")
             params.append(current_row)
@@ -509,6 +642,240 @@ def get_active_job(employee_id: str, feature: str):
         ).fetchone()
 
 
+def replace_transcode_agent_confirmation_items(
+    job_id: int,
+    employee_id: str,
+    items: list[dict],
+) -> list[int]:
+    now = utcnow()
+    inserted_ids: list[int] = []
+    with db_cursor() as conn:
+        conn.execute(
+            "DELETE FROM transcode_agent_confirmation_events WHERE job_id = ?",
+            (job_id,),
+        )
+        conn.execute(
+            "DELETE FROM transcode_agent_confirmation_items WHERE job_id = ?",
+            (job_id,),
+        )
+        for item in items:
+            cursor = conn.execute(
+                """
+                INSERT INTO transcode_agent_confirmation_items (
+                    job_id, employee_id, excel_row, customer_code, customer_name,
+                    spec, context_text, field_key, field_label, current_code,
+                    options_json, pending_code, score, reason, evidence_json,
+                    analysis_json, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                """,
+                (
+                    job_id,
+                    employee_id,
+                    int(item.get("excel_row") or 0),
+                    str(item.get("customer_code") or ""),
+                    str(item.get("customer_name") or ""),
+                    str(item.get("spec") or ""),
+                    str(item.get("context_text") or ""),
+                    str(item.get("field_key") or ""),
+                    str(item.get("field_label") or ""),
+                    str(item.get("current_code") or ""),
+                    json.dumps(item.get("options") or [], ensure_ascii=False, default=str),
+                    str(item.get("pending_code") or ""),
+                    int(item.get("score") or 0),
+                    str(item.get("reason") or ""),
+                    json.dumps(item.get("evidence") or {}, ensure_ascii=False, default=str),
+                    json.dumps(item.get("analysis") or {}, ensure_ascii=False, default=str),
+                    now,
+                    now,
+                ),
+            )
+            inserted_ids.append(int(cursor.lastrowid))
+    return inserted_ids
+
+
+def list_transcode_agent_confirmation_items(
+    job_id: int,
+    employee_id: str,
+    *,
+    status: str | None = None,
+) -> list[sqlite3.Row]:
+    query = """
+        SELECT * FROM transcode_agent_confirmation_items
+        WHERE job_id = ? AND employee_id = ?
+    """
+    params: list[object] = [job_id, employee_id]
+    if status:
+        query += " AND status = ?"
+        params.append(status)
+    query += " ORDER BY excel_row, id"
+    with db_cursor() as conn:
+        return conn.execute(query, params).fetchall()
+
+
+def get_transcode_agent_confirmation_item(item_id: int) -> sqlite3.Row | None:
+    with db_cursor() as conn:
+        return conn.execute(
+            "SELECT * FROM transcode_agent_confirmation_items WHERE id = ?",
+            (item_id,),
+        ).fetchone()
+
+
+def update_transcode_agent_confirmation_item(
+    item_id: int,
+    *,
+    status: str,
+    confirmed_code: str | None,
+    confirmation_basis: str,
+    confirmed_by: str,
+    analysis: dict | None = None,
+    long_term_rule_id: str | None = None,
+) -> sqlite3.Row | None:
+    now = utcnow()
+    with db_cursor() as conn:
+        before = conn.execute(
+            "SELECT * FROM transcode_agent_confirmation_items WHERE id = ?",
+            (item_id,),
+        ).fetchone()
+        if not before:
+            return None
+        fields = [
+            "status = ?",
+            "confirmed_code = ?",
+            "confirmation_basis = ?",
+            "confirmed_by = ?",
+            "confirmed_at = ?",
+            "updated_at = ?",
+        ]
+        params: list[object] = [
+            status,
+            confirmed_code,
+            confirmation_basis,
+            confirmed_by,
+            now,
+            now,
+        ]
+        if analysis is not None:
+            fields.append("analysis_json = ?")
+            params.append(json.dumps(analysis, ensure_ascii=False, default=str))
+        if status in {"confirmed", "auto_resolved"} and confirmed_code:
+            fields.extend(["current_code = ?", "score = 100"])
+            params.append(confirmed_code)
+        if long_term_rule_id is not None:
+            fields.append("long_term_rule_id = ?")
+            params.append(long_term_rule_id)
+        params.append(item_id)
+        conn.execute(
+            f"UPDATE transcode_agent_confirmation_items SET {', '.join(fields)} WHERE id = ?",
+            params,
+        )
+        after = conn.execute(
+            "SELECT * FROM transcode_agent_confirmation_items WHERE id = ?",
+            (item_id,),
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO transcode_agent_confirmation_events (
+                item_id, job_id, employee_id, action, before_json, after_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                item_id,
+                before["job_id"],
+                confirmed_by,
+                status,
+                json.dumps(dict(before), ensure_ascii=False, default=str),
+                json.dumps(dict(after), ensure_ascii=False, default=str),
+                now,
+            ),
+        )
+        return after
+
+
+def refresh_transcode_agent_confirmation_item(
+    item_id: int,
+    *,
+    current_code: str,
+    pending_code: str,
+    score: int,
+    reason: str,
+    evidence: dict,
+    analysis: dict,
+) -> None:
+    with db_cursor() as conn:
+        conn.execute(
+            """
+            UPDATE transcode_agent_confirmation_items
+            SET current_code = ?, pending_code = ?, score = ?, reason = ?,
+                evidence_json = ?, analysis_json = ?, updated_at = ?
+            WHERE id = ? AND status = 'pending'
+            """,
+            (
+                current_code,
+                pending_code,
+                int(score),
+                reason,
+                json.dumps(evidence or {}, ensure_ascii=False, default=str),
+                json.dumps(analysis or {}, ensure_ascii=False, default=str),
+                utcnow(),
+                item_id,
+            ),
+        )
+
+
+def update_transcode_agent_row_analysis(
+    job_id: int,
+    excel_row: int,
+    analysis: dict,
+) -> None:
+    with db_cursor() as conn:
+        conn.execute(
+            """
+            UPDATE transcode_agent_confirmation_items
+            SET analysis_json = ?, pending_code = ?, updated_at = ?
+            WHERE job_id = ? AND excel_row = ?
+            """,
+            (
+                json.dumps(analysis, ensure_ascii=False, default=str),
+                str(analysis.get("candidate_code") or ""),
+                utcnow(),
+                job_id,
+                excel_row,
+            ),
+        )
+
+
+def transcode_agent_confirmation_counts(job_id: int) -> dict[str, int]:
+    with db_cursor() as conn:
+        rows = conn.execute(
+            """
+            SELECT status, COUNT(*) AS total
+            FROM transcode_agent_confirmation_items
+            WHERE job_id = ?
+            GROUP BY status
+            """,
+            (job_id,),
+        ).fetchall()
+    counts = {"pending": 0, "confirmed": 0, "skipped": 0, "total": 0}
+    for row in rows:
+        counts[str(row["status"])] = int(row["total"])
+        counts["total"] += int(row["total"])
+    return counts
+
+
+def list_transcode_agent_confirmation_events(job_id: int) -> list[sqlite3.Row]:
+    with db_cursor() as conn:
+        return conn.execute(
+            """
+            SELECT id, item_id, job_id, employee_id, action,
+                   before_json, after_json, created_at
+            FROM transcode_agent_confirmation_events
+            WHERE job_id = ?
+            ORDER BY id
+            """,
+            (job_id,),
+        ).fetchall()
+
+
 def prune_jobs_for_employee(employee_id: str, keep_limit: int = 500) -> list[sqlite3.Row]:
     with db_cursor() as conn:
         rows = conn.execute(
@@ -521,6 +888,16 @@ def prune_jobs_for_employee(employee_id: str, keep_limit: int = 500) -> list[sql
             (employee_id, keep_limit),
         ).fetchall()
         if rows:
+            stale_ids = [row["id"] for row in rows]
+            placeholders = ",".join("?" for _ in stale_ids)
+            conn.execute(
+                f"DELETE FROM transcode_agent_confirmation_events WHERE job_id IN ({placeholders})",
+                stale_ids,
+            )
+            conn.execute(
+                f"DELETE FROM transcode_agent_confirmation_items WHERE job_id IN ({placeholders})",
+                stale_ids,
+            )
             conn.executemany("DELETE FROM jobs WHERE id = ?", [(row["id"],) for row in rows])
     return rows
 
@@ -529,6 +906,14 @@ def delete_job(job_id: int) -> sqlite3.Row | None:
     with db_cursor() as conn:
         row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         if row:
+            conn.execute(
+                "DELETE FROM transcode_agent_confirmation_events WHERE job_id = ?",
+                (job_id,),
+            )
+            conn.execute(
+                "DELETE FROM transcode_agent_confirmation_items WHERE job_id = ?",
+                (job_id,),
+            )
             conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
     return row
 

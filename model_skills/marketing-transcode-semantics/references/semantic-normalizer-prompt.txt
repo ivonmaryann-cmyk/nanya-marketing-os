@@ -14,11 +14,14 @@
 - 原文存在 RV/3H、多值冲突、缺少选择条件时，必须输出 ambiguity，不能自行选择。
 - 没有订单备注字段时，不能假设备注内容；必须写入 missing_inputs。
 - 每个结论必须给出 source_field 和 evidence_text，evidence_text 必须是输入中的连续原文。
-- rule_structure阶段每个语义项的source_field固定写 `CCL特殊规则`；订单备注、客户规格等运行时字段只能写在conditions的field和source_scope中。
+- rule_structure阶段每个语义项的source_field固定使用 `input.task_context.source_column`，允许值为 `CCL特殊规则`、`通用特殊规则` 或 `非影响转码备注`；订单备注、客户规格等运行时字段只能写在conditions的field和source_scope中。
 - ambiguities中的evidence_text也必须逐字复制输入中的连续原文；如果歧义来自输入缺失且没有可引用原文，evidence_text必须为空字符串，不能写概括或推测。
 - 精确数字、单位和字符位置规则应标记 deterministic_preferred=true，提示后续由程序执行。
 - rule_structure阶段只负责定义规则条件，不要求当前订单已经提供订单备注、客户规格或物料号；不要因为运行时字段当前没有值而产生ambiguity或missing_inputs。只有规则原文本身缺少选择条件、存在多值冲突或缺少外部规则源时才记录。
 - order_normalization阶段如果已批准规则要求订单备注、客户规格、品号或物料号，而输入没有该字段，必须写入missing_inputs。
+- order_normalization阶段必须从 relevant_approved_rules 中选择唯一能被输入证据支持的规则语义。target_field 和 normalized_value 必须与该已批准规则完全一致；没有对应规则时不得输出语义项。
+- order_normalization阶段不得将订单备注中未明示的代码填入 stated_target_value；stated_target_value 应留空，映射值只能来自 relevant_approved_rules。
+- order_normalization阶段绝对不能从 relevant_approved_rules 的 stated_target_values、normalized_values 或结果代码复制内容到 stated_target_value。该字段只能逐字复制 source_fields 中实际出现的目标值；原文“要汽板”不能填AC，必须输出 stated_target_value=""，只在 normalized_value 中输出 automotive。
 - rule_structure阶段如果 `input.task_context.business_field` 有值，必须按该业务字段确定 `target_field`，不能根据结果代码自行猜测字段。
 - `input.task_context.required_input_fields` 是规则运行时需要读取的订单字段。conditions中的field和source_scope必须优先使用这些运行时字段，不能写成CCL特殊规则。
 - `input.task_context.related_candidate_texts` 是同一客户、同一业务字段的相邻候选，只用于解析“该字样”“上述条件”等指代。条件仍需保留当前规则原文证据，不能把相邻候选当作当前原文。
@@ -63,6 +66,9 @@
 - “客户规格没有Q时=AP”是 keyword_absent，必须限定 source_field=客户规格。
 - “订单若不备注芯厚，默认是总厚”是 default_when_missing，缺失对象是“芯厚”标识，不能视为所有订单无条件总厚。
 - “订单备注第5码A或S都下汽车板”是 position_code，模型识别意图，字符位置匹配交给程序。
+- 广东依顿/广州伊顿订单备注中的“汽车板、下汽车板、汽板、要车板、要汽板、qicheban”等口语表达，统一归一为 automotive；只允许匹配该客户已经批准的基板级别规则。
+- 广东依顿/广州伊顿订单备注中的“HW、华为、华为单”等表达，统一归一为 huawei_order；铜厚阈值仍由程序读取上下两面铜厚后判断，模型不能自行判定AP或A1。
+- 广东依顿/广州伊顿的“8张布、八张布、8层布”等表达统一归一为 eight_cloth_layers；只有同时具备已批准规则要求的NY2150H、56mil、1/1或H/H及汽车板语义时，才能匹配AY规则。
 
 只返回符合 JSON Schema 的 JSON 对象，不要返回 Markdown、解释性前言或代码块。
 schema_version 固定为 1.0。

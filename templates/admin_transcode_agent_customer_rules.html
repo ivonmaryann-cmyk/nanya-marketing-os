@@ -1,0 +1,441 @@
+{% extends "base.html" %}
+{% block title %}客户特殊规则维护 | 营销转码Agent{% endblock %}
+{% block content %}
+<style>
+  .cr-page { display: grid; gap: 14px; min-width: 0; }
+  .cr-page > * { min-width: 0; }
+  .cr-head { display: flex; align-items: flex-start; gap: 14px; }
+  .cr-head h1 { margin: 0 0 4px; font-size: 28px; }
+  .cr-head p { margin: 0; color: #64748b; }
+  .cr-actions { margin-left: auto; display: flex; gap: 9px; }
+  .cr-kind-nav { display: flex; flex-wrap: wrap; gap: 7px; }
+  .cr-kind-nav a { min-height: 36px; display: inline-flex; align-items: center; padding: 7px 12px; border: 1px solid #dbe3ef; border-radius: 6px; color: #53627a; text-decoration: none; background: #fff; }
+  .cr-kind-nav a.active { border-color: #3478ee; background: #edf4ff; color: #225fc4; font-weight: 800; }
+  .cr-button, .cr-button-secondary, .cr-button-danger {
+    min-height: 38px; border: 1px solid #dbe3ef; border-radius: 6px; padding: 9px 13px;
+    background: #fff; color: #334155; font-weight: 700; text-decoration: none; cursor: pointer;
+  }
+  .cr-button { background: #3478ee; border-color: #3478ee; color: #fff; }
+  .cr-button-danger { color: #b42335; }
+  .cr-workspace {
+    min-height: 690px; display: grid; grid-template-columns: 250px minmax(460px, 1fr) 350px;
+    border: 1px solid #dbe3ef; background: #fff; box-shadow: 0 5px 20px rgba(31, 54, 94, .07);
+  }
+  .cr-customer-pane, .cr-rule-pane, .cr-editor { min-width: 0; }
+  .cr-customer-pane { display: grid; grid-template-rows: auto auto 1fr auto; border-right: 1px solid #dbe3ef; }
+  .cr-pane-title { padding: 15px 15px 9px; font-weight: 800; }
+  .cr-search { margin: 0 13px 11px; display: grid; grid-template-columns: 1fr auto; gap: 6px; }
+  .cr-search input, .cr-field input, .cr-field select, .cr-field textarea {
+    width: 100%; border: 1px solid #dbe3ef; border-radius: 6px; background: #fff; padding: 9px 10px; color: #24324a;
+  }
+  .cr-search input { background: #f8fafc; }
+  .cr-search button { width: 38px; border: 1px solid #dbe3ef; border-radius: 6px; background: #fff; font-weight: 800; }
+  .cr-customer-list { border-top: 1px solid #e5eaf2; max-height: 596px; overflow: auto; }
+  .cr-customer {
+    display: grid; grid-template-columns: 1fr auto; gap: 4px; padding: 12px 14px;
+    border-bottom: 1px solid #edf1f6; text-decoration: none; color: #17233d;
+  }
+  .cr-customer:hover { background: #f8fbff; }
+  .cr-customer.active { background: #edf4ff; box-shadow: inset 3px 0 #3478ee; }
+  .cr-customer strong { font-size: 14px; }
+  .cr-customer small { display: block; margin-top: 2px; color: #7a869c; }
+  .cr-count { align-self: start; padding: 3px 7px; border-radius: 10px; background: #eaf8f2; color: #24805d; font-size: 11px; font-weight: 800; }
+  .cr-customer-foot { border-top: 1px solid #dbe3ef; padding: 11px 13px; }
+  .cr-customer-foot .cr-button-secondary { display: block; text-align: center; }
+  .cr-rule-pane { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto 1fr auto; }
+  .cr-rule-pane > * { min-width: 0; }
+  .cr-customer-head { padding: 14px 17px; border-bottom: 1px solid #dbe3ef; display: flex; align-items: center; }
+  .cr-customer-head h2 { margin: 0 0 4px; font-size: 21px; }
+  .cr-meta { display: flex; flex-wrap: wrap; gap: 12px; color: #6b778c; font-size: 12px; }
+  .cr-live { margin-left: auto; color: #24805d; font-weight: 800; font-size: 12px; white-space: nowrap; }
+  .cr-live::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: #36a879; }
+  .cr-tabs { display: flex; flex-wrap: wrap; gap: 6px; padding: 11px 13px 0; border-bottom: 1px solid #dbe3ef; }
+  .cr-tab { min-height: 34px; padding: 7px 10px; border: 1px solid #dbe3ef; border-bottom: 0; border-radius: 6px 6px 0 0; background: #f8fafc; color: #5e6b81; text-decoration: none; }
+  .cr-tab.active { background: #3478ee; border-color: #3478ee; color: #fff; font-weight: 800; }
+  .cr-toolbar { padding: 10px 13px; border-bottom: 1px solid #dbe3ef; display: flex; align-items: center; gap: 8px; }
+  .cr-toolbar span { color: #64748b; font-size: 12px; }
+  .cr-toolbar .cr-button { min-height: 34px; margin-left: auto; padding-top: 7px; padding-bottom: 7px; }
+  .cr-table-wrap { overflow: auto; }
+  .cr-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  .cr-table th { height: 38px; padding: 0 9px; background: #f7f9fd; color: #68758b; font-size: 12px; text-align: left; border-bottom: 1px solid #dbe3ef; }
+  .cr-table td { padding: 11px 9px; border-bottom: 1px solid #e8edf4; vertical-align: top; }
+  .cr-table tr.active { background: #f2f7ff; box-shadow: inset 3px 0 #3478ee; }
+  .cr-table tr:hover { background: #f8fbff; }
+  .cr-table a { color: inherit; text-decoration: none; }
+  .cr-source { display: inline-block; padding: 3px 6px; border-radius: 4px; background: #eef1f6; color: #59677e; font-size: 11px; }
+  .cr-source.model { background: #f0edff; color: #644bb0; }
+  .cr-condition { font-weight: 700; line-height: 1.45; }
+  .cr-condition small { display: block; margin-top: 4px; color: #7b879c; font-weight: 400; }
+  .cr-result { color: #2d61b8; font-size: 17px; font-weight: 900; }
+  .cr-enabled { color: #24805d; font-size: 12px; font-weight: 800; }
+  .cr-disabled { color: #8a95a8; font-size: 12px; }
+  .cr-rule-foot { padding: 9px 13px; background: #fafcff; border-top: 1px solid #dbe3ef; display: flex; color: #69758a; font-size: 12px; }
+  .cr-rule-foot a { margin-left: auto; color: #315eaa; font-weight: 700; }
+  .cr-editor { display: grid; grid-template-rows: auto 1fr auto; border-left: 1px solid #dbe3ef; background: #fbfcff; }
+  .cr-editor-head { padding: 15px 16px; border-bottom: 1px solid #dbe3ef; display: flex; align-items: center; }
+  .cr-editor-head h3 { margin: 0; font-size: 17px; }
+  .cr-editor-head span { margin-left: auto; color: #24805d; font-size: 12px; font-weight: 800; }
+  .cr-form { padding: 14px 16px; max-height: 605px; overflow: auto; }
+  .cr-field { display: grid; gap: 5px; margin-bottom: 12px; color: #58657a; font-size: 12px; }
+  .cr-field textarea { min-height: 72px; resize: vertical; line-height: 1.5; }
+  .cr-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+  .cr-switch { padding: 10px; margin-bottom: 12px; border: 1px solid #ded9f6; border-radius: 6px; background: #f7f5ff; color: #5d4a98; }
+  .cr-switch label { display: flex; align-items: center; gap: 7px; font-weight: 800; }
+  .cr-switch p { margin: 6px 0 0; font-size: 12px; line-height: 1.5; }
+  .cr-condition-block { border: 1px solid #e0e6ef; border-radius: 6px; margin-bottom: 9px; padding: 9px; background: #fff; }
+  .cr-condition-block .cr-row2 { margin-bottom: 7px; }
+  .cr-condition-block button { border: 0; padding: 0; background: transparent; color: #b42335; font-size: 12px; }
+  .cr-add-condition { border: 1px dashed #a9b8cf; border-radius: 6px; background: #fff; color: #315eaa; width: 100%; min-height: 34px; margin-bottom: 12px; font-weight: 700; }
+  .cr-impact { padding: 9px 10px; border-left: 3px solid #35a879; background: #eaf8f2; color: #316c58; font-size: 12px; line-height: 1.5; }
+  .cr-editor-foot { padding: 11px 15px; border-top: 1px solid #dbe3ef; background: #fff; display: flex; gap: 8px; }
+  .cr-editor-foot .cr-button { margin-left: auto; }
+  .cr-empty { padding: 34px 20px; color: #6e7a8f; text-align: center; }
+  .cr-history { border: 1px solid #dbe3ef; background: #fff; padding: 15px; }
+  .cr-history-head { display: flex; align-items: center; margin-bottom: 10px; }
+  .cr-history-head h2 { margin: 0; font-size: 19px; }
+  .cr-history-head a { margin-left: auto; }
+  .cr-history table { width: 100%; border-collapse: collapse; }
+  .cr-history th, .cr-history td { padding: 9px; border-bottom: 1px solid #e8edf4; text-align: left; }
+  .cr-history th { color: #68758b; font-size: 12px; background: #f7f9fd; }
+  .cr-history form { margin: 0; }
+  @media (max-width: 1400px) {
+    .cr-workspace { grid-template-columns: 220px minmax(420px, 1fr); }
+    .cr-editor { grid-column: 1 / -1; border-left: 0; border-top: 1px solid #dbe3ef; }
+    .cr-form { max-height: none; }
+  }
+  @media (max-width: 760px) {
+    .shell { display: block; }
+    .shell > .sidebar { display: none; }
+    .shell > .content { width: 100%; padding: 14px; overflow: visible; }
+    .cr-head { display: grid; }.cr-actions { margin-left: 0; }
+    .cr-actions { flex-wrap: wrap; }
+    .page-backbar span, .cr-head p { overflow-wrap: anywhere; }
+    .cr-workspace { display: block; }.cr-customer-list { max-height: 260px; }
+    .cr-customer-pane, .cr-editor { border: 0; border-bottom: 1px solid #dbe3ef; }
+    .cr-customer-head { align-items: flex-start; flex-direction: column; gap: 6px; }
+    .cr-live { margin-left: 0; }
+    .cr-table { min-width: 680px; }
+    .cr-table-wrap { overflow-x: auto; }
+    .cr-row2 { grid-template-columns: 1fr; }
+  }
+</style>
+
+<div class="cr-page">
+  <div class="page-backbar">
+    <a class="back-link" href="{{ url_for('main.admin_transcode_rule_center', section='customer') }}">返回规则配置</a>
+    <span>营销转码Agent / 规则配置 / 客户特殊规则维护</span>
+  </div>
+
+  <div class="cr-head">
+    <div>
+      <h1>客户特殊规则维护</h1>
+      <p>按客户维护8个转码参数与订单备注条件；基础长期规则与页面修改层统一查看。</p>
+    </div>
+    <div class="cr-actions">
+      <a class="cr-button-secondary" href="{{ url_for('main.admin_transcode_agent_customer_rules', show_history='1', rule_kind=workspace.rule_kind) }}">修改记录</a>
+      <a class="cr-button" href="{{ url_for('main.admin_transcode_agent_customer_rules', new_customer='1', rule_kind=workspace.rule_kind) }}">＋ 新增客户规则</a>
+    </div>
+  </div>
+
+  <nav class="cr-kind-nav" aria-label="规则分类">
+    <a class="{% if workspace.rule_kind == 'all' %}active{% endif %}" href="{{ url_for('main.admin_transcode_agent_customer_rules', rule_kind='all') }}">全部客户规则</a>
+    <a class="{% if workspace.rule_kind == 'deterministic' %}active{% endif %}" href="{{ url_for('main.admin_transcode_agent_customer_rules', rule_kind='deterministic') }}">确定性特殊规则</a>
+    <a class="{% if workspace.rule_kind == 'semantic' %}active{% endif %}" href="{{ url_for('main.admin_transcode_agent_customer_rules', rule_kind='semantic') }}">订单备注语义规则</a>
+  </nav>
+
+  <section class="cr-workspace">
+    <aside class="cr-customer-pane">
+      <div class="cr-pane-title">客户</div>
+      <form class="cr-search" method="get">
+        <input type="hidden" name="rule_kind" value="{{ workspace.rule_kind }}">
+        <input name="search" value="{{ request.args.get('search', '') }}" placeholder="代码或客户简称">
+        <button type="submit" title="搜索">⌕</button>
+      </form>
+      <div class="cr-customer-list">
+        {% for customer in workspace.customers %}
+        <a class="cr-customer {% if customer.key == workspace.selected_customer_key %}active{% endif %}"
+           href="{{ url_for('main.admin_transcode_agent_customer_rules', customer_key=customer.key, rule_kind=workspace.rule_kind) }}">
+          <span><strong>{{ customer.name }}</strong><small>{{ customer.code or '无客户代码' }}</small></span>
+          <span class="cr-count">{{ customer.rule_count }}条</span>
+        </a>
+        {% else %}
+        <div class="cr-empty">没有找到客户规则。</div>
+        {% endfor %}
+      </div>
+      <div class="cr-customer-foot">
+        <a class="cr-button-secondary" href="{{ url_for('main.admin_transcode_agent_customer_rules', new_customer='1', rule_kind=workspace.rule_kind) }}">新增客户</a>
+      </div>
+    </aside>
+
+    <section class="cr-rule-pane">
+      {% if workspace.selected_customer %}
+      <div class="cr-customer-head">
+        <div>
+          <h2>{{ workspace.selected_customer.name }}</h2>
+          <div class="cr-meta">
+            <span>客户代码 {{ workspace.selected_customer.code }}</span>
+            <span>规则数 {{ workspace.selected_customer.rule_count }}</span>
+            <span>确定性规则基线 {{ active_agent_version }}</span>
+            <span>订单备注规则基线 {{ active_semantic_version }}</span>
+          </div>
+        </div>
+        <div class="cr-live">运行中</div>
+      </div>
+      <div class="cr-tabs">
+        {% for field in business_fields %}
+        <a class="cr-tab {% if field == workspace.selected_field %}active{% endif %}"
+           href="{{ url_for('main.admin_transcode_agent_customer_rules', customer_key=workspace.selected_customer_key, business_field=field, rule_kind=workspace.rule_kind) }}">
+          {{ field }} {{ workspace.selected_customer.field_counts[field] }}
+        </a>
+        {% endfor %}
+      </div>
+      <div class="cr-toolbar">
+        <span>{{ workspace.selected_field }}规则：{{ workspace.rules|length }}条</span>
+        <a class="cr-button"
+           href="{{ url_for('main.admin_transcode_agent_customer_rules', customer_key=workspace.selected_customer_key, business_field=workspace.selected_field, new='1', rule_kind=workspace.rule_kind) }}">＋ 新增规则</a>
+      </div>
+      <div class="cr-table-wrap">
+        <table class="cr-table">
+          <colgroup><col style="width:104px"><col><col style="width:66px"><col style="width:64px"></colgroup>
+          <thead><tr><th>输入来源</th><th>触发条件</th><th>结果</th><th>状态</th></tr></thead>
+          <tbody>
+            {% for rule in workspace.rules %}
+            <tr class="{% if workspace.selected_rule and rule.rule_id == workspace.selected_rule.rule_id %}active{% endif %}">
+              <td>
+                <a href="{{ url_for('main.admin_transcode_agent_customer_rules', customer_key=workspace.selected_customer_key, business_field=workspace.selected_field, rule_id=rule.rule_id, rule_kind=workspace.rule_kind) }}">
+                  <span class="cr-source {% if rule.semantic_enabled %}model{% endif %}">{{ rule.input_source }}</span>
+                </a>
+              </td>
+              <td>
+                <a href="{{ url_for('main.admin_transcode_agent_customer_rules', customer_key=workspace.selected_customer_key, business_field=workspace.selected_field, rule_id=rule.rule_id, rule_kind=workspace.rule_kind) }}">
+                  <div class="cr-condition">{{ rule.source_text }}<small>{{ rule.condition_summary }} · {{ rule.origin }}</small></div>
+                </a>
+              </td>
+              <td><a href="{{ url_for('main.admin_transcode_agent_customer_rules', customer_key=workspace.selected_customer_key, business_field=workspace.selected_field, rule_id=rule.rule_id, rule_kind=workspace.rule_kind) }}"><span class="cr-result">{{ rule.target_value }}</span></a></td>
+              <td><span class="{{ 'cr-enabled' if rule.enabled else 'cr-disabled' }}">{{ '启用' if rule.enabled else '停用' }}</span></td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4"><div class="cr-empty">该参数暂无客户特殊规则，可直接新增。</div></td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="cr-rule-foot">
+        当前共{{ workspace.rule_count }}条长期规则，其中{{ workspace.override_count }}条存在页面修改层。
+        <a href="{{ url_for('main.admin_transcode_agent_customer_rules', show_history='1', rule_kind=workspace.rule_kind) }}">查看修改记录 →</a>
+      </div>
+      {% else %}
+      <div class="cr-empty">请选择客户，或新增第一条客户规则。</div>
+      {% endif %}
+    </section>
+
+    <aside class="cr-editor">
+      {% if workspace.selected_rule %}
+      {% set selected = workspace.selected_rule %}
+      <div class="cr-editor-head">
+        <h3>{{ '新增规则' if not selected.rule_id else '编辑规则' }}</h3>
+        <span>{{ '确定性规则' if selected.asset_type == 'agent_deterministic' else '订单备注语义规则' }}</span>
+      </div>
+      <form method="post" id="customer-rule-form">
+        <div class="cr-form">
+          <input type="hidden" name="rule_id" value="{{ selected.rule_id }}">
+          <input type="hidden" name="asset_type" value="{{ selected.asset_type or 'semantic' }}">
+          <input type="hidden" name="rule_kind" value="{{ workspace.rule_kind }}">
+          <div class="cr-row2">
+            <label class="cr-field">客户代码<input name="customer_code" value="{{ selected.customer_code }}" placeholder="代码和简称至少填写一个"></label>
+            <label class="cr-field">客户简称<input name="customer_name" value="{{ selected.customer_name }}" placeholder="代码和简称至少填写一个"></label>
+          </div>
+          <label class="cr-field">维护参数
+            <select name="business_field" id="cr-business-field">
+              {% for field in business_fields %}
+              <option value="{{ field }}" {% if selected.business_field == field %}selected{% endif %}>{{ field }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="cr-field">业务规则原文
+            <textarea name="source_text" required>{{ selected.source_text }}</textarea>
+          </label>
+          {% if selected.asset_type != 'agent_deterministic' %}
+          <div class="cr-switch">
+            <label><input type="checkbox" name="semantic_enabled" value="1" {% if selected.semantic_enabled %}checked{% endif %}>启用订单备注模型语义标准化</label>
+            <p>模型只理解口语表达；最终输出仍来自本条已维护规则。</p>
+          </div>
+          <div class="cr-field">触发条件</div>
+          <div id="cr-condition-list">
+            {% for condition in selected.conditions %}
+            <div class="cr-condition-block">
+              <div class="cr-row2">
+                <label class="cr-field">条件字段
+                  <select name="condition_field">
+                    {% for field in condition_fields %}
+                    <option value="{{ field }}" {% if condition.field == field %}selected{% endif %}>{{ field }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
+                <label class="cr-field">判断方式
+                  <select name="condition_operator">
+                    {% for operator in condition_operators %}
+                    <option value="{{ operator }}" {% if condition.operator == operator %}selected{% endif %}>{{ condition_operator_labels[operator] }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
+              </div>
+              <label class="cr-field">条件值<input name="condition_value" value="{{ condition.value }}" placeholder="多值用；分隔"></label>
+              <button type="button" class="js-remove-condition">删除该条件</button>
+            </div>
+            {% endfor %}
+          </div>
+          <button type="button" class="cr-add-condition" id="cr-add-condition">＋ 增加触发条件</button>
+          {% else %}
+          {% set agent = selected.agent_rule %}
+          <div class="cr-impact">Agent Excel基础规则保持不变；保存时按原规则ID生成页面修改层，可从修改记录恢复。</div>
+          <div class="cr-row2">
+            <label class="cr-field">条件胶系<input name="agent_condition_glue" value="{{ agent.get('条件胶系', '') }}" placeholder="例如 NY2150"></label>
+            <label class="cr-field">条件关键词<input name="agent_condition_keyword" value="{{ agent.get('条件关键词', '') }}" placeholder="多值用；分隔"></label>
+          </div>
+          <div class="cr-row2">
+            <label class="cr-field">条件铜厚<input name="agent_condition_copper" value="{{ agent.get('条件铜厚', '') }}" placeholder="例如 &lt;1oz"></label>
+            <label class="cr-field">条件厚度<input name="agent_condition_thickness" value="{{ agent.get('条件厚度', '') }}" placeholder="例如 &gt;=0.8"></label>
+          </div>
+          <label class="cr-field">条件尺寸<input name="agent_condition_size" value="{{ agent.get('条件尺寸', '') }}" placeholder="例如 37*49"></label>
+          {% endif %}
+          <div class="cr-row2">
+            {% if selected.asset_type == 'agent_deterministic' %}
+            <label class="cr-field">生效参数
+              <select name="agent_override_field">
+                {% for override_field, field_label in agent_override_fields.items() %}
+                <option value="{{ override_field }}" {% if selected.agent_rule.get('覆盖字段') == override_field %}selected{% endif %}>{{ field_label }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            {% else %}
+            <label class="cr-field">目标字段
+              <select name="target_field" id="cr-target-field">
+                {% for field, targets in field_targets.items() %}
+                  {% for target in targets %}
+                  <option value="{{ target }}" data-business="{{ field }}" {% if selected.target_field == target %}selected{% endif %}>{{ target_field_labels.get(target, field) }}</option>
+                  {% endfor %}
+                {% endfor %}
+              </select>
+            </label>
+            {% endif %}
+            <label class="cr-field">目标结果<input name="target_value" value="{{ selected.target_value }}" required></label>
+          </div>
+          <div class="cr-row2">
+            <label class="cr-field">优先级<input name="priority" type="number" min="1" max="999" value="{{ selected.priority }}"></label>
+            <label class="cr-field">规则状态
+              <span><input name="enabled" type="checkbox" value="1" {% if selected.enabled %}checked{% endif %}> 启用</span>
+            </label>
+          </div>
+          <label class="cr-field">业务依据<input name="approval_basis" value="{{ selected.approval_basis }}" placeholder="例如：2026-07-24业务确认"></label>
+          {% if selected.rule_id %}
+          <div class="cr-impact">来源：{{ selected.origin }}。保存后立即进入营销转码 Agent，修改记录可恢复。</div>
+          {% else %}
+          <div class="cr-impact">保存后立即进入营销转码Agent运行时；原始规则文件不会被覆盖，修改可从记录中恢复。</div>
+          {% endif %}
+        </div>
+        <div class="cr-editor-foot">
+          {% if selected.rule_id %}
+          <button class="cr-button-danger" type="submit" name="action" value="delete" onclick="return confirm('确认删除这条规则？删除后立即停止生效。')">删除规则</button>
+          {% endif %}
+          <a class="cr-button-secondary" href="{{ url_for('main.admin_transcode_agent_customer_rules', customer_key=workspace.selected_customer_key, business_field=workspace.selected_field, rule_kind=workspace.rule_kind) }}">取消</a>
+          <button class="cr-button" type="submit" name="action" value="save">保存并生效</button>
+        </div>
+      </form>
+      {% else %}
+      <div class="cr-editor-head"><h3>规则编辑</h3></div>
+      <div class="cr-empty">选择一条规则进行编辑，或新增规则。</div>
+      <div></div>
+      {% endif %}
+    </aside>
+  </section>
+
+  {% if show_history %}
+  <section class="cr-history">
+    <div class="cr-history-head">
+      <h2>修改记录</h2>
+      <a class="cr-button-secondary" href="{{ url_for('main.admin_transcode_agent_customer_rules', rule_kind=workspace.rule_kind) }}">关闭</a>
+    </div>
+    <table>
+      <thead><tr><th>时间</th><th>客户</th><th>参数</th><th>操作</th><th>规则</th><th>操作人</th><th></th></tr></thead>
+      <tbody>
+        {% for change in rule_changes %}
+        <tr>
+          <td>{{ change.created_at }}</td><td>{{ change.customer }}</td><td>{{ change.business_field }}</td>
+          <td>{{ change.action }}</td><td>{{ change.source_text or change.rule_id }}</td><td>{{ change.employee_id }}</td>
+          <td>
+            {% if change.action != '恢复' %}
+            <form method="post"><input type="hidden" name="change_id" value="{{ change.id }}"><button class="cr-button-secondary" name="action" value="restore" type="submit">恢复此修改</button></form>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7">暂无页面修改记录。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+</div>
+
+<template id="cr-condition-template">
+  <div class="cr-condition-block">
+    <div class="cr-row2">
+      <label class="cr-field">条件字段
+        <select name="condition_field">
+          {% for field in condition_fields %}<option value="{{ field }}">{{ field }}</option>{% endfor %}
+        </select>
+      </label>
+      <label class="cr-field">判断方式
+        <select name="condition_operator">
+          {% for operator in condition_operators %}<option value="{{ operator }}">{{ condition_operator_labels[operator] }}</option>{% endfor %}
+        </select>
+      </label>
+    </div>
+    <label class="cr-field">条件值<input name="condition_value" value="" placeholder="多值用；分隔"></label>
+    <button type="button" class="js-remove-condition">删除该条件</button>
+  </div>
+</template>
+
+<script>
+  (() => {
+    const list = document.getElementById("cr-condition-list");
+    const addButton = document.getElementById("cr-add-condition");
+    const template = document.getElementById("cr-condition-template");
+    if (list && addButton && template) {
+      addButton.addEventListener("click", () => {
+        list.appendChild(template.content.cloneNode(true));
+      });
+      list.addEventListener("click", (event) => {
+        const button = event.target.closest(".js-remove-condition");
+        if (!button) return;
+        if (list.querySelectorAll(".cr-condition-block").length <= 1) {
+          window.alert("至少保留一条触发条件。");
+          return;
+        }
+        button.closest(".cr-condition-block").remove();
+      });
+    }
+
+    const businessSelect = document.getElementById("cr-business-field");
+    const targetSelect = document.getElementById("cr-target-field");
+    if (businessSelect && targetSelect) {
+      const refreshTargets = () => {
+        const business = businessSelect.value;
+        let firstVisible = null;
+        let selectedVisible = false;
+        Array.from(targetSelect.options).forEach((option) => {
+          const visible = option.dataset.business === business;
+          option.hidden = !visible;
+          option.disabled = !visible;
+          if (visible && !firstVisible) firstVisible = option;
+          if (visible && option.selected) selectedVisible = true;
+        });
+        if (!selectedVisible && firstVisible) firstVisible.selected = true;
+      };
+      businessSelect.addEventListener("change", refreshTargets);
+      refreshTargets();
+    }
+  })();
+</script>
+{% endblock %}

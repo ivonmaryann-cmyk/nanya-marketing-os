@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0",
+  "policy": "只允许基于正式规则自身的冲突、条件不足和非唯一映射进入人工确认；禁止引用测试正确码或结果对比",
+  "rules": [
+    {
+      "rule_id": "CPR-YIDUN-HW-MIXED-COPPER",
+      "status": "approved",
+      "basis_type": "non_unique_mapping",
+      "customers": ["依顿", "伊顿"],
+      "contains_all": ["NY2150H"],
+      "contains_any_groups": [["HW", "华为"]],
+      "copper_pair_mixed_threshold": 1.5,
+      "field": "基板级别",
+      "field_keys": ["grade"],
+      "reason": "HW/华为订单两面铜厚跨越1.5oz阈值，正式规则未定义非对称铜厚应选择AP还是A1",
+      "business_basis": "客户规则存在两个合法输出但缺少非对称铜厚选择条件"
+    },
+    {
+      "rule_id": "CPR-YIDUN-AUTO-HW-CONFLICT",
+      "status": "approved",
+      "basis_type": "rule_conflict",
+      "customers": ["依顿", "伊顿"],
+      "contains_all": ["NY2150H"],
+      "contains_any_groups": [["HW", "华为"], ["汽车板", "汽板", "下汽车板", "CAR"]],
+      "field": "基板级别",
+      "field_keys": ["grade"],
+      "reason": "订单同时满足汽车板AC与HW/华为AP或A1规则，且没有可消解冲突的已批准优先条件",
+      "business_basis": "同一字段的已批准客户规则在相同输入下产生不同输出"
+    }
+  ]
+}

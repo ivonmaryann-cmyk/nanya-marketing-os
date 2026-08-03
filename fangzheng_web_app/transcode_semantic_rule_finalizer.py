@@ -6,22 +6,12 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from .transcode_agent_standard import OFFICIAL_GRADE_CODES
+
 
 PASS_STATUS = "程序校验通过"
 EXECUTION_MODE = "结构化后可确定性执行"
-VALID_GRADE_CODES = {
-    "AC",
-    "AD",
-    "AH",
-    "AL",
-    "AM",
-    "AP",
-    "AT",
-    "A1",
-    "A2",
-    "A5",
-    "F1",
-}
+VALID_GRADE_CODES = set(OFFICIAL_GRADE_CODES)
 DEFAULT_OVERRIDE_PATH = (
     Path(__file__).resolve().parents[1]
     / "model_skills/customer-special-rule-maintenance/references/semantic_rule_atomic_overrides.json"
@@ -173,6 +163,7 @@ def _build_atomic_row(
         "客户代码": str(candidate.get("customer_code") or "").strip(),
         "客户简称": str(candidate.get("customer_name") or "").strip(),
         "来源行号": candidate.get("source_row"),
+        "来源列": str(candidate.get("source_column") or "CCL特殊规则").strip(),
         "业务字段": str(candidate.get("business_field") or "").strip(),
         "规则原文": str(candidate.get("source_text") or "").strip(),
         "语义类型": str(item.get("semantic_type") or "").strip(),

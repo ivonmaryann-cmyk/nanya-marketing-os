@@ -85,14 +85,8 @@ from .inventory_detail_service import (
     queue_inventory_detail_job,
 )
 from .job_control import cancel_job_process, reconcile_interrupted_jobs
-from .order_reprice_service import JINGWANG_CUSTOMER_PRICE_CHECK_MODE
-from .order_reprice_service import JINGWANG_FACTORY_MERGE_MODE
-from .order_reprice_service import JINGWANG_PRICE_CHECK_MODE
 from .order_reprice_service import MODE_LABELS as ORDER_REPRICE_MODE_LABELS
 from .order_reprice_service import queue_order_reprice_job
-from .pdf_excel_service import ALLOWED_EXTENSIONS as PDF_EXCEL_ALLOWED_EXTENSIONS
-from .pdf_excel_service import FEATURE as PDF_EXCEL_FEATURE
-from .pdf_excel_service import queue_pdf_excel_job
 from .price_calculation_customers import (
     PRICE_CALCULATION_CUSTOMERS,
     default_price_customer_key,
@@ -103,7 +97,6 @@ from .price_calculation_rules import (
     get_active_price_rule_version,
     get_price_rule_history,
     normalize_price_quote_variant,
-    save_new_guanghe_rule_version,
     save_new_price_rule_version,
 )
 from .price_calculation_service import calculate_price_quote, queue_price_calculation_job, run_jingwang_regression
@@ -130,9 +123,91 @@ from .transcode_agent_rules import (
     get_transcode_agent_rule_count,
     get_transcode_agent_rule_file_path,
     get_transcode_agent_rule_history,
+    load_transcode_agent_rules,
     save_new_transcode_agent_rule_version,
 )
-from .transcode_agent_service import calculate_transcode_agent_quote, queue_transcode_agent_job
+from .transcode_agent_service import (
+    calculate_transcode_agent_quote,
+    confirm_transcode_agent_item,
+    finalize_transcode_agent_confirmations,
+    list_transcode_agent_confirmations,
+    load_transcode_module,
+    queue_transcode_agent_job,
+    queue_transcode_agent_single_job,
+    reevaluate_transcode_agent_confirmations,
+    skip_transcode_agent_confirmation_row,
+)
+from .transcode_customer_rule_admin import (
+    AGENT_ASSET_TYPE,
+    AGENT_OVERRIDE_TO_BUSINESS_FIELD,
+    BUSINESS_FIELDS as CUSTOMER_RULE_BUSINESS_FIELDS,
+    BUSINESS_FIELD_TARGETS as CUSTOMER_RULE_FIELD_TARGETS,
+    TARGET_FIELD_LABELS as CUSTOMER_RULE_TARGET_FIELD_LABELS,
+    CONDITION_FIELDS as CUSTOMER_RULE_CONDITION_FIELDS,
+    CONDITION_OPERATOR_LABELS as CUSTOMER_RULE_CONDITION_OPERATOR_LABELS,
+    CONDITION_OPERATORS as CUSTOMER_RULE_CONDITION_OPERATORS,
+    CustomerRuleMaintenanceError,
+    agent_rules_for_customer_workspace,
+    build_agent_rule_from_form,
+    build_rule_from_form,
+    customer_rule_workspace,
+    delete_agent_rule_override,
+    delete_rule_override,
+    find_rule,
+    list_customer_rule_changes,
+    make_customer_key,
+    restore_customer_rule_change,
+    save_agent_rule_override,
+    save_rule_override,
+    validate_customer_maintained_rule,
+)
+from .transcode_model_config import (
+    load_user_model_config,
+    test_user_model_connection,
+    update_user_model_config,
+)
+from .transcode_semantic_rules import (
+    get_active_transcode_semantic_rule_version,
+    load_transcode_semantic_rules,
+)
+from .transcode_rule_center import (
+    BUSINESS_FIELDS as RULE_CENTER_BUSINESS_FIELDS,
+    RuleCenterError,
+    build_base_rule_from_form,
+    build_asset_row_from_form,
+    build_rule_center_lookup_tables,
+    build_confirmation_policy_from_form,
+    confirmation_field_meta,
+    create_backup as create_rule_center_backup,
+    delete_base_override,
+    delete_asset_override,
+    delete_confirmation_policy,
+    delete_lookup_override,
+    ensure_daily_backup as ensure_rule_center_daily_backup,
+    find_base_override,
+    find_asset_row,
+    list_backups as list_rule_center_backups,
+    list_base_overrides,
+    list_asset_rows,
+    list_confirmation_policy_views,
+    list_lookup_rows,
+    list_rule_center_changes,
+    load_score_config,
+    lookup_group_meta,
+    asset_group_meta,
+    restore_backup as restore_rule_center_backup,
+    rule_center_summary,
+    save_base_override,
+    save_asset_override,
+    save_confirmation_policy,
+    save_lookup_override,
+    save_score_config,
+)
+from .transcode_agent_standard import (
+    HIGH_SPEED_MIL_TO_MM,
+    OFFICIAL_GRADE_CODES,
+    STANDARD_MM_SIZE_ALIASES,
+)
 from .transcode_service import calculate_transcode_quote, queue_transcode_job
 from .transcode_special_import_service import FEATURE_NAME as SPECIAL_IMPORT_FEATURE, queue_transcode_special_import_job
 from .transcode_special_rules import (
@@ -189,8 +264,8 @@ FUNCTION_CARDS = [
     },
     {
         "key": "in_transit",
-        "title": "深南在途核对",
-        "desc": "上传系统导出数据和客户在途数据，自动核对数量、品名和匹配状态。",
+        "title": "在途核对",
+        "desc": "上传包含厂内明细和客户明细的 Excel，自动核对数量、品名、日期和待出货明细。",
         "route": "main.in_transit",
         "stage": "test",
     },
@@ -206,13 +281,6 @@ FUNCTION_CARDS = [
         "title": "订单改价",
         "desc": "上传胜宏客户明细、厂内明细和报价单，自动完成订单匹配、价格核对与改价结果校验。",
         "route": "main.order_reprice",
-        "stage": "test",
-    },
-    {
-        "key": "pdf_excel",
-        "title": "PDF/图片转Excel",
-        "desc": "批量上传 PDF 或图片，通用识别采购单版式和明细表，输出采购单与明细数据 Excel。",
-        "route": "main.pdf_excel",
         "stage": "test",
     },
     {
@@ -232,7 +300,6 @@ FUNCTION_CARDS = [
 ]
 
 FEATURE_LABELS = {
-    "pdf_excel": "PDF/图片转Excel",
     "fangzheng": "方正价格计算",
     "transcode": "营销自动化转码",
     "transcode_agent": "营销转码Agent",
@@ -369,36 +436,6 @@ ORDER_REPRICE_MODE_META = {
         "factory_hint": "字段：客户单号、项次、客户产品编号、单价",
         "button": "开始改价核对",
     },
-    JINGWANG_FACTORY_MERGE_MODE: {
-        "tab": "厂内数据合并",
-        "title": "景旺厂内701/411数据合并",
-        "history": "厂内数据合并",
-        "factory_701_label": "厂内701",
-        "factory_701_hint": "字段：订单号/出货单号、项次、客户单号、客户产品编号、单价",
-        "factory_411_label": "厂内411",
-        "factory_411_hint": "字段：单别单号、项次、客户单号、客户产品编号、单价",
-        "button": "开始合并",
-    },
-    JINGWANG_CUSTOMER_PRICE_CHECK_MODE: {
-        "tab": "客户数据核价",
-        "title": "景旺客户数据核价",
-        "history": "客户数据核价",
-        "customer_hint": "字段：物料编号、采购单号.1、价格",
-        "merged_label": "701+411合并表",
-        "merged_hint": "上传第一步生成的701+411合并表",
-        "button": "开始核价",
-    },
-    JINGWANG_PRICE_CHECK_MODE: {
-        "tab": "订单核价",
-        "title": "景旺订单核价",
-        "history": "订单核价",
-        "customer_hint": "字段：物料编号、采购单号.1、价格",
-        "factory_701_label": "厂内701",
-        "factory_701_hint": "字段：订单号/出货单号、项次、客户单号、客户产品编号、单价",
-        "factory_411_label": "厂内411",
-        "factory_411_hint": "字段：单别单号、项次、客户单号、客户产品编号、单价",
-        "button": "开始订单核价",
-    },
 }
 
 ORDER_REPRICE_CUSTOMERS = [
@@ -408,7 +445,7 @@ ORDER_REPRICE_CUSTOMERS = [
         "enabled": True,
         "modes": ["block1", "block2", "block3"],
     },
-    {"key": "jingwang", "label": "景旺", "enabled": True, "modes": [JINGWANG_FACTORY_MERGE_MODE, JINGWANG_CUSTOMER_PRICE_CHECK_MODE]},
+    {"key": "jingwang", "label": "景旺", "enabled": False, "modes": []},
     {"key": "bomin", "label": "博敏", "enabled": False, "modes": []},
 ]
 
@@ -503,6 +540,98 @@ def _bomin_quote_authorized() -> bool:
     if not require_login():
         return True
     return _valid_bomin_quote_token() or _localhost_bomin_quote_allowed()
+
+
+def _internal_transcode_agent_error(message: str, status_code: int):
+    payload = {
+        "status": "失败",
+        "formal_code": "",
+        "candidate_code": "",
+        "pending_code": "",
+        "confidence": 0,
+        "summary": message,
+        "note": message,
+        "reason": message,
+        "error": message,
+        "field_evidence": [],
+        "rule_version": "",
+        "agent_rule_version": "",
+        "requires_manual_completion": False,
+        "incomplete_fields": [],
+        "aps_query_ready": False,
+    }
+    return jsonify(payload), status_code
+
+
+def _authorize_internal_transcode_agent():
+    expected_token = os.environ.get("TRANSCODE_AGENT_INTERNAL_TOKEN", "").strip()
+    if not expected_token:
+        return _internal_transcode_agent_error(
+            "内部转码服务未配置 TRANSCODE_AGENT_INTERNAL_TOKEN",
+            503,
+        )
+
+    provided_token = request.headers.get("X-Internal-Token", "").strip()
+    if not provided_token or not hmac.compare_digest(provided_token, expected_token):
+        return _internal_transcode_agent_error("内部服务 Token 无效", 401)
+    return None
+
+
+def _normalize_internal_transcode_agent_quote(data: dict) -> dict:
+    status = str(data.get("status") or "失败").strip() or "失败"
+    candidate_code = str(data.get("candidate_code") or "").strip()
+    formal_code = str(data.get("formal_code") or data.get("result") or "").strip()
+    if status != "成功":
+        formal_code = ""
+
+    pending_code = str(data.get("pending_code") or "").strip()
+    if status == "待确认":
+        pending_code = pending_code or candidate_code
+    else:
+        pending_code = ""
+
+    note = str(data.get("summary") or data.get("note") or "").strip()
+    error = str(data.get("reason") or data.get("error") or "").strip()
+    field_evidence = data.get("field_evidence") or []
+    incomplete_fields = []
+    for item in field_evidence:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("field_key") or "").strip() != "structure":
+            continue
+        structure_code = str(item.get("code") or "").strip()
+        hit_type = str(item.get("hit_type") or "").strip()
+        if structure_code == "*" or hit_type == "占位符":
+            incomplete_fields.append("结构码")
+            break
+
+    # Older callers may omit field_evidence; '*' is the established structure placeholder.
+    if not incomplete_fields and any(
+        "*" in code for code in (formal_code, candidate_code, pending_code) if code
+    ):
+        incomplete_fields.append("结构码")
+
+    requires_manual_completion = bool(incomplete_fields)
+    return {
+        "status": status,
+        "formal_code": formal_code,
+        "candidate_code": candidate_code,
+        "pending_code": pending_code,
+        "confidence": data.get("confidence", 0),
+        "summary": note,
+        "note": note,
+        "reason": error,
+        "error": error,
+        "field_evidence": field_evidence,
+        "rule_version": str(data.get("rule_version") or ""),
+        "agent_rule_version": str(data.get("agent_rule_version") or ""),
+        "order_semantic_model": data.get("order_semantic_model") or {},
+        "requires_manual_completion": requires_manual_completion,
+        "incomplete_fields": incomplete_fields,
+        "aps_query_ready": bool(
+            status == "成功" and formal_code and not requires_manual_completion
+        ),
+    }
 
 
 @bp.app_context_processor
@@ -622,18 +751,6 @@ def _price_calculation_manifest(job: dict) -> dict:
         return {}
 
 
-def _pdf_excel_manifest(job: dict) -> dict:
-    if not job or job.get("feature") != PDF_EXCEL_FEATURE:
-        return {}
-    manifest_path = Path(job.get("stored_input_path") or "")
-    if not manifest_path.exists():
-        return {}
-    try:
-        return json.loads(manifest_path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-
 def _price_customer_from_request() -> str:
     key = (
         request.values.get("customer_key")
@@ -678,9 +795,7 @@ def _decorate_job(job) -> dict:
         manifest = _order_reprice_manifest(data)
         mode = _order_reprice_mode_from_job(data, manifest)
         data["order_reprice_mode"] = mode
-        is_jingwang_mode = mode in {JINGWANG_FACTORY_MERGE_MODE, JINGWANG_CUSTOMER_PRICE_CHECK_MODE, JINGWANG_PRICE_CHECK_MODE}
-        data["customer_key"] = manifest.get("customer_key") or ("jingwang" if is_jingwang_mode else "shenghong")
-        data["customer_label"] = manifest.get("customer_label") or ("景旺" if is_jingwang_mode else "胜宏")
+        data["customer_label"] = manifest.get("customer_label") or "胜宏"
         data["function_type"] = ORDER_REPRICE_MODE_META.get(mode, {}).get("history", "订单改价")
         stats = _order_reprice_stats(data, mode)
         data["order_reprice_stats"] = stats
@@ -737,12 +852,6 @@ def _order_reprice_stats(job: dict, mode: str) -> dict:
                 return _order_reprice_block2_stats(result_path)
             if mode == "block3":
                 return _order_reprice_block3_stats(result_path)
-            if mode == JINGWANG_FACTORY_MERGE_MODE:
-                return _order_reprice_jingwang_merge_stats(result_path)
-            if mode == JINGWANG_CUSTOMER_PRICE_CHECK_MODE:
-                return _order_reprice_jingwang_stats(result_path, include_covered=False)
-            if mode == JINGWANG_PRICE_CHECK_MODE:
-                return _order_reprice_jingwang_stats(result_path, include_covered=True)
         except Exception:
             pass
     return _order_reprice_fallback_stats(job, mode)
@@ -767,22 +876,6 @@ def _order_reprice_fallback_stats(job: dict, mode: str) -> dict:
             {"label": "价格正确数", "value": success},
             {"label": "价格异常数", "value": fail},
             {"label": "未匹配数", "value": "-"},
-            {"label": "异常率", "value": _format_percent(fail, total)},
-        ]
-        return {"total": total, "issue_count": fail, "cards": cards}
-    if mode == JINGWANG_FACTORY_MERGE_MODE:
-        cards = [
-            {"label": "合并表行数", "value": success or total},
-            {"label": "异常数", "value": fail},
-            {"label": "覆盖数量", "value": "-"},
-            {"label": "处理状态", "value": job.get("status") or "-"},
-        ]
-        return {"total": success or total, "issue_count": fail, "cards": cards}
-    if mode in {JINGWANG_CUSTOMER_PRICE_CHECK_MODE, JINGWANG_PRICE_CHECK_MODE}:
-        cards = [
-            {"label": "客户总记录数", "value": total},
-            {"label": "价格一致数", "value": success},
-            {"label": "异常/未匹配数", "value": fail},
             {"label": "异常率", "value": _format_percent(fail, total)},
         ]
         return {"total": total, "issue_count": fail, "cards": cards}
@@ -844,44 +937,6 @@ def _order_reprice_block3_stats(result_path: Path) -> dict:
         {"label": "未匹配数", "value": unmatched},
     ]
     return {"total": total, "issue_count": error + unmatched, "cards": cards}
-
-
-def _order_reprice_jingwang_merge_stats(result_path: Path) -> dict:
-    summary = _workbook_summary(result_path, "合并汇总")
-    rows_701 = _summary_int(summary, "701原始行数") or _summary_int(summary, "701行数")
-    rows_411 = _summary_int(summary, "411原始行数") or _summary_int(summary, "411行数")
-    filtered = _summary_int(summary, "701过滤删除数") + _summary_int(summary, "411过滤删除数")
-    covered_411 = _summary_int(summary, "411被701覆盖数量")
-    merged = _summary_int(summary, "合并表行数")
-    cards = [
-        {"label": "701原始行数", "value": rows_701},
-        {"label": "411原始行数", "value": rows_411},
-        {"label": "过滤删除数", "value": filtered},
-        {"label": "411被701覆盖数", "value": covered_411},
-        {"label": "合并表行数", "value": merged},
-    ]
-    return {"total": merged, "issue_count": 0, "cards": cards}
-
-
-def _order_reprice_jingwang_stats(result_path: Path, *, include_covered: bool = True) -> dict:
-    summary = _workbook_summary(result_path, "核价汇总")
-    total = _summary_int(summary, "客户总记录数")
-    matched = _summary_int(summary, "客户已匹配数量")
-    unmatched = _summary_int(summary, "客户未匹配数量")
-    price_equal = _summary_int(summary, "价格一致数量") or _summary_int(summary, "金额一致数量")
-    price_mismatch = _summary_int(summary, "价格不一致数量") or _summary_int(summary, "金额不一致数量")
-    covered_411 = _summary_int(summary, "411被701覆盖数量")
-    issue_count = price_mismatch + unmatched
-    cards = [
-        {"label": "客户总记录数", "value": total},
-        {"label": "客户已匹配数", "value": matched},
-        {"label": "客户未匹配数", "value": unmatched},
-        {"label": "价格一致数", "value": price_equal},
-        {"label": "价格不一致数", "value": price_mismatch},
-    ]
-    if include_covered:
-        cards.append({"label": "411被701覆盖数", "value": covered_411})
-    return {"total": total, "issue_count": issue_count, "cards": cards}
 
 
 def _workbook_records(path: Path, sheet_name: str) -> list[dict]:
@@ -947,13 +1002,439 @@ def transcode_agent():
     if redirect_resp:
         return redirect_resp
     jobs = list_jobs(current_employee(), limit=20, feature=TRANSCODE_AGENT_FEATURE)
+    model_config = load_user_model_config(current_employee())
     return render_template(
         "transcode_agent.html",
         jobs=jobs,
         active_rule_version=get_active_transcode_rule_version(),
         active_agent_rule_version=get_active_transcode_agent_rule_version() or "未上传Agent规则",
         agent_rule_count=get_transcode_agent_rule_count(),
+        model_config=model_config,
         active_job=_active_job_for(TRANSCODE_AGENT_FEATURE, jobs),
+        auto_confirm=request.args.get("auto_confirm") == "1",
+    )
+
+
+@bp.route("/admin/transcode-rule-center", methods=["GET", "POST"])
+def admin_transcode_rule_center():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    section = str(request.values.get("section") or "overview").strip()
+    if request.method == "POST":
+        action = str(request.form.get("action") or "").strip()
+        try:
+            if action == "save_base":
+                existing = find_base_override(request.form.get("rule_id") or "")
+                rule = build_base_rule_from_form(request.form, existing=existing)
+                save_base_override(rule, updated_by=employee_id)
+                flash(f"基础规则已保存并立即生效：{rule['rule_id']}", "success")
+                return redirect(
+                    url_for(
+                        "main.admin_transcode_rule_center",
+                        section="base",
+                        rule_id=rule["rule_id"],
+                    )
+                )
+            if action == "delete_base":
+                delete_base_override(request.form.get("rule_id") or "", updated_by=employee_id)
+                flash("基础规则已停用并保留修改记录。", "success")
+                return redirect(url_for("main.admin_transcode_rule_center", section="base"))
+            if action == "save_lookup":
+                save_lookup_override(request.form, updated_by=employee_id)
+                flash("基础映射已保存并立即生效。", "success")
+                return redirect(
+                    url_for(
+                        "main.admin_transcode_rule_center",
+                        section="base",
+                        base_view="mapping",
+                        lookup_group=request.form.get("lookup_group") or "glue_code",
+                    )
+                )
+            if action == "delete_lookup":
+                delete_lookup_override(
+                    request.form.get("lookup_group") or "",
+                    request.form.get("lookup_input") or "",
+                    updated_by=employee_id,
+                )
+                flash("基础映射已停用并保留修改记录。", "success")
+                return redirect(
+                    url_for(
+                        "main.admin_transcode_rule_center",
+                        section="base",
+                        base_view="mapping",
+                        lookup_group=request.form.get("lookup_group") or "glue_code",
+                    )
+                )
+            if action == "save_asset":
+                from .transcode_agent_rules import load_transcode_agent_mapping_tables
+
+                asset_group = request.form.get("asset_group") or "Agent胶系主表"
+                existing = find_asset_row(
+                    load_transcode_agent_mapping_tables(),
+                    asset_group,
+                    request.form.get("asset_row_id") or "",
+                )
+                group, row = build_asset_row_from_form(request.form, existing=existing)
+                save_asset_override(group, row, updated_by=employee_id)
+                flash("规则资产已保存并立即生效。", "success")
+                return redirect(
+                    url_for(
+                        "main.admin_transcode_rule_center",
+                        section="base",
+                        base_view="assets",
+                        asset_group=group,
+                        asset_row_id=row["映射ID"],
+                    )
+                )
+            if action == "delete_asset":
+                group = request.form.get("asset_group") or ""
+                delete_asset_override(
+                    group,
+                    request.form.get("asset_row_id") or "",
+                    updated_by=employee_id,
+                )
+                flash("规则资产已停用并保留修改记录。", "success")
+                return redirect(
+                    url_for(
+                        "main.admin_transcode_rule_center",
+                        section="base",
+                        base_view="assets",
+                        asset_group=group,
+                    )
+                )
+            if action == "save_score":
+                save_score_config(request.form, updated_by=employee_id)
+                flash("评分与人工确认标准已保存并立即生效。", "success")
+                return redirect(url_for("main.admin_transcode_rule_center", section="scoring"))
+            if action == "save_confirmation_policy":
+                policy_views = list_confirmation_policy_views()
+                selected = next(
+                    (
+                        item["native_rule"]
+                        for item in policy_views
+                        if item["rule_id"] == str(request.form.get("confirmation_rule_id") or "")
+                    ),
+                    None,
+                )
+                rule = build_confirmation_policy_from_form(request.form, existing=selected)
+                save_confirmation_policy(rule, updated_by=employee_id)
+                flash("人工确认触发条件已保存并立即生效。", "success")
+                return redirect(
+                    url_for(
+                        "main.admin_transcode_rule_center",
+                        section="scoring",
+                        confirmation_rule_id=rule["rule_id"],
+                    )
+                )
+            if action == "delete_confirmation_policy":
+                delete_confirmation_policy(
+                    request.form.get("confirmation_rule_id") or "",
+                    updated_by=employee_id,
+                )
+                flash("人工确认触发条件已停用。", "success")
+                return redirect(url_for("main.admin_transcode_rule_center", section="scoring"))
+            if action == "backup":
+                path = create_rule_center_backup(reason="页面手动备份")
+                flash(f"规则已备份：{path.name}", "success")
+                return redirect(url_for("main.admin_transcode_rule_center", section="backups"))
+            if action == "restore_backup":
+                restore_rule_center_backup(
+                    request.form.get("backup_name") or "",
+                    updated_by=employee_id,
+                )
+                flash("备份已恢复，规则立即生效。", "success")
+                return redirect(url_for("main.admin_transcode_rule_center", section="backups"))
+            raise RuleCenterError("未知的规则维护操作。")
+        except (RuleCenterError, ValueError, OSError, json.JSONDecodeError) as exc:
+            flash(f"规则配置失败：{exc}", "error")
+
+    ensure_rule_center_daily_backup()
+    agent_rules = load_transcode_agent_rules()
+    semantic_version = get_active_transcode_semantic_rule_version()
+    semantic_rules = load_transcode_semantic_rules(semantic_version) if semantic_version else []
+    from .transcode_agent_rules import load_transcode_agent_mapping_tables
+
+    mapping_tables = load_transcode_agent_mapping_tables()
+    engine = load_transcode_module()
+    rule_path = get_transcode_rule_file_path(get_active_transcode_rule_version())
+    lookup_tables = engine.build_lookup_tables(engine.load_rule_sheets(str(rule_path)))
+    lookup_tables = build_rule_center_lookup_tables(
+        lookup_tables,
+        mapping_tables,
+        official_grade_codes=set(OFFICIAL_GRADE_CODES),
+        standard_sizes=STANDARD_MM_SIZE_ALIASES,
+        high_speed_mil=HIGH_SPEED_MIL_TO_MM,
+        copper_micron=engine.MICRON_COPPER_MAP,
+        copper_types=engine.SPECIAL_COPPER_MAP,
+        copper_valid=engine.VALID_COPPER_SPECS,
+        size_ranges=engine.STANDARD_SIZE_RANGES,
+    )
+    lookup_groups = lookup_group_meta()
+    lookup_group = request.args.get("lookup_group") or "glue_code"
+    if lookup_group not in lookup_groups:
+        lookup_group = "glue_code"
+    asset_groups = asset_group_meta()
+    asset_group = request.args.get("asset_group") or "Agent胶系主表"
+    if asset_group not in asset_groups:
+        asset_group = "Agent胶系主表"
+    asset_rows = list_asset_rows(mapping_tables, asset_group=asset_group)
+    selected_asset = find_asset_row(
+        mapping_tables,
+        asset_group,
+        request.args.get("asset_row_id") or "",
+    )
+    base_rules = list_base_overrides()
+    selected_rule = find_base_override(request.args.get("rule_id") or "")
+    confirmation_policies = list_confirmation_policy_views()
+    selected_confirmation_policy = next(
+        (
+            item
+            for item in confirmation_policies
+            if item["rule_id"] == str(request.args.get("confirmation_rule_id") or "")
+        ),
+        None,
+    )
+    summary = rule_center_summary(
+        mapping_tables=mapping_tables,
+        agent_rules=agent_rules,
+        semantic_rules=semantic_rules,
+    )
+    coverage_rows = [
+        {"category": "标准映射", "source": "最新版胶系主表及官方编码规范", "count": sum(len(list_lookup_rows(lookup_tables, group_key=key)) for key in lookup_groups), "status": "已可视化维护"},
+        {"category": "客户与算法规则", "source": "活动Agent辅助映射表", "count": sum(len(mapping_tables.get(key, [])) for key in asset_groups), "status": "已可视化维护"},
+        {"category": "客户确定性规则", "source": "活动Agent机器规则", "count": len(agent_rules), "status": "按客户维护"},
+        {"category": "订单备注语义", "source": "活动语义规则", "count": len(semantic_rules), "status": "按客户维护"},
+        {"category": "旧特殊需求兼容", "source": "基础规则表/特殊需求", "count": len(lookup_tables.get("special_by_name") or {}), "status": "只读兼容回退"},
+        {"category": "客户下单兼容", "source": "基础规则表/客户下单与胶系基板转换", "count": len(lookup_tables.get("customer_order_rules") or []), "status": "只读兼容回退"},
+        {"category": "评分与人工确认", "source": "统一规则配置页面", "count": len(confirmation_policies), "status": "已可视化维护"},
+    ]
+    return render_template(
+        "transcode_rule_center.html",
+        section=section,
+        summary=summary,
+        business_fields=RULE_CENTER_BUSINESS_FIELDS,
+        base_rules=base_rules,
+        selected_rule=selected_rule,
+        score_config=load_score_config(),
+        confirmation_fields=confirmation_field_meta(),
+        confirmation_policies=confirmation_policies,
+        selected_confirmation_policy=selected_confirmation_policy,
+        changes=list_rule_center_changes(),
+        customer_changes=list_customer_rule_changes(limit=30),
+        backups=list_rule_center_backups(),
+        lookup_groups=lookup_groups,
+        lookup_group=lookup_group,
+        lookup_rows=list_lookup_rows(lookup_tables, group_key=lookup_group),
+        asset_groups=asset_groups,
+        asset_group=asset_group,
+        asset_rows=asset_rows,
+        selected_asset=selected_asset,
+        coverage_rows=coverage_rows,
+        active_base_version=get_active_transcode_rule_version(),
+        active_agent_version=get_active_transcode_agent_rule_version(),
+    )
+
+
+@bp.get("/features/transcode-agent/confirmations/<int:job_id>")
+def transcode_agent_confirmation_center(job_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    try:
+        confirmation_data = list_transcode_agent_confirmations(
+            job_id,
+            current_employee() or "",
+            record_scope=request.args.get("scope", "all"),
+            record_page=request.args.get("page", 1, type=int) or 1,
+            record_page_size=200,
+        )
+    except LookupError:
+        flash("未找到该营销转码Agent确认任务。", "error")
+        return redirect(url_for("main.transcode_agent"))
+    job = get_job(job_id)
+    return render_template(
+        "transcode_agent_confirmation.html",
+        job=job,
+        confirmation_data=confirmation_data,
+        condition_fields=CUSTOMER_RULE_CONDITION_FIELDS,
+        condition_operators=CUSTOMER_RULE_CONDITION_OPERATORS,
+    )
+
+
+@bp.route("/features/transcode-agent/model-config", methods=["GET", "POST"])
+def transcode_agent_model_config():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    if request.method == "POST":
+        action = str(request.form.get("action") or "save").strip()
+        api_key_text = str(request.form.get("api_key") or "").strip()
+        clear_key = bool(request.form.get("clear_api_key"))
+        api_key: str | None = "" if clear_key else (api_key_text or None)
+        try:
+            config = update_user_model_config(
+                employee_id,
+                enabled=bool(request.form.get("enabled")),
+                base_url=request.form.get("base_url") or "",
+                api_key=api_key,
+                model=request.form.get("model") or "",
+            )
+            if action == "test":
+                result = test_user_model_connection(config)
+                flash(f"模型{result['status']}：{result['model']}。", "success")
+            else:
+                flash("当前用户的模型配置已保存。", "success")
+        except Exception as exc:
+            flash(f"模型配置失败：{exc}", "error")
+        return redirect(url_for("main.transcode_agent_model_config"))
+    return render_template(
+        "transcode_agent_model_config.html",
+        model_config=load_user_model_config(employee_id),
+    )
+
+
+@bp.route("/admin/transcode-agent-customer-rules", methods=["GET", "POST"])
+def admin_transcode_agent_customer_rules():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    active_version = get_active_transcode_semantic_rule_version()
+    semantic_rules = load_transcode_semantic_rules(active_version) if active_version else []
+    agent_rules = load_transcode_agent_rules()
+    rules = semantic_rules + agent_rules_for_customer_workspace(agent_rules)
+    if request.method == "POST":
+        action = str(request.form.get("action") or "save").strip()
+        rule_kind = str(request.form.get("rule_kind") or "all").strip()
+        if rule_kind not in {"all", "deterministic", "semantic"}:
+            rule_kind = "all"
+        try:
+            if action == "save":
+                existing = find_rule(rules, request.form.get("rule_id") or "")
+                asset_type = str(request.form.get("asset_type") or "semantic").strip()
+                if asset_type == AGENT_ASSET_TYPE:
+                    native_existing = dict((existing or {}).get("agent_rule") or {})
+                    native_rule = build_agent_rule_from_form(
+                        request.form,
+                        existing_rule=native_existing,
+                    )
+                    save_agent_rule_override(
+                        native_rule,
+                        updated_by=employee_id,
+                        previous_rule=native_existing,
+                    )
+                    redirect_code = native_rule["客户代码"]
+                    redirect_name = native_rule["客户简称"]
+                    redirect_field = AGENT_OVERRIDE_TO_BUSINESS_FIELD[native_rule["覆盖字段"]]
+                    redirect_rule_id = native_rule["规则ID"]
+                else:
+                    rule = build_rule_from_form(request.form, existing_rule=existing)
+                    validate_customer_maintained_rule(rule)
+                    save_rule_override(rule, updated_by=employee_id, previous_rule=existing)
+                    redirect_code = rule["customer_code"]
+                    redirect_name = rule["customer_name"]
+                    redirect_field = rule["business_field"]
+                    redirect_rule_id = rule["rule_id"]
+                flash(f"客户特殊规则已保存并生效：{redirect_rule_id}", "success")
+                return redirect(
+                    url_for(
+                        "main.admin_transcode_agent_customer_rules",
+                        customer_key=make_customer_key(redirect_code, redirect_name),
+                        business_field=redirect_field,
+                        rule_id=redirect_rule_id,
+                        rule_kind=rule_kind,
+                    )
+                )
+            if action == "delete":
+                rule = find_rule(rules, request.form.get("rule_id") or "")
+                if rule is None:
+                    raise CustomerRuleMaintenanceError("要删除的规则不存在。")
+                if str(rule.get("asset_type") or "") == AGENT_ASSET_TYPE:
+                    delete_agent_rule_override(dict(rule.get("agent_rule") or {}), updated_by=employee_id)
+                else:
+                    delete_rule_override(rule, updated_by=employee_id)
+                flash(f"客户特殊规则已删除并立即停止生效：{rule['rule_id']}", "success")
+                return redirect(
+                    url_for(
+                        "main.admin_transcode_agent_customer_rules",
+                        customer_key=make_customer_key(rule["customer_code"], rule["customer_name"]),
+                        business_field=rule["business_field"],
+                        rule_kind=rule_kind,
+                    )
+                )
+            if action == "restore":
+                restored_rule_id = restore_customer_rule_change(
+                    int(request.form.get("change_id") or 0),
+                    updated_by=employee_id,
+                )
+                flash(f"修改记录已恢复并生效：{restored_rule_id}", "success")
+                return redirect(
+                    url_for(
+                        "main.admin_transcode_agent_customer_rules",
+                        show_history="1",
+                        rule_kind=rule_kind,
+                    )
+                )
+            raise CustomerRuleMaintenanceError("未知的客户规则维护操作。")
+        except (CustomerRuleMaintenanceError, ValueError) as exc:
+            flash(f"客户特殊规则保存失败：{exc}", "error")
+
+    workspace = customer_rule_workspace(
+        rules,
+        search=request.values.get("search") or "",
+        customer_key=request.values.get("customer_key") or "",
+        business_field=request.values.get("business_field") or "",
+        rule_id=request.values.get("rule_id") or "",
+        rule_kind=request.values.get("rule_kind") or "all",
+    )
+    if request.args.get("new") == "1" or request.args.get("new_customer") == "1":
+        selected_customer = workspace.get("selected_customer") or {}
+        is_new_customer = request.args.get("new_customer") == "1"
+        selected_field = workspace["selected_field"]
+        new_is_semantic = workspace["rule_kind"] == "semantic"
+        workspace["selected_rule"] = {
+            "rule_id": "",
+            "asset_type": "semantic",
+            "customer_code": "" if is_new_customer else selected_customer.get("code", ""),
+            "customer_name": "" if is_new_customer else selected_customer.get("name", ""),
+            "business_field": selected_field,
+            "source_text": "",
+            "input_source": "订单备注" if new_is_semantic else "客户规格",
+            "conditions": [
+                {
+                    "field": "订单备注" if new_is_semantic else "客户规格",
+                    "operator": "contains_any",
+                    "value": "",
+                }
+            ],
+            "condition_summary": "",
+            "target_field": CUSTOMER_RULE_FIELD_TARGETS[selected_field][0],
+            "target_value": "",
+            "priority": 100,
+            "enabled": True,
+            "semantic_enabled": new_is_semantic,
+            "approval_basis": "",
+            "origin": "新增规则",
+            "machine_rule": None,
+            "agent_rule": {},
+        }
+    return render_template(
+        "admin_transcode_agent_customer_rules.html",
+        workspace=workspace,
+        active_semantic_version=active_version or "未发布",
+        active_agent_version=get_active_transcode_agent_rule_version() or "未发布",
+        agent_override_fields=AGENT_OVERRIDE_TO_BUSINESS_FIELD,
+        business_fields=CUSTOMER_RULE_BUSINESS_FIELDS,
+        field_targets=CUSTOMER_RULE_FIELD_TARGETS,
+        target_field_labels=CUSTOMER_RULE_TARGET_FIELD_LABELS,
+        condition_fields=CUSTOMER_RULE_CONDITION_FIELDS,
+        condition_operators=CUSTOMER_RULE_CONDITION_OPERATORS,
+        condition_operator_labels=CUSTOMER_RULE_CONDITION_OPERATOR_LABELS,
+        rule_changes=list_customer_rule_changes(),
+        show_history=request.args.get("show_history") == "1",
     )
 
 
@@ -1675,7 +2156,7 @@ def create_transcode_agent_job_view():
         return redirect(url_for("main.transcode_agent", job_id=active_job["id"]))
     job_id = queue_transcode_agent_job(current_employee(), uploaded_file, original_filename)
     flash("营销转码Agent任务已创建，系统正在处理。", "success")
-    return redirect(url_for("main.transcode_agent", job_id=job_id))
+    return redirect(url_for("main.transcode_agent", job_id=job_id, auto_confirm=1))
 
 
 @bp.post("/shennan/jobs")
@@ -1787,14 +2268,14 @@ def create_in_transit_job_view():
         return redirect(url_for("main.in_transit"))
     original_filename = (uploaded_file.filename or "").strip()
     if not original_filename.lower().endswith((".xlsx", ".xlsm", ".xls")):
-        flash("深南在途核对仅支持 .xlsx / .xlsm / .xls 文件。", "error")
+        flash("在途核对仅支持 .xlsx / .xlsm / .xls 文件。", "error")
         return redirect(url_for("main.in_transit"))
     active_job = get_active_job(current_employee(), "in_transit")
     if active_job:
-        flash("当前已有深南在途核对任务正在处理，请先等待完成或停止后再上传。", "error")
+        flash("当前已有在途核对任务正在处理，请先等待完成或停止后再上传。", "error")
         return redirect(url_for("main.in_transit", job_id=active_job["id"]))
     job_id = queue_in_transit_job(current_employee(), uploaded_file, original_filename)
-    flash("深南在途核对任务已创建，系统正在处理。", "success")
+    flash("在途核对任务已创建，系统正在处理。", "success")
     return redirect(url_for("main.in_transit", job_id=job_id))
 
 
@@ -1896,89 +2377,13 @@ def create_order_reprice_job_view():
         flash("请选择订单改价处理块。", "error")
         return redirect(url_for("main.order_reprice"))
 
-    customer_key = request.form.get("customer_key", "shenghong").strip() or "shenghong"
     customer_file = request.files.get("customer_file")
     factory_file = request.files.get("factory_file")
-    factory_701_file = request.files.get("factory_701_file")
-    factory_411_file = request.files.get("factory_411_file")
-    merged_file = request.files.get("merged_file")
     quote_files = [file_obj for file_obj in request.files.getlist("quote_files") if file_obj and file_obj.filename]
 
     def _valid_excel(file_obj) -> bool:
         return bool(file_obj and file_obj.filename and file_obj.filename.lower().endswith((".xlsx", ".xlsm", ".xls")))
 
-    active_job = get_active_job(current_employee(), "order_reprice")
-    if active_job:
-        flash("当前已有订单改价任务正在处理，请先等待完成或停止后再上传。", "error")
-        return redirect(url_for("main.order_reprice", job_id=active_job["id"]))
-
-    if mode == JINGWANG_FACTORY_MERGE_MODE:
-        if customer_key != "jingwang":
-            flash("景旺厂内数据合并请选择景旺客户。", "error")
-            return redirect(url_for("main.order_reprice"))
-        if not _valid_excel(factory_701_file) or not _valid_excel(factory_411_file):
-            flash("请上传厂内701和厂内411两份 Excel 文件。", "error")
-            return redirect(url_for("main.order_reprice"))
-        try:
-            job_id = queue_order_reprice_job(
-                current_employee(),
-                mode,
-                customer_key=customer_key,
-                factory_701_file=factory_701_file,
-                factory_411_file=factory_411_file,
-            )
-        except Exception as exc:
-            flash(f"景旺厂内数据合并任务创建失败：{exc}", "error")
-            return redirect(url_for("main.order_reprice"))
-        flash("景旺厂内数据合并任务已创建，系统正在处理。", "success")
-        return redirect(url_for("main.order_reprice", job_id=job_id))
-
-    if mode == JINGWANG_CUSTOMER_PRICE_CHECK_MODE:
-        if customer_key != "jingwang":
-            flash("景旺客户数据核价请选择景旺客户。", "error")
-            return redirect(url_for("main.order_reprice"))
-        if not _valid_excel(merged_file) or not _valid_excel(customer_file):
-            flash("请上传701+411合并表和客户数据两份 Excel 文件。", "error")
-            return redirect(url_for("main.order_reprice"))
-        try:
-            job_id = queue_order_reprice_job(
-                current_employee(),
-                mode,
-                customer_file,
-                customer_key=customer_key,
-                merged_file=merged_file,
-            )
-        except Exception as exc:
-            flash(f"景旺客户数据核价任务创建失败：{exc}", "error")
-            return redirect(url_for("main.order_reprice"))
-        flash("景旺客户数据核价任务已创建，系统正在处理。", "success")
-        return redirect(url_for("main.order_reprice", job_id=job_id))
-
-    if mode == JINGWANG_PRICE_CHECK_MODE:
-        if customer_key != "jingwang":
-            flash("景旺订单核价请选择景旺客户。", "error")
-            return redirect(url_for("main.order_reprice"))
-        if not _valid_excel(factory_701_file) or not _valid_excel(factory_411_file) or not _valid_excel(customer_file):
-            flash("请上传厂内701、厂内411和客户数据三份 Excel 文件。", "error")
-            return redirect(url_for("main.order_reprice"))
-        try:
-            job_id = queue_order_reprice_job(
-                current_employee(),
-                mode,
-                customer_file,
-                customer_key=customer_key,
-                factory_701_file=factory_701_file,
-                factory_411_file=factory_411_file,
-            )
-        except Exception as exc:
-            flash(f"景旺订单核价任务创建失败：{exc}", "error")
-            return redirect(url_for("main.order_reprice"))
-        flash("景旺订单核价任务已创建，系统正在处理。", "success")
-        return redirect(url_for("main.order_reprice", job_id=job_id))
-
-    if customer_key != "shenghong":
-        flash("该客户暂未支持当前订单改价功能。", "error")
-        return redirect(url_for("main.order_reprice"))
     if not _valid_excel(customer_file) or not _valid_excel(factory_file):
         flash("请上传客户明细和厂内明细 Excel 文件。", "error")
         return redirect(url_for("main.order_reprice"))
@@ -1989,15 +2394,12 @@ def create_order_reprice_job_view():
         flash("报价单仅支持 .xlsx / .xlsm / .xls 文件。", "error")
         return redirect(url_for("main.order_reprice"))
 
+    active_job = get_active_job(current_employee(), "order_reprice")
+    if active_job:
+        flash("当前已有订单改价任务正在处理，请先等待完成或停止后再上传。", "error")
+        return redirect(url_for("main.order_reprice", job_id=active_job["id"]))
     try:
-        job_id = queue_order_reprice_job(
-            current_employee(),
-            mode,
-            customer_file,
-            factory_file,
-            quote_files,
-            customer_key=customer_key,
-        )
+        job_id = queue_order_reprice_job(current_employee(), mode, customer_file, factory_file, quote_files)
     except Exception as exc:
         flash(f"订单改价任务创建失败：{exc}", "error")
         return redirect(url_for("main.order_reprice"))
@@ -2064,7 +2466,197 @@ def api_transcode_quote():
 
 @bp.post("/api/transcode-agent/quote")
 def api_transcode_agent_quote():
-    return _api_quote_response(calculate_transcode_agent_quote, allow_extra_fields=True)
+    redirect_resp = require_login()
+    if redirect_resp:
+        return jsonify({"error": "unauthorized"}), 401
+    payload = request.get_json(silent=True) or {}
+    spec = str(payload.get("spec") or request.form.get("spec") or "").strip()
+    if not spec:
+        return jsonify({"status": "失败", "result": None, "error": "请输入客户规格"}), 400
+    try:
+        data = calculate_transcode_agent_quote(
+            spec,
+            customer=payload.get("customer") or request.form.get("customer") or "",
+            customer_code=payload.get("customer_code") or request.form.get("customer_code") or "",
+            order_text=payload.get("order_text") or request.form.get("order_text") or "",
+            order_remark=payload.get("order_remark") or request.form.get("order_remark") or "",
+            employee_id=current_employee() or "",
+        )
+        return jsonify(data), 200 if data.get("status") != "失败" else 422
+    except Exception as exc:
+        return jsonify({"status": "失败", "result": None, "error": str(exc)}), 500
+
+
+@bp.post("/api/internal/transcode-agent/quote")
+def api_internal_transcode_agent_quote():
+    auth_error = _authorize_internal_transcode_agent()
+    if auth_error:
+        return auth_error
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _internal_transcode_agent_error("请求体必须是 JSON 对象", 400)
+
+    spec = str(payload.get("spec") or "").strip()
+    if not spec:
+        return _internal_transcode_agent_error("请输入客户规格", 400)
+
+    try:
+        data = calculate_transcode_agent_quote(
+            spec,
+            customer=str(payload.get("customer") or "").strip(),
+            customer_code=str(payload.get("customer_code") or "").strip(),
+            order_remark=str(payload.get("order_remark") or "").strip(),
+            employee_id=os.environ.get("TRANSCODE_AGENT_INTERNAL_EMPLOYEE_ID", "").strip(),
+        )
+        normalized = _normalize_internal_transcode_agent_quote(data)
+        status_code = 200 if normalized["status"] in {"成功", "待确认"} else 422
+        return jsonify(normalized), status_code
+    except Exception as exc:
+        return _internal_transcode_agent_error(f"内部转码执行失败：{exc}", 500)
+
+
+@bp.post("/api/transcode-agent/single-jobs")
+def api_create_transcode_agent_single_job():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return jsonify({"error": "unauthorized"}), 401
+    payload = request.get_json(silent=True) or {}
+    spec = str(payload.get("spec") or "").strip()
+    if not spec:
+        return jsonify({"status": "失败", "error": "请输入客户规格"}), 400
+    employee_id = current_employee() or ""
+    active_job = get_active_job(employee_id, TRANSCODE_AGENT_FEATURE)
+    if active_job:
+        return (
+            jsonify(
+                {
+                    "status": "失败",
+                    "error": "当前已有营销转码Agent任务正在处理，请先等待完成或停止。",
+                    "job_id": active_job["id"],
+                    "task_url": url_for(
+                        "main.transcode_agent",
+                        job_id=active_job["id"],
+                    ),
+                }
+            ),
+            409,
+        )
+    try:
+        job_id = queue_transcode_agent_single_job(
+            employee_id,
+            spec=spec,
+            customer=payload.get("customer") or "",
+            customer_code=payload.get("customer_code") or "",
+            order_remark=payload.get("order_remark") or "",
+        )
+        return (
+            jsonify(
+                {
+                    "status": "已创建",
+                    "job_id": job_id,
+                    "task_url": url_for(
+                        "main.transcode_agent",
+                        job_id=job_id,
+                        auto_confirm=1,
+                    ),
+                }
+            ),
+            202,
+        )
+    except Exception as exc:
+        return jsonify({"status": "失败", "error": str(exc)}), 500
+
+
+@bp.get("/api/transcode-agent/jobs/<int:job_id>/confirmations")
+def api_transcode_agent_confirmations(job_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        return jsonify(
+            list_transcode_agent_confirmations(
+                job_id,
+                current_employee() or "",
+                record_scope=request.args.get("scope", "all"),
+                record_page=request.args.get("page", 1, type=int) or 1,
+                record_page_size=request.args.get("page_size", 200, type=int) or 200,
+            )
+        )
+    except LookupError as exc:
+        return jsonify({"error": str(exc)}), 404
+
+
+@bp.post("/api/transcode-agent/confirmations/<int:item_id>/confirm")
+def api_confirm_transcode_agent_item(item_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return jsonify({"error": "unauthorized"}), 401
+    payload = request.get_json(silent=True) or {}
+    try:
+        data = confirm_transcode_agent_item(
+            item_id,
+            current_employee() or "",
+            confirmed_code=str(payload.get("confirmed_code") or ""),
+            basis=str(payload.get("basis") or "").strip(),
+            save_long_term=bool(payload.get("save_long_term")),
+            long_term_rule=payload.get("long_term_rule")
+            if isinstance(payload.get("long_term_rule"), dict)
+            else None,
+        )
+        return jsonify(data)
+    except LookupError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 409
+
+
+@bp.post("/api/transcode-agent/confirmations/<int:item_id>/skip")
+def api_skip_transcode_agent_confirmation_row(item_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        return jsonify(
+            skip_transcode_agent_confirmation_row(
+                item_id,
+                current_employee() or "",
+            )
+        )
+    except LookupError as exc:
+        return jsonify({"error": str(exc)}), 404
+
+
+@bp.post("/api/transcode-agent/jobs/<int:job_id>/finalize-pending")
+def api_finalize_transcode_agent_confirmations(job_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        return jsonify(
+            finalize_transcode_agent_confirmations(
+                job_id,
+                current_employee() or "",
+            )
+        )
+    except LookupError as exc:
+        return jsonify({"error": str(exc)}), 404
+
+
+@bp.post("/api/transcode-agent/jobs/<int:job_id>/reevaluate-pending")
+def api_reevaluate_transcode_agent_confirmations(job_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        return jsonify(
+            reevaluate_transcode_agent_confirmations(
+                job_id,
+                current_employee() or "",
+            )
+        )
+    except LookupError as exc:
+        return jsonify({"error": str(exc)}), 404
 
 
 @bp.post("/api/shennan/quote")
@@ -2617,32 +3209,20 @@ def admin_price_calculation_rules():
     if request.method == "POST":
         admin_password = request.form.get("admin_password", "")
         rule_file = request.files.get("rule_file")
-        guanghe_huangshi_file = request.files.get("guanghe_huangshi_file")
-        guanghe_nanya_file = request.files.get("guanghe_nanya_file")
         remark = request.form.get("remark", "").strip()
         if not verify_admin_password(admin_password):
             flash("管理员密码错误。", "error")
-        elif selected_customer == "guanghe" and (not guanghe_huangshi_file or not guanghe_huangshi_file.filename or not guanghe_nanya_file or not guanghe_nanya_file.filename):
-            flash("请上传黄石广合单价和南亚新材价格更新两份 Excel。", "error")
-        elif selected_customer != "guanghe" and (not rule_file or not rule_file.filename):
+        elif not rule_file or not rule_file.filename:
             flash("请上传所选客户的报价表 Excel。", "error")
         else:
             try:
-                if selected_customer == "guanghe":
-                    version = save_new_guanghe_rule_version(
-                        guanghe_huangshi_file,
-                        guanghe_nanya_file,
-                        updated_by=current_employee(),
-                        remark=remark,
-                    )
-                else:
-                    version = save_new_price_rule_version(
-                        selected_customer,
-                        rule_file,
-                        updated_by=current_employee(),
-                        remark=remark,
-                        quote_variant=selected_quote_variant,
-                    )
+                version = save_new_price_rule_version(
+                    selected_customer,
+                    rule_file,
+                    updated_by=current_employee(),
+                    remark=remark,
+                    quote_variant=selected_quote_variant,
+                )
                 regression = run_jingwang_regression(selected_customer, version, selected_quote_variant)
                 if regression["total"]:
                     flash(

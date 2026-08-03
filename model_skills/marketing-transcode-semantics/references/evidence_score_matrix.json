@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "mode": "shadow",
-  "gate_threshold": 90,
+  "gate_threshold": 100,
   "semantic_supported_score": 98,
   "model_supported_score": 95,
   "model_accepted_confidences": ["high"],

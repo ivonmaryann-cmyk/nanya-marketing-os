@@ -1,0 +1,231 @@
+{
+  "schema_version": "1.0",
+  "approval_basis": "用户确认通用特殊规则和非影响转码备注中明确CCL内容纳入八字段转换，2026-07-23",
+  "rules": [
+    {
+      "customers": [
+        {"code": "123043", "name": "吉安生益", "row": 100},
+        {"code": "103738", "name": "生益电子", "row": 101},
+        {"code": "103792", "name": "广东世运", "row": 126},
+        {"code": "103809", "name": "鹤山世安", "row": 127},
+        {"code": "103910", "name": "珠海中京", "row": 217},
+        {"code": "103020", "name": "惠州中京", "row": 218}
+      ],
+      "source_column": "通用特殊规则",
+      "business_field": "铜箔类型+印字/非印字",
+      "source_text": "订单未备注铜箔，默认HTE",
+      "semantic_type": "keyword_absent",
+      "target_field": "copper_type",
+      "normalized_value": "HTE",
+      "stated_target_value": "HTE",
+      "conditions": [{"field": "订单规格/订单备注", "operator": "not_contains", "value": ["RTF", "HVLP", "VLP", "IGAV"], "source_scope": "订单规格/订单备注"}],
+      "evidence_text": "订单未备注铜箔，默认HTE"
+    },
+    {
+      "customers": [{"code": "122023", "name": "超颖电子", "row": 3}],
+      "source_column": "非影响转码备注",
+      "business_field": "总/芯厚",
+      "source_text": "0.8以下是不含铜，0.8含以上是含铜",
+      "semantic_type": "comparison",
+      "target_field": "total_core",
+      "normalized_value": "core",
+      "stated_target_value": "不含铜",
+      "conditions": [{"field": "基板厚度", "operator": "lt", "value": 0.8, "source_scope": "基板厚度"}],
+      "evidence_text": "0.8以下是不含铜"
+    },
+    {
+      "customers": [{"code": "122023", "name": "超颖电子", "row": 3}],
+      "source_column": "非影响转码备注",
+      "business_field": "总/芯厚",
+      "source_text": "0.8以下是不含铜，0.8含以上是含铜",
+      "semantic_type": "comparison",
+      "target_field": "total_core",
+      "normalized_value": "total",
+      "stated_target_value": "含铜",
+      "conditions": [{"field": "基板厚度", "operator": "gte", "value": 0.8, "source_scope": "基板厚度"}],
+      "evidence_text": "0.8含以上是含铜"
+    },
+    {
+      "customers": [
+        {"code": "103935", "name": "东莞康源", "row": 28},
+        {"code": "257076", "name": "韩国HW", "row": 58},
+        {"code": "257093", "name": "越南HW", "row": 91},
+        {"code": "103407", "name": "深圳恩达", "row": 182}
+      ],
+      "source_column": "非影响转码备注",
+      "business_field": "基板级别",
+      "source_text": "所有物料下汽车板料号",
+      "semantic_type": "explicit_fact",
+      "target_field": "grade_intent",
+      "normalized_value": "AC",
+      "stated_target_value": "汽车板",
+      "conditions": [{"field": "客户规格", "operator": "present", "value": null, "source_scope": "客户规格"}],
+      "evidence_text": "所有物料下汽车板料号"
+    },
+    {
+      "customers": [{"code": "103863", "name": "益明正宏", "row": 33}],
+      "source_column": "非影响转码备注",
+      "business_field": "基板级别",
+      "source_text": "NY3170HC、NY-A1、NY-A2需按汽车板安排",
+      "semantic_type": "multi_condition",
+      "target_field": "grade_intent",
+      "normalized_value": "AC",
+      "stated_target_value": "汽车板",
+      "conditions": [{"field": "胶系", "operator": "in", "value": ["NY3170HC", "NY-A1", "NY-A2"], "source_scope": "胶系"}],
+      "evidence_text": "NY3170HC、NY-A1、NY-A2需按汽车板安排"
+    },
+    {
+      "customers": [{"code": "123020", "name": "赣州深联", "row": 35}],
+      "source_column": "非影响转码备注",
+      "business_field": "基板级别",
+      "source_text": "除NY2140规格除外其他所有料号全部按汽车板安排",
+      "semantic_type": "exclusion_set",
+      "target_field": "grade_intent",
+      "normalized_value": "AC",
+      "stated_target_value": "汽车板",
+      "conditions": [{"field": "胶系", "operator": "not_in", "value": ["NY2140"], "source_scope": "胶系"}],
+      "evidence_text": "除NY2140规格除外其他所有料号全部按汽车板安排"
+    },
+    {
+      "customers": [{"code": "123020", "name": "赣州深联", "row": 35}],
+      "source_column": "非影响转码备注",
+      "business_field": "基板尺寸",
+      "source_text": "客户订单27.3*49，需录入27.3*49.3",
+      "semantic_type": "explicit_fact",
+      "target_field": "size",
+      "normalized_value": "height_plus_0.3",
+      "stated_target_value": "27.3*49.3",
+      "conditions": [{"field": "客户规格", "operator": "present", "value": null, "source_scope": "客户规格"}],
+      "evidence_text": "客户订单27.3*49，需录入27.3*49.3"
+    },
+    {
+      "customers": [{"code": "257103", "name": "森德科技", "row": 38}],
+      "source_column": "非影响转码备注",
+      "business_field": "基板级别",
+      "source_text": "NY-A1默认下汽车板",
+      "semantic_type": "explicit_fact",
+      "target_field": "grade_intent",
+      "normalized_value": "AC",
+      "stated_target_value": "汽车板",
+      "conditions": [{"field": "胶系", "operator": "equals", "value": "NY-A1", "source_scope": "胶系"}],
+      "evidence_text": "NY-A1默认下汽车板"
+    },
+    {
+      "customers": [{"code": "201005", "name": "加宏CA", "row": 60}],
+      "source_column": "非影响转码备注",
+      "business_field": "铜箔类型+印字/非印字",
+      "source_text": "全部默认有水印",
+      "semantic_type": "explicit_fact",
+      "target_field": "print_mark",
+      "normalized_value": "有水印",
+      "stated_target_value": "有水印",
+      "conditions": [{"field": "客户规格", "operator": "present", "value": null, "source_scope": "客户规格"}],
+      "evidence_text": "全部默认有水印"
+    },
+    {
+      "customers": [{"code": "204044", "name": "西班牙G", "row": 64}],
+      "source_column": "非影响转码备注",
+      "business_field": "铜箔类型+印字/非印字",
+      "source_text": "有水印需要下IGAV",
+      "semantic_type": "keyword_present",
+      "target_field": "copper_type",
+      "normalized_value": "IGAV",
+      "stated_target_value": "IGAV",
+      "conditions": [{"field": "客户规格", "operator": "contains_any", "value": ["水印"], "source_scope": "客户规格"}],
+      "evidence_text": "有水印需要下IGAV"
+    },
+    {
+      "customers": [{"code": "103901/104686", "name": "广东依顿/广州伊顿", "row": 113}],
+      "source_column": "非影响转码备注",
+      "business_field": "基板级别",
+      "source_text": "所有规格根据客户订单备注确认是按汽车板还是普通板录入",
+      "semantic_type": "keyword_present",
+      "target_field": "grade_intent",
+      "normalized_value": "AC",
+      "stated_target_value": "汽车板",
+      "conditions": [{"field": "订单备注", "operator": "contains_any", "value": ["汽车板", "下汽车板"], "source_scope": "订单备注"}],
+      "evidence_text": "汽车板"
+    },
+    {
+      "customers": [{"code": "103901/104686", "name": "广东依顿/广州伊顿", "row": 113}],
+      "source_column": "非影响转码备注",
+      "business_field": "基板级别",
+      "source_text": "所有规格根据客户订单备注确认是按汽车板还是普通板录入",
+      "semantic_type": "keyword_present",
+      "target_field": "grade_intent",
+      "normalized_value": "A1",
+      "stated_target_value": "普通板",
+      "conditions": [{"field": "订单备注", "operator": "contains_any", "value": ["普通板"], "source_scope": "订单备注"}],
+      "evidence_text": "普通板"
+    },
+    {
+      "customers": [{"code": "103901/104686", "name": "广东依顿/广州伊顿", "row": 113}],
+      "source_column": "非影响转码备注",
+      "business_field": "基板级别",
+      "source_text": "NY2150H 1.5oz（含）以上铜箔厚度 HW订单需按AP电源板",
+      "semantic_type": "multi_condition",
+      "target_field": "grade_intent",
+      "normalized_value": "AP",
+      "stated_target_value": "AP",
+      "conditions": [
+        {"field": "胶系", "operator": "equals", "value": "NY2150H", "source_scope": "胶系"},
+        {"field": "铜箔规格", "operator": "gte", "value": 1.5, "source_scope": "铜箔规格"},
+        {"field": "订单备注", "operator": "contains_any", "value": ["HW", "华为"], "source_scope": "订单备注"}
+      ],
+      "evidence_text": "NY2150H 1.5oz（含）以上铜箔厚度 HW订单需按AP电源板"
+    },
+    {
+      "customers": [{"code": "103901/104686", "name": "广东依顿/广州伊顿", "row": 113}],
+      "source_column": "非影响转码备注",
+      "business_field": "基板级别",
+      "source_text": "1.5oz（不含）以下按普通A1等级安排",
+      "semantic_type": "multi_condition",
+      "target_field": "grade_intent",
+      "normalized_value": "A1",
+      "stated_target_value": "A1",
+      "conditions": [
+        {"field": "胶系", "operator": "equals", "value": "NY2150H", "source_scope": "胶系"},
+        {"field": "铜箔规格", "operator": "lt", "value": 1.5, "source_scope": "铜箔规格"},
+        {"field": "订单备注", "operator": "contains_any", "value": ["HW", "华为"], "source_scope": "订单备注"}
+      ],
+      "evidence_text": "1.5oz（不含）以下按普通A1等级安排"
+    },
+    {
+      "customers": [{"code": "104417", "name": "江苏洲旭", "row": 192}],
+      "source_column": "非影响转码备注",
+      "business_field": "铜箔类型+印字/非印字",
+      "source_text": "NY3170M胶系，下单有双面字样的为RTF，无该字样为HTE",
+      "semantic_type": "keyword_present",
+      "target_field": "copper_type",
+      "normalized_value": "RTF",
+      "stated_target_value": "RTF",
+      "conditions": [
+        {"field": "胶系", "operator": "equals", "value": "NY3170M", "source_scope": "胶系"},
+        {"field": "订单规格/订单备注", "operator": "contains_any", "value": ["双面"], "source_scope": "订单规格/订单备注"}
+      ],
+      "evidence_text": "下单有双面字样的为RTF"
+    },
+    {
+      "customers": [{"code": "104417", "name": "江苏洲旭", "row": 192}],
+      "source_column": "非影响转码备注",
+      "business_field": "铜箔类型+印字/非印字",
+      "source_text": "NY3170M胶系，下单有双面字样的为RTF，无该字样为HTE",
+      "semantic_type": "keyword_absent",
+      "target_field": "copper_type",
+      "normalized_value": "HTE",
+      "stated_target_value": "HTE",
+      "conditions": [
+        {"field": "胶系", "operator": "equals", "value": "NY3170M", "source_scope": "胶系"},
+        {"field": "订单规格/订单备注", "operator": "not_contains", "value": ["双面"], "source_scope": "订单规格/订单备注"}
+      ],
+      "evidence_text": "无该字样为HTE"
+    }
+  ],
+  "pending": [
+    {"customer": "广东依顿/广州伊顿", "source_text": "NY2150H 56mil 1/1和H/H 8张布 汽车板要求安排AY等级", "reason": "AY不在当前合法基板级别代码表"},
+    {"customer": "广东依顿/广州伊顿", "source_text": "不连铜芯厚", "reason": "原文与20260723测试正确码第22位T冲突，暂不覆盖总/芯厚"},
+    {"customer": "桂林诗宇", "source_text": "所有物料都是HDI物料", "reason": "HDI未给出唯一基板级别代码"},
+    {"customer": "南京芯爱", "source_text": "基材品质均为A级板品质", "reason": "A级板品质未给出唯一基板级别代码"},
+    {"customer": "崇达系", "source_text": "按芯厚下单的规格151里客户厚度需维护总厚厚度", "reason": "尚不能确认这是第22码覆盖还是151订单维护动作"}
+  ]
+}

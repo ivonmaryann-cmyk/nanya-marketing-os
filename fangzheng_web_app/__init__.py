@@ -1,10 +1,6 @@
 from flask import Flask
 
-try:
-    from dotenv import load_dotenv
-except ImportError:  # pragma: no cover - optional local convenience dependency
-    load_dotenv = None
-
+from .local_env import load_local_env
 from .db import init_db
 from .paths import ensure_storage_dirs
 from .routes import bp
@@ -17,12 +13,11 @@ from .shennan_rules import ensure_default_shennan_rule_version
 from .transcode_rules import ensure_default_transcode_rule_version
 from .transcode_agent_rules import ensure_default_transcode_agent_rule_version
 from .transcode_semantic_rules import ensure_default_transcode_semantic_rule_version
+from .transcode_rule_center import ensure_daily_backup, ensure_rule_center_tables
 
 
 def create_app() -> Flask:
-    if load_dotenv is not None:
-        load_dotenv()
-
+    load_local_env()
     app = Flask(__name__, template_folder="../templates", static_folder="../static")
     app.config["SECRET_KEY"] = "fangzheng-web-app-dev-secret"
     # 库存明细一次上传两份库存表，当前业务样例合计约 43 MB；预留 multipart 开销。
@@ -30,11 +25,13 @@ def create_app() -> Flask:
 
     ensure_storage_dirs()
     init_db()
+    ensure_rule_center_tables()
     reconcile_interrupted_jobs()
     ensure_default_rule_version()
     ensure_default_transcode_rule_version()
     ensure_default_transcode_agent_rule_version()
     ensure_default_transcode_semantic_rule_version()
+    ensure_daily_backup()
     ensure_default_shennan_rule_version()
     ensure_default_hushi_rule_version()
     ensure_default_bomin_rule_version()

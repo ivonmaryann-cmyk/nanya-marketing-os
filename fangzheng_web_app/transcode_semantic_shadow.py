@@ -6,6 +6,8 @@ import re
 import unicodedata
 from typing import Any
 
+from .transcode_customer_identity import customer_names_match
+
 
 RUNTIME_MODES = {"off", "shadow"}
 SHADOW_STATUS_MATCHED = "命中"
@@ -61,7 +63,7 @@ def _evaluate_rule(
     for condition in rule.get("conditions") or []:
         field = str(condition.get("field") or "").strip()
         observation = observations.get(field) or {"available": False, "value": "", "sources": []}
-        if not observation.get("available"):
+        if not observation.get("available") and str(condition.get("operator") or "") != "missing":
             if field and field not in missing_fields:
                 missing_fields.append(field)
             condition_results.append(
@@ -119,7 +121,9 @@ def _evaluate_rule(
         "customer": customer_name,
         "spec": spec,
         "rule_id": rule.get("rule_id", ""),
+        "priority": int(rule.get("priority") or 0),
         "source_candidate_id": rule.get("source_candidate_id", ""),
+        "source_column": rule.get("source_column", ""),
         "business_field": rule.get("business_field", ""),
         "target_fields": rule.get("target_fields", []),
         "normalized_values": rule.get("normalized_values", []),
@@ -200,11 +204,13 @@ def _parse_char_at(value: Any, source_text: str) -> tuple[int, list[Any]]:
 def _customer_matches(rule: dict[str, Any], customer_code: str, customer_name: str) -> bool:
     rule_codes = set(re.findall(r"\d+", str(rule.get("customer_code") or "")))
     actual_code = str(customer_code or "").strip()
-    if rule_codes and actual_code:
-        return actual_code in rule_codes
+    if rule_codes and actual_code and actual_code not in rule_codes:
+        return False
     rule_name = _normalize(rule.get("customer_name"))
     actual_name = _normalize(customer_name)
-    return bool(rule_name and actual_name and (rule_name in actual_name or actual_name in rule_name))
+    if rule_name and actual_name:
+        return customer_names_match(rule.get("customer_name"), customer_name)
+    return bool(rule_codes and actual_code)
 
 
 def _as_list(value: Any) -> list[Any]:

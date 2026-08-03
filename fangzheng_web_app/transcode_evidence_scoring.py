@@ -33,7 +33,7 @@ def evidence_gate_decision(analysis: dict[str, Any], *, mode: str) -> dict[str, 
     shadow = analysis.get("evidence_score_shadow") or {}
     current_score = int(analysis.get("overall_score") or 0)
     shadow_score = int(shadow.get("shadow_score") or 0)
-    threshold = int(shadow.get("threshold") or 90)
+    threshold = int(shadow.get("threshold") or 100)
     reviews = shadow.get("field_reviews") or []
     formal_reviews = [
         item
@@ -83,6 +83,10 @@ def load_evidence_score_matrix(path: str | Path = DEFAULT_SCORE_MATRIX_PATH) -> 
     verdict_scores = payload.get("verdict_scores") or {}
     if set(verdict_scores) != VERDICTS:
         raise ValueError("证据评分矩阵的verdict_scores不完整")
+    if matrix_path.resolve() == DEFAULT_SCORE_MATRIX_PATH.resolve():
+        from .transcode_rule_center import merge_score_matrix
+
+        payload = merge_score_matrix(payload)
     return payload
 
 
@@ -126,14 +130,14 @@ def evaluate_evidence_score_shadow(
         "hard_blockers": blockers,
         "source_fields": _source_fields(observations),
         "model_called": False,
-        "runtime_effect": "影子评分只用于对比，不覆盖当前分数和90分门禁",
+        "runtime_effect": "影子评分只用于对比，不覆盖当前确定性分和100分正式码门禁",
     }
 
 
 def empty_evidence_score_shadow(*, current_score: int = 0, reason: str = "") -> dict[str, Any]:
     return {
         "mode": "off",
-        "threshold": 90,
+        "threshold": 100,
         "current_score": int(current_score or 0),
         "shadow_score": 0,
         "score_delta": -int(current_score or 0),
@@ -193,7 +197,7 @@ def apply_model_evidence_review(
         review["reason"] = f"模型证据审查：{model_review.get('reason', '')}"
 
     reviews = merged.get("field_reviews") or []
-    threshold = int(merged.get("threshold") or score_matrix.get("gate_threshold") or 90)
+    threshold = int(merged.get("threshold") or score_matrix.get("gate_threshold") or 100)
     shadow_score = min([int(item.get("shadow_score") or 0) for item in reviews] or [0])
     current_score = int(merged.get("current_score") or 0)
     blockers = [
@@ -211,7 +215,7 @@ def apply_model_evidence_review(
             "model_call_count": 1,
             "model_confidence": confidence,
             "model_hard_blockers": list(model_result.get("hard_blockers") or []),
-            "runtime_effect": "模型证据审查仅更新影子对比，不覆盖当前分数和90分门禁",
+            "runtime_effect": "模型证据审查仅更新影子对比，不能单独取得100分正式出码资格",
         }
     )
     return merged

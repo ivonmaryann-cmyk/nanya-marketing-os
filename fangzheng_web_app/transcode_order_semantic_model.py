@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
 from .transcode_semantic_service import DeepSeekSemanticClient, load_semantic_model_config
+from .transcode_model_config import load_user_model_config
 
 
 @dataclass(frozen=True)
@@ -16,9 +19,13 @@ class OrderSemanticRuntime:
     load_error: str = ""
 
 
-def load_order_semantic_runtime() -> OrderSemanticRuntime:
+def load_order_semantic_runtime(employee_id: str = "") -> OrderSemanticRuntime:
     try:
-        config = load_semantic_model_config()
+        config = (
+            load_user_model_config(employee_id).to_runtime_config()
+            if str(employee_id or "").strip()
+            else load_semantic_model_config()
+        )
     except Exception as exc:
         return OrderSemanticRuntime(mode="off", client=None, load_error=str(exc))
     if not config.enabled:
@@ -33,11 +40,16 @@ def load_order_semantic_runtime() -> OrderSemanticRuntime:
 
 def should_normalize_order(
     semantic_evaluations: list[dict[str, Any]],
-    source_fields: dict[str, str],
+    order_remark: str,
 ) -> bool:
-    if not source_fields:
+    if not str(order_remark or "").strip():
         return False
-    return any(item.get("rule_id") and item.get("status") != "条件错误" for item in semantic_evaluations)
+    return any(
+        item.get("rule_id")
+        and item.get("status") != "条件错误"
+        and _evaluation_uses_order_remark(item)
+        for item in semantic_evaluations
+    )
 
 
 def normalize_order_shadow(
@@ -62,6 +74,60 @@ def normalize_order_shadow(
             "instruction": "只做订单口语标准化，不输出制造码，不覆盖正式转码结果",
         },
     )
+
+
+def build_model_rule_evaluations(
+    normalized: dict[str, Any],
+    semantic_evaluations: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Bind model-normalized facts back to approved rules.
+
+    The model may normalize wording, but a formal override is only allowed when
+    the normalized target/value maps to an approved customer rule and every
+    non-remark condition of that rule is already deterministically satisfied.
+    """
+    if str(normalized.get("model_confidence") or "") != "high":
+        return [], ["模型整体置信度非high"]
+    if normalized.get("ambiguities"):
+        return [], ["模型返回语义歧义"]
+
+    matched: list[dict[str, Any]] = []
+    notes: list[str] = []
+    for item in normalized.get("semantic_items") or []:
+        if str(item.get("confidence") or "") != "high":
+            notes.append(f"跳过非high语义：{item.get('target_field') or '未知字段'}")
+            continue
+        target = _normalize(item.get("target_field"))
+        value = _normalize(item.get("normalized_value"))
+        if not target or not value:
+            continue
+        candidates = [
+            evaluation
+            for evaluation in semantic_evaluations
+            if _evaluation_uses_order_remark(evaluation)
+            and len(evaluation.get("target_fields") or []) == 1
+            and len(evaluation.get("normalized_values") or []) == 1
+            and _normalize((evaluation.get("target_fields") or [""])[0]) == target
+            and _normalize((evaluation.get("normalized_values") or [""])[0]) == value
+            and _non_remark_conditions_match(evaluation)
+        ]
+        if not candidates:
+            notes.append(
+                f"未找到已批准规则：{item.get('target_field')}={item.get('normalized_value')}"
+            )
+            continue
+        for evaluation in candidates:
+            linked = dict(evaluation)
+            linked["status"] = "命中"
+            linked["model_normalized"] = True
+            linked["model_evidence_text"] = str(item.get("evidence_text") or "")
+            linked["model_confidence"] = str(item.get("confidence") or "")
+            linked["note"] = "模型仅完成订单备注语义标准化；覆盖值来自已批准语义规则"
+            matched.append(linked)
+    unique: dict[str, dict[str, Any]] = {}
+    for item in matched:
+        unique[str(item.get("rule_id") or "")] = item
+    return list(unique.values()), notes
 
 
 def build_order_semantic_cache_key(
@@ -93,6 +159,14 @@ def source_fields_from_observations(
     }
 
 
+def order_remark_source_fields(
+    observations: dict[str, dict[str, Any]],
+) -> dict[str, str]:
+    observation = observations.get("订单备注") or {}
+    value = str(observation.get("value") or "").strip()
+    return {"订单备注": value} if value else {}
+
+
 def _compact_rule(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "rule_id": item.get("rule_id", ""),
@@ -105,3 +179,23 @@ def _compact_rule(item: dict[str, Any]) -> dict[str, Any]:
         "source_text": item.get("source_text", ""),
         "evidence_texts": item.get("evidence_texts") or [],
     }
+
+
+def _evaluation_uses_order_remark(item: dict[str, Any]) -> bool:
+    return any(
+        str(condition.get("field") or "").strip() == "订单备注"
+        for condition in item.get("condition_results") or []
+    ) or "订单备注" in (item.get("observed_inputs") or {})
+
+
+def _non_remark_conditions_match(item: dict[str, Any]) -> bool:
+    return all(
+        bool(condition.get("matched"))
+        for condition in item.get("condition_results") or []
+        if str(condition.get("field") or "").strip() != "订单备注"
+    )
+
+
+def _normalize(value: Any) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "")).upper()
+    return re.sub(r"\s+", "", text)

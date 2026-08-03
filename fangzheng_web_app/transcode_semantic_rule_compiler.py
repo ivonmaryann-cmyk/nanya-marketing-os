@@ -41,6 +41,8 @@ RUNTIME_INPUT_FIELDS = {
     "胶系",
     "基板厚度",
     "铜箔规格",
+    "铜箔上面oz",
+    "铜箔下面oz",
     "订单规格",
     "订单规格/订单备注",
 }
@@ -89,6 +91,7 @@ class SemanticRuleCompilation:
     customer_code: str
     customer_name: str
     source_row: int
+    source_column: str
     business_field: str
     source_text: str
     required_input_fields: str
@@ -118,13 +121,15 @@ def compile_semantic_candidate(
     if not source_text:
         return _failed_compilation(candidate, "候选原文为空")
 
+    source_column = str(candidate.get("source_column") or "CCL特殊规则").strip()
     model_result = client.normalize(
         task_type="rule_structure",
-        source_fields={"CCL特殊规则": source_text},
+        source_fields={source_column: source_text},
         customer_code=str(candidate.get("customer_code") or "").strip(),
         customer_name=str(candidate.get("customer_name") or "").strip(),
         task_context={
             "candidate_id": str(candidate.get("candidate_id") or "").strip(),
+            "source_column": source_column,
             "business_field": str(candidate.get("business_field") or "").strip(),
             "required_input_fields": str(candidate.get("required_input_fields") or "").strip(),
             "purpose": "客户特殊规则离线JSON化",
@@ -146,6 +151,7 @@ def evaluate_semantic_compilation(
     model_result, normalization_notes = canonicalize_model_result(
         model_result,
         source_text=str(candidate.get("source_text") or "").strip(),
+        source_column=str(candidate.get("source_column") or "CCL特殊规则").strip(),
     )
     errors: list[str] = []
     questions: list[str] = []
@@ -223,6 +229,7 @@ def evaluate_semantic_compilation(
         customer_code=str(candidate.get("customer_code") or "").strip(),
         customer_name=str(candidate.get("customer_name") or "").strip(),
         source_row=_to_int(candidate.get("source_row")),
+        source_column=str(candidate.get("source_column") or "CCL特殊规则").strip(),
         business_field=str(candidate.get("business_field") or "").strip(),
         source_text=str(candidate.get("source_text") or "").strip(),
         required_input_fields=str(candidate.get("required_input_fields") or "").strip(),
@@ -243,6 +250,7 @@ def canonicalize_model_result(
     model_result: dict[str, Any],
     *,
     source_text: str = "",
+    source_column: str = "CCL特殊规则",
 ) -> tuple[dict[str, Any], list[str]]:
     canonical = json.loads(json.dumps(model_result, ensure_ascii=False))
     notes: list[str] = []
@@ -252,13 +260,13 @@ def canonicalize_model_result(
         raw_source_field = str(item.get("source_field") or "").strip()
         evidence_text = str(item.get("evidence_text") or "").strip()
         if (
-            raw_source_field != "CCL特殊规则"
+            raw_source_field != source_column
             and evidence_text
             and evidence_text in source_text
         ):
-            item["source_field"] = "CCL特殊规则"
+            item["source_field"] = source_column
             notes.append(
-                f"第{item_index + 1}项source_field：{raw_source_field}->CCL特殊规则"
+                f"第{item_index + 1}项source_field：{raw_source_field}->{source_column}"
             )
         normalized_conditions: list[dict[str, Any]] = []
         for condition_index, condition in enumerate(item.get("conditions") or []):
@@ -399,6 +407,7 @@ def _failed_compilation(
         customer_code=str(candidate.get("customer_code") or "").strip(),
         customer_name=str(candidate.get("customer_name") or "").strip(),
         source_row=_to_int(candidate.get("source_row")),
+        source_column=str(candidate.get("source_column") or "CCL特殊规则").strip(),
         business_field=str(candidate.get("business_field") or "").strip(),
         source_text=str(candidate.get("source_text") or "").strip(),
         required_input_fields=str(candidate.get("required_input_fields") or "").strip(),

@@ -47,6 +47,7 @@ REQUIRED_HEADERS = {
     "确认依据",
     "备注",
 }
+OPTIONAL_HEADERS = {"来源列"}
 
 ALLOWED_BUSINESS_FIELDS = {
     "胶系",
@@ -240,7 +241,11 @@ def validate_transcode_semantic_rule_version(version: str) -> dict[str, Any]:
         expected_hash = str((manifest.get("files") or {}).get(filename) or "")
         if not expected_hash or _sha256(path) != expected_hash:
             raise SemanticRuleAssetError(f"模型语义规则文件哈希不匹配：{filename}")
-    rules = load_transcode_semantic_rules(version, validate_manifest=False)
+    rules = load_transcode_semantic_rules(
+        version,
+        validate_manifest=False,
+        include_maintenance=False,
+    )
     if len(rules) != int(manifest.get("rule_count") or 0):
         raise SemanticRuleAssetError("模型语义规则数量与manifest不一致")
     return manifest
@@ -255,6 +260,7 @@ def load_transcode_semantic_rules(
     version: str | None = None,
     *,
     validate_manifest: bool = True,
+    include_maintenance: bool = True,
 ) -> list[dict[str, Any]]:
     selected = version or get_active_transcode_semantic_rule_version()
     if not selected:
@@ -269,7 +275,14 @@ def load_transcode_semantic_rules(
         raise SemanticRuleAssetError("模型语义机器规则rules不是数组")
     for index, rule in enumerate(rules):
         _validate_machine_rule(rule, index)
-    return rules
+    if not include_maintenance:
+        return rules
+    from .transcode_customer_rule_admin import merge_customer_rule_overrides
+
+    merged = merge_customer_rule_overrides(rules)
+    for index, rule in enumerate(merged):
+        _validate_machine_rule(rule, index)
+    return merged
 
 
 def _parse_rule_row(row: dict[str, Any], row_number: int) -> dict[str, Any]:
@@ -297,6 +310,7 @@ def _parse_rule_row(row: dict[str, Any], row_number: int) -> dict[str, Any]:
         "customer_code": _clean(row.get("客户代码")),
         "customer_name": _clean(row.get("客户简称")),
         "source_row": _to_int(row.get("来源行号")),
+        "source_column": _clean(row.get("来源列")) or "CCL特殊规则",
         "business_field": business_field,
         "source_text": _clean(row.get("规则原文")),
         "semantic_types": _split_values(row.get("语义类型")),
@@ -346,7 +360,8 @@ def _validate_machine_rule(rule: Any, index: int) -> None:
         "approval",
         "note",
     }
-    if set(rule) != required:
+    optional = {"source_column"}
+    if not required.issubset(set(rule)) or set(rule) - required - optional:
         raise SemanticRuleAssetError(f"机器规则第{index + 1}项字段不完整")
     if not rule["rule_id"] or not rule["source_candidate_id"] or not rule["enabled"]:
         raise SemanticRuleAssetError(f"机器规则第{index + 1}项未启用或缺少ID")

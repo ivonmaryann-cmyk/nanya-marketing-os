@@ -66,20 +66,6 @@
 - 不允许让新格式客户特殊需求表影响普通营销转码、在途核对或其他报价功能。
 - 不允许解析或执行 `PP特殊规则`、`PP小片特殊规则`。
 
-## 2026-07-20 引擎隔离实现
-
-营销转码 Agent 与普通转码采用物理隔离的引擎入口：
-
-```text
-普通转码、在途转换 -> fangzheng_web_app.transcode_engine
-营销转码 Agent     -> fangzheng_web_app.transcode_agent_engine
-```
-
-- `transcode_engine.py` 保持与远端 `dev` 基线一致，不承载本轮 Agent 增强。
-- 客户特殊规则、增强解析、厚度及尺寸映射只进入 `transcode_agent_engine.py`。
-- Agent 评分、证据链和模型语义模块只由 `transcode_agent_service.py` 调用。
-- `smoke_agent_engine_isolation.py` 固化两个入口，防止后续误接回共享引擎。
-
 ## 当前测试结果评估
 
 业务文件中第一个 Sheet 的人工结果：

@@ -32,6 +32,9 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional, Tuple, Dict, List
 
+from .transcode_agent_standard import HIGH_SPEED_MIL_TO_MM, STANDARD_MM_SIZE_ALIASES
+from .transcode_customer_identity import is_yidun_customer
+
 try:
     from .transcode_special_rules import get_structured_special_rules_path, is_structured_special_rules_enabled
 except Exception:
@@ -212,8 +215,6 @@ def detect_customer_code_column(df: pd.DataFrame) -> Optional[int]:
             header = _clean_cell(df.iloc[row_idx, col_idx])
             if any(keyword in header for keyword in CUSTOMER_CODE_HEADER_KEYWORDS):
                 return col_idx
-    if len(df.columns) > 1:
-        return 1
     return None
 
 
@@ -343,8 +344,16 @@ def build_lookup_tables(sheets: Dict[str, pd.DataFrame]) -> Dict:
     df_rule = sheets.get("编码规则", pd.DataFrame())
     grade_code_map = {}    # K列代码 → L列说明（用于反查）
     grade_desc_to_code = {}  # 说明关键词 → K列代码
+    copper_type_rules = []  # I列代码 + J列铜箔类型说明
     struct_desc_to_code = {}
     for i in range(len(df_rule)):
+        copper_type_code = str(df_rule.iloc[i, 8]).strip() if len(df_rule.columns) > 8 and pd.notna(df_rule.iloc[i, 8]) else ''
+        copper_type_desc = str(df_rule.iloc[i, 9]).strip() if len(df_rule.columns) > 9 and pd.notna(df_rule.iloc[i, 9]) else ''
+        if copper_type_code and copper_type_desc and copper_type_code != 'nan' and len(copper_type_code) == 1:
+            copper_type_rules.append({
+                'code': copper_type_code.upper(),
+                'description': copper_type_desc,
+            })
         k = str(df_rule.iloc[i, 10]).strip() if len(df_rule.columns) > 10 and pd.notna(df_rule.iloc[i, 10]) else ''
         l = str(df_rule.iloc[i, 11]).strip() if len(df_rule.columns) > 11 and pd.notna(df_rule.iloc[i, 11]) else ''
         if k and l and k != 'nan' and l != 'nan' and len(k) <= 4:
@@ -356,6 +365,7 @@ def build_lookup_tables(sheets: Dict[str, pd.DataFrame]) -> Dict:
             struct_desc_to_code[o] = n
     tables['grade_code_map'] = grade_code_map
     tables['grade_desc_to_code'] = grade_desc_to_code
+    tables['copper_type_rules'] = copper_type_rules
     tables['struct_desc_to_code'] = struct_desc_to_code
 
     # ── 客户下单与胶系基板转换 ──
@@ -447,6 +457,7 @@ GLUE_ALIAS = {
     'NY6300S': '6C',
     'NY3150': '3B',   # 客户写NY3150通常指NY3150HF
     'NY3170': '3C',   # 客户写NY3170通常指NY3170HF
+    'NY6666SE': 'C8',
 }
 
 
@@ -510,14 +521,22 @@ def find_customer_order_override(cust_code: str, cust_name: str, glue_model: str
     code_key = _normalize_customer_code(cust_code)
     name_key = _normalize_customer_name(cust_name)
     glue_key = _normalize_glue_key(glue_model)
-    if not code_key or not name_key or not glue_key:
+    if not glue_key or (not code_key and not name_key):
+        return {}
+    if not code_key and name_key not in {
+        "江苏博敏", "博敏电子", "梅州奔创", "湖北金禄", "惠州骏亚",
+        "珠海景旺", "淮安特创", "江苏协和", "深圳博敏", "梅州鼎泰",
+        "信福昌发", "技研新阳", "苏宏志展", "江西弘高",
+    }:
         return {}
 
     matches = []
     for rule in rules:
         if rule.get('unsupported'):
             continue
-        if rule.get('cust_code') != code_key or rule.get('cust_name') != name_key:
+        if code_key and rule.get('cust_code') != code_key:
+            continue
+        if name_key and rule.get('cust_name') != name_key:
             continue
         if rule.get('glue_key') != glue_key:
             continue
@@ -527,6 +546,16 @@ def find_customer_order_override(cust_code: str, cust_name: str, glue_model: str
 
     if not matches:
         return {}
+
+    if "方正F7" in str(cust_name or "") and glue_key == "NY2150":
+        confirmed_matches = [match for match in matches if match.get('glue_code') == '2B']
+        if confirmed_matches:
+            matches = confirmed_matches
+
+    # Many marketing uploads only contain the exact customer name. Name-only
+    # fallback is safe only when all matching rows resolve to one customer code.
+    if not code_key and len({m.get('cust_code') for m in matches}) != 1:
+        return {'error': f'客户下单转换规则客户名称不唯一：{name_key}'}
 
     signatures = {
         (m.get('glue_code', ''), m.get('grade_code', ''), m.get('condition_op'), m.get('condition_mm'))
@@ -777,6 +806,34 @@ def get_glue_code(glue_model: str, glue_exact_map: dict, glue_model_map: dict, c
 # 步骤2：厚度代码
 # ============================================================
 
+def get_high_speed_mil_thickness(
+    glue_model: str,
+    glue_code: str,
+    text: str,
+    thick_raw: str,
+    unit: str,
+    glue_cat_map: dict,
+) -> Optional[float]:
+    """Return the official mil value only for confirmed high-speed material families."""
+    if unit != 'mil':
+        return None
+    match = re.search(r'(\d+(?:\.\d+)?)', str(thick_raw or ''))
+    if not match:
+        return None
+    mil = float(match.group(1))
+    mapped = HIGH_SPEED_MIL_TO_MM.get(mil)
+    if mapped is None:
+        return None
+
+    category = get_glue_category(glue_model, glue_cat_map, glue_code)
+    category_upper = str(category or '').upper()
+    explicit_high_speed = any(token in str(text or '').upper() for token in (
+        '高频', '高速', 'HIGH FREQUENCY', 'HIGH SPEED',
+    ))
+    if category_upper == '高频' or category_upper.startswith('M6含以上') or explicit_high_speed:
+        return mapped
+    return None
+
 def extract_thickness_mm(text: str) -> Tuple[Optional[float], str, str]:
     """
     提取厚度，返回 (mm值, 原始字符串, 单位)
@@ -803,7 +860,7 @@ def extract_thickness_mm(text: str) -> Tuple[Optional[float], str, str]:
 
     # FR-4/FR4 is a material marker and may be glued to the thickness:
     # FR-40.9mm -> FR-4 0.9mm, FR41.2mm -> FR4 1.2mm.
-    text = re.sub(r'\b(FR\s*-?\s*4)(?=\d+\.\d+\s*[Mm]{2})', r'\1 ', text, flags=re.IGNORECASE)
+    text = re.sub(r'(?<![A-Z0-9])(FR\s*-?\s*4)(?=\d+\.\d+\s*[Mm]{2})', r'\1 ', text, flags=re.IGNORECASE)
 
     # 0. 带公差写法取中心值，包括 0.508+0.02/-0.05mm。
     m = re.search(
@@ -844,6 +901,13 @@ def extract_thickness_mm(text: str) -> Tuple[Optional[float], str, str]:
         if 0 < inch <= 0.25:
             return round(inch * 25.4, 2), m.group(0), 'inch'
 
+    # Zero-padded inch notation: 0040" means 0.0040 inch.
+    m = re.search(r'(?<![\d.])(0{2,3}\d{1,2})\s*(?:"|″|”)(?!\s*[*Xx×])', text)
+    if m:
+        inch = float(f"0.{m.group(1)}")
+        if 0 < inch <= 0.25:
+            return round(inch * 25.4, 3), m.group(0), 'inch'
+
     # 3. mil单位：常规下单口径保留0.01mm。
     m = re.search(r'(\d+(?:\.\d+)?)\s*mil', text, re.IGNORECASE)
     if m:
@@ -856,6 +920,20 @@ def extract_thickness_mm(text: str) -> Tuple[Optional[float], str, str]:
     if m:
         val = float(m.group(1))
         if 0.05 <= val <= 10:
+            return val, m.group(1), 'mm'
+
+    # Dashed material separator used by some ERP descriptions: FR-4---0.15.
+    m = re.search(r'(?<![A-Z0-9])(?:FR|RF)\s*-?\s*4\s*-{2,}\s*(\d+(?:\.\d+)?)', text, re.IGNORECASE)
+    if m:
+        val = float(m.group(1))
+        if 0.03 <= val <= 10:
+            return val, m.group(1), 'mm'
+
+    # Thickness followed by two millimetre dimensions: 0.152*940*1245MM.
+    m = re.search(r'(?<![\d.])(\d+\.\d+)\s*[*×Xx]\s*\d{3,4}(?:\.\d+)?\s*[*×Xx]\s*\d{3,4}(?:\.\d+)?\s*MM', text, re.IGNORECASE)
+    if m:
+        val = float(m.group(1))
+        if 0.03 <= val <= 10:
             return val, m.group(1), 'mm'
 
     # 4. 数字(含铜) 或 数字(不含铜) 格式
@@ -882,6 +960,48 @@ def extract_thickness_mm(text: str) -> Tuple[Optional[float], str, str]:
             return val, m.group(0), 'mm'
 
     return None, '', ''
+
+
+def extract_customer_dual_thickness(cust_name: str, text: str) -> Tuple[Optional[float], str, str]:
+    """Parse narrow customer formats whose unlabeled numbers have confirmed meaning."""
+    customer = str(cust_name or "")
+    source = str(text or "")
+    if "江苏瀚宇" in customer:
+        model_match = re.search(r'\bNY[A-Z0-9-]+\s+(\d{3}|\d+[Pp]\d+)\b', source, re.IGNORECASE)
+        if model_match:
+            token = model_match.group(1).upper()
+            if token == "031":
+                # The confirmed 31mil boundary and the current conversion table
+                # differ by several microns; keep it visible for business review.
+                return None, '', ''
+            mil = float(token.replace("P", ".")) if "P" in token else float(int(token))
+            return round(mil * 0.0254, 3), token, 'mil'
+
+    if "泰兴电路" in customer:
+        match = re.search(
+            r'(?:CCL|\u8986\u94dc\u677f)\s+FR4\.[01]\s+(\d+(?:\.\d+)?)\s+'
+            r'[A-Z0-9.]+\s*/\s*[A-Z0-9.]+\s+(\d+(?:\.\d+)?)',
+            source,
+            re.IGNORECASE,
+        )
+        if match:
+            core_mm = float(match.group(1))
+            return core_mm, match.group(1), 'mm'
+
+    if "深南" not in customer:
+        return None, '', ''
+    match = re.search(
+        r'(?:CCL|覆铜板)\s+FR4\.[01]\s+(\d+(?:\.\d+)?)\s+'
+        r'[A-Z0-9.]+\s*/\s*[A-Z0-9.]+\s+(\d+(?:\.\d+)?)',
+        source,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None, '', ''
+    core_mm = float(match.group(1))
+    total_mm = float(match.group(2))
+    selected = total_mm if core_mm >= 0.8 else core_mm
+    return selected, str(selected), 'mm'
 
 
 def thickness_to_code(mm_val: float) -> str:
@@ -916,6 +1036,8 @@ def get_customer_thickness_mode_override(cust_name: str, text: str) -> Tuple[Opt
             return "core", "兴森快捷：T/C 是芯厚"
         if re.search(r'(?<![A-Z0-9])D\s*/\s*C(?![A-Z0-9])', text_upper):
             return "total", "兴森快捷：D/C 是总厚"
+    if "方正F7" in cust_text:
+        return "core", "方正F7：默认输入芯厚，>=0.8mm按总芯厚转换表转总厚"
     return None, ""
 
 
@@ -1282,6 +1404,7 @@ MICRON_COPPER_MAP = {
     '15': 'J',
     '17': 'H',
     '18': 'H',
+    '22': 'I',
     '28': 'K',
     '35': '1',
     '50': 'F',
@@ -1317,6 +1440,18 @@ def extract_copper_spec(text: str) -> Optional[str]:
     text_upper = re.sub(r'(?<![A-Z0-9])C\s*/\s*M\s*(?=级|級|GRADE|\b)', ' CMGRADE ', text_upper, flags=re.IGNORECASE)
     # Split tightly written thickness + copper specs, e.g. 0.100mm1/1 -> 0.100mm 1/1.
     text_upper = re.sub(r'(MM|MIL)\s*(?=[A-Z0-9.]{1,3}\s*/)', r'\1 ', text_upper, flags=re.IGNORECASE)
+
+    # DeepSouth foil aliases carry the copper weight in the final character:
+    # HV2H/HV2H -> H/H, R21/S2 -> 1/2, SH/S1 -> H/1.
+    m = re.search(
+        r'(?:CCL|覆铜板)\s+FR4\.[01]\s+\d+(?:\.\d+)?\s+'
+        r'((?:HV|R|S)[A-Z0-9]*[H1-6])\s*/\s*'
+        r'((?:HV|R|S)[A-Z0-9]*[H1-6])\s+\d+(?:\.\d+)?',
+        text_upper,
+        re.IGNORECASE,
+    )
+    if m:
+        return f"{m.group(1)[-1]}/{m.group(2)[-1]}"
 
     # Customer notation 1/H is normalized to the internal H/1 order.
     if re.search(r'(?<![A-Z0-9])1\s*/\s*H(?![A-Z0-9])', text_upper):
@@ -1544,6 +1679,14 @@ def _ceil2(value: float) -> float:
     return math.ceil((float(value) * 100) - 1e-9) / 100
 
 
+def _standard_mm_size_alias(value: float) -> Optional[float]:
+    value = float(value)
+    for source_mm, target_inch in STANDARD_MM_SIZE_ALIASES.items():
+        if abs(value - source_mm) <= 0.5:
+            return target_inch
+    return None
+
+
 def _normalize_latitude_49(value: float) -> Optional[float]:
     """Normalize the latitude/width dimension around the business 49.x size bands."""
     value = round(float(value) + 1e-9, 2)
@@ -1601,6 +1744,10 @@ def _normalize_standard_size(w: float, h: float, snap_to_standard: bool = False)
 
 def _size_from_numbers(w: float, h: float, unit: str) -> Optional[Tuple[float, float]]:
     if unit == "mm":
+        w_alias = _standard_mm_size_alias(w)
+        h_alias = _standard_mm_size_alias(h)
+        if w_alias is not None and h_alias is not None:
+            return _normalize_standard_size(w_alias, h_alias, snap_to_standard=False)
         w = _ceil2(w / 25.4)
         h = _ceil2(h / 25.4)
         return _normalize_standard_size(w, h, snap_to_standard=True)
@@ -1613,8 +1760,34 @@ def extract_size(text: str) -> Optional[Tuple[float, float]]:
     支持 inch 标记（"、in、inch）、mm 标记、W/F 前缀和大数字无单位 mm 写法。
     """
     text_norm = str(text).replace('×', 'X').replace('x', 'X').replace('＊', '*')
+    text_norm = re.sub(r"(?<=\d)'{2}", '"', text_norm)
     text_norm = re.sub(r'(?<=\d)\s+\.\s*(?=\d)', '.', text_norm)
     text_no_fabric = _strip_fabric_structures(text_norm)
+
+    # Prefix-labelled dimensions: 经41*纬49 inch and the reverse order.
+    m = re.search(
+        r'经\s*(\d+(?:\.\d+)?)\s*[*X]\s*纬\s*(\d+(?:\.\d+)?)\s*(?:INCH|IN|英寸)',
+        text_norm,
+        re.IGNORECASE,
+    )
+    if m:
+        return _size_from_numbers(float(m.group(1)), float(m.group(2)), "inch")
+    m = re.search(
+        r'纬\s*(\d+(?:\.\d+)?)\s*[*X]\s*经\s*(\d+(?:\.\d+)?)\s*(?:INCH|IN|英寸)',
+        text_norm,
+        re.IGNORECASE,
+    )
+    if m:
+        return _size_from_numbers(float(m.group(2)), float(m.group(1)), "inch")
+
+    # Both dimensions carry an inch suffix but omit the separator: 82IN 49IN.
+    m = re.search(
+        r'(\d+(?:\.\d+)?)\s*(?:INCH|IN|英寸)\s*(\d+(?:\.\d+)?)\s*(?:INCH|IN|英寸)',
+        text_norm,
+        re.IGNORECASE,
+    )
+    if m:
+        return _size_from_numbers(float(m.group(1)), float(m.group(2)), "inch")
 
     # 经纬标注 inch 写法：16"(纬)X20.4"(经) should output 经 x 纬 -> 20.4 x 16.
     wh_pattern = (
@@ -1781,7 +1954,7 @@ def get_glue_category(glue_model: str, glue_cat_map: dict, glue_code: str = "") 
     norm_model = _normalize_glue_key(glue_model)
     if norm_model in {"NY2140L", "NY3170HC"}:
         return "特殊"
-    if str(glue_code or "").upper() in {"RV", "DA"}:
+    if str(glue_code or "").upper() in {"RV", "DA", "C8", "CK", "AH"}:
         return "特殊"
 
     norm_cat_map = {_normalize_glue_key(k): v for k, v in glue_cat_map.items()}
@@ -1824,7 +1997,49 @@ SPECIAL_COPPER_MAP = [
 ]
 
 
-def get_copper_type_code(text: str) -> str:
+COPPER_TYPE_TOKEN_PATTERN = re.compile(r'(?<![A-Z0-9])(?:HVLP[1-5]|RTF[1-6]?|VLP1?|HTE)(?![A-Z0-9])')
+
+
+def _copper_type_tokens(text: str) -> List[str]:
+    return [match.group(0).upper() for match in COPPER_TYPE_TOKEN_PATTERN.finditer(str(text or '').upper())]
+
+
+def _has_positive_watermark(text: str) -> bool:
+    text_upper = str(text or '').upper()
+    return (
+        '有水印' in str(text or '')
+        or '带水印' in str(text or '')
+        or bool(re.search(r'(?<!NO\s)UV\s*(?:YES|Y)\b', text_upper))
+    )
+
+
+def _match_copper_type_rule(text: str, copper_type_rules: Optional[List[dict]]) -> Optional[str]:
+    if not copper_type_rules:
+        return None
+    input_tokens = _copper_type_tokens(text)
+    has_watermark = _has_positive_watermark(text)
+    candidates = []
+    for rule in copper_type_rules:
+        description = str(rule.get('description') or '')
+        tokens = _copper_type_tokens(description)
+        if not tokens:
+            continue
+        requires_watermark = '水印' in description and '无水印' not in description
+        if requires_watermark != has_watermark:
+            continue
+        if len(tokens) >= 2:
+            matched = any(input_tokens[i:i + len(tokens)] == tokens for i in range(len(input_tokens) - len(tokens) + 1))
+        else:
+            matched = tokens[0] in input_tokens
+        if matched:
+            candidates.append((len(tokens), len(description), str(rule.get('code') or '').upper()))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][2]
+
+
+def get_copper_type_code(text: str, copper_type_rules: Optional[List[dict]] = None) -> str:
     """
     根据规格文本判断铜箔类型代码
     修复：HTE是常规铜，不映射为D；只有RTF/HVLP/VLP才特殊
@@ -1832,6 +2047,9 @@ def get_copper_type_code(text: str) -> str:
     text_upper = text.upper()
     if 'IGAV UV' in text_upper:
         return 'I'
+    rule_code = _match_copper_type_rule(text, copper_type_rules)
+    if rule_code:
+        return rule_code
     has_hs2_vsp = "HS2-M2-VSP" in text_upper or "HS2-M2-VS" in text_upper
     if has_hs2_vsp and "RTF" in text_upper:
         return "N"
@@ -1840,9 +2058,60 @@ def get_copper_type_code(text: str) -> str:
     for keyword, code in SPECIAL_COPPER_MAP:
         if keyword in text_upper:
             return code
-    if '有水印' in text or '带水印' in text or re.search(r'(?<!NO\s)UV\s*(?:YES|Y)\b', text_upper):
+    if _has_positive_watermark(text):
         return 'Q'
     return 'W'  # 默认常规铜无水印
+
+
+def get_customer_copper_type_code(cust_name: str, text: str) -> Optional[str]:
+    """Resolve customer-local copper aliases that are explicit in the source rules."""
+    if "深南" not in str(cust_name or ""):
+        return None
+    match = re.search(
+        r'(?:CCL|覆铜板)\s+FR4\.[01]\s+\d+(?:\.\d+)?\s+'
+        r'([A-Z0-9.]+)\s*/\s*([A-Z0-9.]+)\s+\d+(?:\.\d+)?',
+        str(text or "").upper(),
+    )
+    if not match:
+        return None
+
+    def foil_type(token: str) -> str:
+        token = token.upper()
+        token = re.sub(r'[H1-6]$', '', token)
+        if token.startswith('HV'):
+            level = re.search(r'HV(\d)', token)
+            return f"HVLP{level.group(1)}" if level else "HVLP1"
+        if token.startswith('R'):
+            level = re.search(r'R(\d)', token)
+            return f"RTF{level.group(1)}" if level else "RTF"
+        if token.startswith('S'):
+            return "RTF"
+        return "HTE"
+
+    left = foil_type(match.group(1))
+    right = foil_type(match.group(2))
+    pair = frozenset((left, right))
+    combined_codes = {
+        frozenset(("HVLP1", "RTF")): "C",
+        frozenset(("HVLP2", "RTF")): "N",
+        frozenset(("HVLP3", "RTF")): "H",
+        frozenset(("RTF2", "RTF")): "S",
+        frozenset(("RTF3", "RTF")): "T",
+    }
+    if left != right and pair in combined_codes:
+        return combined_codes[pair]
+    single_codes = {
+        "HTE": "W",
+        "RTF": "R",
+        "RTF2": "B",
+        "RTF3": "A",
+        "HVLP1": "O",
+        "HVLP2": "P",
+        "HVLP3": "K",
+        "HVLP4": "Z",
+        "HVLP5": "J",
+    }
+    return single_codes.get(left) if left == right else None
 
 
 # ============================================================
@@ -1884,10 +2153,6 @@ def get_grade_code(text: str, cust_name: str, glue_model: str,
     text_upper = str(text or "").upper()
     if "惠州威健" in cust_text and "CTI" in text_upper and "600" in text_upper and _normalize_glue_key(glue_model) == "NY1600":
         return "A2"
-    if any(name in cust_text for name in ("广东依顿", "森德科技")) and (
-        "耐CAF" in grade_source or "ANTI-CAF" in text_upper or "ANTI CAF" in text_upper
-    ):
-        return "AC"
     if any(keyword in grade_source for keyword in (
         "汽车专用", "汽车板", "车载板", "车用", "CAR BOARD", "CARBOARD", "AUTOMOTIVE",
     )):
@@ -1913,6 +2178,8 @@ def get_grade_code(text: str, cust_name: str, glue_model: str,
         return "AC"
     if "崇达" in cust_text and norm_glue == "NY3150HC":
         return "AC"
+    if norm_glue in {"NY3150HC", "NY3170HF"}:
+        return "AC"
     if "深万基隆" in cust_text and norm_glue.startswith("NY2140"):
         return "A1"
     if "珠海益天" in cust_text and norm_glue.startswith("NY2140"):
@@ -1921,7 +2188,26 @@ def get_grade_code(text: str, cust_name: str, glue_model: str,
         thickness_mm, _, _ = extract_thickness_mm(text)
         copper_spec = extract_copper_spec(text)
         max_oz = _max_copper_oz(copper_spec)
-        if thickness_mm is not None and thickness_mm > 0.8 and max_oz is not None and max_oz <= 1:
+        strict_below_one_oz_customers = (
+            "赣州超跃", "赣州金顺", "赣州逸豪", "信丰共赢", "信迅捷兴",
+            "中宝悦嘉", "九江明阳", "深圳明阳", "益宝悦嘉", "深三德盈",
+        )
+        strict_below_one_oz = any(name in cust_text for name in strict_below_one_oz_customers)
+        if (
+            strict_below_one_oz
+            and thickness_mm is not None
+            and thickness_mm >= 0.8
+            and max_oz is not None
+            and max_oz < 1
+        ):
+            return "F1"
+        if (
+            not strict_below_one_oz
+            and thickness_mm is not None
+            and thickness_mm > 0.8
+            and max_oz is not None
+            and max_oz <= 1
+        ):
             return "F1"
     if "世运" in str(cust_name or "") and norm_glue == "NY3170HC":
         return "AC"
@@ -2164,11 +2450,19 @@ def transcode_row(s_text: str, e_text: str, d_cust_name: str, a_cust_code: str,
     customer_grade_override = ''
 
     # ── 步骤2：厚度代码 ──
-    mm_val, thick_raw, unit = extract_thickness_mm(s_text)
+    mm_val, thick_raw, unit = extract_customer_dual_thickness(d_cust_name, s_text)
+    if mm_val is None:
+        mm_val, thick_raw, unit = extract_thickness_mm(s_text)
     exact_inch_mm = apply_customer_exact_inch_thickness(d_cust_name, thick_raw, glue_model or "")
     if exact_inch_mm is not None:
         mm_val = exact_inch_mm
         unit = 'inch-exact'
+    official_mil_mm = get_high_speed_mil_thickness(
+        glue_model or '', glue_code, s_text, thick_raw, unit, tables['glue_cat_map']
+    )
+    if official_mil_mm is not None:
+        mm_val = official_mil_mm
+        unit = '高频高速mil规范表'
     steps['thickness_raw'] = thick_raw
     steps['thickness_mm'] = mm_val
     steps['thickness_unit'] = unit
@@ -2271,7 +2565,7 @@ def transcode_row(s_text: str, e_text: str, d_cust_name: str, a_cust_code: str,
         f"{s_text or ''} {context_text or ''}",
         re.IGNORECASE,
     )
-    if "广东依顿" in str(d_cust_name or "") and yidun_mil and float(yidun_mil.group(1)) >= 4:
+    if is_yidun_customer(d_cust_name) and yidun_mil and float(yidun_mil.group(1)) >= 4:
         mil_value = float(yidun_mil.group(1))
         if not order_is_total and mil_value < 31:
             order_mm = mil_value * 0.0254
@@ -2289,7 +2583,7 @@ def transcode_row(s_text: str, e_text: str, d_cust_name: str, a_cust_code: str,
         copper_code = '??'
     else:
         copper_code = copper_spec_to_code(copper_spec)
-        if "广东依顿" in str(d_cust_name or "") and re.search(r'(?<![A-Z0-9])1\s*/\s*H\s*OZ\b', s_text.upper()):
+        if is_yidun_customer(d_cust_name) and re.search(r'(?<![A-Z0-9])1\s*/\s*H\s*OZ\b', s_text.upper()):
             copper_code = "H1"
             steps['copper_note'] = '广东依顿特殊写法：1/HOZ按H/1'
         if "深万基隆" in str(d_cust_name or "") and copper_spec.upper() == "H/H":
@@ -2333,7 +2627,9 @@ def transcode_row(s_text: str, e_text: str, d_cust_name: str, a_cust_code: str,
     steps['step5_glue_cat_code'] = glue_cat_code
 
     # ── 步骤6：铜箔类型代码 ──
-    copper_type_code = get_copper_type_code(s_text)
+    copper_type_code = get_customer_copper_type_code(d_cust_name, s_text) or get_copper_type_code(
+        s_text, tables.get('copper_type_rules')
+    )
     steps['step6_copper_type_code'] = copper_type_code
 
     # ── 步骤7：基板级别代码 ──
@@ -2349,6 +2645,9 @@ def transcode_row(s_text: str, e_text: str, d_cust_name: str, a_cust_code: str,
     ):
         grade_code = "D3"
         steps['grade_note'] = '深南NY-P5Q考试板按确认样本使用D3等级'
+    if "深南" in str(d_cust_name or "") and re.search(r'[\(（]\s*AE\s*[\)）]', str(s_text or ''), re.IGNORECASE):
+        grade_code = "AC"
+        steps['grade_note'] = '深南原表规则：AE按汽车板AC等级'
     steps['step7_grade_code'] = grade_code
 
     # ── 步骤8：总/芯厚代码 ──

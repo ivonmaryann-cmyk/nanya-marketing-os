@@ -224,6 +224,8 @@ class DeepSeekSemanticClient:
                 "relevant_approved_rules": relevant_rules or [],
             },
         )
+        if task_type == "order_normalization":
+            _clear_unstated_order_targets(result, clean_sources)
         validate_semantic_result(result, clean_sources, expected_task_type=task_type)
         return result
 
@@ -292,6 +294,19 @@ class DeepSeekSemanticClient:
         if not isinstance(result, dict):
             raise SemanticModelResponseError("Model response must be a JSON object.")
         return result
+
+
+def _clear_unstated_order_targets(
+    result: dict[str, Any],
+    source_fields: dict[str, str],
+) -> None:
+    """Remove target codes copied from approved rules but absent from order text."""
+    for item in result.get("semantic_items") or []:
+        if not isinstance(item, dict):
+            continue
+        stated_target = str(item.get("stated_target_value") or "").strip()
+        if stated_target and not _text_present_in_sources(stated_target, source_fields):
+            item["stated_target_value"] = ""
 
 
 def validate_semantic_result(

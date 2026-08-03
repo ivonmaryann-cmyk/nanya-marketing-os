@@ -14,6 +14,7 @@ from werkzeug.utils import secure_filename
 
 from .db import get_setting, set_setting
 from .paths import DEFAULT_RULES_DIR, TRANSCODE_AGENT_RULES_DIR, TRANSCODE_AGENT_RULES_VERSIONS_DIR
+from .transcode_agent_standard import OFFICIAL_GRADE_CODES
 
 
 FEATURE_KEY = "transcode_agent"
@@ -82,7 +83,8 @@ EXECUTABLE_FIELDS = {
     "tc_code",
 }
 
-GRADE_CODES = {"A1", "A2", "A5", "AC", "AD", "AH", "AL", "AP", "AM", "AT", "F1"}
+# 这里只放开规则值校验；是否触发仍必须由客户规则或明确规格条件决定。
+GRADE_CODES = set(OFFICIAL_GRADE_CODES)
 GLUE_MODEL_TO_CODE = {
     "NY2140": "2A",
     "2140": "2A",
@@ -133,6 +135,26 @@ COPPER_TYPE_VALUE_MAP = {
 }
 
 MAPPING_TABLE_HEADERS = {
+    "Agent胶系主表": [
+        "映射ID", "启用", "胶系编号", "胶系名称", "胶系分类", "输出胶系代码",
+        "来源文件", "来源行号", "备注",
+    ],
+    "Agent胶系兼容别名": [
+        "映射ID", "启用", "兼容名称", "标准胶系编号", "标准胶系名称",
+        "输出胶系代码", "来源批次", "规则文本", "备注",
+    ],
+    "Agent胶系选择规则": [
+        "映射ID", "启用", "胶系名称", "条件客户代码", "条件客户简称", "条件关键词",
+        "输出胶系代码", "优先级", "来源批次", "规则文本", "备注",
+    ],
+    "Agent基础条件规则": [
+        "映射ID", "启用", "物料类别", "条件胶系", "条件关键词", "关键词模式",
+        "覆盖胶系代码", "覆盖胶水类别", "覆盖基板级别", "来源批次", "规则文本", "备注",
+    ],
+    "客户规则组": [
+        "映射ID", "启用", "规则组ID", "规则组名称", "客户代码", "客户简称",
+        "主规则客户代码", "主规则客户简称", "来源批次", "备注",
+    ],
     "客户字段映射": [
         "映射ID",
         "启用",
@@ -321,6 +343,96 @@ def get_transcode_agent_mapping_table_file_path(version: str | None = None) -> P
     return get_transcode_agent_rule_dir(version) / MAPPING_TABLE_FILENAME
 
 
+def publish_transcode_agent_glue_asset_version(
+    mapping_file: Path | None = None,
+    *,
+    updated_by: str,
+    remark: str = "",
+) -> str:
+    source_mapping = Path(mapping_file or (DEFAULT_AGENT_RULE_DIR / MAPPING_TABLE_FILENAME))
+    if not source_mapping.exists():
+        raise FileNotFoundError(f"未找到Agent映射资产：{source_mapping}")
+    workbook = openpyxl.load_workbook(source_mapping, read_only=True, data_only=True)
+    required_glue_sheets = {"Agent胶系主表", "Agent胶系兼容别名", "Agent胶系选择规则"}
+    missing = sorted(required_glue_sheets - set(workbook.sheetnames))
+    if missing:
+        raise ValueError(f"Agent胶系资产缺少Sheet：{', '.join(missing)}")
+    master_sheet = workbook["Agent胶系主表"]
+    first_data_row = next(
+        master_sheet.iter_rows(min_row=2, max_row=2, values_only=True),
+        None,
+    )
+    if not first_data_row or not any(str(value or "").strip() for value in first_data_row):
+        raise ValueError("Agent胶系主表没有可发布数据")
+
+    current_version = get_active_transcode_agent_rule_version() or ensure_default_transcode_agent_rule_version()
+    current_dir = get_transcode_agent_rule_dir(current_version)
+    version = datetime.now().strftime("transcode_agent_rules_%Y%m%d_%H%M%S")
+    version_dir = TRANSCODE_AGENT_RULES_VERSIONS_DIR / version
+    shutil.copytree(current_dir, version_dir)
+    shutil.copy2(source_mapping, version_dir / MAPPING_TABLE_FILENAME)
+    set_setting(_active_key(), version)
+
+    history = _read_history()
+    history.insert(
+        0,
+        {
+            "version": version,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "updated_by": updated_by,
+            "remark": remark or "发布营销转码Agent最新版胶系主表及历史兼容映射",
+            "source_file": source_mapping.name,
+            "rule_count": len(load_transcode_agent_rules(version)),
+            "base_version": current_version,
+            "updated_sheets": "Agent胶系主表, Agent胶系兼容别名, Agent胶系选择规则",
+        },
+    )
+    _write_history(history)
+    return version
+
+
+def publish_cleaned_active_mapping_version(*, updated_by: str, remark: str = "") -> str:
+    current_version = get_active_transcode_agent_rule_version() or ensure_default_transcode_agent_rule_version()
+    current_dir = get_transcode_agent_rule_dir(current_version)
+    structured_draft = current_dir / STRUCTURED_DRAFT_FILENAME
+    if not structured_draft.exists():
+        raise FileNotFoundError(f"当前Agent规则版本缺少确认草稿：{structured_draft}")
+
+    rebuilt_tables, _ = parse_confirmed_customer_special_mapping_tables(structured_draft)
+    pending_rows = rebuilt_tables.get("待接入规则", [])
+
+    version = datetime.now().strftime("transcode_agent_rules_%Y%m%d_%H%M%S")
+    version_dir = TRANSCODE_AGENT_RULES_VERSIONS_DIR / version
+    shutil.copytree(current_dir, version_dir)
+    mapping_path = version_dir / MAPPING_TABLE_FILENAME
+    workbook = openpyxl.load_workbook(mapping_path)
+    worksheet = workbook["待接入规则"]
+    if worksheet.max_row > 1:
+        worksheet.delete_rows(2, worksheet.max_row - 1)
+    headers = MAPPING_TABLE_HEADERS["待接入规则"]
+    for row in pending_rows:
+        worksheet.append([row.get(header, "") for header in headers])
+    workbook.save(mapping_path)
+    set_setting(_active_key(), version)
+
+    history = _read_history()
+    history.insert(
+        0,
+        {
+            "version": version,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "updated_by": updated_by,
+            "remark": remark or "清理已分流的重复待接入规则，保留当前全部已发布映射",
+            "source_file": structured_draft.name,
+            "rule_count": len(load_transcode_agent_rules(current_version)),
+            "base_version": current_version,
+            "updated_sheets": "待接入规则,转换说明",
+        },
+    )
+    _write_history(history)
+    return version
+
+
 def save_new_transcode_agent_rule_version(
     rule_file: FileStorage,
     *,
@@ -346,7 +458,16 @@ def save_new_transcode_agent_rule_version(
         mapping_tables, mapping_summary = parse_confirmed_customer_special_mapping_tables(original_path)
         # 正确码回归样本形成的客户字段映射不属于草稿生成物。
         # 上传新草稿时继承当前已发布映射，避免确定性回归规则丢失。
-        mapping_tables["客户字段映射"] = load_transcode_agent_mapping_tables().get("客户字段映射", [])
+        published_tables = load_transcode_agent_mapping_tables()
+        for maintained_sheet in (
+            "Agent胶系主表",
+            "Agent胶系兼容别名",
+            "Agent胶系选择规则",
+            "Agent基础条件规则",
+            "客户规则组",
+            "客户字段映射",
+        ):
+            mapping_tables[maintained_sheet] = published_tables.get(maintained_sheet, [])
         build_mapping_table_workbook(mapping_path, mapping_tables, mapping_summary)
     build_machine_rule_workbook(rule_path, rules, summary)
     set_setting(_active_key(), version)
@@ -825,6 +946,8 @@ def _append_pending_mapping_row(tables: dict[str, list[dict]], base: dict, combi
     source = _clean_multiline(combined_text)
     if not source:
         return
+    if _mapping_rule_is_already_routed(tables, base, source):
+        return
     tables["待接入规则"].append(
         {
             **base,
@@ -832,9 +955,37 @@ def _append_pending_mapping_row(tables: dict[str, list[dict]], base: dict, combi
             "原始规则": source,
             "规则来源说明": source_note,
             "建议处理": _suggest_pending_mapping_action(source),
-            "备注": "技术待支持总览行；专门Sheet已拆出的规则仍会保留此总览",
+            "备注": "无法分流到已有映射、订单语义或当前编码范围的规则，需人工复核",
         }
     )
+
+
+def _mapping_rule_is_already_routed(tables: dict[str, list[dict]], base: dict, source: str) -> bool:
+    source_row = _clean(base.get("来源行号"))
+    customer_code = _clean(base.get("客户代码"))
+    customer_name = _clean(base.get("客户简称"))
+    for sheet_name in (
+        "客户单边尺寸映射",
+        "客户尺寸映射",
+        "客户尺寸算法",
+        "客户厚度映射",
+        "客户物料编码口径",
+        "外部尺寸表引用",
+    ):
+        for row in tables.get(sheet_name, []):
+            if _clean(row.get("来源行号")) != source_row:
+                continue
+            if _clean(row.get("客户代码")) != customer_code:
+                continue
+            if _clean(row.get("客户简称")) == customer_name:
+                return True
+
+    normalized = _clean(source).upper()
+    if "订单" in normalized or "备注" in normalized or "第5码" in normalized:
+        return True
+    if "J0J0F0" in normalized or "24-30位" in normalized or "24~30位" in normalized:
+        return True
+    return False
 
 
 def _detect_pending_mapping_type(text: str) -> str:
@@ -1226,15 +1377,37 @@ def _parse_confirmed_rule_line(
     condition_text = parts.get("条件", "")
     explanation = parts.get("依据", "") or parts.get("说明", "") or parts.get("确认点", "")
 
+    if (
+        _clean(customer_name) == "方正F7"
+        and override_field == "tc_code"
+        and _clean(override_value_raw).upper() == "C"
+        and not condition_text
+    ):
+        condition_text = "厚度:<0.8"
+        explanation = "方正F7默认输入芯厚；>=0.8mm由Agent总芯厚算法转总厚"
+    if (
+        _clean(customer_name) == "江苏博敏"
+        and override_field == "grade_code"
+        and re.fullmatch(r"AH\s+AD", _clean(override_value_raw).upper())
+    ):
+        override_value_raw = "AD"
+        explanation = "原文AH为客户胶系代码，AD为基板级别代码"
+
     if rule_status != CONFIRMED_RULE_STATUS:
         return None, f"规则状态非{CONFIRMED_RULE_STATUS}"
     if field_name in IGNORED_CONFIRMED_FIELDS or override_field in IGNORED_CONFIRMED_OVERRIDES:
         return None, "本阶段排除字段"
     if override_field not in EXECUTABLE_FIELDS:
         return None, "覆盖字段不在本阶段执行白名单"
-    if _contains_order_semantic(condition_text) or _contains_order_semantic(override_value_raw):
+    customer_spec_absence_rule = (
+        override_field == "grade_code"
+        and "客户规格没有Q" in _clean(condition_text).upper()
+    )
+    if (
+        _contains_order_semantic(condition_text) or _contains_order_semantic(override_value_raw)
+    ) and not customer_spec_absence_rule:
         return None, "订单语义规则后续专门处理"
-    if _contains_unsupported_negative_condition(condition_text):
+    if _contains_unsupported_negative_condition(condition_text) and not customer_spec_absence_rule:
         return None, "负向/排除条件本阶段暂不执行"
 
     normalized_value = _normalize_override_value(override_field, override_value_raw)
@@ -1380,7 +1553,11 @@ def _dedupe_confirmed_rules(rows: list[dict]) -> list[dict]:
     return deduped
 
 
-def load_transcode_agent_rules(version: str | None = None) -> list[dict]:
+def load_transcode_agent_rules(
+    version: str | None = None,
+    *,
+    include_maintenance: bool = True,
+) -> list[dict]:
     path = get_transcode_agent_rule_file_path(version)
     if not path.exists():
         return []
@@ -1394,7 +1571,12 @@ def load_transcode_agent_rules(version: str | None = None) -> list[dict]:
         item = {headers[col - 1]: _clean(worksheet.cell(row_idx, col).value) for col in range(1, worksheet.max_column + 1) if headers[col - 1]}
         if item.get("规则ID"):
             rules.append(item)
-    return rules
+    if not include_maintenance:
+        return rules
+    from .transcode_customer_rule_admin import merge_agent_rule_overrides
+    from .transcode_rule_center import merge_base_rule_overrides
+
+    return merge_base_rule_overrides(merge_agent_rule_overrides(rules))
 
 
 def load_transcode_agent_mapping_tables(version: str | None = None) -> dict[str, list[dict]]:
@@ -1416,7 +1598,9 @@ def load_transcode_agent_mapping_tables(version: str | None = None) -> dict[str,
             }
             if item.get("映射ID"):
                 rows.append(item)
-    return tables
+    from .transcode_rule_center import merge_agent_mapping_overrides
+
+    return merge_agent_mapping_overrides(tables)
 
 
 def get_transcode_agent_rule_count() -> int:
