@@ -18,6 +18,8 @@ PRICE_RULE_FILENAME = "price_rules.xlsx"
 TEST_DATA_FILENAME = "test_data.xlsx"
 GUANGHE_HUANGSHI_RULE_FILENAME = "guanghe_huangshi_price_rules.xlsx"
 GUANGHE_NANYA_RULE_FILENAME = "guanghe_nanya_price_rules.xlsx"
+SUHANG_PP_RULE_FILENAME = "suhang_pp_price_rules.xlsx"
+SUHANG_CCL_RULE_FILENAME = "suhang_ccl_price_rules.xlsx"
 ALLOWED_RULE_EXTENSIONS = {".xlsx", ".xls", ".xlsm"}
 JINGWANG_QUOTE_VARIANTS = {"new": "新报价单", "old": "旧报价单"}
 
@@ -112,6 +114,43 @@ def ensure_default_price_rule_version(customer_key: str, quote_variant: str | No
         return ""
 
     packaged_dir = DEFAULT_RULES_DIR / "price_calculation"
+    if customer_key == "suhang":
+        seed_pp = packaged_dir / "suhang" / "pp_price_rules.xlsx"
+        seed_ccl = packaged_dir / "suhang" / "ccl_price_rules.xlsx"
+        seed_test = packaged_dir / "suhang" / TEST_DATA_FILENAME
+        if not seed_pp.exists() or not seed_ccl.exists():
+            return ""
+        version = datetime.now().strftime("suhang_bootstrap_%Y%m%d_%H%M%S")
+        version_dir = _versions_dir(customer_key, variant) / version
+        version_dir.mkdir(parents=True, exist_ok=True)
+        _copy_price_rule(seed_pp, version_dir / SUHANG_PP_RULE_FILENAME)
+        _copy_price_rule(seed_ccl, version_dir / SUHANG_CCL_RULE_FILENAME)
+        _merge_excel_sources(
+            [("苏杭PP报价", version_dir / SUHANG_PP_RULE_FILENAME), ("苏杭CCL报价", version_dir / SUHANG_CCL_RULE_FILENAME)],
+            version_dir / PRICE_RULE_FILENAME,
+        )
+        if seed_test.exists():
+            _copy_excel_as_xlsx(seed_test, version_dir / TEST_DATA_FILENAME)
+        validate_price_rule_files(customer_key, version_dir / PRICE_RULE_FILENAME, version_dir / TEST_DATA_FILENAME)
+        set_setting(_active_key(customer_key, variant), version)
+        append_price_rule_history(
+            customer_key,
+            {
+                "version": version,
+                "customer_key": customer_key,
+                "customer_label": customer["label"],
+                "quote_variant": variant,
+                "quote_variant_label": JINGWANG_QUOTE_VARIANTS.get(variant, ""),
+                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "updated_by": "system",
+                "remark": "由内置苏杭PP和CCL报价表及测试数据初始化",
+                "rule_file": f"{seed_pp.name}；{seed_ccl.name}",
+                "test_file": seed_test.name,
+            },
+            variant,
+        )
+        return version
+
     seed_map = {
         "jingwang": (packaged_dir / "jingwang" / "new" / PRICE_RULE_FILENAME, packaged_dir / "jingwang" / "new" / TEST_DATA_FILENAME),
         "plin": (packaged_dir / "plin" / PRICE_RULE_FILENAME, packaged_dir / "plin" / TEST_DATA_FILENAME),
@@ -163,6 +202,75 @@ def ensure_default_price_rule_version(customer_key: str, quote_variant: str | No
             "test_file": seed_test.name,
         },
         variant,
+    )
+    return version
+
+
+def save_new_suhang_rule_version(
+    pp_file: FileStorage | None = None,
+    ccl_file: FileStorage | None = None,
+    *,
+    updated_by: str,
+    remark: str,
+) -> str:
+    customer = enabled_price_customer("suhang")
+    if not (pp_file and pp_file.filename) and not (ccl_file and ccl_file.filename):
+        raise ValueError("请至少上传苏杭PP报价单或苏杭CCL报价单其中一份 Excel")
+
+    for label, storage in (("苏杭PP报价单", pp_file), ("苏杭CCL报价单", ccl_file)):
+        if storage and storage.filename:
+            source_name = secure_filename(storage.filename) or PRICE_RULE_FILENAME
+            if Path(source_name).suffix.lower() not in ALLOWED_RULE_EXTENSIONS:
+                raise ValueError(f"{label}仅支持 .xlsx / .xls / .xlsm 文件")
+
+    ensure_default_price_rule_version("suhang")
+    version = datetime.now().strftime("suhang_rules_%Y%m%d_%H%M%S_%f")
+    version_dir = _versions_dir("suhang") / version
+    version_dir.mkdir(parents=True, exist_ok=True)
+
+    uploaded_names: list[str] = []
+    if pp_file and pp_file.filename:
+        uploaded_name = pp_file.filename or SUHANG_PP_RULE_FILENAME
+        uploaded_names.append(f"PP:{uploaded_name}")
+        uploaded_path = version_dir / (secure_filename(uploaded_name) or SUHANG_PP_RULE_FILENAME)
+        pp_file.save(uploaded_path)
+        _copy_price_rule(uploaded_path, version_dir / SUHANG_PP_RULE_FILENAME)
+    else:
+        source_name = _copy_existing_suhang_component(SUHANG_PP_RULE_FILENAME, version_dir / SUHANG_PP_RULE_FILENAME)
+        uploaded_names.append(f"PP沿用:{source_name}")
+
+    if ccl_file and ccl_file.filename:
+        uploaded_name = ccl_file.filename or SUHANG_CCL_RULE_FILENAME
+        uploaded_names.append(f"CCL:{uploaded_name}")
+        uploaded_path = version_dir / (secure_filename(uploaded_name) or SUHANG_CCL_RULE_FILENAME)
+        ccl_file.save(uploaded_path)
+        _copy_price_rule(uploaded_path, version_dir / SUHANG_CCL_RULE_FILENAME)
+    else:
+        source_name = _copy_existing_suhang_component(SUHANG_CCL_RULE_FILENAME, version_dir / SUHANG_CCL_RULE_FILENAME)
+        uploaded_names.append(f"CCL沿用:{source_name}")
+
+    _merge_excel_sources(
+        [("苏杭PP报价", version_dir / SUHANG_PP_RULE_FILENAME), ("苏杭CCL报价", version_dir / SUHANG_CCL_RULE_FILENAME)],
+        version_dir / PRICE_RULE_FILENAME,
+    )
+    test_name = _copy_existing_test_data("suhang", version_dir / TEST_DATA_FILENAME)
+    validate_price_rule_files("suhang", version_dir / PRICE_RULE_FILENAME, version_dir / TEST_DATA_FILENAME)
+
+    set_setting(_active_key("suhang"), version)
+    append_price_rule_history(
+        "suhang",
+        {
+            "version": version,
+            "customer_key": "suhang",
+            "customer_label": customer["label"],
+            "quote_variant": "",
+            "quote_variant_label": "",
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "updated_by": updated_by,
+            "remark": remark or "网页上传苏杭PP/CCL报价单并生效",
+            "rule_file": "；".join(uploaded_names),
+            "test_file": test_name,
+        },
     )
     return version
 
@@ -300,7 +408,7 @@ def validate_price_rule_files(customer_key: str, rule_path: str | Path, test_dat
         load_workbook_compat(rule_path, data_only=True)
         _validate_plin_rule_file(rule_path)
         return
-    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "guanghe", "shengyi", "techuang", "zhongfu", "huaxingyu", "dongxun"}:
+    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "guanghe", "shengyi", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang"}:
         load_workbook_compat(rule_path, data_only=True)
         return
     if customer_key == "lejian":
@@ -362,6 +470,7 @@ def _copy_existing_test_data(customer_key: str, target: Path, quote_variant: str
         "zhongfu": packaged_dir / "zhongfu" / TEST_DATA_FILENAME,
         "huaxingyu": packaged_dir / "huaxingyu" / TEST_DATA_FILENAME,
         "dongxun": packaged_dir / "dongxun" / TEST_DATA_FILENAME,
+        "suhang": packaged_dir / "suhang" / TEST_DATA_FILENAME,
     }
     if customer_key in default_test_map:
         default_test = default_test_map[customer_key]
@@ -398,6 +507,10 @@ def _copy_excel_as_xlsx(source: Path, target: Path) -> None:
 
 
 def _merge_guanghe_rule_sources(sources: list[tuple[str, Path]], target: Path) -> None:
+    _merge_excel_sources(sources, target)
+
+
+def _merge_excel_sources(sources: list[tuple[str, Path]], target: Path) -> None:
     from openpyxl import Workbook
 
     merged = Workbook()
@@ -410,8 +523,24 @@ def _merge_guanghe_rule_sources(sources: list[tuple[str, Path]], target: Path) -
             for row in worksheet.iter_rows():
                 target_sheet.append([cell.value for cell in row])
     if not merged.worksheets:
-        raise ValueError("广合报价单未读取到任何 Sheet")
+        raise ValueError("报价单未读取到任何 Sheet")
     merged.save(target)
+
+
+def _copy_existing_suhang_component(filename: str, target: Path) -> str:
+    active_version = get_setting(_active_key("suhang"), "") or ""
+    candidates: list[Path] = []
+    if active_version:
+        candidates.append(_versions_dir("suhang") / active_version / filename)
+    default_name = "pp_price_rules.xlsx" if filename == SUHANG_PP_RULE_FILENAME else "ccl_price_rules.xlsx"
+    candidates.append(DEFAULT_RULES_DIR / "price_calculation" / "suhang" / default_name)
+    for source in candidates:
+        if source.exists():
+            if source.resolve() == target.resolve():
+                return source.name
+            _copy_price_rule(source, target)
+            return source.name
+    raise ValueError(f"缺少苏杭规则文件：{filename}")
 
 
 def _unique_sheet_title(title: str, used_titles: set[str]) -> str:

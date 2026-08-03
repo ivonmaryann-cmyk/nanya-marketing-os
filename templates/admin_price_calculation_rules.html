@@ -61,6 +61,15 @@
       <span>南亚新材价格更新 Excel</span>
       <input type="file" name="guanghe_nanya_file" accept=".xls,.xlsx,.xlsm" required>
     </label>
+    {% elif selected_customer == "suhang" %}
+    <label>
+      <span>苏杭 PP 报价单 Excel</span>
+      <input type="file" name="suhang_pp_file" accept=".xls,.xlsx,.xlsm">
+    </label>
+    <label>
+      <span>苏杭 CCL 报价单 Excel</span>
+      <input type="file" name="suhang_ccl_file" accept=".xls,.xlsx,.xlsm">
+    </label>
     {% else %}
     <label>
       <span>客户报价表 Excel</span>

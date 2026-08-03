@@ -97,6 +97,8 @@ from .price_calculation_rules import (
     get_active_price_rule_version,
     get_price_rule_history,
     normalize_price_quote_variant,
+    save_new_guanghe_rule_version,
+    save_new_suhang_rule_version,
     save_new_price_rule_version,
 )
 from .price_calculation_service import calculate_price_quote, queue_price_calculation_job, run_jingwang_regression
@@ -3209,20 +3211,43 @@ def admin_price_calculation_rules():
     if request.method == "POST":
         admin_password = request.form.get("admin_password", "")
         rule_file = request.files.get("rule_file")
+        guanghe_huangshi_file = request.files.get("guanghe_huangshi_file")
+        guanghe_nanya_file = request.files.get("guanghe_nanya_file")
+        suhang_pp_file = request.files.get("suhang_pp_file")
+        suhang_ccl_file = request.files.get("suhang_ccl_file")
         remark = request.form.get("remark", "").strip()
         if not verify_admin_password(admin_password):
             flash("管理员密码错误。", "error")
-        elif not rule_file or not rule_file.filename:
+        elif selected_customer == "guanghe" and (not guanghe_huangshi_file or not guanghe_huangshi_file.filename or not guanghe_nanya_file or not guanghe_nanya_file.filename):
+            flash("请上传黄石广合单价和南亚新材价格更新两份 Excel。", "error")
+        elif selected_customer == "suhang" and (not suhang_pp_file or not suhang_pp_file.filename) and (not suhang_ccl_file or not suhang_ccl_file.filename):
+            flash("请至少上传苏杭PP报价单或苏杭CCL报价单其中一份 Excel。", "error")
+        elif selected_customer not in {"guanghe", "suhang"} and (not rule_file or not rule_file.filename):
             flash("请上传所选客户的报价表 Excel。", "error")
         else:
             try:
-                version = save_new_price_rule_version(
-                    selected_customer,
-                    rule_file,
-                    updated_by=current_employee(),
-                    remark=remark,
-                    quote_variant=selected_quote_variant,
-                )
+                if selected_customer == "guanghe":
+                    version = save_new_guanghe_rule_version(
+                        guanghe_huangshi_file,
+                        guanghe_nanya_file,
+                        updated_by=current_employee(),
+                        remark=remark,
+                    )
+                elif selected_customer == "suhang":
+                    version = save_new_suhang_rule_version(
+                        suhang_pp_file,
+                        suhang_ccl_file,
+                        updated_by=current_employee(),
+                        remark=remark,
+                    )
+                else:
+                    version = save_new_price_rule_version(
+                        selected_customer,
+                        rule_file,
+                        updated_by=current_employee(),
+                        remark=remark,
+                        quote_variant=selected_quote_variant,
+                    )
                 regression = run_jingwang_regression(selected_customer, version, selected_quote_variant)
                 if regression["total"]:
                     flash(
