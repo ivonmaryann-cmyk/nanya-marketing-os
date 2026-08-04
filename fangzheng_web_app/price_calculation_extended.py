@@ -310,10 +310,11 @@ def _load_wutong_rules(rule_path: str | Path) -> ExtRules:
                     glasses = _norm_glasses(ws.cell(data_row, 2).value)
                     length = _length_int(ws.cell(data_row, 6).value)
                     rc_min, rc_max = _parse_rc_range(ws.cell(data_row, 8).value)
+                    roll_price = _to_float(ws.cell(data_row, 9).value)
                     price = _to_float(ws.cell(data_row, 10).value)
-                    if glasses and rc_min is not None and price is not None:
+                    if glasses and rc_min is not None and (price is not None or roll_price is not None):
                         for glass in glasses:
-                            pp_rows.append(ExtPpRule(data_row, ws.title, product, glass, rc_min, rc_max, length, None, price))
+                            pp_rows.append(ExtPpRule(data_row, ws.title, product, glass, rc_min, rc_max, length, None, price, roll_price))
     return ExtRules("wutong", pp_rows, ccl_rows)
 
 
@@ -3959,18 +3960,38 @@ def _calculate_yingchuangli_ccl(desc: str, rules: ExtRules, quantity: Any = None
 
     special = _yingchuangli_best_ccl_row(rules.ccl_rows, product, thickness_mm, copper, foil, stack, thickness_scope, special=True)
     if special:
-        price = _round_money(special.prices["PRICE"])
+        factor, size_label = _yingchuangli_ccl_size_factor(desc)
+        base_price = float(special.prices["PRICE"])
+        price = _round_money(base_price * factor)
         total = _calc_total(quantity, price)
-        note = f"命中英创力特殊规格基板 Sheet {special.sheet} 第 {special.excel_row} 行，取最新月份单价={price:.2f}"
+        note = f"命中英创力特殊规格基板 Sheet {special.sheet} 第 {special.excel_row} 行，取最新月份单价={base_price:.2f}，尺寸={size_label}，系数={factor:g}，新价={price:.2f}"
         return ExtCalcResult("成功", "CCL", price, total, "", "", note, special.excel_row, "最新月份单价")
 
     regular = _yingchuangli_best_ccl_row(rules.ccl_rows, product, thickness_mm, copper, foil, stack, thickness_scope, special=False)
     if not regular:
         return ExtCalcResult("失败", "CCL", "待确认", "", "", "", "未命中英创力CCL报价：型号/TG、厚度、铜厚、铜箔或叠构不匹配")
-    price = _round_money(regular.prices["PRICE"])
+    factor, size_label = _yingchuangli_ccl_size_factor(desc)
+    base_price = float(regular.prices["PRICE"])
+    price = _round_money(base_price * factor)
     total = _calc_total(quantity, price)
-    note = f"命中英创力CCL报价 Sheet {regular.sheet} 第 {regular.excel_row} 行，按G:J最新价格列取价={price:.2f}"
+    note = f"命中英创力CCL报价 Sheet {regular.sheet} 第 {regular.excel_row} 行，按G:J最新价格列取价={base_price:.2f}，尺寸={size_label}，系数={factor:g}，新价={price:.2f}"
     return ExtCalcResult("成功", "CCL", price, total, "", "", note, regular.excel_row, "G:J最新价格")
+
+
+def _yingchuangli_ccl_size_factor(desc: str) -> tuple[float, str]:
+    length_in, width_in = _extract_size(desc, ignore_decimal=False)
+    if length_in is None or width_in is None:
+        return 1.0, "41*49默认"
+    if abs(width_in - 49) <= 0.8:
+        major = length_in
+    elif abs(length_in - 49) <= 0.8:
+        major = width_in
+    else:
+        major = max(length_in, width_in)
+    for target, factor, label in ((37, 0.9, "37*49"), (43, 1.05, "43*49"), (41, 1.0, "41*49")):
+        if abs(major - target) <= 0.8:
+            return factor, label
+    return 1.0, f"{length_in:g}*{width_in:g}"
 
 
 def _yingchuangli_best_ccl_row(
@@ -4073,6 +4094,17 @@ def _calculate_pp(customer_key: str, desc: str, rules: ExtRules) -> ExtCalcResul
             f"卷长按{length}m匹配，Per M={price:.6f}"
         )
         return ExtCalcResult("成功", "PP", price, "", _fmt_width(width or best.width), _fmt_length(length), note, best.excel_row, best.sheet)
+    if customer_key == "wutong" and small_length_m is None and small_width_in is None:
+        if best.roll_price is not None:
+            price = _round_money(best.roll_price)
+            note = f"命中吴通PP报价 Sheet {best.sheet} 第 {best.excel_row} 行，整卷含税价={price:.2f}"
+            if length:
+                note += f"，卷长按{length}m匹配"
+            return ExtCalcResult("成功", "PP", price, "", _fmt_width(width or best.width), _fmt_length(length), note, best.excel_row, best.sheet)
+        if best.price is not None and length:
+            price = _round_money(float(best.price) * length)
+            note = f"命中吴通PP报价 Sheet {best.sheet} 第 {best.excel_row} 行，报价行缺少整卷价，按每米价={best.price:.2f}*卷长{length}计算整卷价={price:.2f}"
+            return ExtCalcResult("成功", "PP", price, "", _fmt_width(width or best.width), _fmt_length(length), note, best.excel_row, best.sheet)
     if customer_key == "eaton" and length:
         if best.roll_price is not None:
             price = _round_money(best.roll_price)
