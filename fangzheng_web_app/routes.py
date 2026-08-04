@@ -84,6 +84,12 @@ from .inventory_detail_service import (
     normalize_inventory_mode,
     queue_inventory_detail_job,
 )
+from .inventory_bid_service import (
+    FEATURE as INVENTORY_BID_FEATURE,
+    cleanup_inventory_bid_job_files,
+    queue_inventory_bid_job,
+    queue_inventory_bid_max_job,
+)
 from .job_control import cancel_job_process, reconcile_interrupted_jobs
 from .order_reprice_service import MODE_LABELS as ORDER_REPRICE_MODE_LABELS
 from .order_reprice_service import queue_order_reprice_job
@@ -282,6 +288,13 @@ FUNCTION_CARDS = [
         "stage": "test",
     },
     {
+        "key": "inventory_bid",
+        "title": "库存竞标",
+        "desc": "上传上海和江西两份库存表，按规格、类别、厚度、铜箔、尺寸和铜箔类型汇总竞标库存。",
+        "route": "main.inventory_bid",
+        "stage": "test",
+    },
+    {
         "key": "order_reprice",
         "title": "订单改价",
         "desc": "上传胜宏客户明细、厂内明细和报价单，自动完成订单匹配、价格核对与改价结果校验。",
@@ -322,6 +335,7 @@ FEATURE_LABELS = {
     "price_calculation": "价格计算",
     "in_transit": "深南在途核对",
     "inventory_detail": "库存明细",
+    "inventory_bid": "库存竞标",
     "order_reprice": "订单改价",
     "work_planning": "工作规划",
 }
@@ -1582,6 +1596,21 @@ def inventory_detail():
     )
 
 
+@bp.get("/features/inventory-bid")
+def inventory_bid():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    reconcile_interrupted_jobs()
+    jobs = list_jobs(current_employee(), limit=20, feature=INVENTORY_BID_FEATURE)
+    return render_template(
+        "inventory_bid.html",
+        jobs=_decorate_jobs(jobs),
+        active_rule_version="库存竞标内置规则 v2",
+        active_job=_decorate_job(_active_job_for(INVENTORY_BID_FEATURE, jobs)),
+    )
+
+
 @bp.get("/features/order-reprice")
 def order_reprice():
     redirect_resp = require_login()
@@ -2358,6 +2387,65 @@ def create_inventory_detail_job_view():
     return redirect(url_for("main.inventory_detail", job_id=job_id))
 
 
+@bp.post("/inventory-bid/jobs")
+def create_inventory_bid_job_view():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    shanghai_file = request.files.get("shanghai_inventory_file")
+    jiangxi_file = request.files.get("jiangxi_inventory_file")
+    if not shanghai_file or not shanghai_file.filename:
+        flash("请先上传上海库存表。", "error")
+        return redirect(url_for("main.inventory_bid"))
+    if not jiangxi_file or not jiangxi_file.filename:
+        flash("请先上传江西库存表。", "error")
+        return redirect(url_for("main.inventory_bid"))
+    invalid_files = [
+        file_obj.filename
+        for file_obj in [shanghai_file, jiangxi_file]
+        if file_obj and Path(file_obj.filename or "").suffix.lower() not in {".xls", ".xlsx"}
+    ]
+    if invalid_files:
+        flash(f"库存竞标仅支持 .xls / .xlsx：{', '.join(invalid_files)}", "error")
+        return redirect(url_for("main.inventory_bid"))
+    active_job = get_active_job(current_employee(), INVENTORY_BID_FEATURE)
+    if active_job:
+        flash("当前已有库存竞标任务正在处理，请先等待完成或停止后再上传。", "error")
+        return redirect(url_for("main.inventory_bid", job_id=active_job["id"]))
+    try:
+        job_id = queue_inventory_bid_job(current_employee(), shanghai_file, jiangxi_file)
+    except Exception as exc:
+        flash(f"库存竞标任务创建失败：{exc}", "error")
+        return redirect(url_for("main.inventory_bid"))
+    flash("库存竞标任务已创建，系统正在处理。", "success")
+    return redirect(url_for("main.inventory_bid", job_id=job_id))
+
+
+@bp.post("/inventory-bid/max-jobs")
+def create_inventory_bid_max_job_view():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    bid_file = request.files.get("bid_result_file")
+    if not bid_file or not bid_file.filename:
+        flash("请先上传已填写报价的库存竞标汇总表。", "error")
+        return redirect(url_for("main.inventory_bid"))
+    if Path(bid_file.filename or "").suffix.lower() not in {".xls", ".xlsx"}:
+        flash("库存竞标取最大值仅支持 .xls / .xlsx 文件。", "error")
+        return redirect(url_for("main.inventory_bid"))
+    active_job = get_active_job(current_employee(), INVENTORY_BID_FEATURE)
+    if active_job:
+        flash("当前已有库存竞标任务正在处理，请先等待完成或停止后再上传。", "error")
+        return redirect(url_for("main.inventory_bid", job_id=active_job["id"]))
+    try:
+        job_id = queue_inventory_bid_max_job(current_employee(), bid_file)
+    except Exception as exc:
+        flash(f"库存竞标取最大值任务创建失败：{exc}", "error")
+        return redirect(url_for("main.inventory_bid"))
+    flash("库存竞标取最大值任务已创建，系统正在处理。", "success")
+    return redirect(url_for("main.inventory_bid", job_id=job_id))
+
+
 @bp.post("/pdf-excel/jobs")
 def create_pdf_excel_job_view():
     redirect_resp = require_login()
@@ -2751,6 +2839,7 @@ def _job_feature_return_url(job, job_id: int) -> str:
         "transcode_agent": "main.transcode_agent",
         "in_transit": "main.in_transit",
         "inventory_detail": "main.inventory_detail",
+        "inventory_bid": "main.inventory_bid",
         "order_reprice": "main.order_reprice",
         "pdf_excel": "main.pdf_excel",
         "transcode_special_import": "main.admin_transcode_special_rules",
@@ -2796,6 +2885,8 @@ def delete_history(job_id: int):
     if deleted:
         if deleted["feature"] == INVENTORY_DETAIL_FEATURE:
             cleanup_inventory_detail_job_files(deleted)
+        elif deleted["feature"] == INVENTORY_BID_FEATURE:
+            cleanup_inventory_bid_job_files(deleted)
         else:
             for path_key in ["stored_input_path", "stored_result_path"]:
                 safe_unlink(deleted[path_key])
