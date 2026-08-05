@@ -19,16 +19,6 @@ from .bomin_rules import (
 )
 from .bomin_service import calculate_bomin_quote, queue_bomin_job
 from .calculator_service import calculate_fangzheng_quote, queue_job
-from .ai_repair_config import (
-    AiConfigError,
-    ai_config_form_values,
-    get_active_ai_config_version_id,
-    get_ai_repair_config,
-    list_ai_config_versions,
-    master_key_configured,
-    save_ai_config_version,
-    validate_ai_config_input,
-)
 from .db import (
     change_user_password,
     create_feedback,
@@ -65,7 +55,6 @@ from .db import (
     verify_user_password,
 )
 from .file_utils import safe_unlink
-from .deepseek_repair_client import DeepSeekRepairError, test_repair_connection
 from .hushi_rules import (
     get_active_hushi_rule_version,
     get_hushi_rule_dir,
@@ -93,9 +82,6 @@ from .inventory_bid_service import (
 from .job_control import cancel_job_process, reconcile_interrupted_jobs
 from .order_reprice_service import MODE_LABELS as ORDER_REPRICE_MODE_LABELS
 from .order_reprice_service import queue_order_reprice_job
-from .pdf_excel_service import ALLOWED_EXTENSIONS as PDF_EXCEL_ALLOWED_EXTENSIONS
-from .pdf_excel_service import FEATURE as PDF_EXCEL_FEATURE
-from .pdf_excel_service import queue_pdf_excel_job
 from .price_calculation_customers import (
     PRICE_CALCULATION_CUSTOMERS,
     default_price_customer_key,
@@ -784,6 +770,8 @@ def _price_calculation_manifest(job: dict) -> dict:
 
 
 def _pdf_excel_manifest(job: dict) -> dict:
+    from .pdf_excel_service import FEATURE as PDF_EXCEL_FEATURE
+
     if not job or job.get("feature") != PDF_EXCEL_FEATURE:
         return {}
     manifest_path = Path(job.get("stored_input_path") or "")
@@ -826,6 +814,8 @@ def _order_reprice_mode_from_job(job: dict, manifest: dict | None = None) -> str
 
 
 def _decorate_job(job) -> dict:
+    from .pdf_excel_service import FEATURE as PDF_EXCEL_FEATURE
+
     data = _job_dict(job)
     if not data:
         return data
@@ -1722,6 +1712,8 @@ def _render_pdf_excel_page(
     ai_result: dict[str, str] | None = None,
     open_ai_dialog: bool = False,
 ):
+    from .pdf_excel_service import FEATURE as PDF_EXCEL_FEATURE
+
     jobs = list_jobs(current_employee(), limit=20, feature=PDF_EXCEL_FEATURE)
     ai_admin = None
     if is_admin_user(current_employee()):
@@ -1763,6 +1755,8 @@ def _pdf_ai_submitted_values() -> dict[str, object]:
 
 
 def _pdf_ai_expected_version() -> int | None:
+    from .ai_repair_config import AiConfigError
+
     raw_value = request.form.get("expected_active_version_id", "").strip()
     if not raw_value:
         return None
@@ -1780,6 +1774,14 @@ def _pdf_ai_admin_context(
     form_values: dict[str, object] | None = None,
     result: dict[str, str] | None = None,
 ) -> dict[str, object]:
+    from .ai_repair_config import (
+        ai_config_form_values,
+        get_active_ai_config_version_id,
+        get_ai_repair_config,
+        list_ai_config_versions,
+        master_key_configured,
+    )
+
     current_config = get_ai_repair_config()
     versions = list_ai_config_versions()
     active_id = get_active_ai_config_version_id()
@@ -1806,6 +1808,14 @@ def _pdf_ai_admin_context(
 
 @bp.route("/admin/pdf-excel-ai", methods=["GET", "POST"])
 def admin_pdf_excel_ai():
+    from .ai_repair_config import (
+        AiConfigError,
+        get_ai_repair_config,
+        save_ai_config_version,
+        validate_ai_config_input,
+    )
+    from .deepseek_repair_client import DeepSeekRepairError, test_repair_connection
+
     access_response = require_admin_role()
     if access_response:
         return access_response
@@ -2534,6 +2544,12 @@ def create_inventory_bid_max_job_view():
 
 @bp.post("/pdf-excel/jobs")
 def create_pdf_excel_job_view():
+    from .pdf_excel_service import (
+        ALLOWED_EXTENSIONS as PDF_EXCEL_ALLOWED_EXTENSIONS,
+        FEATURE as PDF_EXCEL_FEATURE,
+        queue_pdf_excel_job,
+    )
+
     redirect_resp = require_login()
     if redirect_resp:
         return redirect_resp
