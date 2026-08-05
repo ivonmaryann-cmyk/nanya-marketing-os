@@ -4814,6 +4814,77 @@ button:disabled {
   margin-bottom: 6px;
 }
 
+.rule-history-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 16px;
+}
+
+.rule-history-head h2,
+.rule-history-head p {
+  margin: 0;
+}
+
+.rule-history-head p {
+  margin-top: 7px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.rule-history-password {
+  flex: 0 1 320px;
+}
+
+.rule-history-password span {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.rule-history-password input {
+  width: 100%;
+}
+
+.rule-history-table-wrap {
+  overflow-x: auto;
+}
+
+.rule-history-table {
+  min-width: 1120px;
+}
+
+.rule-version-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.rule-version-form {
+  margin: 0;
+}
+
+.rule-version-actions button {
+  min-height: 36px;
+  padding: 8px 14px;
+  border-radius: 8px;
+}
+
+@media (max-width: 620px) {
+  .rule-history-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .rule-history-password {
+    flex-basis: auto;
+  }
+}
+
 @media (max-width: 980px) {
   .agent-quote-panel,
   .agent-form-row,

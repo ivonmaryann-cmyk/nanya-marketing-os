@@ -76,6 +76,58 @@ def append_price_rule_history(customer_key: str, entry: dict, quote_variant: str
     _write_history(customer_key, history, quote_variant)
 
 
+def activate_price_rule_version(customer_key: str, version: str, quote_variant: str | None = None) -> str:
+    enabled_price_customer(customer_key)
+    variant = normalize_price_quote_variant(customer_key, quote_variant)
+    rule_version, _history = _validated_history_version(customer_key, version, variant)
+    rule_path = get_price_rule_file_path(customer_key, rule_version, variant)
+    if not rule_path.is_file():
+        raise ValueError("该规则版本的报价单文件不存在，无法启用")
+    test_path = get_price_test_data_file_path(customer_key, rule_version, variant)
+    validate_price_rule_files(customer_key, rule_path, test_path if test_path.exists() else None)
+    set_setting(_active_key(customer_key, variant), rule_version)
+    return rule_version
+
+
+def delete_price_rule_version(customer_key: str, version: str, quote_variant: str | None = None) -> str:
+    enabled_price_customer(customer_key)
+    variant = normalize_price_quote_variant(customer_key, quote_variant)
+    rule_version, history = _validated_history_version(customer_key, version, variant)
+    active_version = get_setting(_active_key(customer_key, variant), "") or ""
+    if rule_version == active_version:
+        raise ValueError("当前生效版本不能删除，请先启用其他版本")
+
+    versions_root = _versions_dir(customer_key, variant).resolve()
+    version_dir = (versions_root / rule_version).resolve()
+    if version_dir.parent != versions_root:
+        raise ValueError("规则版本目录不合法")
+    if version_dir.exists():
+        if not version_dir.is_dir():
+            raise ValueError("规则版本路径不是目录，无法删除")
+        shutil.rmtree(version_dir)
+
+    _write_history(
+        customer_key,
+        [item for item in history if str(item.get("version") or "") != rule_version],
+        variant,
+    )
+    return rule_version
+
+
+def _validated_history_version(
+    customer_key: str,
+    version: str,
+    quote_variant: str | None = None,
+) -> tuple[str, list[dict]]:
+    rule_version = (version or "").strip()
+    if not rule_version or Path(rule_version).name != rule_version or rule_version in {".", ".."}:
+        raise ValueError("规则版本名称不合法")
+    history = _read_history(customer_key, quote_variant)
+    if not any(str(item.get("version") or "") == rule_version for item in history):
+        raise ValueError("规则版本不存在或已被删除")
+    return rule_version, history
+
+
 def get_price_rule_version_dir(customer_key: str, version: str | None = None, quote_variant: str | None = None) -> Path:
     enabled_price_customer(customer_key)
     rule_version = version or (get_setting(_active_key(customer_key, quote_variant), "") or "")
@@ -168,6 +220,7 @@ def ensure_default_price_rule_version(customer_key: str, quote_variant: str | No
         "huaxingyu": (packaged_dir / "huaxingyu" / PRICE_RULE_FILENAME, packaged_dir / "huaxingyu" / TEST_DATA_FILENAME),
         "dongxun": (packaged_dir / "dongxun" / PRICE_RULE_FILENAME, packaged_dir / "dongxun" / TEST_DATA_FILENAME),
         "yingchuangli": (packaged_dir / "yingchuangli" / "price_rules.xls", packaged_dir / "yingchuangli" / "test_data.xls"),
+        "zhongjing": (packaged_dir / "zhongjing" / PRICE_RULE_FILENAME, packaged_dir / "zhongjing" / TEST_DATA_FILENAME),
     }
     seed_files = seed_map.get(customer_key)
     if not seed_files:
@@ -409,7 +462,7 @@ def validate_price_rule_files(customer_key: str, rule_path: str | Path, test_dat
         load_workbook_compat(rule_path, data_only=True)
         _validate_plin_rule_file(rule_path)
         return
-    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "guanghe", "shengyi", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli"}:
+    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "guanghe", "shengyi", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing"}:
         load_workbook_compat(rule_path, data_only=True)
         return
     if customer_key == "lejian":
@@ -473,6 +526,7 @@ def _copy_existing_test_data(customer_key: str, target: Path, quote_variant: str
         "dongxun": packaged_dir / "dongxun" / TEST_DATA_FILENAME,
         "suhang": packaged_dir / "suhang" / TEST_DATA_FILENAME,
         "yingchuangli": packaged_dir / "yingchuangli" / "test_data.xls",
+        "zhongjing": packaged_dir / "zhongjing" / TEST_DATA_FILENAME,
     }
     if customer_key in default_test_map:
         default_test = default_test_map[customer_key]

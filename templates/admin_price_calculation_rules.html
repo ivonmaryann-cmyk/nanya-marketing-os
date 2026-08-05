@@ -41,6 +41,7 @@
 <section class="card">
   <h2>上传当前客户新版规则</h2>
   <form method="post" enctype="multipart/form-data" class="form-grid">
+    <input type="hidden" name="action" value="upload">
     <input type="hidden" name="customer_key" value="{{ selected_customer }}">
     {% if selected_customer == "jingwang" %}
     <label>
@@ -101,26 +102,70 @@
 {% endif %}
 
 <section class="card">
-  <h2>当前客户最近规则版本</h2>
-  <table class="table">
+  <div class="rule-history-head">
+    <div>
+      <h2>当前客户最近规则版本</h2>
+      <p>可启用任意历史版本；当前生效版本需先切换后才能删除。</p>
+    </div>
+    {% if rule_history %}
+    <label class="rule-history-password">
+      <span>版本操作管理员密码</span>
+      <input type="password" id="rule-history-admin-password" autocomplete="current-password" required>
+    </label>
+    {% endif %}
+  </div>
+  <div class="rule-history-table-wrap">
+  <table class="table rule-history-table">
     <thead>
-      <tr><th>客户</th><th>版本</th><th>更新时间</th><th>更新人</th><th>报价表</th><th>备注</th></tr>
+      <tr><th>客户</th><th>版本</th><th>状态</th><th>更新时间</th><th>更新人</th><th>报价表</th><th>备注</th><th>操作</th></tr>
     </thead>
     <tbody>
       {% for item in rule_history %}
       <tr>
         <td>{{ item.customer_label }}</td>
         <td>{{ item.version }}</td>
+        <td>
+          {% if item.version == active_rule_version %}
+          <span class="status completed">当前生效</span>
+          {% else %}
+          <span class="status">历史版本</span>
+          {% endif %}
+        </td>
         <td>{{ item.updated_at }}</td>
         <td>{{ item.updated_by }}</td>
         <td>{{ item.rule_file }}</td>
         <td>{{ item.remark }}</td>
+        <td>
+          <div class="rule-version-actions">
+            {% if item.version != active_rule_version %}
+            <form method="post" class="rule-version-form" data-version-action="activate">
+              <input type="hidden" name="action" value="activate">
+              <input type="hidden" name="customer_key" value="{{ selected_customer }}">
+              <input type="hidden" name="quote_variant" value="{{ selected_quote_variant }}">
+              <input type="hidden" name="version" value="{{ item.version }}">
+              <input type="hidden" name="admin_password" value="">
+              <button type="submit" class="secondary-button">启用</button>
+            </form>
+            <form method="post" class="rule-version-form" data-version-action="delete" data-version="{{ item.version }}">
+              <input type="hidden" name="action" value="delete">
+              <input type="hidden" name="customer_key" value="{{ selected_customer }}">
+              <input type="hidden" name="quote_variant" value="{{ selected_quote_variant }}">
+              <input type="hidden" name="version" value="{{ item.version }}">
+              <input type="hidden" name="admin_password" value="">
+              <button type="submit" class="danger-button">删除</button>
+            </form>
+            {% else %}
+            <button type="button" class="secondary-button" disabled title="请先启用其他版本">已启用</button>
+            {% endif %}
+          </div>
+        </td>
       </tr>
       {% else %}
-      <tr><td colspan="6">当前客户暂无价格计算规则版本记录。</td></tr>
+      <tr><td colspan="8">当前客户暂无价格计算规则版本记录。</td></tr>
       {% endfor %}
     </tbody>
   </table>
+  </div>
 </section>
 
 <script>
@@ -136,5 +181,21 @@
       window.location.href = `{{ url_for('main.admin_price_calculation_rules') }}?customer_key={{ selected_customer }}&quote_variant=${adminQuoteVariant.value}`;
     });
   }
+  const historyAdminPassword = document.getElementById("rule-history-admin-password");
+  document.querySelectorAll(".rule-version-form").forEach(form => {
+    form.addEventListener("submit", event => {
+      if (!historyAdminPassword || !historyAdminPassword.value) {
+        event.preventDefault();
+        historyAdminPassword?.focus();
+        historyAdminPassword?.reportValidity();
+        return;
+      }
+      if (form.dataset.versionAction === "delete" && !window.confirm(`确定删除规则版本 ${form.dataset.version} 吗？此操作无法撤销。`)) {
+        event.preventDefault();
+        return;
+      }
+      form.querySelector('input[name="admin_password"]').value = historyAdminPassword.value;
+    });
+  });
 </script>
 {% endblock %}

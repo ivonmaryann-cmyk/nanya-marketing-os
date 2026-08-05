@@ -90,6 +90,8 @@ from .price_calculation_customers import (
 from .price_calculation_rule_docs import get_price_calculation_rule_doc
 from .price_calculation_rules import (
     JINGWANG_QUOTE_VARIANTS,
+    activate_price_rule_version,
+    delete_price_rule_version,
     get_active_price_rule_version,
     get_price_rule_history,
     normalize_price_quote_variant,
@@ -3433,7 +3435,39 @@ def admin_price_calculation_rules():
 
     regression = None
     if request.method == "POST":
+        action = (request.form.get("action") or "upload").strip().lower()
         admin_password = request.form.get("admin_password", "")
+        if action in {"activate", "delete"}:
+            version = request.form.get("version", "").strip()
+            if not verify_admin_password(admin_password):
+                flash("管理员密码错误。", "error")
+            else:
+                try:
+                    if action == "activate":
+                        activated_version = activate_price_rule_version(
+                            selected_customer,
+                            version,
+                            selected_quote_variant,
+                        )
+                        flash(f"规则版本已启用：{activated_version}", "success")
+                    else:
+                        deleted_version = delete_price_rule_version(
+                            selected_customer,
+                            version,
+                            selected_quote_variant,
+                        )
+                        flash(f"规则版本已删除：{deleted_version}", "success")
+                except Exception as exc:
+                    operation = "启用" if action == "activate" else "删除"
+                    flash(f"规则版本{operation}失败：{exc}", "error")
+            return redirect(
+                url_for(
+                    "main.admin_price_calculation_rules",
+                    customer_key=selected_customer,
+                    quote_variant=selected_quote_variant,
+                )
+            )
+
         rule_file = request.files.get("rule_file")
         guanghe_huangshi_file = request.files.get("guanghe_huangshi_file")
         guanghe_nanya_file = request.files.get("guanghe_nanya_file")

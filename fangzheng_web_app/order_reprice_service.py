@@ -1364,7 +1364,7 @@ def parse_spec(spec: str) -> ParsedSpec:
         )
 
     thickness_match = re.search(r"(\d+(?:\.\d+)?)\s*MM", text)
-    copper_match = re.search(r"MM\s*([H\d.]+/[H\d.]+)", text)
+    copper_match = re.search(r"MM\s*([A-Z0-9.]+/[A-Z0-9.]+)", text)
     foil_match = re.search(r"\(([^)）]+)\)", text)
     size_match = re.search(r"(\d+(?:\.\d+)?)\s*[*X]\s*(\d+(?:\.\d+)?)", text)
     stack_match = re.search(r"\(([^()）]*\d{2,4}[^()）]*)\)\s*$", text)
@@ -1897,7 +1897,9 @@ def _norm_glass(value: Any) -> str:
 
 
 def _norm_copper(value: Any) -> str:
-    text = _norm(value).replace("T", "1").replace(" ", "")
+    # T/T is a distinct foil specification from 1/1; only sort the two sides
+    # so the confirmed H/1 and 1/H notation remains interchangeable.
+    text = _norm(value).replace(" ", "")
     parts = [part for part in text.split("/") if part]
     if len(parts) == 2:
         return "/".join(sorted(parts, key=_copper_sort_key))

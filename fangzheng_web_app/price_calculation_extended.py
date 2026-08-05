@@ -96,6 +96,8 @@ def load_extended_rules(customer_key: str, rule_path: str | Path) -> ExtRules:
         rules = _load_suhang_rules(rule_path)
     elif customer_key == "yingchuangli":
         rules = _load_yingchuangli_rules(rule_path)
+    elif customer_key == "zhongjing":
+        rules = _load_zhongjing_rules(rule_path)
     else:
         raise ValueError(f"不支持的扩展价格计算客户：{customer_key}")
     if not rules.pp_rows and not rules.ccl_rows:
@@ -129,6 +131,8 @@ def calculate_extended_spec(customer_key: str, spec: str, rules: ExtRules, quant
         return _calculate_suhang_spec(desc, rules, quantity=quantity)
     if customer_key == "yingchuangli":
         return _calculate_yingchuangli_spec(desc, rules, quantity=quantity)
+    if customer_key == "zhongjing":
+        return _calculate_zhongjing_spec(desc, rules, quantity=quantity)
     if _looks_like_pp(desc):
         return _calculate_pp(customer_key, desc, rules)
     return _calculate_ccl(customer_key, desc, rules, quantity=quantity)
@@ -165,6 +169,8 @@ def run_extended_regression(customer_key: str, rules: ExtRules, test_data_path: 
                 ok = result.status == "成功" or result.note == "苏杭 PP 小片需待确认"
             elif customer_key == "yingchuangli":
                 ok = result.status == "成功" or result.note == "英创力 PP 小片需待确认"
+            elif customer_key == "zhongjing":
+                ok = result.status == "成功" or result.note == "中京 PP 小片需待确认"
             elif expected_col:
                 tolerance = 0.0002 if customer_key in {"taixing", "aoshikang"} else 0.02
                 ok = _result_equal(result.price, expected, tolerance=tolerance)
@@ -576,6 +582,97 @@ def _load_yingchuangli_special_ccl_rows(ws, ccl_rows: list[ExtCclRule]) -> None:
         if not product or thickness_mm is None or not copper or price is None:
             continue
         ccl_rows.append(ExtCclRule(data_row, ws.title, product, thickness_mm, None, copper, foil, stack, {"PRICE": price}, f"special:{thickness_scope}"))
+
+
+def _load_zhongjing_rules(rule_path: str | Path) -> ExtRules:
+    wb = load_workbook_compat(rule_path, data_only=True)
+    pp_rows: list[ExtPpRule] = []
+    ccl_rows: list[ExtCclRule] = []
+    for ws in wb.worksheets:
+        ccl_header_row = None
+        pp_header_row = None
+        for row_idx in range(1, ws.max_row + 1):
+            values = [_text(ws.cell(row_idx, col_idx).value) for col_idx in range(1, ws.max_column + 1)]
+            value_set = set(values)
+            if "产品类别" in value_set and "Per SF" in value_set and any("40" in value and "48" in value for value in values):
+                ccl_header_row = row_idx
+            if {"产品类别", "产品型号", "树脂含量中值(%)", "标准卷装长度", "RMB/M"}.issubset(value_set):
+                pp_header_row = row_idx
+        if ccl_header_row:
+            _load_zhongjing_ccl_rows(ws, ccl_header_row, pp_header_row, ccl_rows)
+        if pp_header_row:
+            _load_zhongjing_pp_rows(ws, pp_header_row, pp_rows)
+    return ExtRules("zhongjing", pp_rows, ccl_rows)
+
+
+def _load_zhongjing_ccl_rows(ws, header_row: int, pp_header_row: int | None, ccl_rows: list[ExtCclRule]) -> None:
+    last_row = (pp_header_row - 1) if pp_header_row else ws.max_row
+    for data_row in range(header_row + 1, last_row + 1):
+        product = _norm_product(ws.cell(data_row, 1).value)
+        if not product or product.endswith("P"):
+            continue
+        thickness_mil = _to_float(ws.cell(data_row, 2).value)
+        thickness_without_copper = _to_float(ws.cell(data_row, 3).value)
+        thickness_with_copper = _to_float(ws.cell(data_row, 4).value)
+        stack = _norm_stack(ws.cell(data_row, 5).value)
+        copper = _norm_copper(ws.cell(data_row, 6).value) or _norm_copper(ws.cell(data_row, 7).value)
+        foil = _norm_foil(ws.cell(data_row, 6).value) or _norm_foil(ws.cell(data_row, 7).value) or "HTE"
+        prices = {
+            "SF": _to_float(ws.cell(data_row, 8).value),
+            "36*48": _to_float(ws.cell(data_row, 9).value),
+            "40*48": _to_float(ws.cell(data_row, 10).value),
+            "42*48": _to_float(ws.cell(data_row, 11).value),
+        }
+        if not copper or not stack or not any(value is not None for value in prices.values()):
+            continue
+        if thickness_without_copper is not None:
+            ccl_rows.append(
+                ExtCclRule(
+                    data_row,
+                    ws.title,
+                    product,
+                    thickness_without_copper,
+                    thickness_mil,
+                    copper,
+                    foil,
+                    stack,
+                    prices,
+                    "zhongjing:不含铜",
+                )
+            )
+        if thickness_with_copper is not None:
+            ccl_rows.append(
+                ExtCclRule(
+                    data_row,
+                    ws.title,
+                    product,
+                    thickness_with_copper,
+                    thickness_mil,
+                    copper,
+                    foil,
+                    stack,
+                    prices,
+                    "zhongjing:含铜",
+                )
+            )
+
+
+def _load_zhongjing_pp_rows(ws, header_row: int, pp_rows: list[ExtPpRule]) -> None:
+    for data_row in range(header_row + 1, ws.max_row + 1):
+        product = _norm_product(ws.cell(data_row, 1).value)
+        if not product:
+            break
+        if not product.startswith("NY"):
+            continue
+        glass = _norm_glass(ws.cell(data_row, 2).value)
+        rc_min, rc_max = _parse_rc_range(ws.cell(data_row, 3).value)
+        length = _length_int(ws.cell(data_row, 4).value)
+        width = _to_float(ws.cell(data_row, 5).value)
+        price = _to_float(ws.cell(data_row, 8).value)
+        roll_price = _to_float(ws.cell(data_row, 10).value)
+        if not glass or rc_min is None or price is None:
+            continue
+        pp_rows.append(ExtPpRule(data_row, ws.title, product, glass, rc_min, rc_max, length, width, price, roll_price))
 
 
 def _load_taixing_rules(rule_path: str | Path) -> ExtRules:
@@ -4030,6 +4127,203 @@ def _yingchuangli_best_ccl_row(
             stack_rank = 0
         candidates.append(((stack_rank, 0 if row_scope == thickness_scope else 1, row.excel_row), row))
     return sorted(candidates, key=lambda item: item[0])[0][1] if candidates else None
+
+
+def _calculate_zhongjing_spec(desc: str, rules: ExtRules, quantity: Any = None) -> ExtCalcResult:
+    if _zhongjing_is_pp(desc):
+        return _calculate_zhongjing_pp(desc, rules)
+    return _calculate_zhongjing_ccl(desc, rules, quantity=quantity)
+
+
+def _zhongjing_is_pp(desc: str) -> bool:
+    upper = desc.upper()
+    if "半固化片" in desc or "PP" in upper:
+        return True
+    product = _extract_current_quote_pp_product(desc)
+    return bool(product.endswith("P") and _extract_glass(desc))
+
+
+def _zhongjing_product_aliases(value: Any) -> set[str]:
+    product = _norm_product(value)
+    if not product:
+        return set()
+    base = product[:-1] if product.endswith("P") else product
+    return {product, base, f"{base}P"}
+
+
+def _calculate_zhongjing_pp(desc: str, rules: ExtRules) -> ExtCalcResult:
+    if "小片" in desc or _is_current_quote_pp_small_piece(desc):
+        return ExtCalcResult("失败", "PP", "待确认", "", "", "", "中京 PP 小片需待确认")
+    product = _extract_current_quote_pp_product(desc)
+    glass = _extract_glass(desc)
+    rc = _extract_current_quote_rc(desc)
+    length = _extract_length(desc)
+    width = _extract_width(desc)
+    if not product or not glass or rc is None:
+        return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width), _fmt_length(length), "中京PP规格缺少型号、玻布或含胶量")
+    aliases = _zhongjing_product_aliases(product)
+    candidates: list[tuple[tuple[float, float, int], ExtPpRule]] = []
+    for row in rules.pp_rows:
+        if row.product not in aliases or row.glass != glass:
+            continue
+        if row.rc_min is None or row.rc_max is None or not (row.rc_min - 0.2 <= rc <= row.rc_max + 0.2):
+            continue
+        width_rank = abs((row.width or width or 49.5) - (width or row.width or 49.5))
+        length_rank = abs((row.length or length or 0) - (length or row.length or 0))
+        candidates.append(((length_rank, width_rank, row.excel_row), row))
+    if not candidates:
+        return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width), _fmt_length(length), "未命中中京PP报价：型号、玻布、含胶量或卷长不匹配")
+    best = sorted(candidates, key=lambda item: item[0])[0][1]
+    if best.price is None:
+        return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width), _fmt_length(length), "命中中京PP规格但RMB/M为空")
+    price = _round_money(best.price)
+    note = (
+        f"命中中京PP报价 Sheet {best.sheet} 第 {best.excel_row} 行，"
+        f"玻布={glass}，含胶量={rc:g}%，RMB/M={price:.2f}"
+    )
+    return ExtCalcResult(
+        "成功",
+        "PP",
+        price,
+        "",
+        _fmt_width(width or best.width),
+        _fmt_length(length or best.length),
+        note,
+        best.excel_row,
+        "RMB/M",
+    )
+
+
+def _zhongjing_thickness_mm(desc: str) -> float | None:
+    match = re.search(r"(?<![A-Z0-9.])(\d+(?:\.\d+)?)\s*(?:MM|T)\b", desc, re.I)
+    return float(match.group(1)) if match else _extract_thickness_mm(desc)
+
+
+def _zhongjing_copper_state(desc: str) -> str:
+    if "不含铜" in desc or "不含銅" in desc:
+        return "不含铜"
+    if "含铜" in desc or "含銅" in desc:
+        return "含铜"
+    return ""
+
+
+def _zhongjing_copper_aliases(copper: str, foil: str) -> set[str]:
+    aliases = {copper, _reverse_copper(copper)}
+    if foil == "HTE":
+        equivalent = {"T/T": "H/H", "H/H": "T/T", "1/H": "1/1", "1/1": "1/H"}
+        mapped = equivalent.get(copper)
+        if mapped:
+            aliases.update({mapped, _reverse_copper(mapped)})
+    return aliases
+
+
+def _zhongjing_stack(desc: str) -> str:
+    stack = _extract_stack(desc)
+    if stack:
+        return stack
+    glass_pattern = r"1027|1037|1035|1067|1078|1080|1086|1506|2113|2116|2313|3313|7628|106"
+    pieces = [(glass, int(count)) for glass, count in re.findall(rf"({glass_pattern})\s*[*xX×]\s*(\d+)", desc, re.I)]
+    return "+".join(f"{count}*{glass}" for glass, count in sorted(pieces, key=lambda item: item[0]))
+
+
+def _calculate_zhongjing_ccl(desc: str, rules: ExtRules, quantity: Any = None) -> ExtCalcResult:
+    product = _extract_product(desc)
+    thickness_mm = _zhongjing_thickness_mm(desc)
+    copper = _extract_copper(desc)
+    state = _zhongjing_copper_state(desc)
+    foil = _extract_foil(desc) or "HTE"
+    stack = _zhongjing_stack(desc)
+    length_in, width_in = _extract_size(desc, ignore_decimal=False)
+    if not product or thickness_mm is None or not copper or not state or not stack or length_in is None or width_in is None:
+        return ExtCalcResult("失败", "CCL", "待确认", "", "", "", "中京CCL规格缺少型号、含铜状态、厚度、铜厚、叠构或尺寸")
+
+    product_norm = _norm_product(product)
+    base_rows = [
+        row
+        for row in rules.ccl_rows
+        if row.product == product_norm
+        and row.kind == f"zhongjing:{state}"
+        and row.thickness_mm is not None
+        and abs(row.thickness_mm - thickness_mm) <= 0.015
+        and row.stack == stack
+    ]
+    exact_aliases = _zhongjing_copper_aliases(copper, foil)
+    exact_rows = [row for row in base_rows if row.foil == foil and row.copper in exact_aliases]
+    rtf_fallback = False
+    if not exact_rows and foil == "RTF":
+        fallback_aliases = _zhongjing_copper_aliases(copper, "HTE")
+        exact_rows = [row for row in base_rows if row.foil == "HTE" and row.copper in fallback_aliases]
+        rtf_fallback = bool(exact_rows)
+    if not exact_rows:
+        return ExtCalcResult("失败", "CCL", "待确认", "", "", "", "未命中中京CCL报价：型号、含铜厚度、铜厚、铜箔或叠构不匹配")
+    candidates = sorted(exact_rows, key=lambda row: (abs((row.thickness_mm or 0) - thickness_mm), row.excel_row))
+
+    if rtf_fallback:
+        for row in candidates:
+            sf_price = row.prices.get("SF")
+            if sf_price is None:
+                continue
+            small_factor = 1.03 if not _zhongjing_direct_size_key(length_in, width_in) else 1.0
+            price = _round_money(float(sf_price) * length_in * width_in / 144 * 1.06 * small_factor)
+            total = _calc_total(quantity, price)
+            note = (
+                f"命中中京HTE报价 Sheet {row.sheet} 第 {row.excel_row} 行，规格使用RTF且无独立RTF报价，"
+                f"按SF={sf_price:.3f}*{length_in:g}*{width_in:g}/144*1.06"
+            )
+            if small_factor > 1:
+                note += "*1.03裁切费"
+            note += f"={price:.2f}"
+            return ExtCalcResult("成功", "CCL", price, total, "", "", note, row.excel_row, "SF+6%")
+
+    direct_key = _zhongjing_direct_size_key(length_in, width_in)
+    if direct_key:
+        for row in candidates:
+            direct_price = row.prices.get(direct_key)
+            if direct_price is None:
+                continue
+            price = _round_money(direct_price)
+            total = _calc_total(quantity, price)
+            note = f"命中中京CCL报价 Sheet {row.sheet} 第 {row.excel_row} 行，客户尺寸={length_in:g}*{width_in:g}，对应{direct_key}报价={price:.2f}"
+            return ExtCalcResult("成功", "CCL", price, total, "", "", note, row.excel_row, direct_key)
+
+    small_options: list[tuple[float, ExtCclRule, dict[str, Any]]] = []
+    for row in candidates:
+        for parent in _zhongjing_small_piece_parents(length_in, width_in):
+            parent_price = row.prices.get(parent["source_key"])
+            if parent_price is None:
+                continue
+            unit_price = float(parent_price) * 1.03 / parent["opens"]
+            small_options.append((unit_price, row, {**parent, "parent_price": float(parent_price)}))
+    if small_options:
+        raw_price, row, parent = sorted(small_options, key=lambda item: (item[0], item[1].excel_row))[0]
+        price = _round_money(raw_price)
+        total = _calc_total(quantity, price)
+        note = (
+            f"命中中京CCL小片报价 Sheet {row.sheet} 第 {row.excel_row} 行，父级{parent['label']}报价={parent['parent_price']:.2f}，"
+            f"总开数={parent['opens']}，加3%裁切费，公式={parent['parent_price']:.2f}*1.03/{parent['opens']}={price:.2f}"
+        )
+        return ExtCalcResult("成功", "CCL", price, total, "", "", note, row.excel_row, parent["source_key"])
+    return ExtCalcResult("失败", "CCL", "待确认", "", "", "", f"中京CCL未找到可用尺寸报价或小片父级：{length_in:g}*{width_in:g}")
+
+
+def _zhongjing_direct_size_key(length_in: float, width_in: float) -> str:
+    for customer_w, customer_h, source_key in ((37, 49, "36*48"), (41, 49, "40*48"), (43, 49, "42*48")):
+        if _same_size(length_in, width_in, customer_w, customer_h):
+            return source_key
+    return ""
+
+
+def _zhongjing_small_piece_parents(length_in: float, width_in: float) -> list[dict[str, Any]]:
+    parents = [(37, 49, "36*48"), (41, 49, "40*48"), (43, 49, "42*48")]
+    options: list[dict[str, Any]] = []
+    for parent_w, parent_h, source_key in parents:
+        best_opens = 0
+        for piece_w, piece_h in ((length_in, width_in), (width_in, length_in)):
+            opens = math.floor(parent_w / piece_w + 1e-9) * math.floor(parent_h / piece_h + 1e-9)
+            best_opens = max(best_opens, opens)
+        if best_opens > 0:
+            options.append({"source_key": source_key, "label": f"{parent_w}*{parent_h}", "opens": best_opens})
+    return options
 
 
 def _calculate_pp(customer_key: str, desc: str, rules: ExtRules) -> ExtCalcResult:
