@@ -186,10 +186,10 @@ def queue_order_reprice_job(
             f"{factory_411_file.filename} + {customer_file.filename}"
         )
     else:
-        if not factory_file:
+        if mode != "block2" and not factory_file:
             raise ValueError("请上传厂内明细 Excel 文件")
         customer_path = _save_upload(customer_file, job_dir, "customer")
-        factory_path = _save_upload(factory_file, job_dir, "factory")
+        factory_path = _save_upload(factory_file, job_dir, "factory") if factory_file else None
         quote_paths = [_save_upload(file_obj, job_dir, f"quote_{idx}") for idx, file_obj in enumerate(quote_files, 1)]
         manifest = {
             "mode": mode,
@@ -197,10 +197,12 @@ def queue_order_reprice_job(
             "customer_key": customer_key or "shenghong",
             "customer_label": "胜宏",
             "customer_path": str(customer_path),
-            "factory_path": str(factory_path),
+            "factory_path": str(factory_path) if factory_path else "",
             "quote_paths": [str(path) for path in quote_paths],
         }
-        source_filename = f"{MODE_LABELS[mode]}：{customer_file.filename} + {factory_file.filename}"
+        source_filename = f"{MODE_LABELS[mode]}：{customer_file.filename}"
+        if factory_file:
+            source_filename += f" + {factory_file.filename}"
         if quote_paths:
             source_filename += f" + {len(quote_paths)}份报价单"
 
@@ -294,7 +296,7 @@ def process_block1(customer_path: Path, factory_path: Path, *, job_id: int | Non
 
 def process_block2(
     customer_path: Path,
-    factory_path: Path,
+    factory_path: Path | None,
     quote_paths: list[Path],
     *,
     job_id: int | None = None,
@@ -302,14 +304,17 @@ def process_block2(
     if not quote_paths:
         raise ValueError("第二块需要上传至少一份胜宏报价单")
 
-    customer_df = read_business_sheet(customer_path, {"采购订单号", "项次", "料件编号", "规格", "采购量", "采购单位", "含税单价"})
-    factory_df = read_business_sheet(factory_path, {"客户订单", "项次", "客户产品编号"})
-    matches = match_customer_to_factory(
-        customer_df,
-        factory_df,
-        customer_cols=("采购订单号", "项次", "料件编号"),
-        factory_cols=("客户订单", "项次", "客户产品编号"),
-    )
+    customer_df = read_block2_customer_sheet(customer_path)
+    has_tax_price = "含税单价" in customer_df.columns
+    matches: dict[int, MatchResult] = {}
+    if factory_path is not None:
+        factory_df = read_business_sheet(factory_path, {"客户订单", "项次", "客户产品编号"})
+        matches = match_customer_to_factory(
+            customer_df,
+            factory_df,
+            customer_cols=("采购订单号", "项次", "料件编号"),
+            factory_cols=("客户订单", "项次", "客户产品编号"),
+        )
     quote_rows = load_quote_rows(quote_paths)
     append_job_log(job_id, f"已读取胜宏报价单：{len(quote_rows)} 条报价记录", total_rows=len(customer_df)) if job_id else None
 
@@ -317,11 +322,13 @@ def process_block2(
     notes: list[dict[str, Any]] = []
     success = 0
     fail = 0
+    skipped = 0
     actual_qty_values = []
     factory_items = []
     quote_prices = []
     compare_results = []
     quote_notes = []
+    price_diffs = []
 
     for pos, (idx, row) in enumerate(customer_df.iterrows(), 1):
         spec = _text(row.get("规格"))
@@ -335,25 +342,49 @@ def process_block2(
         quote_prices.append(quote["price"])
         quote_notes.append(quote["note"])
 
-        if quote["price"] is None:
+        if quote.get("status") == "skipped":
+            compare = "不输出"
+            price_diffs.append(None)
+            skipped += 1
+        elif quote["price"] is None:
             compare = "未命中报价"
+            price_diffs.append(None)
             fail += 1
             notes.append(
                 {
                     "行号": pos + 1,
-                    "采购订单号": row.get("采购订单号"),
+                    "采购订单号": row.get("采购订单号") or row.get("订购单号"),
                     "项次": row.get("项次"),
                     "料件编号": row.get("料件编号"),
                     "规格": spec,
                     "原因": quote["note"],
                 }
             )
-        elif _prices_equal(quote["price"], row.get("含税单价")):
-            compare = "正确"
+        elif not has_tax_price or _number(row.get("含税单价")) is None:
+            compare = "无需比对"
             success += 1
         else:
-            compare = "错误"
-            fail += 1
+            diff = _price_diff(quote["price"], row.get("含税单价"))
+            price_diffs.append(diff)
+            if _prices_equal(quote["price"], row.get("含税单价")):
+                compare = "一致"
+                success += 1
+            else:
+                compare = "不一致"
+                fail += 1
+            compare_results.append(compare)
+            if job_id and (pos == 1 or pos % 50 == 0 or pos == len(customer_df)):
+                append_job_log(
+                    job_id,
+                    f"第二块价格核对进度：{pos}/{len(customer_df)}",
+                    success_count=success,
+                    fail_count=fail,
+                    current_row=pos,
+                    total_rows=len(customer_df),
+                )
+            continue
+        if compare in {"无需比对"}:
+            price_diffs.append(None)
         compare_results.append(compare)
 
         if job_id and (pos == 1 or pos % 50 == 0 or pos == len(customer_df)):
@@ -369,16 +400,20 @@ def process_block2(
     output["实际订单数量"] = actual_qty_values
     output["厂内项次"] = factory_items
     output["报价单价格"] = quote_prices
+    if has_tax_price:
+        output["价格差额"] = price_diffs
     output["价格比对结果"] = compare_results
     output["报价命中说明"] = quote_notes
 
     summary = summary_sheet(
         [
             ("总记录数", len(output)),
-            ("价格正确数量", compare_results.count("正确")),
-            ("价格错误数量", compare_results.count("错误")),
+            ("价格一致数量", compare_results.count("一致")),
+            ("价格不一致数量", compare_results.count("不一致")),
+            ("无需比对数量", compare_results.count("无需比对")),
+            ("不输出数量", compare_results.count("不输出")),
             ("未命中报价数量", compare_results.count("未命中报价")),
-            ("未匹配厂内数量", sum(1 for item in matches.values() if item.status == "未匹配")),
+            ("未匹配厂内数量", sum(1 for item in matches.values() if item.status == "未匹配") if matches else 0),
         ]
     )
     return {
@@ -389,7 +424,7 @@ def process_block2(
         ],
         "success_count": success,
         "fail_count": fail,
-        "skip_count": 0,
+        "skip_count": skipped,
         "total_rows": len(output),
     }
 
@@ -1121,13 +1156,16 @@ def _parse_ccl_rows(raw, headers: list[str], header_idx: int, source_file: str, 
         if not product:
             continue
         thickness_value = values[thickness_col] if thickness_col is not None and thickness_col < len(values) else None
+        stack_value = values[stack_col] if stack_col is not None and stack_col < len(values) else None
         row_values = {
             "厚度": _number(thickness_value),
             "厚度候选": _numbers(thickness_value),
             "铜箔": _norm_copper(values[copper_col] if copper_col is not None and copper_col < len(values) else None),
             "铜箔特性": _norm_foil(values[foil_col] if foil_col is not None and foil_col < len(values) else None),
             "板材类型": _norm_state(values[state_col] if state_col is not None and state_col < len(values) else None),
-            "叠构": _norm_stack(values[stack_col] if stack_col is not None and stack_col < len(values) else None),
+            "板材类型候选": _norm_state_candidates(values[state_col] if state_col is not None and state_col < len(values) else None),
+            "叠构": _norm_stack(stack_value),
+            "叠构候选": _norm_stack_candidates(stack_value),
             "SF单价": _number(values[sf_col] if sf_col is not None and sf_col < len(values) else None),
         }
         price_map = {}
@@ -1145,7 +1183,7 @@ def _parse_pp_rows(raw, headers: list[str], header_idx: int, source_file: str, s
     product_col = _find_col(headers, {"产品型号", "产品名称"})
     glass_col = _find_col(headers, {"布种"})
     rc_col = _find_col(headers, {"RC值", "树脂含量"})
-    length_col = _find_col(headers, {"长度M", "每卷长度"})
+    length_col = _find_col(headers, {"长度M", "长度(M)", "长度", "每卷长度", "RL"})
     price_col = _find_col(headers, {"RL价格", "每卷价格"})
     if price_col is None:
         price_col = _find_col(headers, {"单价M", "单价/M"})
@@ -1185,6 +1223,8 @@ def find_quote_price(spec: str, quote_rows: list[QuoteRow]) -> dict[str, Any]:
     parsed = parse_spec(spec)
     if parsed.product is None:
         return {"price": None, "note": "无法从规格提取产品型号"}
+    if parsed.material_type == "PP" and parsed.length_m is None:
+        return {"price": None, "note": "PP小片不输出结果", "status": "skipped"}
     product_aliases = _quote_product_aliases(parsed.product, parsed.material_type)
     candidates = [
         row
@@ -1208,7 +1248,9 @@ def _find_pp_quote(parsed: ParsedSpec, candidates: list[QuoteRow]) -> dict[str, 
             continue
         if parsed.rc is not None and not _rc_matches(row.values.get("RC"), parsed.rc):
             continue
-        if parsed.length_m is not None and row.values.get("长度") is not None and not _float_equal(parsed.length_m, row.values["长度"]):
+        if parsed.length_m is not None and row.values.get("长度") is None:
+            continue
+        if parsed.length_m is not None and not _float_equal(parsed.length_m, row.values["长度"]):
             continue
         return {
             "price": row.values.get("价格"),
@@ -1225,19 +1267,80 @@ def _find_ccl_quote(parsed: ParsedSpec, candidates: list[QuoteRow]) -> dict[str,
             continue
         if parsed.foil and row.values.get("铜箔特性") and parsed.foil != row.values["铜箔特性"]:
             continue
-        if parsed.copper_state and row.values.get("板材类型") and parsed.copper_state != row.values["板材类型"]:
+        if parsed.copper_state and not _state_matches(row.values, parsed.copper_state):
             continue
-        if parsed.stack and row.values.get("叠构") and parsed.stack != row.values["叠构"]:
+        if parsed.stack and not _stack_matches(row.values, parsed.stack):
             continue
-        price = row.size_prices.get(parsed.size_key or "") if parsed.size_key else None
-        if price is None and row.values.get("SF单价") is not None:
-            price = row.values["SF单价"]
+        price = _ccl_row_price(parsed, row)
         if price is not None:
             return {
-                "price": price,
-                "note": f"命中 {row.source_file}/{row.sheet_name} 第{row.excel_row}行",
+                "price": price["price"],
+                "note": f"命中 {row.source_file}/{row.sheet_name} 第{row.excel_row}行{price['note']}",
             }
     return {"price": None, "note": "未命中CCL报价：型号、厚度、铜箔、叠构或尺寸不匹配"}
+
+
+def _ccl_row_price(parsed: ParsedSpec, row: QuoteRow) -> dict[str, Any] | None:
+    price = row.size_prices.get(parsed.size_key or "") if parsed.size_key else None
+    note = ""
+    if price is None and parsed.size_key:
+        split_match = _split_ccl_piece_price(parsed.size_key, row.size_prices)
+        if split_match is not None:
+            price = split_match["price"]
+            note = f"，基板小片按{split_match['parent_size']} 1开{split_match['split_count']}折算"
+    if price is None and row.values.get("SF单价") is not None:
+        price = row.values["SF单价"]
+    if price is None:
+        return None
+    return {"price": price, "note": note}
+
+
+def _split_ccl_piece_price(size_key: str, size_prices: dict[str, float]) -> dict[str, Any] | None:
+    child = _size_tuple(size_key)
+    if child is None:
+        return None
+    options = []
+    for parent_key, parent_price in size_prices.items():
+        parent = _size_tuple(parent_key)
+        if parent is None or parent_price is None:
+            continue
+        for parent_w, parent_h in (parent, (parent[1], parent[0])):
+            split_count = _split_count(parent_w, parent_h, child[0], child[1])
+            if split_count is not None and split_count > 1:
+                options.append(
+                    {
+                        "price": parent_price / split_count,
+                        "parent_size": parent_key,
+                        "split_count": split_count,
+                    }
+                )
+    if not options:
+        return None
+    return sorted(options, key=lambda item: item["split_count"])[0]
+
+
+def _size_tuple(size_key: str) -> tuple[float, float] | None:
+    parts = [_number(part) for part in re.split(r"[*Xx]", _text(size_key))]
+    if len(parts) < 2 or parts[0] is None or parts[1] is None:
+        return None
+    return parts[0], parts[1]
+
+
+def _split_count(parent_w: float, parent_h: float, child_w: float, child_h: float) -> int | None:
+    if child_w <= 0 or child_h <= 0 or child_w - parent_w > 0.6 or child_h - parent_h > 0.6:
+        return None
+    cols = _near_int(parent_w / child_w)
+    rows = _near_int(parent_h / child_h)
+    if cols is None or rows is None:
+        return None
+    return cols * rows
+
+
+def _near_int(value: float, tolerance: float = 0.08) -> int | None:
+    rounded = round(value)
+    if rounded < 1:
+        return None
+    return rounded if abs(value - rounded) <= tolerance else None
 
 
 def parse_spec(spec: str) -> ParsedSpec:
@@ -1247,7 +1350,7 @@ def parse_spec(spec: str) -> ParsedSpec:
     if not product:
         product_match = re.search(r"\b(NY[-A-Z0-9()]+P?)\b", text)
         product = product_match.group(1) if product_match else None
-    material_type = "PP" if product and product.endswith("P") else "CCL"
+    material_type = "PP" if product and _product_is_pp(product) else "CCL"
     if material_type == "PP":
         glass_match = re.search(r":\s*([0-9]{2,4})\s*RC", text)
         rc_match = re.search(r"RC\s*=?\s*(\d+(?:\.\d+)?)\s*%?", text)
@@ -1509,6 +1612,48 @@ def read_business_sheet(path: Path, required_columns: set[str]) -> pd.DataFrame:
     raise ValueError(f"{path.name} 未找到包含字段 {', '.join(sorted(required_columns))} 的业务 Sheet")
 
 
+def read_block2_customer_sheet(path: Path) -> pd.DataFrame:
+    workbook = pd.ExcelFile(path)
+    for sheet_name in workbook.sheet_names:
+        raw = pd.read_excel(path, sheet_name=sheet_name, header=None, dtype=object)
+        for header_idx in range(min(20, len(raw))):
+            headers = [_clean_header(value) for value in raw.iloc[header_idx].tolist()]
+            spec_col = _find_col(headers, {"规格", "客户规格", "物料规格"})
+            if spec_col is None:
+                continue
+            df = pd.read_excel(path, sheet_name=sheet_name, header=header_idx, dtype=object)
+            df = df.dropna(how="all").reset_index(drop=True)
+            df.columns = [str(col).strip() for col in df.columns]
+            renamed = _rename_block2_customer_columns(df)
+            if "规格" not in renamed.columns:
+                continue
+            return renamed
+    raise ValueError(f"{path.name} 未找到包含字段 规格 的业务 Sheet")
+
+
+def _rename_block2_customer_columns(df: pd.DataFrame) -> pd.DataFrame:
+    aliases = {
+        "采购订单号": {"采购订单号", "采购单号", "订购单号", "订单号"},
+        "料件编号": {"料件编号", "物料编号", "料号", "客户产品编号"},
+        "规格": {"规格", "客户规格", "物料规格"},
+        "采购量": {"采购量", "订单行数量", "数量", "订购数量"},
+        "采购单位": {"采购单位", "请购单位", "单位"},
+        "含税单价": {"含税单价", "含税价格", "含税价", "单价含税"},
+    }
+    rename_map = {}
+    used_targets = set(df.columns)
+    for column in df.columns:
+        clean = _clean_header(column)
+        for target, names in aliases.items():
+            if target in used_targets and target != column:
+                continue
+            if clean in {_clean_header(name) for name in names}:
+                rename_map[column] = target
+                used_targets.add(target)
+                break
+    return df.rename(columns=rename_map)
+
+
 def find_header_row(raw: pd.DataFrame, required_columns: set[str]) -> int | None:
     required = {_clean_header(col) for col in required_columns}
     for idx in range(min(20, len(raw))):
@@ -1590,6 +1735,14 @@ def _prices_equal(left: Any, right: Any) -> bool:
     if left_num is None or right_num is None:
         return False
     return round(left_num + 1e-9, 2) == round(right_num + 1e-9, 2)
+
+
+def _price_diff(left: Any, right: Any) -> float | None:
+    left_num = _number(left)
+    right_num = _number(right)
+    if left_num is None or right_num is None:
+        return None
+    return round(left_num - right_num, 2)
 
 
 def _jingwang_customer_po_column(df: pd.DataFrame) -> str:
@@ -1745,7 +1898,19 @@ def _norm_glass(value: Any) -> str:
 
 def _norm_copper(value: Any) -> str:
     text = _norm(value).replace("T", "1").replace(" ", "")
+    parts = [part for part in text.split("/") if part]
+    if len(parts) == 2:
+        return "/".join(sorted(parts, key=_copper_sort_key))
     return text
+
+
+def _copper_sort_key(value: str) -> tuple[int, float | str]:
+    if value == "H":
+        return (0, value)
+    number = _number(value)
+    if number is not None:
+        return (1, number)
+    return (2, value)
 
 
 def _norm_foil(value: Any) -> str:
@@ -1762,6 +1927,19 @@ def _norm_state(value: Any) -> str:
     if "含铜" in text:
         return "含铜"
     return _norm(value)
+
+
+def _norm_state_candidates(value: Any) -> list[str]:
+    text = _text(value)
+    candidates = []
+    if "含铜" in text:
+        candidates.append("含铜")
+    if "不含铜" in text:
+        candidates.append("不含铜")
+    normalized = _norm(value)
+    if normalized and not candidates:
+        candidates.append(normalized)
+    return list(dict.fromkeys(candidates))
 
 
 def _norm_size_key(value: Any) -> str:
@@ -1797,6 +1975,47 @@ def _norm_stack(value: Any) -> str:
     if not parts:
         return text
     return "+".join(f"{glass}*{parts[glass]}" for glass in sorted(parts))
+
+
+def _norm_stack_candidates(value: Any) -> list[str]:
+    text = _norm(value).replace("X", "*").replace("×", "*")
+    if not text:
+        return []
+    plus_groups = [group for group in re.split(r"[+，、]", text) if group]
+    candidates = [""]
+    for group in plus_groups:
+        options = [_norm_stack(option) for option in group.split("/") if option]
+        options = [option for option in options if option]
+        if not options:
+            continue
+        candidates = [
+            _combine_stack_candidate(prefix, option)
+            for prefix in candidates
+            for option in options
+        ]
+    return list(dict.fromkeys(candidate for candidate in candidates if candidate))
+
+
+def _combine_stack_candidate(left: str, right: str) -> str:
+    if not left:
+        return right
+    return _norm_stack(f"{left}+{right}")
+
+
+def _stack_matches(row_values: dict[str, Any], target: str) -> bool:
+    candidates = row_values.get("叠构候选") or []
+    if candidates:
+        return target in candidates
+    rule_stack = row_values.get("叠构")
+    return not rule_stack or target == rule_stack
+
+
+def _state_matches(row_values: dict[str, Any], target: str) -> bool:
+    candidates = row_values.get("板材类型候选") or []
+    if candidates:
+        return target in candidates
+    rule_state = row_values.get("板材类型")
+    return not rule_state or target == rule_state
 
 
 def _clean_header(value: Any) -> str:

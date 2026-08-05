@@ -449,9 +449,7 @@ ORDER_REPRICE_MODE_META = {
         "tab": "430价格核对",
         "title": "430价格核对",
         "history": "430价格核对",
-        "customer_hint": "字段：规格、采购量、采购单位、含税单价",
-        "factory_label": "430厂内明细",
-        "factory_hint": "字段：客户订单、项次、客户产品编号",
+        "customer_hint": "字段：规格；如有含税单价则自动比对",
         "button": "开始价格核对",
         "quote_hint": "支持多个报价单文件",
     },
@@ -948,17 +946,19 @@ def _order_reprice_block1_stats(result_path: Path) -> dict:
 def _order_reprice_block2_stats(result_path: Path) -> dict:
     summary = _workbook_summary(result_path, "匹配汇总")
     total = _summary_int(summary, "总记录数")
-    correct = _summary_int(summary, "价格正确数量")
-    price_error = _summary_int(summary, "价格错误数量")
+    correct = _summary_int(summary, "价格一致数量") or _summary_int(summary, "价格正确数量")
+    price_error = _summary_int(summary, "价格不一致数量") or _summary_int(summary, "价格错误数量")
     quote_missing = _summary_int(summary, "未命中报价数量")
     factory_missing = _summary_int(summary, "未匹配厂内数量")
+    skipped = _summary_int(summary, "不输出数量")
     unmatched = quote_missing + factory_missing
     issue_count = price_error + unmatched
     cards = [
         {"label": "总记录数", "value": total},
-        {"label": "价格正确数", "value": correct},
-        {"label": "价格异常数", "value": price_error},
+        {"label": "价格一致数", "value": correct},
+        {"label": "价格不一致数", "value": price_error},
         {"label": "未匹配数", "value": unmatched},
+        {"label": "不输出数", "value": skipped},
         {"label": "异常率", "value": _format_percent(issue_count, total)},
     ]
     return {"total": total, "issue_count": issue_count, "cards": cards}
@@ -2499,7 +2499,10 @@ def create_order_reprice_job_view():
     def _valid_excel(file_obj) -> bool:
         return bool(file_obj and file_obj.filename and file_obj.filename.lower().endswith((".xlsx", ".xlsm", ".xls")))
 
-    if not _valid_excel(customer_file) or not _valid_excel(factory_file):
+    if not _valid_excel(customer_file):
+        flash("请上传客户明细 Excel 文件。", "error")
+        return redirect(url_for("main.order_reprice"))
+    if mode != "block2" and not _valid_excel(factory_file):
         flash("请上传客户明细和厂内明细 Excel 文件。", "error")
         return redirect(url_for("main.order_reprice"))
     if mode == "block2" and not quote_files:

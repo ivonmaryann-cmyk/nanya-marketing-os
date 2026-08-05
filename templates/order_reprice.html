@@ -119,12 +119,14 @@
           <strong>拖拽客户明细 Excel 到这里，或点击选择</strong>
           <em>客户明细：未选择；{{ meta.customer_hint }}</em>
         </label>
+        {% if mode != "block2" %}
         <label class="upload-dropzone" data-upload-label data-file-label="{{ meta.factory_label }}">
           <input type="file" name="factory_file" accept=".xlsx,.xls,.xlsm" required>
           <span class="upload-icon">{{ "411" if mode == "block3" else "430" }}</span>
           <strong>拖拽{{ meta.factory_label }} Excel 到这里，或点击选择</strong>
           <em>{{ meta.factory_label }}：未选择；{{ meta.factory_hint }}</em>
         </label>
+        {% endif %}
         {% if mode == "block2" %}
         <label class="upload-dropzone" data-upload-label data-file-label="报价单">
           <input type="file" name="quote_files" accept=".xlsx,.xls,.xlsm" multiple required>
