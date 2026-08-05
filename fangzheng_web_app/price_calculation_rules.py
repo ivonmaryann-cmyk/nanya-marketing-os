@@ -235,10 +235,14 @@ def ensure_default_price_rule_version(customer_key: str, quote_variant: str | No
     version = datetime.now().strftime(f"{version_prefix}_%Y%m%d_%H%M%S")
     version_dir = _versions_dir(customer_key, variant) / version
     version_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(seed_price, version_dir / PRICE_RULE_FILENAME)
-    if seed_test.exists():
-        _copy_excel_as_xlsx(seed_test, version_dir / TEST_DATA_FILENAME)
-    validate_price_rule_files(customer_key, version_dir / PRICE_RULE_FILENAME, version_dir / TEST_DATA_FILENAME)
+    try:
+        shutil.copy2(seed_price, version_dir / PRICE_RULE_FILENAME)
+        if seed_test.exists():
+            _copy_excel_as_xlsx(seed_test, version_dir / TEST_DATA_FILENAME)
+        validate_price_rule_files(customer_key, version_dir / PRICE_RULE_FILENAME, version_dir / TEST_DATA_FILENAME)
+    except Exception:
+        shutil.rmtree(version_dir, ignore_errors=True)
+        raise
 
     set_setting(_active_key(customer_key, variant), version)
     append_price_rule_history(
