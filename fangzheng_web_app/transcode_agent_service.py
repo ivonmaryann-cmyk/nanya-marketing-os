@@ -619,6 +619,7 @@ def run_transcode_agent_job(job_id: int, employee_id: str) -> None:
         processed = 0
 
         def process_one(i: int) -> dict[str, Any]:
+            nonlocal order_semantic_call_count, evidence_model_call_count
             row = df_req.iloc[i]
             customer_code = (
                 engine._clean_cell(row.iloc[customer_code_col])
