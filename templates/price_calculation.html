@@ -71,7 +71,27 @@
         </div>
         <span class="rule-chip">已接入客户可用</span>
       </div>
-      <div class="customer-selector" role="list" aria-label="价格计算项目选择">
+      <div class="price-rule-toolbar">
+        <button type="button" class="secondary-link price-rule-open" id="price-rule-open">{{ selected_option.label }}规则说明</button>
+      </div>
+      <div class="calculator-picker">
+        <label for="calculator-search">
+          <span>搜索并选择计算项目</span>
+          <div class="calculator-combobox">
+            <input id="calculator-search" type="search" autocomplete="off" value="{{ selected_option.label }}（{{ "专用" if selected_option.kind == "special" else "客户" }}）" placeholder="输入客户名或 key，例如：吴通 / wutong / 英创力">
+            <span class="calculator-combobox-caret" aria-hidden="true"></span>
+            <div class="calculator-menu" id="calculator-menu" role="listbox">
+              {% for calculator in calculators %}
+              <button type="button" class="calculator-menu-option {% if calculator.key == selected_calculator %}active{% endif %}" data-calculator="{{ calculator.key }}" data-search="{{ calculator.key }} {{ calculator.label }} {{ calculator.kind }}" role="option" aria-selected="{{ 'true' if calculator.key == selected_calculator else 'false' }}">
+                <strong>{{ calculator.label }}</strong>
+                <span>{{ calculator.key }} · {{ "专用" if calculator.kind == "special" else "客户" }}</span>
+              </button>
+              {% endfor %}
+            </div>
+          </div>
+        </label>
+      </div>
+      <div class="customer-selector customer-selector-legacy" role="list" aria-label="价格计算项目选择">
         {% for calculator in calculators %}
         <button type="button" class="customer-option {% if calculator.key == selected_calculator %}active{% endif %}" data-calculator="{{ calculator.key }}">
           <span>{{ calculator.label }}</span>
@@ -205,6 +225,27 @@
   </aside>
 </section>
 
+<dialog class="price-rule-dialog" id="price-rule-dialog" aria-labelledby="price-rule-dialog-title">
+  <div class="price-rule-dialog-shell">
+    <header class="price-rule-dialog-head">
+      <div>
+        <span>价格计算规则说明</span>
+        <h2 id="price-rule-dialog-title">{{ price_rule_doc.title }}</h2>
+        <p>{{ price_rule_doc.summary }}</p>
+      </div>
+      <button type="button" class="price-rule-close" data-price-rule-close aria-label="关闭" title="关闭">×</button>
+    </header>
+    <div class="price-rule-section-list">
+      {% for heading, body in price_rule_doc.sections %}
+      <section class="price-rule-section">
+        <h3>{{ heading }}</h3>
+        <p>{{ body }}</p>
+      </section>
+      {% endfor %}
+    </div>
+  </div>
+</dialog>
+
 <script>
   const selectedCalculator = "{{ selected_calculator }}";
   const selectedCustomer = "{{ selected_customer }}";
@@ -219,7 +260,10 @@
   const uploadSubmit = uploadForm.querySelector('button[type="submit"]');
 
   const calculatorButtons = Array.from(document.querySelectorAll(".customer-option"));
-  const calculatorKeys = new Set(calculatorButtons.map(button => button.dataset.calculator));
+  const calculatorSearch = document.getElementById("calculator-search");
+  const calculatorMenu = document.getElementById("calculator-menu");
+  const calculatorOptions = Array.from(document.querySelectorAll(".calculator-menu-option"));
+  const calculatorKeys = new Set(calculatorOptions.map(option => option.dataset.calculator));
   const searchParams = new URLSearchParams(window.location.search);
   const hasExplicitCalculator = searchParams.has("calculator_key") || searchParams.has("customer_key");
   if (hasExplicitCalculator) {
@@ -237,6 +281,66 @@
       window.location.href = `{{ url_for('main.price_calculation') }}?calculator_key=${encodeURIComponent(button.dataset.calculator)}`;
     });
   });
+
+  function goToCalculator(calculatorKey) {
+    if (!calculatorKey || calculatorKey === selectedCalculator) return;
+    window.localStorage.setItem(calculatorStorageKey, calculatorKey);
+    window.location.href = `{{ url_for('main.price_calculation') }}?calculator_key=${encodeURIComponent(calculatorKey)}`;
+  }
+
+  function filterCalculatorOptions() {
+    const query = calculatorSearch.value.trim().toLowerCase();
+    let firstVisible = null;
+    calculatorOptions.forEach(option => {
+      const haystack = (option.dataset.search || option.textContent || "").toLowerCase();
+      const visible = !query || haystack.includes(query);
+      option.classList.toggle("hidden", !visible);
+      if (visible && !firstVisible) firstVisible = option;
+    });
+    calculatorMenu.classList.toggle("is-open", true);
+    return firstVisible;
+  }
+
+  calculatorOptions.forEach(option => {
+    option.addEventListener("click", () => goToCalculator(option.dataset.calculator));
+  });
+
+  calculatorSearch.addEventListener("focus", () => {
+    calculatorSearch.select();
+    filterCalculatorOptions();
+  });
+
+  calculatorSearch.addEventListener("input", filterCalculatorOptions);
+
+  calculatorSearch.addEventListener("keydown", event => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const firstVisible = calculatorOptions.find(option => !option.classList.contains("hidden"));
+      if (firstVisible) goToCalculator(firstVisible.dataset.calculator);
+    }
+    if (event.key === "Escape") {
+      calculatorMenu.classList.remove("is-open");
+      calculatorSearch.blur();
+    }
+  });
+
+  document.addEventListener("click", event => {
+    if (!event.target.closest(".calculator-combobox")) {
+      calculatorMenu.classList.remove("is-open");
+    }
+  });
+
+  const priceRuleDialog = document.getElementById("price-rule-dialog");
+  const priceRuleOpen = document.getElementById("price-rule-open");
+  if (priceRuleDialog && priceRuleOpen) {
+    priceRuleOpen.addEventListener("click", () => priceRuleDialog.showModal());
+    priceRuleDialog.querySelectorAll("[data-price-rule-close]").forEach(button => {
+      button.addEventListener("click", () => priceRuleDialog.close());
+    });
+    priceRuleDialog.addEventListener("click", event => {
+      if (event.target === priceRuleDialog) priceRuleDialog.close();
+    });
+  }
 
   document.querySelectorAll(".quote-variant-select").forEach(select => {
     select.addEventListener("change", () => {

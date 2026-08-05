@@ -101,6 +101,7 @@ from .price_calculation_customers import (
     default_price_customer_key,
     enabled_price_customer,
 )
+from .price_calculation_rule_docs import get_price_calculation_rule_doc
 from .price_calculation_rules import (
     JINGWANG_QUOTE_VARIANTS,
     get_active_price_rule_version,
@@ -1558,6 +1559,7 @@ def price_calculation():
         jobs=jobs,
         active_rule_version=active_rule_version,
         active_job=active_job,
+        price_rule_doc=get_price_calculation_rule_doc(selected_calculator),
         upload_url=url_for(selected_option["upload_endpoint"]),
         quote_url=url_for(selected_option["quote_endpoint"]),
         admin_url=url_for(selected_option["admin_endpoint"], **admin_values),

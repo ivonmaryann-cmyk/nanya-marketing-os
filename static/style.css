@@ -4760,6 +4760,21 @@ button:disabled {
 }
 
 @media (max-width: 620px) {
+  .calculator-menu {
+    grid-template-columns: 1fr;
+  }
+
+  .price-rule-dialog-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .price-rule-dialog-head,
+  .price-rule-section-list {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
   .agent-evidence-grid {
     grid-template-columns: 1fr;
   }
@@ -4782,6 +4797,242 @@ button:disabled {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.customer-selector-legacy {
+  display: none;
+}
+
+.price-rule-toolbar {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: 14px;
+}
+
+.price-rule-open {
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 8px 14px;
+  border: 1px solid #d8e7f7;
+  border-radius: 8px;
+  background: #f4f9ff;
+  color: #2f75e8;
+  font-size: 14px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.calculator-picker span,
+.price-rule-dialog-head span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.price-rule-dialog-head p,
+.price-rule-section p {
+  margin: 0;
+  color: #536078;
+  line-height: 1.7;
+}
+
+.calculator-picker {
+  display: grid;
+  gap: 8px;
+}
+
+.calculator-picker label {
+  display: grid;
+  gap: 6px;
+}
+
+.calculator-combobox {
+  position: relative;
+}
+
+.calculator-combobox::before {
+  content: "";
+  position: absolute;
+  left: 16px;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  border: 2px solid #9aaad0;
+  border-radius: 999px;
+  transform: translateY(-58%);
+  pointer-events: none;
+}
+
+.calculator-combobox::after {
+  content: "";
+  position: absolute;
+  left: 30px;
+  top: 50%;
+  width: 7px;
+  height: 2px;
+  border-radius: 999px;
+  background: #9aaad0;
+  transform: translateY(7px) rotate(45deg);
+  pointer-events: none;
+}
+
+.calculator-combobox-caret {
+  position: absolute;
+  right: 18px;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  border-right: 2px solid #7c8eb8;
+  border-bottom: 2px solid #7c8eb8;
+  transform: translateY(-65%) rotate(45deg);
+  pointer-events: none;
+}
+
+.calculator-picker input {
+  width: 100%;
+  min-height: 52px;
+  padding-left: 46px;
+  padding-right: 46px;
+  border: 1px solid #d6e0ec;
+  border-radius: 14px;
+  background: #fbfdff;
+  color: #707eae;
+  box-shadow: 0 10px 24px rgba(45, 67, 103, .06);
+  font-size: 16px;
+  font-weight: 750;
+}
+
+.calculator-picker input:focus {
+  border-color: #7da6ef;
+  box-shadow: 0 0 0 4px rgba(47, 117, 232, .12), 0 14px 32px rgba(45, 67, 103, .10);
+  outline: 0;
+}
+
+.calculator-picker input::placeholder {
+  color: #9aa7c8;
+  font-weight: 700;
+}
+
+.calculator-menu {
+  position: absolute;
+  z-index: 20;
+  display: none;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px;
+  width: 100%;
+  max-height: 300px;
+  margin-top: 8px;
+  padding: 10px;
+  overflow-y: auto;
+  border: 1px solid #dbe5f1;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .98);
+  box-shadow: 0 18px 42px rgba(15, 23, 42, .16);
+}
+
+.calculator-menu.is-open {
+  display: grid;
+}
+
+.calculator-menu-option {
+  display: grid;
+  gap: 2px;
+  min-height: 50px;
+  padding: 9px 11px;
+  border: 1px solid #e1e8f2;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  text-align: left;
+}
+
+.calculator-menu-option:hover,
+.calculator-menu-option.active {
+  border-color: #8fb4f4;
+  background: #f0f6ff;
+}
+
+.calculator-menu-option strong {
+  font-size: 14px;
+}
+
+.calculator-menu-option span {
+  color: #71819d;
+  font-size: 12px;
+}
+
+.calculator-menu-option.hidden {
+  display: none;
+}
+
+.price-rule-dialog {
+  width: min(820px, calc(100vw - 32px));
+  max-height: min(760px, calc(100vh - 32px));
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+}
+
+.price-rule-dialog::backdrop {
+  background: rgba(11, 20, 38, .46);
+}
+
+.price-rule-dialog-shell {
+  display: grid;
+  max-height: inherit;
+  overflow: hidden;
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, .24);
+}
+
+.price-rule-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 22px 24px;
+  border-bottom: 1px solid #e5ebf3;
+}
+
+.price-rule-dialog-head h2 {
+  margin: 4px 0 8px;
+  letter-spacing: 0;
+}
+
+.price-rule-close {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  min-height: 38px;
+  padding: 0;
+  border-radius: 8px;
+  background: #f4f7fb;
+  color: #43506a;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.price-rule-section-list {
+  display: grid;
+  gap: 12px;
+  padding: 18px 24px 24px;
+  overflow-y: auto;
+}
+
+.price-rule-section {
+  padding: 14px 16px;
+  border: 1px solid #e3eaf3;
+  border-radius: 8px;
+  background: #fbfdff;
+}
+
+.price-rule-section h3 {
+  margin: 0 0 6px;
+  font-size: 15px;
+  letter-spacing: 0;
 }
 
 .customer-option,
