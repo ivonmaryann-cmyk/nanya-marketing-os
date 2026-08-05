@@ -2841,29 +2841,29 @@ def list_transcode_agent_confirmations(
         item["decision_options"] = candidate_codes
         item["options"] = _json_loads(item.pop("options_json", "[]"), [])
         item["evidence"] = _json_loads(item.pop("evidence_json", "{}"), {})
-        if str(item["status"]) == "pending":
-            field_evidence = next(
-                (
-                    ev
-                    for ev in analysis.get("field_evidence") or []
-                    if str(ev.get("field_key") or "") == str(item["field_key"])
-                    and ev.get("gate")
-                ),
-                None,
+        field_evidence = next(
+            (
+                ev
+                for ev in analysis.get("field_evidence") or []
+                if str(ev.get("field_key") or "") == str(item["field_key"])
+            ),
+            None,
+        )
+        if field_evidence:
+            business = _business_field_evidence(analysis, field_evidence)
+        else:
+            business = _business_field_evidence(
+                analysis,
+                {
+                    "field_key": str(item["field_key"]),
+                    "field": str(item["field_label"]),
+                    "code": str(item.get("current_code") or ""),
+                },
             )
-            if field_evidence:
-                business = _business_field_evidence(analysis, field_evidence)
-            else:
-                business = _business_field_evidence(
-                    analysis,
-                    {
-                        "field_key": str(item["field_key"]),
-                        "field": str(item["field_label"]),
-                        "code": str(item.get("current_code") or ""),
-                    },
-                )
-            item["evidence"]["business_evidence"] = business
-            item["business_reason"] = business
+        item["evidence"]["business_evidence"] = business
+        item["business_reason"] = business
+        item["reason"] = business
+        if str(item["status"]) == "pending":
             item["decision_reason"] = business
         item.pop("analysis_json", None)
         items.append(item)
