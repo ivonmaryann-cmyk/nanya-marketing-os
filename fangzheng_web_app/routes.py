@@ -11,6 +11,8 @@ from pathlib import Path
 from flask import Blueprint, abort, flash, jsonify, redirect, render_template, request, send_file, session, url_for
 from openpyxl import load_workbook
 
+PDF_EXCEL_FEATURE = "pdf_excel"
+
 from .bomin_rules import (
     get_active_bomin_rule_version,
     get_bomin_rule_file_path,
@@ -772,8 +774,6 @@ def _price_calculation_manifest(job: dict) -> dict:
 
 
 def _pdf_excel_manifest(job: dict) -> dict:
-    from .pdf_excel_service import FEATURE as PDF_EXCEL_FEATURE
-
     if not job or job.get("feature") != PDF_EXCEL_FEATURE:
         return {}
     manifest_path = Path(job.get("stored_input_path") or "")
@@ -816,8 +816,6 @@ def _order_reprice_mode_from_job(job: dict, manifest: dict | None = None) -> str
 
 
 def _decorate_job(job) -> dict:
-    from .pdf_excel_service import FEATURE as PDF_EXCEL_FEATURE
-
     data = _job_dict(job)
     if not data:
         return data
@@ -1714,8 +1712,6 @@ def _render_pdf_excel_page(
     ai_result: dict[str, str] | None = None,
     open_ai_dialog: bool = False,
 ):
-    from .pdf_excel_service import FEATURE as PDF_EXCEL_FEATURE
-
     jobs = list_jobs(current_employee(), limit=20, feature=PDF_EXCEL_FEATURE)
     ai_admin = None
     if is_admin_user(current_employee()):
