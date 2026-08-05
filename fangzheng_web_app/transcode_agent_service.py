@@ -189,6 +189,18 @@ FIELD_STEP_KEYS = {
     if gate
 }
 
+TRACE_FIELD_KEY_BY_LABEL = {
+    "胶系": "glue",
+    "厚度": "thickness",
+    "铜厚": "copper",
+    "尺寸": "size",
+    "胶水类别": "glue_category",
+    "铜箔类型": "copper_type",
+    "基板级别": "grade",
+    "总/芯厚": "total_core",
+    "结构码": "structure",
+}
+
 LONG_TERM_RULE_FIELDS = {
     "glue": ("胶系", "glue"),
     "thickness": ("基板厚度", "thickness"),
@@ -2895,6 +2907,25 @@ def list_transcode_agent_confirmations(
     if workbook_refreshed:
         records = _load_transcode_agent_trace_records(str(job["stored_result_path"] or ""))
     for record in records:
+        analysis = analyses_by_confirmation_row.get(int(record.get("excel_row") or 0))
+        if analysis:
+            for trace_item in record.get("trace_items") or []:
+                field_label = str(trace_item.get("field_label") or "").replace(
+                    "（首次解析）", ""
+                )
+                field_key = TRACE_FIELD_KEY_BY_LABEL.get(field_label)
+                if not field_key:
+                    continue
+                pseudo_evidence = {
+                    "field_key": field_key,
+                    "code": str(trace_item.get("current_code") or ""),
+                    "evidence": str(
+                        (trace_item.get("evidence") or {}).get("evidence") or ""
+                    ),
+                }
+                business = _business_field_evidence(analysis, pseudo_evidence)
+                trace_item["evidence"]["business_evidence"] = business
+                trace_item["reason"] = business
         record["record_state"] = _trace_record_state(
             record,
             item_statuses_by_row.get(int(record["excel_row"]), set()),
@@ -3032,7 +3063,7 @@ def _business_field_evidence(
 def _model_grade_stated_value(result: dict[str, Any]) -> str:
     for item in result.get("semantic_items") or []:
         if str(item.get("target_field") or "") == "grade_intent":
-            return str(item.get("stated_target_value") or item.get("normalized_value") or "")
+            return str(item.get("normalized_value") or item.get("stated_target_value") or "")
     return ""
 
 
