@@ -1,5 +1,6 @@
 (() => {
-  const normalize = (value) => String(value || "").trim().toLowerCase();
+  const normalize = (value) =>
+    String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
 
   document.querySelectorAll("table[data-rule-list]").forEach((table) => {
     const body = table.tBodies[0];
