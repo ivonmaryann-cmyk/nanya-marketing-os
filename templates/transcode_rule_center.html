@@ -138,7 +138,11 @@
       <p>所有页面维护内容保存后立即生效。系统每天自动备份一次，保留最近30天。</p>
     </div>
     <div class="rc-head-actions">
+      {% if section == 'active' %}
       <a class="rc-link" href="{{ url_for('main.transcode_agent') }}">返回营销转码 Agent</a>
+      {% else %}
+      <a class="rc-link" href="{{ url_for('main.admin_transcode_rule_center') }}">返回规则配置</a>
+      {% endif %}
     </div>
   </header>
 

@@ -113,6 +113,25 @@ def test_customer_rule_form_keeps_agent_override_sync_controls(monkeypatch, tmp_
     assert "refreshAgentOverride" in body
 
 
+def test_rule_center_detail_back_links_return_to_overview(monkeypatch, tmp_path):
+    client = _client(monkeypatch, tmp_path)
+
+    overview = client.get("/admin/transcode-rule-center?section=overview")
+    overview_body = overview.get_data(as_text=True)
+    assert "返回营销转码 Agent" in overview_body
+
+    for section in ("base", "customer", "scoring", "backups"):
+        response = client.get(f"/admin/transcode-rule-center?section={section}")
+        assert response.status_code == 200
+        body = response.get_data(as_text=True)
+        assert "返回规则配置" in body
+        assert 'href="/admin/transcode-rule-center"' in body
+
+    customer = client.get("/admin/transcode-agent-customer-rules")
+    assert customer.status_code == 200
+    assert 'href="/admin/transcode-rule-center"' in customer.get_data(as_text=True)
+
+
 def test_transcode_agent_page_hides_legacy_rule_display(monkeypatch, tmp_path):
     client = _client(monkeypatch, tmp_path)
 
