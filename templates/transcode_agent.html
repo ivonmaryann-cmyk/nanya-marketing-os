@@ -294,6 +294,7 @@
   let redirectedToConfirmation = false;
   let terminalRefreshScheduled = false;
   const autoRedirectToConfirmation = panel.dataset.autoConfirm === "1";
+  const refreshAfterTerminal = ["queued", "running"].includes(panel.dataset.initialStatus);
 
   function render(data) {
     liveStatusEl.textContent = data.status;
@@ -313,6 +314,7 @@
       window.location.assign(panel.dataset.confirmationUrl);
     } else if (
       (data.status === "completed" || data.status === "awaiting_confirmation")
+      && refreshAfterTerminal
       && !terminalRefreshScheduled
     ) {
       terminalRefreshScheduled = true;
