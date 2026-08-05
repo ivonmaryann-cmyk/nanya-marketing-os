@@ -26,11 +26,12 @@
 
 import re
 import math
+import unicodedata
 import zipfile
 import pandas as pd
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Optional, Tuple, Dict, List
+from typing import Any, Optional, Tuple, Dict, List
 
 from .transcode_agent_standard import HIGH_SPEED_MIL_TO_MM, STANDARD_MM_SIZE_ALIASES
 from .transcode_customer_identity import is_yidun_customer
@@ -2144,6 +2145,35 @@ def _max_copper_oz(copper_spec: Optional[str]) -> Optional[float]:
     return max(values)
 
 
+def match_exact_grade_desc(
+    text: str,
+    grade_desc_to_code: dict | None,
+) -> tuple[str, str] | None:
+    """Match a coding-spec grade description exactly, longest phrase first."""
+    if not grade_desc_to_code:
+        return None
+    source = _normalize_exact_phrase(text)
+    best: tuple[str, str] | None = None
+    for desc, code in grade_desc_to_code.items():
+        key = _normalize_exact_phrase(desc)
+        if not key or key not in source:
+            continue
+        candidate = (str(code or "").strip().upper(), key)
+        if best is None or len(key) > len(best[1]):
+            best = candidate
+    if best and re.fullmatch(r"[A-Z0-9]{2}", best[0]):
+        return best
+    return None
+
+
+def _normalize_exact_phrase(value: Any) -> str:
+    return re.sub(
+        r"\s+",
+        "",
+        unicodedata.normalize("NFKC", str(value or "")).upper(),
+    )
+
+
 def get_grade_code(text: str, cust_name: str, glue_model: str,
                    special_by_name: dict, grade_desc_to_code: dict = None) -> str:
     """
@@ -2158,10 +2188,9 @@ def get_grade_code(text: str, cust_name: str, glue_model: str,
     if any(keyword in grade_source for keyword in (
         "汽车专用", "汽车板", "车载板", "车用", "CAR BOARD", "CARBOARD", "AUTOMOTIVE",
     )):
-        grade_desc_to_code = grade_desc_to_code or {}
-        for desc, code in grade_desc_to_code.items():
-            if "汽车" in str(desc):
-                return code
+        exact = match_exact_grade_desc(text, grade_desc_to_code)
+        if exact:
+            return exact[0]
         return "AC"
     if "HDI专用" in grade_source or "HDI 专用" in grade_source.upper():
         return "AD"
@@ -2213,6 +2242,9 @@ def get_grade_code(text: str, cust_name: str, glue_model: str,
             return "F1"
     if "世运" in str(cust_name or "") and norm_glue == "NY3170HC":
         return "AC"
+    exact = match_exact_grade_desc(text, grade_desc_to_code)
+    if exact:
+        return exact[0]
     return 'A1'
 
 
@@ -2637,6 +2669,15 @@ def transcode_row(s_text: str, e_text: str, d_cust_name: str, a_cust_code: str,
     # ── 步骤7：基板级别代码 ──
     grade_code = get_grade_code(s_text, d_cust_name, glue_model or '',
                                 tables['special_by_name'], tables.get('grade_desc_to_code', {}))
+    if not customer_grade_override:
+        exact_grade = match_exact_grade_desc(
+            s_text,
+            tables.get('grade_desc_to_code', {}),
+        )
+        if exact_grade:
+            steps['grade_note'] = (
+                f"基板级别写法：{exact_grade[1]}→{exact_grade[0]}"
+            )
     if customer_grade_override:
         grade_code = customer_grade_override
         steps['grade_note'] = '客户下单转换表覆盖基板等级'

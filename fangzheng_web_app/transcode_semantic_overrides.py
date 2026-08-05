@@ -37,6 +37,9 @@ def apply_confirmed_semantic_overrides(
     conflicts: list[str] = []
     applied: list[dict[str, Any]] = []
     steps = analysis.get("engine_steps") or {}
+    exact_grade_note = str((steps or {}).get("grade_note") or "")
+    exact_grade_hit = exact_grade_note.startswith("基板级别写法：")
+    exact_grade_code = str((steps or {}).get("step7_grade_code") or "").strip().upper()
     protected_fields = {
         str(item.get("field") or "")
         for item in (analysis.get("applied_rules") or [])
@@ -82,6 +85,12 @@ def apply_confirmed_semantic_overrides(
             conflicts.append(
                 f"{field}: 确定性订单语义={ '/'.join(sorted(prior_semantic)) }，"
                 f"模型标准化={code}"
+            )
+            continue
+        if field == "grade_code" and exact_grade_hit and exact_grade_code and code != exact_grade_code:
+            conflicts.append(
+                f"grade_code: 规格已按基板级别写法精确命中{exact_grade_code}，"
+                f"订单备注模型语义{code}不得覆盖"
             )
             continue
         step_key = {
