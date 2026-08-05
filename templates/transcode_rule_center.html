@@ -45,8 +45,15 @@
   .rc-table td { padding: 11px; border-bottom: 1px solid #e8edf4; vertical-align: top; line-height: 1.45; overflow-wrap: anywhere; }
   .rc-table tr.active { background: #edf5ff; box-shadow: inset 3px 0 #3478ee; }
   .rc-table a { color: inherit; text-decoration: none; }
+  .rc-action-cell { text-align: center !important; vertical-align: middle !important; }
+  .rc-edit-action { display: inline; padding: 0; border: 0; color: #285fae !important; font-size: 13px; font-weight: 750; line-height: 1.4; white-space: nowrap; background: transparent; }
+  .rc-edit-action:hover { color: #174b97 !important; text-decoration: underline; }
+  .rc-source-start td { border-top: 2px solid #cbd8e9; }
+  .rc-source-label { display: inline; color: #243b63; font-weight: 800; }
   .rc-code { color: #245eb6; font-weight: 850; }
   .rc-status { color: #21805c; font-weight: 750; }
+  .rc-warning { color: #a15c00; font-weight: 800; }
+  .rc-conflict-row { background: #fffaf0; }
   .rc-muted { color: #7a879b; }
   .rc-empty { padding: 44px 20px; color: #718097; text-align: center; }
   .rc-form { padding: 16px; }
@@ -73,6 +80,20 @@
   .rc-score-side p { color: #64728a; line-height: 1.6; }
   .rc-score-side .rc-primary { width: 100%; }
   .rc-history-note { max-width: 460px; white-space: normal; }
+  .rc-business-head { display:flex; align-items:center; gap:12px; padding:13px 14px; border-bottom:1px solid #e3e9f1; background:#f8fbff; }
+  .rc-business-head strong { font-size:15px; }
+  .rc-business-head span { color:#718097; font-size:12px; }
+  .rc-group-count { display:inline-flex; min-width:28px; justify-content:center; border-radius:12px; padding:2px 8px; background:#e9f2ff; color:#245eb6; font-size:12px; font-weight:800; }
+  .rc-inline-details summary, .rc-raw-details > summary { color:#2769cf; font-weight:750; cursor:pointer; list-style:none; }
+  .rc-inline-details summary::-webkit-details-marker, .rc-raw-details > summary::-webkit-details-marker { display:none; }
+  .rc-inline-details[open] summary { margin-bottom:8px; }
+  .rc-detail-list { display:grid; gap:6px; padding:9px; border:1px solid #dce5f1; background:#fbfdff; }
+  .rc-detail-item { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:start; padding:7px 0; border-bottom:1px solid #e8edf4; }
+  .rc-detail-item:last-child { border-bottom:0; }
+  .rc-detail-item small { display:block; margin-top:2px; color:#748198; }
+  .rc-raw-details { border-top:1px solid #d8e1ee; }
+  .rc-raw-details > summary { padding:13px 15px; background:#f8fafc; }
+  .rc-raw-details[open] > summary { border-bottom:1px solid #d8e1ee; }
   @media (max-width: 1100px) {
     .rc-summary { grid-template-columns: repeat(2, 1fr); }
     .rc-metric { border-bottom: 1px solid #e3e9f1; }
@@ -106,11 +127,8 @@
 </style>
 
 {% set nav = [
-  ('overview', '规则总览'),
-  ('base', '基础规则'),
-  ('customer', '客户特殊规则'),
-  ('semantic', '订单备注语义'),
-  ('scoring', '出码与人工确认'),
+  ('active', '生效规则'),
+  ('pending', '待完善'),
   ('backups', '备份与修改记录')
 ] %}
 <div class="rc-page">
@@ -130,242 +148,122 @@
     {% endfor %}
   </nav>
 
-  {% if section == 'overview' %}
+  {% if section == 'active' %}
   <section class="rc-summary">
-    <div class="rc-metric"><span>系统基础映射</span><strong>{{ summary.base_mapping_count }}</strong></div>
-    <div class="rc-metric"><span>页面新增基础规则</span><strong>{{ summary.base_override_count }}</strong></div>
-    <div class="rc-metric"><span>客户数量</span><strong>{{ summary.customer_count }}</strong></div>
-    <div class="rc-metric"><span>客户确定性规则</span><strong>{{ summary.agent_rule_count }}</strong></div>
-    <div class="rc-metric"><span>订单备注语义规则</span><strong>{{ summary.order_semantic_count }}</strong></div>
+    <div class="rc-metric"><span>基础规则</span><strong>{{ summary.base_rule_count }}</strong></div>
+    <div class="rc-metric"><span>生效客户规则</span><strong>{{ customer_rule_summary.display_scope_counts.get('active', 0) }}</strong></div>
+    <div class="rc-metric"><span>100分出码标准</span><strong>100</strong></div>
   </section>
   <section class="rc-categories">
     <a class="rc-category" href="{{ url_for('main.admin_transcode_rule_center', section='base') }}">
       <small>01</small><h3>基础规则</h3>
       <p>维护胶系、厚度、铜箔、尺寸、胶水类别、铜箔类型、基板级别和总/芯厚。</p>
-      <em>系统基线继续保留，页面新增或调整作为即时生效规则。</em>
+      <em>按8个业务参数分类，保存后立即生效。</em>
     </a>
     <a class="rc-category" href="{{ url_for('main.admin_transcode_rule_center', section='customer') }}">
       <small>02</small><h3>客户特殊规则</h3>
-      <p>按客户查看和维护八类 CCL 特殊要求，支持新增客户、停用规则和修改追溯。</p>
-      <em>{{ summary.customer_count }} 个客户 / {{ summary.agent_rule_count + summary.semantic_rule_count }} 条相关规则</em>
-    </a>
-    <a class="rc-category" href="{{ url_for('main.admin_transcode_rule_center', section='semantic') }}">
-      <small>03</small><h3>订单备注语义</h3>
-      <p>维护“下汽车板”“需要AP板”等业务说法与场内标准结果的对应关系。</p>
-      <em>模型只做口语标准化，不直接生成码值。</em>
+      <p>按客户统一查看和维护八类 CCL 特殊要求及订单备注规则，仅展示当前参与转码的规则。</p>
+      <em>{{ summary.customer_count }} 个客户 / {{ customer_rule_summary.display_scope_counts.get('active', 0) }} 条生效规则</em>
     </a>
     <a class="rc-category" href="{{ url_for('main.admin_transcode_rule_center', section='scoring') }}">
-      <small>04</small><h3>出码与人工确认</h3>
+      <small>03</small><h3>出码与人工确认</h3>
       <p>核对100分正式出码门禁，以及冲突、缺信息、语义辅助时的评分标准。</p>
       <em>正式码标准固定为100分。</em>
     </a>
   </section>
   <section class="rc-band">
-    <div class="rc-section-head"><div><h2>规则覆盖检查</h2><p>核对页面维护入口与实际运行资产是否一致。基础版本：{{ active_base_version }}；Agent版本：{{ active_agent_version }}</p></div></div>
+    <div class="rc-section-head"><div><h2>当前生效范围</h2><p>这里只显示会影响当前营销转码结果的基础规则、客户规则和出码门禁。当前基础版本：{{ active_base_version }}；Agent 版本：{{ active_agent_version or '未发布' }}。</p></div></div>
     <table class="rc-table">
-      <thead><tr><th style="width:20%">规则分类</th><th>实际运行来源</th><th style="width:14%">数量</th><th style="width:20%">页面状态</th></tr></thead>
+      <thead><tr><th style="width:25%">规则分类</th><th>业务说明</th><th style="width:14%">数量</th><th style="width:20%">维护状态</th></tr></thead>
       <tbody>
         {% for item in coverage_rows %}<tr><td><strong>{{ item.category }}</strong></td><td>{{ item.source }}</td><td class="rc-code">{{ item.count }}</td><td class="{% if '已可视化' in item.status or '按客户' in item.status %}rc-status{% else %}rc-muted{% endif %}">{{ item.status }}</td></tr>{% endfor %}
       </tbody>
     </table>
-    <div class="rc-note" style="border-width:1px 0 0">“只读兼容回退”只用于承接历史规格。新增和修改业务规则应进入上面的标准映射、客户与算法规则或客户特殊规则，不再回写旧Excel。</div>
+    <div class="rc-note" style="border-width:1px 0 0">待业务确认和待技术支持已从默认生效列表移出；历史样本和外部资料仅在“备份与修改记录”中追溯，不参与转码。</div>
+  </section>
+
+  {% elif section == 'pending' %}
+  <section class="rc-band">
+    <div class="rc-section-head">
+      <div><h2>待完善</h2><p>包括待业务确认和待技术支持事项。它们不会参与自动出码，补齐口径或能力后再转为生效规则。</p></div>
+      <a class="rc-primary" href="{{ url_for('main.admin_transcode_agent_customer_rules', scope='pending') }}">查看待完善事项</a>
+    </div>
+    <section class="rc-summary" style="border:0;box-shadow:none">
+      <div class="rc-metric"><span>待完善总数</span><strong>{{ customer_rule_summary.display_scope_counts.get('pending', 0) }}</strong></div>
+      <div class="rc-metric"><span>待业务确认</span><strong>{{ customer_rule_summary.scope_counts.get('pending', 0) }}</strong></div>
+      <div class="rc-metric"><span>待技术支持</span><strong>{{ customer_rule_summary.scope_counts.get('technical', 0) }}</strong></div>
+    </section>
+    <div class="rc-note">在客户页面选择“待完善”后，可按客户、参数和规则内容检索；确认后的规则应保存为对应客户或全客户的正式规则。</div>
   </section>
 
   {% elif section == 'base' %}
-  <section class="rc-note">系统内置规则仍是稳定基线。业务在这里新增或调整的规则优先用于营销转码 Agent，不需要再修改 Excel。</section>
-  <nav class="rc-nav" aria-label="基础规则维护方式">
-    <a class="{% if request.args.get('base_view', 'rules') == 'rules' %}active{% endif %}" href="{{ url_for('main.admin_transcode_rule_center', section='base') }}">条件规则</a>
-    <a class="{% if request.args.get('base_view') == 'mapping' %}active{% endif %}" href="{{ url_for('main.admin_transcode_rule_center', section='base', base_view='mapping') }}">标准映射</a>
-    <a class="{% if request.args.get('base_view') == 'assets' %}active{% endif %}" href="{{ url_for('main.admin_transcode_rule_center', section='base', base_view='assets') }}">客户与算法规则</a>
+  <section class="rc-note">这里显示当前实际生效的基础规则。按业务参数查找并维护，保存后立即参与营销转码 Agent。</section>
+  <nav class="rc-nav" aria-label="基础规则参数">
+    {% for key, meta in business_categories.items() %}
+    <a class="{% if business_category == key %}active{% endif %}" href="{{ url_for('main.admin_transcode_rule_center', section='base', business_category=key) }}">{{ key }}</a>
+    {% endfor %}
   </nav>
-  {% if request.args.get('base_view') == 'mapping' %}
   <section class="rc-band rc-split">
     <div class="rc-list">
       <div class="rc-section-head">
-        <div><h2>系统标准映射</h2><p>查看现有规则；修改后页面值优先，原始映射保留为可回退基线。</p></div>
+        <div><h2>{{ business_category }}</h2><p>{{ business_categories[business_category].description }}</p></div>
+        <div class="rc-head-actions">
+          <a class="rc-primary" href="{{ url_for('main.admin_transcode_rule_center', section='base', business_category=business_category, edit_kind='lookup', new_lookup='1') }}">新增{{ business_category }}映射规则</a>
+        </div>
       </div>
-      <nav class="rc-nav">
-        {% for key, meta in lookup_groups.items() %}
-        <a class="{% if lookup_group == key %}active{% endif %}" href="{{ url_for('main.admin_transcode_rule_center', section='base', base_view='mapping', lookup_group=key) }}">{{ meta.label }}</a>
-        {% endfor %}
-      </nav>
-      <table class="rc-table">
-        <thead><tr><th>{{ lookup_groups[lookup_group].input }}</th><th style="width:24%">{{ lookup_groups[lookup_group].output }}</th><th style="width:16%">来源</th><th style="width:14%">操作</th></tr></thead>
+      <div class="rc-note" style="border-width:0 0 1px">基础规则包括正式业务映射表、编码规范、老版及最新版正式胶系表，以及已经确认的尺寸、厚度和总芯厚换算。客户专属、订单备注和口语语义规则统一到“客户特殊规则”维护。</div>
+      <table class="rc-table" data-rule-list data-search-placeholder="搜索业务输入、规则说明或标准结果" data-source-label="规则范围" data-source-all-label="全部范围" data-source-order="{{ business_categories[business_category].scope_order|join('|') }}">
+        <thead><tr><th style="width:14%">规则范围</th><th style="width:23%">业务输入</th><th>规则说明</th><th style="width:13%">标准结果</th><th style="width:11%">状态</th><th class="rc-action-cell" style="width:8%">操作</th></tr></thead>
         <tbody>
-          {% for row in lookup_rows %}
-          <tr>
-            <td><strong>{{ row.input_value }}</strong></td>
-            <td class="rc-code">{{ row.output_value }}</td>
-            <td class="{% if row.source == '页面调整' %}rc-status{% else %}rc-muted{% endif %}">{{ row.source }}</td>
-            <td><a class="rc-link" href="{{ url_for('main.admin_transcode_rule_center', section='base', base_view='mapping', lookup_group=lookup_group, lookup_input=row.input_value, lookup_output=row.output_value) }}">修改</a></td>
+          {% for row in business_rule_rows %}
+          {% if row.kind == 'lookup' %}{% set edit_url = url_for('main.admin_transcode_rule_center', section='base', business_category=business_category, edit_kind='lookup', lookup_group=row.lookup_group, lookup_input=row.lookup_input, lookup_output=row.lookup_output) %}
+          {% elif row.kind == 'asset' %}{% set edit_url = url_for('main.admin_transcode_rule_center', section='base', business_category=business_category, edit_kind='asset', asset_group=row.asset_group, asset_row_id=row.asset_row_id) %}
+          {% else %}{% set edit_url = '' %}{% endif %}
+          <tr class="js-rule-row {% if row.conflict %}rc-conflict-row{% endif %} {% if row.group_start %}rc-source-start{% endif %}" data-source="{{ row.source_scope }}" data-status="{{ row.status_label or ('启用' if row.enabled else '停用') }}">
+            <td><span class="rc-source-label">{{ row.type_label }}</span></td>
+            <td>{{ row.title }}</td>
+            <td>{{ row.detail }}</td>
+            <td class="rc-code">{{ row.result }}</td>
+            <td class="{% if row.conflict %}rc-warning{% elif row.enabled %}rc-status{% else %}rc-muted{% endif %}">{{ row.status_label or ('生效中' if row.enabled else '已停用') }}</td>
+            <td class="rc-action-cell">{% if edit_url %}<a class="rc-edit-action" href="{{ edit_url }}">编辑</a>{% endif %}</td>
           </tr>
-          {% else %}<tr><td colspan="4" class="rc-empty">当前分类没有映射数据。</td></tr>{% endfor %}
+          {% else %}<tr><td colspan="6" class="rc-empty">当前参数暂无规则，可直接新增。</td></tr>{% endfor %}
         </tbody>
       </table>
     </div>
     <aside class="rc-editor">
+      {% if request.args.get('edit_kind') == 'lookup' or request.args.get('new_lookup') == '1' %}
+      {% set category_lookup_groups = business_categories[business_category].lookup_groups %}
+      {% set edit_lookup_group = request.args.get('lookup_group') if request.args.get('lookup_group') in category_lookup_groups else (category_lookup_groups[0] if category_lookup_groups else '') %}
+      {% if edit_lookup_group %}
       <form method="post" class="rc-form">
-        <h3>新增或调整标准映射</h3>
-        <input type="hidden" name="action" value="save_lookup">
-        <label class="rc-field">映射分类
-          <select name="lookup_group">
-            {% for key, meta in lookup_groups.items() %}<option value="{{ key }}" {% if lookup_group == key %}selected{% endif %}>{{ meta.label }}</option>{% endfor %}
-          </select>
-        </label>
-        <label class="rc-field">{{ lookup_groups[lookup_group].input }}
-          <input name="lookup_input" value="{{ request.args.get('lookup_input', '') }}" required placeholder="填写业务规格中的标准写法">
-        </label>
-        <label class="rc-field">{{ lookup_groups[lookup_group].output }}
-          <input name="lookup_output" value="{{ request.args.get('lookup_output', '') }}" required placeholder="填写对应的场内标准结果">
-        </label>
-        <div class="rc-form-actions"><button class="rc-primary" type="submit">保存并立即生效</button></div>
+        <h3>{{ '新增' if request.args.get('new_lookup') == '1' else '编辑' }}{{ business_category }}规则</h3>
+        <input type="hidden" name="action" value="save_lookup"><input type="hidden" name="business_category" value="{{ business_category }}">
+        <label class="rc-field">业务规则类型<select name="lookup_group">{% for key in category_lookup_groups %}<option value="{{ key }}" {% if edit_lookup_group == key %}selected{% endif %}>{{ lookup_groups[key].label }}</option>{% endfor %}</select></label>
+        <label class="rc-field">{{ lookup_groups[edit_lookup_group].input }}<input name="lookup_input" value="{{ request.args.get('lookup_input', '') }}" required></label>
+        <label class="rc-field">{{ lookup_groups[edit_lookup_group].output }}<input name="lookup_output" value="{{ request.args.get('lookup_output', '') }}" required></label>
+        <div class="rc-form-actions"><button class="rc-primary" type="submit">保存并立即生效</button><a class="rc-link" href="{{ url_for('main.admin_transcode_rule_center', section='base', business_category=business_category) }}">取消</a></div>
       </form>
-      {% if request.args.get('lookup_input') %}
-      <form method="post" class="rc-form" onsubmit="return confirm('确认停用这条标准映射？');">
-        <input type="hidden" name="action" value="delete_lookup">
-        <input type="hidden" name="lookup_group" value="{{ lookup_group }}">
-        <input type="hidden" name="lookup_input" value="{{ request.args.get('lookup_input') }}">
-        <button class="rc-danger" type="submit">停用这条映射</button>
+      {% if request.args.get('lookup_input') %}<form method="post" class="rc-form" onsubmit="return confirm('确认停用这条规则？');"><input type="hidden" name="action" value="delete_lookup"><input type="hidden" name="business_category" value="{{ business_category }}"><input type="hidden" name="lookup_group" value="{{ edit_lookup_group }}"><input type="hidden" name="lookup_input" value="{{ request.args.get('lookup_input') }}"><button class="rc-danger" type="submit">停用并保留记录</button></form>{% endif %}
+      {% else %}<div class="rc-empty">该参数暂无可维护的基础映射。</div>{% endif %}
+      {% elif request.args.get('edit_kind') == 'asset' and selected_asset %}
+      <form method="post" class="rc-form">
+        <h3>编辑{{ asset_groups[asset_group].label }}</h3><input type="hidden" name="action" value="save_asset"><input type="hidden" name="business_category" value="{{ business_category }}"><input type="hidden" name="asset_group" value="{{ asset_group }}"><input type="hidden" name="asset_row_id" value="{{ selected_asset._row_id }}">
+        {% for field in asset_groups[asset_group].fields %}{% set field_label = asset_groups[asset_group].field_labels.get(field, field) %}{% if field == '启用' %}<label class="rc-check"><input type="checkbox" name="asset__启用" value="1" {% if selected_asset.get('启用') != '否' %}checked{% endif %}>启用这条规则</label>{% elif field in ['备注','规则文本','适用条件'] %}<label class="rc-field">{{ field_label }}<textarea name="asset__{{ field }}">{{ selected_asset.get(field, '') }}</textarea></label>{% else %}<label class="rc-field">{{ field_label }}<input name="asset__{{ field }}" value="{{ selected_asset.get(field, '') }}"></label>{% endif %}{% endfor %}
+        <div class="rc-form-actions"><button class="rc-primary" type="submit">保存并立即生效</button><a class="rc-link" href="{{ url_for('main.admin_transcode_rule_center', section='base', business_category=business_category) }}">取消</a></div>
       </form>
+      <form method="post" class="rc-form" onsubmit="return confirm('确认停用这条规则？');"><input type="hidden" name="action" value="delete_asset"><input type="hidden" name="business_category" value="{{ business_category }}"><input type="hidden" name="asset_group" value="{{ asset_group }}"><input type="hidden" name="asset_row_id" value="{{ selected_asset._row_id }}"><button class="rc-danger" type="submit">停用并保留记录</button></form>
+      {% else %}
+      <div class="rc-empty">从左侧操作列点击“编辑”查看规则，或新增一条业务已确认的基础规则。</div>
       {% endif %}
     </aside>
   </section>
-  {% elif request.args.get('base_view') == 'assets' %}
-  <section class="rc-band">
-    <div class="rc-section-head">
-      <div><h2>客户与算法规则</h2><p>这里展示运行时实际使用的最新版胶系、客户尺寸、厚度和外部表引用，不再要求业务直接修改Excel。</p></div>
-      <a class="rc-primary" href="{{ url_for('main.admin_transcode_rule_center', section='base', base_view='assets', asset_group=asset_group, new_asset='1') }}">新增规则</a>
-    </div>
-    <nav class="rc-nav">
-      {% for key, meta in asset_groups.items() %}
-      <a class="{% if asset_group == key %}active{% endif %}" href="{{ url_for('main.admin_transcode_rule_center', section='base', base_view='assets', asset_group=key) }}">{{ meta.label }}</a>
-      {% endfor %}
-    </nav>
-    <div class="rc-note" style="border-width:0 0 1px">{{ asset_groups[asset_group].description }} 当前共 {{ asset_rows|length }} 条。</div>
-    <div class="rc-split">
-      <div class="rc-list">
-        <table class="rc-table">
-          <thead><tr><th style="width:18%">客户/胶系</th><th>规则内容</th><th style="width:16%">结果</th><th style="width:14%">来源</th></tr></thead>
-          <tbody>
-            {% for row in asset_rows %}
-            {% set title = row.get('客户简称') or row.get('胶系名称') or row.get('兼容名称') or row.get('技术类型') or row.get('映射ID') %}
-            {% set size_detail = ((row.get('客户尺寸W') or '') ~ ' × ' ~ (row.get('客户尺寸H') or '')) if row.get('客户尺寸W') or row.get('客户尺寸H') else '' %}
-            {% set detail = row.get('规则文本') or row.get('原始规则') or row.get('客户厚度写法') or row.get('条件关键词') or row.get('适用条件') or row.get('胶系分类') or size_detail %}
-            {% set result = row.get('输出胶系代码') or row.get('覆盖基板级别') or row.get('目标size_code') or row.get('厂内单边尺寸') or row.get('总芯厚口径') or row.get('算法类型') or '-' %}
-            <tr class="{% if selected_asset and selected_asset._row_id == row._row_id %}active{% endif %}">
-              <td><a href="{{ url_for('main.admin_transcode_rule_center', section='base', base_view='assets', asset_group=asset_group, asset_row_id=row._row_id) }}"><strong>{{ title }}</strong><br><span class="rc-muted">{{ row.get('客户代码') or row.get('胶系编号') or '' }}</span></a></td>
-              <td><a href="{{ url_for('main.admin_transcode_rule_center', section='base', base_view='assets', asset_group=asset_group, asset_row_id=row._row_id) }}">{{ detail or row.get('备注') or '-' }}</a></td>
-              <td class="rc-code">{{ result }}</td>
-              <td class="{% if row._source == '页面调整' %}rc-status{% else %}rc-muted{% endif %}">{{ row._source }}</td>
-            </tr>
-            {% else %}<tr><td colspan="4" class="rc-empty">当前分类没有规则。</td></tr>{% endfor %}
-          </tbody>
-        </table>
-      </div>
-      <aside class="rc-editor">
-        {% set editing_asset = selected_asset or request.args.get('new_asset') == '1' %}
-        {% if editing_asset %}
-        <form method="post" class="rc-form">
-          <input type="hidden" name="action" value="save_asset">
-          <input type="hidden" name="asset_group" value="{{ asset_group }}">
-          <input type="hidden" name="asset_row_id" value="{{ selected_asset._row_id if selected_asset else '' }}">
-          <h3>{{ '修改' if selected_asset else '新增' }}{{ asset_groups[asset_group].label }}</h3>
-          {% for field in asset_groups[asset_group].fields %}
-            {% if field == '启用' %}
-            <label class="rc-check"><input type="checkbox" name="asset__启用" value="1" {% if not selected_asset or selected_asset.get('启用') != '否' %}checked{% endif %}>启用这条规则</label>
-            {% elif field in ['备注', '规则文本', '原始规则', '规则来源说明', '建议处理', '适用条件'] %}
-            <label class="rc-field">{{ field }}<textarea name="asset__{{ field }}">{{ selected_asset.get(field, '') if selected_asset else '' }}</textarea></label>
-            {% else %}
-            <label class="rc-field">{{ field }}<input name="asset__{{ field }}" value="{{ selected_asset.get(field, '') if selected_asset else '' }}"></label>
-            {% endif %}
-          {% endfor %}
-          <div class="rc-form-actions"><button class="rc-primary" type="submit">保存并立即生效</button></div>
-        </form>
-        {% if selected_asset %}
-        <form method="post" class="rc-form" onsubmit="return confirm('确认停用这条规则？');">
-          <input type="hidden" name="action" value="delete_asset"><input type="hidden" name="asset_group" value="{{ asset_group }}"><input type="hidden" name="asset_row_id" value="{{ selected_asset._row_id }}">
-          <button class="rc-danger" type="submit">停用并保留记录</button>
-        </form>
-        {% endif %}
-        {% else %}<div class="rc-empty">选择左侧规则查看和修改，或新增规则。</div>{% endif %}
-      </aside>
-    </div>
-  </section>
-  {% else %}
-  <section class="rc-band rc-split">
-    <div class="rc-list">
-      <div class="rc-section-head">
-        <div><h2>页面维护的基础规则</h2><p>适用于全部客户，只有满足所填条件时才覆盖基础结果。</p></div>
-        <a class="rc-primary" href="{{ url_for('main.admin_transcode_rule_center', section='base', new='1') }}">新增规则</a>
-      </div>
-      {% if base_rules %}
-      <table class="rc-table">
-        <thead><tr><th style="width:16%">参数</th><th>适用条件</th><th style="width:17%">标准结果</th><th style="width:13%">状态</th></tr></thead>
-        <tbody>
-          {% for rule in base_rules %}
-          <tr class="{% if selected_rule and selected_rule.rule_id == rule.rule_id %}active{% endif %}">
-            <td><a href="{{ url_for('main.admin_transcode_rule_center', section='base', rule_id=rule.rule_id) }}"><strong>{{ rule.business_field }}</strong></a></td>
-            <td><a href="{{ url_for('main.admin_transcode_rule_center', section='base', rule_id=rule.rule_id) }}">{{ rule.source_text }}<br><span class="rc-muted">{% for label, value in rule.conditions.items() if value %}{{ label }}={{ value }}{% if not loop.last %}；{% endif %}{% endfor %}</span></a></td>
-            <td class="rc-code">{{ rule.target_value }}</td>
-            <td class="{% if rule.enabled %}rc-status{% else %}rc-muted{% endif %}">{{ '生效中' if rule.enabled else '已停用' }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      {% else %}
-      <div class="rc-empty">当前没有页面新增的基础覆盖规则。系统内置基础映射仍正常生效。</div>
-      {% endif %}
-    </div>
-    <aside class="rc-editor">
-      {% set editing = selected_rule or (request.args.get('new') == '1') %}
-      {% if editing %}
-      <form method="post" class="rc-form">
-        <h3>{{ '修改基础规则' if selected_rule else '新增基础规则' }}</h3>
-        <input type="hidden" name="action" value="save_base">
-        <input type="hidden" name="rule_id" value="{{ selected_rule.rule_id if selected_rule else '' }}">
-        <label class="rc-field">维护参数
-          <select name="business_field" required>
-            {% for field in business_fields %}<option value="{{ field }}" {% if selected_rule and selected_rule.business_field == field %}selected{% endif %}>{{ field }}</option>{% endfor %}
-          </select>
-        </label>
-        <label class="rc-field">业务规则说明
-          <textarea name="source_text" required placeholder="例如：胶系为NY3150HF且规格不含TFT时，胶系按AH处理">{{ selected_rule.source_text if selected_rule else '' }}</textarea>
-        </label>
-        <div class="rc-two">
-          <label class="rc-field">胶系条件<input name="condition_glue" value="{{ selected_rule.conditions['胶系'] if selected_rule else '' }}" placeholder="例如 NY3150HF"></label>
-          <label class="rc-field">规格关键词<input name="condition_keyword" value="{{ selected_rule.conditions['规格关键词'] if selected_rule else '' }}" placeholder="多个词用逗号分隔，任意一个出现即可"></label>
-        </div>
-        <div class="rc-two">
-          <label class="rc-field">铜箔规格条件<input name="condition_copper" value="{{ selected_rule.conditions['铜箔规格'] if selected_rule else '' }}" placeholder="例如 H/H"></label>
-          <label class="rc-field">基板厚度条件<input name="condition_thickness" value="{{ selected_rule.conditions['基板厚度'] if selected_rule else '' }}" placeholder="例如 >=0.8"></label>
-        </div>
-        <label class="rc-field">基板尺寸条件<input name="condition_size" value="{{ selected_rule.conditions['基板尺寸'] if selected_rule else '' }}" placeholder="例如 37*49"></label>
-        <div class="rc-two">
-          <label class="rc-field">标准结果<input name="target_value" value="{{ selected_rule.target_value if selected_rule else '' }}" required placeholder="对应场内编码字段"></label>
-          <label class="rc-field">优先顺序<input type="number" name="priority" value="{{ selected_rule.priority if selected_rule else 100 }}"></label>
-        </div>
-        <label class="rc-field">确认依据<input name="business_basis" value="{{ selected_rule.business_basis if selected_rule else '' }}" placeholder="业务确认日期或说明"></label>
-        <label class="rc-check"><input type="checkbox" name="enabled" value="1" {% if not selected_rule or selected_rule.enabled %}checked{% endif %}>保存后立即生效</label>
-        <div class="rc-form-actions"><button class="rc-primary" type="submit">保存规则</button></div>
-      </form>
-      {% if selected_rule %}
-      <form method="post" class="rc-form" onsubmit="return confirm('确认停用这条基础规则？');">
-        <input type="hidden" name="action" value="delete_base"><input type="hidden" name="rule_id" value="{{ selected_rule.rule_id }}">
-        <button class="rc-danger" type="submit">停用并保留记录</button>
-      </form>
-      {% endif %}
-      {% else %}
-      <div class="rc-empty">选择左侧规则查看详情，或点击“新增规则”。</div>
-      {% endif %}
-    </aside>
-  </section>
-  {% endif %}
 
   {% elif section == 'customer' %}
   <section class="rc-band">
     <div class="rc-section-head">
-      <div><h2>客户特殊规则</h2><p>按客户维护八类 CCL 参数；保存后立即参与单条和批量转码。</p></div>
-      <a class="rc-primary" href="{{ url_for('main.admin_transcode_agent_customer_rules', rule_kind='deterministic') }}">进入按客户维护</a>
+      <div><h2>客户特殊规则</h2><p>按客户统一维护八类 CCL 参数和订单备注规则；保存后立即参与单条和批量转码。</p></div>
+      <a class="rc-primary" href="{{ url_for('main.admin_transcode_agent_customer_rules') }}">进入按客户维护</a>
     </div>
     <section class="rc-summary" style="border:0;box-shadow:none">
       <div class="rc-metric"><span>客户数量</span><strong>{{ summary.customer_count }}</strong></div>
@@ -374,25 +272,6 @@
       <div class="rc-metric"><span>维护范围</span><strong>8</strong></div>
       <div class="rc-metric"><span>生效方式</span><strong style="font-size:16px">即时</strong></div>
     </section>
-  </section>
-
-  {% elif section == 'semantic' %}
-  <section class="rc-band">
-    <div class="rc-section-head">
-      <div><h2>订单备注语义规则</h2><p>把业务口语转换为已确认的标准含义，再由确定性规则完成字段覆盖。</p></div>
-      <a class="rc-primary" href="{{ url_for('main.admin_transcode_agent_customer_rules', rule_kind='semantic') }}">维护客户语义规则</a>
-    </div>
-    <div class="rc-note" style="border:0;border-bottom:1px solid #d8e1ee">
-      调用标准：订单备注为空时不调用模型；有内容时先匹配已确认语义规则，模型只负责识别相近说法，不允许自行决定码值。
-    </div>
-    <table class="rc-table">
-      <thead><tr><th>规则范围</th><th>业务处理方式</th><th style="width:18%">当前数量</th></tr></thead>
-      <tbody>
-        <tr><td><strong>客户订单备注</strong></td><td>按客户身份、备注内容和规格条件匹配标准结果</td><td class="rc-code">{{ summary.order_semantic_count }} 条</td></tr>
-        <tr><td><strong>无订单备注</strong></td><td>不调用模型，继续执行基础规则和客户确定性规则</td><td class="rc-status">正常启用</td></tr>
-        <tr><td><strong>模型语义辅助</strong></td><td>只把口语转成标准语义，低于100分仍进入人工确认</td><td class="rc-status">受100分门禁约束</td></tr>
-      </tbody>
-    </table>
   </section>
 
   {% elif section == 'scoring' %}
@@ -421,11 +300,11 @@
     </div>
     <div class="rc-split">
       <div class="rc-list">
-        <table class="rc-table">
+        <table class="rc-table" data-rule-list data-search-placeholder="搜索客户、确认参数或触发原因">
           <thead><tr><th style="width:20%">客户</th><th style="width:18%">确认参数</th><th>何时需要确认</th><th style="width:12%">操作</th></tr></thead>
           <tbody>
             {% for policy in confirmation_policies %}
-            <tr class="{% if selected_confirmation_policy and selected_confirmation_policy.rule_id == policy.rule_id %}active{% endif %}">
+            <tr class="js-rule-row {% if selected_confirmation_policy and selected_confirmation_policy.rule_id == policy.rule_id %}active{% endif %}" data-status="{{ '启用' if policy.native_rule.status == 'approved' else '停用' }}">
               <td><strong>{{ policy.customers }}</strong></td>
               <td>{{ policy.field_label }}</td>
               <td>{{ policy.reason }}{% if policy.native_rule.copper_pair_mixed_threshold is defined %}<br><span class="rc-muted">含非对称铜厚判断条件</span>{% endif %}</td>
@@ -466,14 +345,21 @@
   {% elif section == 'backups' %}
   <section class="rc-band">
     <div class="rc-section-head">
+      <div><h2>历史资料追溯</h2><p>历史样本和外部资料只用于核对、补充新规则，不参与营销转码或100分评分。</p></div>
+      <a class="rc-primary" href="{{ url_for('main.admin_transcode_agent_customer_rules', scope='reference') }}">查看历史资料</a>
+    </div>
+    <div class="rc-note">确认需要采用的历史内容后，请在对应客户的“生效规则”中新建正式规则；不要直接把历史样本当作转码规则。</div>
+  </section>
+  <section class="rc-band">
+    <div class="rc-section-head">
       <div><h2>规则备份</h2><p>每天自动生成一次完整备份，自动清理30天以前的文件。</p></div>
       <form method="post"><input type="hidden" name="action" value="backup"><button class="rc-primary" type="submit">立即备份</button></form>
     </div>
-    <table class="rc-table">
+    <table class="rc-table" data-rule-list data-search-placeholder="搜索备份时间或说明">
       <thead><tr><th>备份时间</th><th>说明</th><th style="width:12%">大小</th><th style="width:16%">操作</th></tr></thead>
       <tbody>
         {% for backup in backups %}
-        <tr><td>{{ backup.created_at }}</td><td>{{ backup.reason }}</td><td>{{ backup.size_kb }} KB</td><td>
+        <tr class="js-rule-row"><td>{{ backup.created_at }}</td><td>{{ backup.reason }}</td><td>{{ backup.size_kb }} KB</td><td>
           <form method="post" onsubmit="return confirm('恢复后将覆盖当前页面维护规则，确认继续？');">
             <input type="hidden" name="action" value="restore_backup"><input type="hidden" name="backup_name" value="{{ backup.name }}"><button class="rc-link" type="submit">恢复</button>
           </form>
@@ -484,15 +370,16 @@
   </section>
   <section class="rc-band">
     <div class="rc-section-head"><div><h2>最近修改记录</h2><p>记录谁在什么时间修改了哪类规则。</p></div></div>
-    <table class="rc-table">
+    <table class="rc-table" data-rule-list data-search-placeholder="搜索修改对象、分类或操作人">
       <thead><tr><th style="width:16%">时间</th><th style="width:14%">分类</th><th>对象</th><th style="width:12%">动作</th><th style="width:14%">操作人</th></tr></thead>
       <tbody>
-        {% for change in changes %}<tr><td>{{ change.created_at }}</td><td>{{ change.category }}</td><td>{{ change.object_id }}</td><td>{{ change.action }}</td><td>{{ change.employee_id }}</td></tr>{% endfor %}
-        {% for change in customer_changes %}<tr><td>{{ change.created_at }}</td><td>客户特殊规则</td><td class="rc-history-note">{{ change.customer }} / {{ change.business_field }} / {{ change.source_text }}</td><td>{{ change.action }}</td><td>{{ change.employee_id }}</td></tr>{% endfor %}
+        {% for change in changes %}<tr class="js-rule-row" data-source="{{ change.category }}" data-status="{{ change.action }}"><td>{{ change.created_at }}</td><td>{{ change.category }}</td><td>{{ change.object_id }}</td><td>{{ change.action }}</td><td>{{ change.employee_id }}</td></tr>{% endfor %}
+        {% for change in customer_changes %}<tr class="js-rule-row" data-source="客户特殊规则" data-status="{{ change.action }}"><td>{{ change.created_at }}</td><td>客户特殊规则</td><td class="rc-history-note">{{ change.customer }} / {{ change.business_field }} / {{ change.source_text }}</td><td>{{ change.action }}</td><td>{{ change.employee_id }}</td></tr>{% endfor %}
         {% if not changes and not customer_changes %}<tr><td colspan="5" class="rc-empty">暂无修改记录</td></tr>{% endif %}
       </tbody>
     </table>
   </section>
   {% endif %}
 </div>
+<script src="{{ url_for('static', filename='rule-list-controls.js') }}"></script>
 {% endblock %}

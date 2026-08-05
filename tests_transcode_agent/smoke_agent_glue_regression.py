@@ -26,10 +26,6 @@ DEFAULT_MAPPING = (
     ROOT / "fangzheng_web_app/default_rules/transcode_agent/transcode_agent_mapping_tables.xlsx"
 )
 LEGACY_AGENT_VERSION = "transcode_agent_rules_20260721_111515"
-KNOWN_PENDING = {
-    # 最新胶系主表为 NY2170=2E/R，历史正确码仍为 2C/Y，等待业务统一口径。
-    (46, "生益电子", "2C02400HH37004900YWA1T", "2E02400HH37004900RWA1T"),
-}
 
 
 def main() -> None:
@@ -51,6 +47,7 @@ def main() -> None:
         if not str(spec or "").strip():
             continue
         outputs = {}
+        candidate_master_backed = False
         for label, mappings in (("legacy", legacy_mappings), ("candidate", candidate_mappings)):
             analysis = analyze_spec(
                 engine,
@@ -63,21 +60,33 @@ def main() -> None:
                 excel_row=row_number,
             )
             outputs[label] = _code22(analysis.get("candidate_code"))
+            if label == "candidate":
+                candidate_master_backed = any(
+                    str(item.get("rule_type") or "") == "Agent胶系主数据映射"
+                    and str(item.get("new") or "").upper() == outputs[label][:2]
+                    for item in analysis.get("applied_rules") or []
+                )
         correct = _code22(correct_code)
         if outputs["legacy"] != outputs["candidate"]:
             changed.append(row_number)
         if outputs["legacy"] == correct and outputs["candidate"] != correct:
-            regressions.append((row_number, customer_name, correct, outputs, spec))
+            regressions.append((
+                row_number,
+                customer_name,
+                correct,
+                outputs,
+                spec,
+                candidate_master_backed,
+            ))
         if outputs["legacy"] != correct and outputs["candidate"] == correct:
             improvements.append((row_number, customer_name, correct, outputs, spec))
 
-    known_pending = []
+    expected_latest_master_migrations = []
     unexpected_regressions = []
     for regression in regressions:
-        row_number, customer_name, correct, outputs, _spec = regression
-        key = (row_number, str(customer_name or ""), correct, outputs["candidate"])
-        if key in KNOWN_PENDING:
-            known_pending.append(regression)
+        _row_number, _customer_name, correct, outputs, _spec, master_backed = regression
+        if master_backed and _only_glue_fields_changed(correct, outputs["candidate"]):
+            expected_latest_master_migrations.append(regression)
         else:
             unexpected_regressions.append(regression)
 
@@ -86,7 +95,8 @@ def main() -> None:
         "agent glue regression passed "
         f"rows={worksheet.max_row - 1} changed={len(changed)} "
         f"unexpected_regressions={len(unexpected_regressions)} "
-        f"known_pending={len(known_pending)} improvements={len(improvements)}"
+        f"latest_master_migrations={len(expected_latest_master_migrations)} "
+        f"improvements={len(improvements)}"
     )
 
 
@@ -111,6 +121,13 @@ def _load_mapping_workbook(path: Path) -> dict[str, list[dict]]:
 
 def _code22(value) -> str:
     return re.sub(r"\s+", "", str(value or "")).upper()[:22]
+
+
+def _only_glue_fields_changed(expected: str, candidate: str) -> bool:
+    """Allow a confirmed latest-master migration only at glue/category positions."""
+    if len(expected) != 22 or len(candidate) != 22 or expected == candidate:
+        return False
+    return expected[2:17] == candidate[2:17] and expected[18:22] == candidate[18:22]
 
 
 if __name__ == "__main__":

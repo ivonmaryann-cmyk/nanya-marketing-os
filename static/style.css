@@ -544,6 +544,73 @@ button,
   justify-content: flex-start;
 }
 
+.secret-input-wrap {
+  position: relative;
+  display: block;
+}
+
+.secret-input-wrap input {
+  width: 100%;
+  padding-right: 52px;
+}
+
+.secret-visibility-button {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: #52627f;
+  background: transparent;
+  box-shadow: none;
+  transform: translateY(-50%);
+}
+
+.secret-visibility-button:hover,
+.secret-visibility-button:focus-visible {
+  color: #246fd4;
+  background: #edf4ff;
+}
+
+.secret-eye-icon {
+  position: relative;
+  display: block;
+  width: 20px;
+  height: 13px;
+  border: 2px solid currentColor;
+  border-radius: 50% / 60%;
+}
+
+.secret-eye-icon::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  transform: translate(-50%, -50%);
+}
+
+.secret-visibility-button.is-visible .secret-eye-icon::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: -3px;
+  z-index: 1;
+  width: 24px;
+  height: 2px;
+  background: currentColor;
+  transform: rotate(-38deg);
+}
+
 .model-config-actions {
   display: flex;
   flex-wrap: wrap;

@@ -11,6 +11,7 @@ from .transcode_customer_identity import customer_names_match
 
 
 VALID_GLUE_CODE = re.compile(r"^[A-Z0-9]{2}$")
+RETIRED_GLUE_RULE_IDS = frozenset({"TGM-SELECT-0002", "TGM-MASTER-0058"})
 _INDEX_CACHE_LIMIT = 16
 _INDEX_CACHE: OrderedDict[int, tuple[dict[str, list[dict]], "_GlueIndex"]] = OrderedDict()
 _INDEX_CACHE_LOCK = threading.RLock()
@@ -66,16 +67,8 @@ def resolve_agent_glue(
         customer_code=customer_code,
         customer_name=customer_name,
     )
-    if selection and _has_runtime_selection_condition(selection):
-        return {
-            "status": "matched",
-            "code": str(selection.get("输出胶系代码") or "").strip().upper(),
-            "rule_id": selection.get("映射ID", ""),
-            "source": "Agent胶系选择规则",
-            "source_row": "",
-            "name": selection.get("胶系名称", ""),
-            "text": selection.get("规则文本", ""),
-        }
+    if selection:
+        return selection
 
     matched_master = _longest_name_matches(index.master_names, normalized_source)
     if matched_master:
@@ -85,17 +78,7 @@ def resolve_agent_glue(
                 matched_master,
                 key=lambda row: _source_row_number(row.get("来源行号")),
             )
-            candidates = [
-                {
-                    "code": str(row.get("输出胶系代码") or "").strip().upper(),
-                    "glue_id": str(row.get("胶系编号") or "").strip(),
-                    "source_row": str(row.get("来源行号") or "").strip(),
-                }
-                for row in sorted(
-                    matched_master,
-                    key=lambda row: _source_row_number(row.get("来源行号")),
-                )
-            ]
+            candidates = _unique_code_candidates(matched_master)
             result = _resolve_rows([preferred], "最新版胶系名称优先命中")
             result["uncertain"] = True
             result["candidates"] = candidates
@@ -129,6 +112,25 @@ def clear_agent_glue_index_cache() -> None:
         _INDEX_CACHE.clear()
 
 
+def is_retired_agent_glue_mapping(row: dict[str, Any]) -> bool:
+    """Return whether a glue mapping is the retired NY-A1 -> 2Z rule."""
+    rule_id = str(row.get("映射ID") or row.get("rule_id") or "").strip().upper()
+    output_code = str(
+        row.get("输出胶系代码") or row.get("output_code") or row.get("code") or ""
+    ).strip().upper()
+    names = (
+        row.get("胶系名称"),
+        row.get("标准胶系名称"),
+        row.get("兼容名称"),
+        row.get("业务写法"),
+        row.get("input_value"),
+    )
+    return output_code == "2Z" and (
+        rule_id in RETIRED_GLUE_RULE_IDS
+        or any(_is_ny_a1_name(name) for name in names)
+    )
+
+
 def _get_glue_index(mapping_tables: dict[str, list[dict]]) -> _GlueIndex:
     cache_key = id(mapping_tables)
     with _INDEX_CACHE_LOCK:
@@ -148,7 +150,9 @@ def _build_glue_index(mapping_tables: dict[str, list[dict]]) -> _GlueIndex:
     master_rows = [
         row
         for row in mapping_tables.get("Agent胶系主表", [])
-        if _enabled(row) and _valid_code(row.get("输出胶系代码"))
+        if _enabled(row)
+        and _valid_code(row.get("输出胶系代码"))
+        and not is_retired_agent_glue_mapping(row)
     ]
     id_rows: dict[str, list[dict]] = {}
     for row in master_rows:
@@ -168,11 +172,18 @@ def _build_glue_index(mapping_tables: dict[str, list[dict]]) -> _GlueIndex:
     aliases = [
         row
         for row in mapping_tables.get("Agent胶系兼容别名", [])
-        if _enabled(row) and _valid_code(row.get("输出胶系代码"))
+        if _enabled(row)
+        and _valid_code(row.get("输出胶系代码"))
+        and not is_retired_agent_glue_mapping(row)
     ]
     selections = []
     for row in mapping_tables.get("Agent胶系选择规则", []):
-        if not _enabled(row) or not _valid_code(row.get("输出胶系代码")):
+        if (
+            not _enabled(row)
+            or not _valid_code(row.get("输出胶系代码"))
+            or is_retired_agent_glue_mapping(row)
+            or not _has_runtime_selection_condition(row)
+        ):
             continue
         name_pattern = _compile_phrase_pattern(row.get("胶系名称"))
         if not name_pattern:
@@ -235,14 +246,24 @@ def _find_explicit_ids(index: _GlueIndex, source: str) -> list[dict]:
 def _resolve_rows(rows: list[dict], source: str) -> dict[str, Any]:
     codes = {str(row.get("输出胶系代码") or "").strip().upper() for row in rows}
     if len(codes) != 1:
-        return {
-            "status": "conflict",
-            "conflict": f"同一胶系命中多个代码：{'/'.join(sorted(codes))}",
-        }
+        preferred = min(rows, key=lambda row: _source_row_number(row.get("来源行号")))
+        result = _resolved_row(preferred, source)
+        result.update(
+            {
+                "uncertain": True,
+                "candidates": _unique_code_candidates(rows),
+                "conflict": f"同一胶系命中多个代码：{'/'.join(sorted(codes))}",
+            }
+        )
+        return result
     row = rows[0]
+    return _resolved_row(row, source)
+
+
+def _resolved_row(row: dict, source: str) -> dict[str, Any]:
     return {
         "status": "matched",
-        "code": next(iter(codes)),
+        "code": str(row.get("输出胶系代码") or "").strip().upper(),
         "rule_id": row.get("映射ID", ""),
         "source": source,
         "source_row": row.get("来源行号", ""),
@@ -254,6 +275,27 @@ def _resolve_rows(rows: list[dict], source: str) -> dict[str, Any]:
             f" → {row.get('输出胶系代码', '')}"
         ).strip(),
     }
+
+
+def _unique_code_candidates(rows: list[dict]) -> list[dict[str, str]]:
+    candidates: list[dict[str, str]] = []
+    seen_codes: set[str] = set()
+    for row in sorted(
+        rows,
+        key=lambda item: _source_row_number(item.get("来源行号")),
+    ):
+        code = str(row.get("输出胶系代码") or "").strip().upper()
+        if not code or code in seen_codes:
+            continue
+        seen_codes.add(code)
+        candidates.append(
+            {
+                "code": code,
+                "glue_id": str(row.get("胶系编号") or "").strip(),
+                "source_row": str(row.get("来源行号") or "").strip(),
+            }
+        )
+    return candidates
 
 
 def _match_selection_rule(
@@ -277,11 +319,36 @@ def _match_selection_rule(
         candidates.append(entry)
     if not candidates:
         return None
-    top_priority = candidates[0].priority
-    top = [entry for entry in candidates if entry.priority == top_priority]
-    if len({str(entry.row.get("输出胶系代码") or "").upper() for entry in top}) > 1:
-        return None
-    return top[0].row
+    candidates.sort(
+        key=lambda entry: (-entry.priority, _source_row_number(entry.row.get("来源行号")))
+    )
+    rows = [entry.row for entry in candidates]
+    preferred = rows[0]
+    result = {
+        "status": "matched",
+        "code": str(preferred.get("输出胶系代码") or "").strip().upper(),
+        "rule_id": preferred.get("映射ID", ""),
+        "source": "Agent胶系选择规则",
+        "source_row": preferred.get("来源行号", ""),
+        "name": preferred.get("胶系名称", ""),
+        "text": preferred.get("规则文本", ""),
+    }
+    codes = {
+        str(row.get("输出胶系代码") or "").strip().upper()
+        for row in rows
+    }
+    if len(codes) > 1:
+        result.update(
+            {
+                "uncertain": True,
+                "candidates": _unique_code_candidates(rows),
+                "conflict": (
+                    "Agent胶系选择规则同时命中多个代码："
+                    f"{'/'.join(sorted(codes))}；不使用优先级消除冲突"
+                ),
+            }
+        )
+    return result
 
 
 def _selection_customer_matches(row: dict, customer_code: str, customer_name: str) -> bool:
@@ -371,3 +438,8 @@ def _normalize(value: Any) -> str:
     text = unicodedata.normalize("NFKC", str(value or "")).upper()
     text = text.replace("（", "(").replace("）", ")")
     return re.sub(r"[\s_\-]+", "", text)
+
+
+def _is_ny_a1_name(value: Any) -> bool:
+    normalized = _normalize(value)
+    return bool(re.match(r"^NYA1(?:$|[^0-9])", normalized))

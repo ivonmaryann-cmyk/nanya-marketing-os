@@ -106,7 +106,8 @@ def _assert_size_mapping(customer: str, customer_code: str, spec: str, expected_
     quote = calculate_transcode_agent_quote(spec, customer=customer, customer_code=customer_code)
     size_evidence = next(item for item in quote["field_evidence"] if item["field"] == "尺寸")
     assert size_evidence["code"] == expected_code, (customer, spec, expected_code, size_evidence, quote)
-    assert size_evidence["hit_type"] == "Agent尺寸映射", (customer, spec, size_evidence, quote)
+    assert size_evidence["hit_type"] == "业务正式规则", (customer, spec, size_evidence, quote)
+    assert size_evidence.get("rule_id") or size_evidence.get("source"), size_evidence
     assert size_evidence["score"] == 100, (customer, spec, size_evidence, quote)
 
 

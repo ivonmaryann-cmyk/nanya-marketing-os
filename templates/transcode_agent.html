@@ -12,11 +12,6 @@
     <h1>营销转码Agent</h1>
     <p>先按统一规则解析8个关键字段；只有全部字段达到100分才生成正式码，其余结果进入逐行人工确认。</p>
   </div>
-  <div class="hero-note">
-    <div>当前规则</div>
-    <strong>基础：{{ active_rule_version }}</strong>
-    <em>Agent：{{ active_agent_rule_version }} / {{ agent_rule_count }} 条机器规则</em>
-  </div>
 </section>
 
 <section class="feature-tools">
@@ -24,7 +19,6 @@
     模型配置·{{ '已启用' if model_config.enabled else '未启用' }}
   </a>
   <a class="feature-action" href="{{ url_for('main.admin_transcode_rule_center') }}">规则配置</a>
-  <a class="secondary-link" href="{{ url_for('main.rule_doc', feature='transcode_agent') }}">Agent规则说明</a>
   <a class="secondary-link" href="{{ url_for('main.transcode') }}">旧版转码</a>
 </section>
 
@@ -74,13 +68,21 @@
       </form>
     </article>
 
-    <article class="card">
+    <article class="card agent-history-card">
       <div class="step-tag">第二步</div>
       <div class="section-head">
-        <h2>最近任务 / 该功能历史</h2>
+        <h2>最近转码任务</h2>
         <a href="{{ url_for('main.history') }}">查看全部</a>
       </div>
-      <table class="table">
+      <div class="agent-history-scroll">
+      <table class="table agent-history-table">
+        <colgroup>
+          <col class="agent-history-id">
+          <col class="agent-history-file">
+          <col class="agent-history-status">
+          <col class="agent-history-time">
+          <col class="agent-history-actions">
+        </colgroup>
         <thead>
           <tr>
             <th>ID</th>
@@ -93,19 +95,19 @@
         <tbody>
           {% for job in jobs %}
           <tr>
-            <td>#{{ job.id }}</td>
-            <td><a href="{{ url_for('main.job_detail', job_id=job.id) }}">{{ job.source_filename }}</a></td>
-            <td><span class="status {{ job.status }}">{{ '待人工确认' if job.status == 'awaiting_confirmation' else job.status }}</span></td>
-            <td>{{ job.created_at }}</td>
-            <td>
+            <td class="agent-job-id">#{{ job.id }}</td>
+            <td class="agent-job-file"><a href="{{ url_for('main.job_detail', job_id=job.id) }}" title="{{ job.source_filename }}">{{ job.source_filename }}</a></td>
+            <td class="agent-job-status"><span class="status {{ job.status }}">{{ '待人工确认' if job.status == 'awaiting_confirmation' else job.status }}</span></td>
+            <td class="agent-job-time">{{ job.created_at }}</td>
+            <td class="agent-job-actions">
               {% if job.status == 'awaiting_confirmation' %}
               <div class="result-actions">
-                <a class="primary-link compact" href="{{ url_for('main.transcode_agent_confirmation_center', job_id=job.id) }}">进入确认中心</a>
+                <a class="task-action task-action-primary" href="{{ url_for('main.transcode_agent_confirmation_center', job_id=job.id) }}">进入确认中心</a>
               </div>
               {% elif job.status == 'completed' %}
               <div class="result-actions">
-                <a class="primary-link compact" href="{{ url_for('main.transcode_agent_confirmation_center', job_id=job.id) }}">查看转码记录</a>
-                <a class="primary-link compact" href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载结果</a>
+                <a class="task-action task-action-secondary" href="{{ url_for('main.transcode_agent_confirmation_center', job_id=job.id) }}">查看记录</a>
+                <a class="task-action task-action-primary" href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载结果</a>
               </div>
               {% else %}
               -
@@ -117,6 +119,7 @@
           {% endfor %}
         </tbody>
       </table>
+      </div>
     </article>
   </div>
 

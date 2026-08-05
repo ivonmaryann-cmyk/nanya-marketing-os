@@ -108,7 +108,8 @@ def _has_agent_override(quote: dict, field: str, value: str) -> bool:
     return any(
         item.get("field") == label
         and item.get("code") == value
-        and item.get("hit_type") == "Agent规则覆盖"
+        and item.get("hit_type") in {"Agent规则覆盖", "业务正式规则"}
+        and bool(item.get("rule_id") or item.get("source"))
         for item in quote.get("field_evidence", [])
     )
 

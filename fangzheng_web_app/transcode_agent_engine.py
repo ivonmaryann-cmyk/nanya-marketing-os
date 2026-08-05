@@ -1751,6 +1751,8 @@ def _size_from_numbers(w: float, h: float, unit: str) -> Optional[Tuple[float, f
         w = _ceil2(w / 25.4)
         h = _ceil2(h / 25.4)
         return _normalize_standard_size(w, h, snap_to_standard=True)
+    if not (5 <= w <= 100 and 5 <= h <= 100):
+        return None
     return _normalize_standard_size(w, h, snap_to_standard=False)
 
 

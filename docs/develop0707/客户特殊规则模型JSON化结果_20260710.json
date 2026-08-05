@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "generated_at": "2026-07-10T15:10:29+08:00",
-  "source_file": "docs/develop0707/客户特殊规则结构化草稿_按原表行_20260708.xlsx",
+  "source_file": "/Users/ny/Desktop/南亚/产品包/nanya_transcode_agent_handoff_CLEAN_20260703/nanya_marketing_os_dev/docs/develop0707/客户特殊规则结构化草稿_按原表行_20260708.xlsx",
   "model_provider": "DeepSeek",
   "model": "deepseek-v4-pro",
   "prompt_sha256": "7e4e122ea942146f794e46915561c8aa66b4288b7169d9c596fce4b16fc71fe0",

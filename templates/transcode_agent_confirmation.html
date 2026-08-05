@@ -80,8 +80,8 @@
           <button type="button" class="icon-command" id="confirm-prev" title="上一行" aria-label="上一行">←</button>
           <button type="button" class="icon-command" id="confirm-next" title="下一行" aria-label="下一行">→</button>
         </div>
-        <button type="button" class="secondary-button" id="confirm-skip-row">暂不处理当前行</button>
-        <button type="button" id="confirm-save-row">确认当前行</button>
+        <button type="button" class="secondary-button" id="confirm-skip-row">这行先不处理，保留待确认</button>
+        <button type="button" id="confirm-save-row">确认这行并写正式码</button>
       </div>
       <p id="confirmation-message" class="confirmation-message" aria-live="polite"></p>
     </div>
@@ -282,8 +282,37 @@
       conditionValue.placeholder = "长期规则触发值";
       conditionValue.dataset.longTermConditionValue = "true";
       config.append(fieldSelect, operatorSelect, conditionValue);
+      const buildAutoBasis = () => {
+        const condition = [
+          fieldSelect.value,
+          longTermOperatorLabels[operatorSelect.value] || operatorSelect.value,
+          conditionValue.value.trim()
+        ].filter(Boolean).join(" ");
+        const code = input.value.trim() || item.current_code || "";
+        return `业务确认：${item.field_label}按${code}；条件：${condition}`;
+      };
+      let lastAutoBasis = "";
+      const refreshAutoBasis = () => {
+        if (!toggle.checked) return;
+        const current = basisEl.value.trim();
+        if (!current || current === lastAutoBasis) {
+          basisEl.value = buildAutoBasis();
+          lastAutoBasis = basisEl.value;
+        }
+      };
       toggle.addEventListener("change", () => {
         config.classList.toggle("hidden", !toggle.checked);
+        if (toggle.checked) {
+          refreshAutoBasis();
+        } else if (basisEl.value.trim() && basisEl.value.trim() === lastAutoBasis) {
+          basisEl.value = "";
+          lastAutoBasis = "";
+        }
+      });
+      [fieldSelect, operatorSelect, conditionValue, input].forEach(element => {
+        ["change", "input"].forEach(eventName => {
+          element.addEventListener(eventName, refreshAutoBasis);
+        });
       });
       longTerm.append(toggleLabel, config);
       wrapper.appendChild(longTerm);

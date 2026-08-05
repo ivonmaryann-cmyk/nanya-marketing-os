@@ -43,6 +43,7 @@ from .db import (
 from .transcode_customer_rule_admin import (
     CustomerRuleMaintenanceError,
     build_rule_from_form,
+    resolve_customer_code_by_name,
     save_rule_override,
     validate_customer_maintained_rule,
 )
@@ -70,7 +71,10 @@ from .transcode_agent_rules import (
     load_transcode_agent_mapping_tables,
     load_transcode_agent_rules,
 )
-from .transcode_agent_glue_resolver import resolve_agent_glue
+from .transcode_agent_glue_resolver import (
+    is_retired_agent_glue_mapping,
+    resolve_agent_glue,
+)
 from .transcode_agent_standard import OFFICIAL_GRADE_CODES
 from .transcode_rules import get_active_transcode_rule_version, get_transcode_rule_file_path
 from .transcode_semantic_rules import (
@@ -288,7 +292,21 @@ def calculate_transcode_agent_quote(
 ) -> dict:
     spec = str(spec or "").strip()
     if not spec:
-        return {"status": "失败", "result": None, "error": "请输入客户规格"}
+        return {
+            "status": "失败",
+            "result": None,
+            "candidate_code": "",
+            "pending_code": "",
+            "note": "请输入客户规格",
+            "error": "请输入客户规格",
+            "confidence": 0,
+            "field_evidence": [],
+            "rule_version": "",
+            "agent_rule_version": "",
+            "requires_manual_completion": False,
+            "incomplete_fields": [],
+            "aps_query_ready": False,
+        }
     analysis, base_version, agent_version = _calculate_transcode_agent_analysis(
         spec,
         customer=customer,
@@ -297,6 +315,7 @@ def calculate_transcode_agent_quote(
         order_remark=order_remark,
         employee_id=employee_id,
     )
+    incomplete_fields = _incomplete_output_fields(analysis)
     return {
         "status": analysis["status"],
         "result": analysis["formal_code"],
@@ -309,7 +328,33 @@ def calculate_transcode_agent_quote(
         "rule_version": base_version,
         "agent_rule_version": agent_version or "未上传",
         "order_semantic_model": analysis.get("order_semantic_model") or {},
+        "requires_manual_completion": bool(incomplete_fields),
+        "incomplete_fields": incomplete_fields,
+        "aps_query_ready": bool(
+            analysis["status"] == "成功"
+            and analysis["formal_code"]
+            and not incomplete_fields
+        ),
     }
+
+
+def _incomplete_output_fields(analysis: dict[str, Any]) -> list[str]:
+    incomplete_fields: list[str] = []
+    for item in analysis.get("field_evidence") or []:
+        if str(item.get("field_key") or "").strip() != "structure":
+            continue
+        structure_code = str(item.get("code") or "").strip()
+        hit_type = str(item.get("hit_type") or "").strip()
+        if structure_code == "*" or hit_type == "占位符" or _is_placeholder(structure_code):
+            incomplete_fields.append(str(item.get("field") or "结构码"))
+
+    if not incomplete_fields:
+        output_code = str(
+            analysis.get("formal_code") or analysis.get("candidate_code") or ""
+        ).strip()
+        if output_code and "*" in output_code:
+            incomplete_fields.append("结构码")
+    return list(dict.fromkeys(incomplete_fields))
 
 
 def _calculate_transcode_agent_analysis(
@@ -942,6 +987,9 @@ def analyze_spec(
                 else "客户规格解析失败后，使用同一订单行的标准规格列补全缺失字段"
             )
     steps = dict(steps or {})
+    steps["agent_input_text"] = " ".join(
+        value for value in (str(spec or "").strip(), str(context_text or "").strip()) if value
+    )
     errors = list(steps.get("errors") or [])
     match_customer_code, match_customer_name, customer_rule_group = _expand_customer_rule_identity(
         agent_mapping_tables or {}, customer_code, customer
@@ -961,7 +1009,7 @@ def analyze_spec(
     )
     # Establish the latest global glue/category state before evaluating
     # customer rules whose conditions depend on the current glue code.
-    _apply_agent_base_conditional_rules(
+    global_special_rules = _apply_agent_global_special_rules(
         agent_mapping_tables or {}, spec, context_text, steps, errors
     )
     applied_rules, conflicts = _apply_agent_rules(
@@ -1018,13 +1066,13 @@ def analyze_spec(
     )
     if applied_material_mappings:
         applied_rules.extend(applied_material_mappings)
-    applied_base_rules = _apply_agent_base_conditional_rules(
-        agent_mapping_tables or {}, spec, context_text, steps, errors
-    )
-    if applied_base_rules:
-        applied_rules.extend(applied_base_rules)
+    # Global special conditions establish the shared baseline. Customer-scoped
+    # rules are applied afterwards and therefore retain the higher precedence.
+    if global_special_rules:
+        applied_rules = global_special_rules + applied_rules
     if glue_master_rules:
         applied_rules = glue_master_rules + applied_rules
+    _enforce_retired_glue_runtime_guard(steps, errors, conflicts)
     candidate_code = _build_code_from_steps(steps, errors)
     field_evidence = _build_field_evidence(steps, errors, applied_rules, conflicts)
     decision = decide_confirmation(
@@ -1068,6 +1116,7 @@ def _load_runtime():
     from .transcode_rule_center import lookup_map_with_overrides, merge_lookup_overrides
 
     merge_lookup_overrides(tables)
+    _remove_retired_glue_mappings(tables)
     engine.HIGH_SPEED_MIL_TO_MM = lookup_map_with_overrides(
         "high_speed_mil", engine.HIGH_SPEED_MIL_TO_MM
     )
@@ -1115,6 +1164,57 @@ def _load_runtime():
     return engine, tables, agent_rules, agent_mapping_tables, base_version, agent_version
 
 
+def _remove_retired_glue_mappings(tables: dict[str, Any]) -> None:
+    """Remove the retired NY-A1 -> 2Z mapping from legacy runtime lookup maps."""
+    for map_name in ("glue_exact_map", "glue_model_map"):
+        source = dict(tables.get(map_name) or {})
+        tables[map_name] = {
+            name: code
+            for name, code in source.items()
+            if not is_retired_agent_glue_mapping(
+                {"胶系名称": name, "输出胶系代码": code}
+            )
+        }
+
+
+def _enforce_retired_glue_runtime_guard(
+    steps: dict[str, Any],
+    errors: list[str],
+    conflicts: list[str],
+) -> None:
+    """Prevent any later override path from restoring the retired NY-A1 -> 2Z."""
+    current_code = str(steps.get("step1_glue_code") or "").strip().upper()
+    if current_code != "2Z":
+        return
+    names = (
+        steps.get("glue_model"),
+        steps.get("agent_glue_name"),
+        steps.get("raw_glue"),
+    )
+    if not any(
+        is_retired_agent_glue_mapping(
+            {"胶系名称": name, "输出胶系代码": current_code}
+        )
+        for name in names
+        if str(name or "").strip()
+    ):
+        return
+
+    message = "glue_code: NY-A1→2Z已废弃，运行时禁止正式出码"
+    if message not in conflicts:
+        conflicts.append(message)
+    fallback = str(steps.get("agent_glue_resolved_code") or "").strip().upper()
+    if fallback and fallback != "2Z":
+        steps["step1_glue_code"] = fallback
+        return
+
+    steps["step1_glue_code"] = ""
+    error = "无法识别胶系型号：NY-A1→2Z已废弃，需使用最新胶系主表"
+    if error not in errors:
+        errors.append(error)
+    steps["errors"] = errors
+
+
 def _apply_agent_rules(
     rules: list[dict],
     customer_code: str,
@@ -1124,17 +1224,30 @@ def _apply_agent_rules(
     steps: dict,
     errors: list[str],
 ) -> tuple[list[dict], list[str]]:
+    matched_rules = [
+        rule
+        for rule in rules
+        if _rule_executable(rule)
+        and _rule_matches(rule, customer_code, customer_name, spec, context, steps)
+    ]
     values: dict[str, str] = {}
     priorities: dict[str, int] = {}
     applied: list[dict] = []
-    conflicts: list[str] = []
-    for rule in sorted(rules, key=lambda item: _rule_priority(item), reverse=True):
-        if not _rule_executable(rule):
-            continue
-        if not _rule_matches(rule, customer_code, customer_name, spec, context, steps):
-            continue
+    conflicts = _same_condition_rule_conflicts(matched_rules)
+    for rule in sorted(matched_rules, key=lambda item: _rule_priority(item), reverse=True):
         field = rule.get("覆盖字段", "")
         value = str(rule.get("覆盖值", "") or "").strip().upper()
+        if field == "glue_code" and is_retired_agent_glue_mapping(
+            {
+                "映射ID": rule.get("规则ID", ""),
+                "胶系名称": rule.get("条件胶系", "") or rule.get("条件文本", ""),
+                "输出胶系代码": value,
+            }
+        ):
+            conflicts.append(
+                f"glue_code: NY-A1→2Z已废弃，规则{rule.get('规则ID', '')}不得执行"
+            )
+            continue
         if _should_skip_agent_rule_override(rule, field, value, customer_name, spec, context, steps):
             continue
         if field in values and values[field] != value:
@@ -1190,8 +1303,60 @@ def _apply_agent_rules(
     if applied:
         steps["agent_rules"] = [f"{item['rule_id']} {item['field']}:{item['old']}->{item['new']}" for item in applied]
     if conflicts:
+        conflicts = list(dict.fromkeys(conflicts))
         steps["agent_rule_conflicts"] = conflicts
     return applied, conflicts
+
+
+def _same_condition_rule_conflicts(rules: list[dict]) -> list[str]:
+    """Detect duplicate machine conditions before priority chooses a candidate."""
+    grouped: dict[tuple[str, tuple[str, ...]], list[dict]] = {}
+    for rule in rules:
+        field = str(rule.get("覆盖字段") or "").strip()
+        if not field:
+            continue
+        grouped.setdefault((field, _agent_rule_condition_signature(rule)), []).append(rule)
+
+    conflicts: list[str] = []
+    for (field, _signature), same_condition_rules in grouped.items():
+        outputs = {
+            str(rule.get("覆盖值") or "").strip().upper()
+            for rule in same_condition_rules
+            if str(rule.get("覆盖值") or "").strip()
+        }
+        if len(outputs) <= 1:
+            continue
+        rule_ids = "/".join(
+            str(rule.get("规则ID") or "未编号") for rule in same_condition_rules
+        )
+        conflicts.append(
+            f"{field}: 同一条件存在多个输出{'/'.join(sorted(outputs))}"
+            f"（规则{rule_ids}）；不使用优先级消除冲突"
+        )
+    return conflicts
+
+
+def _agent_rule_condition_signature(rule: dict) -> tuple[str, ...]:
+    identity_fields = (
+        "客户代码",
+        "客户简称",
+        "物料类别",
+    )
+    condition_fields = (
+        "条件胶系",
+        "条件铜厚",
+        "条件厚度",
+        "条件尺寸",
+        "条件关键词",
+    )
+    conditions = tuple(_norm_match(rule.get(field, "")) for field in condition_fields)
+    fallback_text = "" if any(conditions) else _norm_match(rule.get("条件文本", ""))
+    return (
+        "GLOBAL" if bool(rule.get("_global_rule")) else "CUSTOMER",
+        *(str(_norm_match(rule.get(field, ""))) for field in identity_fields),
+        *conditions,
+        fallback_text,
+    )
 
 
 def _should_skip_agent_rule_override(
@@ -1273,6 +1438,7 @@ def _apply_agent_glue_master(
     if not code:
         return [], []
     steps["step1_glue_code"] = code
+    steps["agent_glue_resolved_code"] = code
     steps["agent_glue_id"] = str(resolution.get("glue_id") or "")
     steps["agent_glue_name"] = str(resolution.get("name") or "")
     steps["agent_glue_source"] = str(resolution.get("source") or "")
@@ -1335,13 +1501,7 @@ def _apply_agent_field_mappings(
             continue
         field = str(row.get("覆盖字段", "") or "").strip()
         value = str(row.get("覆盖值", "") or "").strip().upper()
-        if field not in AGENT_EXECUTABLE_OVERRIDE_FIELDS or not value or field in already_overridden:
-            continue
-        if glue_master_matched and field in {"glue_code", "glue_category_code"}:
-            # This table was derived from historical correct-code samples. It is
-            # supporting evidence, not a newer business rule, so it must not
-            # override an exact match from the latest glue master. Confirmed
-            # customer rules are applied earlier and remain authoritative.
+        if field not in AGENT_EXECUTABLE_OVERRIDE_FIELDS or not value:
             continue
         glue_condition = _norm_match(row.get("条件胶系", ""))
         if glue_condition and glue_condition != current_glue:
@@ -1357,6 +1517,28 @@ def _apply_agent_field_mappings(
         if not step_key:
             continue
         old_value = str(steps.get(step_key, "") or "")
+        if field in already_overridden or (
+            glue_master_matched and field in {"glue_code", "glue_category_code"}
+        ):
+            if old_value.strip().upper() != value:
+                applied.append(
+                    {
+                        "rule_id": row.get("映射ID", ""),
+                        "field": field,
+                        "old": old_value,
+                        "new": old_value,
+                        "historical_suggested": value,
+                        "text": (
+                            f"{row.get('规则文本', '')}；历史样本建议{value}，"
+                            f"与当前正式规则结果{old_value}不一致"
+                        ),
+                        "source": "正确码回归客户字段映射/冲突证据",
+                        "source_row": row.get("来源行号", ""),
+                        "source_field": "客户字段映射",
+                        "rule_type": "辅助客户字段映射",
+                    }
+                )
+            continue
         steps[step_key] = value
         if field == "glue_category_code":
             steps["glue_category"] = "普通" if value == "Y" else "特殊"
@@ -1879,14 +2061,14 @@ def _expand_customer_rule_identity(
     return "，".join(codes), " ".join(names), "，".join(group_names)
 
 
-def _apply_agent_base_conditional_rules(
+def _apply_agent_global_special_rules(
     mapping_tables: dict[str, list[dict]],
     spec: str,
     context: str,
     steps: dict,
     errors: list[str],
 ) -> list[dict]:
-    """Apply approved Agent-only base rules after customer-specific mappings."""
+    """Apply approved special rules whose customer scope is all customers."""
     # Preserve separators so short business keywords such as TFT are matched
     # as independent tokens instead of being joined to adjacent model text.
     combined = f"{spec or ''} {context or ''}".upper()
@@ -1897,8 +2079,11 @@ def _apply_agent_base_conditional_rules(
         if str(row.get("物料类别", "") or "").strip().upper() != "CCL":
             continue
         condition_glue = _norm_match(row.get("条件胶系", ""))
-        if condition_glue and condition_glue != current_glue:
-            continue
+        # Use the exact model token in the uploaded specification as the
+        # decisive condition. The parser may enrich glue_model with business
+        # descriptors such as "汽车板"; that must not prevent an approved
+        # NY3150HF condition from matching. The token boundary still prevents
+        # NY3150HF from accidentally matching NY3150HFP/NY3150HFIST.
         if condition_glue and not _flexible_model_token_matches(condition_glue, combined):
             continue
         keyword = str(row.get("条件关键词", "") or "").strip().upper()
@@ -1942,10 +2127,10 @@ def _apply_agent_base_conditional_rules(
                 "old": old_value,
                 "new": value,
                 "text": row.get("规则文本", ""),
-                "source": "Agent基础条件规则",
+                "source": "全客户特殊规则",
                 "source_row": row.get("来源批次", ""),
-                "source_field": "Agent基础条件规则",
-                "rule_type": "业务确认基础条件规则",
+                "source_field": "全客户特殊规则",
+                "rule_type": "业务确认全客户特殊规则",
             })
         return applied
     return []
@@ -2145,54 +2330,129 @@ def _build_field_evidence(steps: dict, errors: list[str], applied_rules: list[di
 
 def _score_field(key: str, code_value: str, steps: dict, errors: list[str], by_field: dict, conflicts: list[str]) -> tuple[int, str, str, str]:
     override_field = FIELD_KEY_TO_OVERRIDE[key]
-    if override_field in by_field:
-        rule = by_field[override_field]
-        if str(rule.get("source", "")).startswith("已确认人工长期规则"):
-            return 100, "已确认人工长期规则", rule["rule_id"], rule["text"]
-        if str(rule.get("source", "")).startswith("模型标准化+已批准语义规则"):
-            return 98, "模型语义标准化", rule["rule_id"], rule["text"]
-        if str(rule.get("source", "")).startswith(("已批准语义规则", "已批准模型语义映射")):
-            return 100, "已确认业务语义规则", rule["rule_id"], rule["text"]
-        if str(rule.get("source", "")).startswith("Agent尺寸映射"):
-            return 100, "Agent尺寸映射", rule["rule_id"], rule["text"]
-        if str(rule.get("source", "")).startswith("Agent厚度映射"):
-            return 100, "Agent厚度映射", rule["rule_id"], rule["text"]
-        if str(rule.get("source", "")).startswith("Agent总芯厚映射"):
-            return 100, "Agent总芯厚映射", rule["rule_id"], rule["text"]
-        if str(rule.get("source", "")).startswith("Agent物料编码口径"):
-            return 100, "Agent物料编码口径", rule["rule_id"], rule["text"]
-        return 100, "Agent规则覆盖", rule["rule_id"], rule["text"]
     field_conflicts = _conflicts_for_field(key, conflicts)
     if field_conflicts:
         return 60, "规则冲突", "Agent规则包", "; ".join(field_conflicts)
+    if override_field in by_field:
+        rule = by_field[override_field]
+        source = str(rule.get("source") or "")
+        rule_type = str(rule.get("rule_type") or "")
+        rule_id = str(rule.get("rule_id") or "")
+        text = str(rule.get("text") or "")
+        if (
+            source.startswith("正确码回归客户字段映射")
+            or "历史" in source
+            or rule_type == "辅助客户字段映射"
+        ):
+            return 99, "历史样本建议", rule_id, (
+                f"{text}；仅有历史正确码样本支持，未经业务正式规则确认不能单独正式出码"
+            )
+        if "模型" in source:
+            return 98, "模型语义标准化", rule_id, (
+                f"{text}；模型仅做语义标准化，不能单独构成100分正式出码依据"
+            )
+        if source.startswith("最新版胶系名称优先命中"):
+            return 99, "胶系候选口径", rule_id, (
+                f"{text}；优先候选不等于唯一业务结果，需确认同名多码口径"
+            )
+        formal_rule_types = {
+            "确认草稿机器规则",
+            "确认草稿机器规则/胶系联动",
+            "Agent胶系主数据映射",
+            "辅助尺寸映射",
+            "辅助外部尺寸表映射",
+            "辅助厚度映射",
+            "辅助物料编码口径",
+            "业务确认全客户特殊规则",
+            "客户人工长期规则",
+            "明确订单指令",
+        }
+        formal_source_prefixes = (
+            "已确认人工长期规则",
+            "已批准语义规则",
+            "Agent尺寸映射",
+            "Agent厚度映射",
+            "Agent总芯厚映射",
+            "Agent物料编码口径",
+            "全客户特殊规则",
+            "已确认明确订单指令",
+            "新版胶系编号精确命中",
+            "最新版胶系名称精确命中",
+            "Agent胶系兼容别名",
+        )
+        if rule_id and (rule_type in formal_rule_types or source.startswith(formal_source_prefixes)):
+            return 100, "业务正式规则", rule_id, text
+        return 99, "规则来源待确认", rule_id, (
+            f"{text}；该覆盖来源未列入业务正式规则，需人工确认"
+        )
     if _field_has_error(key, errors) or _is_placeholder(code_value):
         return 0, "未识别", "基础解析", "; ".join(errors)
-    if key == "thickness":
-        source = str(steps.get("thickness_mode_source", "") or steps.get("thickness_unit", "") or "基础解析")
-        if "客户特殊" in source or "特殊板厚" in source or "健鼎" in source or "超颖" in source:
-            return 100, "客户特殊厚度规则", source, str(steps.get("thickness_mode_note", "") or steps.get("thickness_raw", ""))
-        if "通用阈值" in source:
-            return 100, "通用阈值", source, str(steps.get("thickness_raw", ""))
-        return 100, "标准解析", source, str(steps.get("thickness_raw", ""))
-    if key == "size":
-        note = str(steps.get("size_note", ""))
-        return 100, "特殊尺寸" if "特殊" in note else "标准尺寸", note or "基础解析", f"{steps.get('size_w', '')}x{steps.get('size_h', '')}"
-    if key == "grade":
-        if steps.get("grade_note"):
-            return 100, "客户下单转换表", "客户下单与胶系基板转换", str(steps.get("grade_note", ""))
-        if code_value == "A1":
-            return 100, "默认规则", "基础规则", "未命中特殊基板等级，按已确认默认A1"
-        return 100, "标准/关键词规则", "基础规则", code_value
-    if key == "total_core":
-        source = str(steps.get("thickness_mode_source", "") or "基础规则")
-        return 100, "总芯厚判断", source, str(steps.get("order_type", ""))
-    if key == "copper_type":
-        if code_value == "W":
-            return 100, "默认常规铜", "基础规则", "按已确认常规铜HTE/W默认"
-        return 100, "关键词命中", "基础规则", code_value
     if key == "structure" and code_value == "*":
         return 0, "占位符", "首版策略", "结构码为*占位符，不参与置信度评分和正式出码拦截"
-    return 100, "标准解析", "基础规则", code_value
+    confirmed_base = _score_confirmed_base_field(key, code_value, steps)
+    if confirmed_base:
+        return confirmed_base
+    return 99, "解析来源待确认", "未登记来源", (
+        f"已解析为{code_value}，但缺少可追溯的业务基础映射或确定性算法来源"
+    )
+
+
+def _score_confirmed_base_field(
+    key: str,
+    code_value: str,
+    steps: dict[str, Any],
+) -> tuple[int, str, str, str] | None:
+    glue_model = str(steps.get("agent_glue_name") or steps.get("glue_model") or "").strip()
+    thickness_raw = str(steps.get("thickness_raw") or "").strip()
+    copper_raw = str(steps.get("copper_spec_raw") or "").strip()
+    has_size = steps.get("size_w") not in (None, "") and steps.get("size_h") not in (None, "")
+
+    if key == "glue" and glue_model:
+        source = str(steps.get("agent_glue_source") or "transcode_rules.xlsx/胶系代码")
+        if "优先命中" in source or steps.get("agent_glue_uncertain"):
+            return None
+        return 100, "正式基础映射", source, f"{glue_model}→{code_value}"
+    if key == "thickness" and thickness_raw and steps.get("thickness_mm") not in (None, ""):
+        source = str(steps.get("thickness_mode_source") or steps.get("thickness_unit") or "")
+        return 100, "确定性厚度算法", source or "NYG-ATD-002-A1/厚度编码", thickness_raw
+    if key == "copper" and copper_raw:
+        return 100, "正式基础映射", "transcode_rules.xlsx/铜箔规格", copper_raw
+    if key == "size" and has_size:
+        note = str(steps.get("size_note") or "标准尺寸")
+        return 100, "确定性尺寸映射", "transcode_rules.xlsx/尺寸规则", (
+            f"{steps.get('size_w')}x{steps.get('size_h')}；{note}"
+        )
+    if key == "glue_category" and glue_model and str(steps.get("glue_category") or "").strip():
+        return 100, "正式基础映射", "transcode_rules.xlsx/胶水类别", (
+            f"{steps.get('glue_category')}→{code_value}"
+        )
+    if key == "grade":
+        grade_note = str(steps.get("grade_note") or "").strip()
+        input_text = str(steps.get("agent_input_text") or "").upper()
+        if grade_note:
+            return 100, "业务确定性等级规则", "transcode_rules.xlsx/客户下单与胶系基板转换", grade_note
+        if code_value == "A1" and (glue_model or thickness_raw or copper_raw or has_size):
+            return 100, "已确认默认规则", "BASE-DEFAULT-GRADE-A1", (
+                "未命中特殊基板等级时按已确认默认A1"
+            )
+        if code_value == "AC" and (
+            "汽车板" in glue_model
+            or any(keyword in input_text for keyword in ("汽车板", "汽车专用"))
+        ):
+            return 100, "业务确定性等级规则", "BASE-GRADE-AUTOMOTIVE-AC", (
+                "规格明确包含汽车板/汽车专用，按已确认等级AC"
+            )
+        return None
+    if key == "total_core" and thickness_raw and str(steps.get("order_type") or "").strip():
+        source = str(steps.get("thickness_mode_source") or "NYG-ATD-002-A1/总芯厚判断")
+        return 100, "确定性总芯厚算法", source, str(steps.get("order_type"))
+    if key == "copper_type" and (copper_raw or glue_model or thickness_raw or has_size):
+        if code_value == "W":
+            return 100, "已确认默认规则", "BASE-DEFAULT-COPPER-TYPE-W", (
+                "未命中特殊铜箔类型时按已确认常规铜HTE/W默认"
+            )
+        return 100, "正式基础映射", "transcode_rules.xlsx/铜箔类型", code_value
+    return None
 
 
 def _conflicts_for_field(key: str, conflicts: list[str]) -> list[str]:
@@ -2228,6 +2488,7 @@ def _refresh_analysis_after_semantic_overrides(
     errors = list(steps.get("errors") or [])
     applied_rules = list(analysis.get("applied_rules") or []) + semantic_applied
     conflicts = list(analysis.get("conflicts") or []) + semantic_conflicts
+    _enforce_retired_glue_runtime_guard(steps, errors, conflicts)
     candidate_code = _build_code_from_steps(steps, errors)
     field_evidence = _build_field_evidence(steps, errors, applied_rules, conflicts)
     decision = decide_confirmation(
@@ -2356,6 +2617,13 @@ def _field_has_error(key: str, errors: list[str]) -> bool:
 
 def _build_code_from_steps(steps: dict, errors: list[str]) -> str:
     if errors:
+        return ""
+    if str(steps.get("step1_glue_code") or "").strip().upper() == "2Z" and any(
+        is_retired_agent_glue_mapping(
+            {"胶系名称": steps.get(name_key), "输出胶系代码": "2Z"}
+        )
+        for name_key in ("glue_model", "agent_glue_name", "raw_glue")
+    ):
         return ""
     parts = [
         str(steps.get("step1_glue_code", "") or ""),
@@ -2949,10 +3217,6 @@ def confirm_transcode_agent_item(
         + (f"；依据：{basis}" if basis else ""),
     )
     _refresh_confirmation_job_status(int(item["job_id"]), newly_formal=newly_formal)
-    _refresh_confirmation_audit_sheet(
-        int(item["job_id"]),
-        str(job["stored_result_path"] or ""),
-    )
     if saved_rule:
         append_job_log(
             int(item["job_id"]),
@@ -3052,10 +3316,6 @@ def skip_transcode_agent_confirmation_row(
         analysis,
         confirmation_note="暂不处理：正式码保持为空，保留待人工确认码值",
     )
-    _refresh_confirmation_audit_sheet(
-        job_id,
-        str(job["stored_result_path"] or ""),
-    )
     _refresh_confirmation_job_status(job_id, newly_formal=False)
     return {
         "job_id": job_id,
@@ -3063,6 +3323,17 @@ def skip_transcode_agent_confirmation_row(
         "status": get_job(job_id)["status"],
         "remaining": transcode_agent_confirmation_counts(job_id)["pending"],
     }
+
+
+def refresh_transcode_agent_audit_sheet(job_id: int) -> None:
+    """Rebuild the confirmation audit sheet outside interactive confirmation."""
+    job = get_job(job_id)
+    if not job or job["feature"] != FEATURE_KEY:
+        return
+    _refresh_confirmation_audit_sheet(
+        job_id,
+        str(job["stored_result_path"] or ""),
+    )
 
 
 def _build_long_term_confirmation_rule(
@@ -3086,6 +3357,10 @@ def _build_long_term_confirmation_rule(
         raise CustomerRuleMaintenanceError("保存长期规则必须填写适用条件")
     business_field, target_field = LONG_TERM_RULE_FIELDS[field_key]
     target_value = _long_term_target_value(field_key, confirmed_code)
+    customer_code = str(item["customer_code"] or "").strip()
+    customer_name = str(item["customer_name"] or "").strip()
+    if not customer_code and customer_name:
+        customer_code = resolve_customer_code_by_name(customer_name)
     source_text = str(payload.get("source_text") or "").strip() or (
         f"确认中心：{condition_field} {condition_operator} {condition_value}"
         f"时，{business_field}={target_value}"
@@ -3093,8 +3368,8 @@ def _build_long_term_confirmation_rule(
     rule = build_rule_from_form(
         {
             "rule_id": "",
-            "customer_code": str(item["customer_code"] or ""),
-            "customer_name": str(item["customer_name"] or ""),
+            "customer_code": customer_code,
+            "customer_name": customer_name,
             "business_field": business_field,
             "source_text": source_text,
             "target_field": target_field,
@@ -3146,6 +3421,15 @@ def _validate_confirmation_code(
             field_key,
         )
         raise ValueError(f"{label}代码必须是{width}位有效代码")
+    if field_key == "glue" and normalized == "2Z":
+        steps = analysis.get("engine_steps") or {}
+        if any(
+            is_retired_agent_glue_mapping(
+                {"胶系名称": steps.get(name_key), "输出胶系代码": normalized}
+            )
+            for name_key in ("glue_model", "agent_glue_name", "raw_glue")
+        ):
+            raise ValueError("NY-A1→2Z已废弃，不能作为人工确认胶系代码")
     return normalized
 
 

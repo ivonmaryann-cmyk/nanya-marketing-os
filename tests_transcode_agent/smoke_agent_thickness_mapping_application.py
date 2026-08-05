@@ -62,11 +62,11 @@ def main() -> None:
             )
             thickness = next(item for item in alias_quote["field_evidence"] if item["field"] == "厚度")
             assert thickness["code"] == "00079", (thickness, alias_quote)
-            assert thickness["hit_type"] == "Agent厚度映射", (thickness, alias_quote)
+            assert thickness["hit_type"] == "业务正式规则", (thickness, alias_quote)
             assert thickness["score"] == 100, (thickness, alias_quote)
             alias_total_core = next(item for item in alias_quote["field_evidence"] if item["field"] == "总/芯厚")
             assert alias_total_core["code"] == "C", (alias_total_core, alias_quote)
-            assert alias_total_core["hit_type"] == "Agent总芯厚映射", (alias_total_core, alias_quote)
+            assert alias_total_core["hit_type"] == "业务正式规则", (alias_total_core, alias_quote)
 
             total_quote = calculate_transcode_agent_quote(
                 "NY2150 43mil 1/1 37*49 HTE",
@@ -75,7 +75,7 @@ def main() -> None:
             )
             total_core = next(item for item in total_quote["field_evidence"] if item["field"] == "总/芯厚")
             assert total_core["code"] == "T", (total_core, total_quote)
-            assert total_core["hit_type"] == "Agent总芯厚映射", (total_core, total_quote)
+            assert total_core["hit_type"] == "业务正式规则", (total_core, total_quote)
 
             material_core_quote = calculate_transcode_agent_quote(
                 "NY2150 0.8mm 1/1 37*49 HTE 631",
@@ -84,7 +84,7 @@ def main() -> None:
             )
             material_core = next(item for item in material_core_quote["field_evidence"] if item["field"] == "总/芯厚")
             assert material_core["code"] == "C", (material_core, material_core_quote)
-            assert material_core["hit_type"] == "Agent物料编码口径", (material_core, material_core_quote)
+            assert material_core["hit_type"] == "业务正式规则", (material_core, material_core_quote)
 
             material_total_quote = calculate_transcode_agent_quote(
                 "NY2150 0.8mm 1/1 37*49 HTE 632",
@@ -93,7 +93,7 @@ def main() -> None:
             )
             material_total = next(item for item in material_total_quote["field_evidence"] if item["field"] == "总/芯厚")
             assert material_total["code"] == "T", (material_total, material_total_quote)
-            assert material_total["hit_type"] == "Agent物料编码口径", (material_total, material_total_quote)
+            assert material_total["hit_type"] == "业务正式规则", (material_total, material_total_quote)
 
             other_customer_quote = calculate_transcode_agent_quote(
                 "NY2150 0.8mm 1/1 37*49 HTE 631",
@@ -101,7 +101,10 @@ def main() -> None:
                 customer_code="103890",
             )
             other_customer_total_core = next(item for item in other_customer_quote["field_evidence"] if item["field"] == "总/芯厚")
-            assert other_customer_total_core["hit_type"] != "Agent物料编码口径", (other_customer_total_core, other_customer_quote)
+            assert other_customer_total_core.get("rule_type") != "物料编码口径", (
+                other_customer_total_core,
+                other_customer_quote,
+            )
 
             print("thickness mapping application smoke passed")
         finally:

@@ -1574,9 +1574,10 @@ def load_transcode_agent_rules(
     if not include_maintenance:
         return rules
     from .transcode_customer_rule_admin import merge_agent_rule_overrides
-    from .transcode_rule_center import merge_base_rule_overrides
 
-    return merge_base_rule_overrides(merge_agent_rule_overrides(rules))
+    # 基础规则只能通过正式映射和确定性算法维护。客户或关键词条件覆盖
+    # 统一进入客户特殊规则，禁止再从隐藏的“基础条件覆盖”通道注入。
+    return merge_agent_rule_overrides(rules)
 
 
 def load_transcode_agent_mapping_tables(version: str | None = None) -> dict[str, list[dict]]:

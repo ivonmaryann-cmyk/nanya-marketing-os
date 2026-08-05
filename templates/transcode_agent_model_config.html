@@ -35,7 +35,24 @@
     </label>
     <label>
       <span>API Key</span>
-      <input type="password" name="api_key" autocomplete="new-password" placeholder="{% if model_config.key_configured %}已配置，留空表示不修改{% else %}请输入 API Key{% endif %}">
+      <span class="secret-input-wrap">
+        <input
+          id="model-api-key"
+          type="password"
+          name="api_key"
+          value="{{ model_config.api_key }}"
+          autocomplete="off"
+          placeholder="请输入 API Key">
+        <button
+          id="toggle-model-api-key"
+          type="button"
+          class="secret-visibility-button"
+          title="显示 API Key"
+          aria-label="显示 API Key"
+          aria-pressed="false">
+          <span class="secret-eye-icon" aria-hidden="true"></span>
+        </button>
+      </span>
     </label>
     {% if model_config.key_configured %}
     <label class="model-clear-key">
@@ -49,4 +66,20 @@
     </div>
   </form>
 </section>
+<script>
+  (() => {
+    const input = document.getElementById("model-api-key");
+    const button = document.getElementById("toggle-model-api-key");
+    if (!input || !button) return;
+
+    button.addEventListener("click", () => {
+      const shouldShow = input.type === "password";
+      input.type = shouldShow ? "text" : "password";
+      button.classList.toggle("is-visible", shouldShow);
+      button.setAttribute("aria-pressed", shouldShow ? "true" : "false");
+      button.setAttribute("aria-label", shouldShow ? "隐藏 API Key" : "显示 API Key");
+      button.setAttribute("title", shouldShow ? "隐藏 API Key" : "显示 API Key");
+    });
+  })();
+</script>
 {% endblock %}

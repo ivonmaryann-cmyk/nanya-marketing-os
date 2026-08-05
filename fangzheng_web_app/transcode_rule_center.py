@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping
 
 from .db import db_cursor, get_setting, set_setting
 from .paths import STORAGE_DIR
+from .transcode_agent_glue_resolver import is_retired_agent_glue_mapping
 
 
 BACKUP_DIR = STORAGE_DIR / "transcode_rule_center_backups"
@@ -77,16 +79,96 @@ LOOKUP_GROUPS = {
     "total_to_core": {"label": "总厚转芯厚", "input": "铜箔组合", "output": "减少厚度(mm)"},
     "core_to_total": {"label": "芯厚转总厚", "input": "铜箔组合", "output": "增加厚度(mm)"},
 }
+
+# 这些写法虽然保留在历史 transcode_rules 中供旧链路兼容，但条件本身已经
+# 限定到具体客户，不属于基础规则页面。客户规则维护入口负责承接这类规则。
+CUSTOMER_LIMITED_BASE_LOOKUPS = {
+    ("grade_trigger", "深南90022-1"),
+    ("grade_trigger", "深南90022-2"),
+    ("grade_trigger", "深南测试"),
+    ("grade_trigger", "江西测试"),
+}
+CUSTOMER_LIMITED_BASE_LOOKUP_KEYS = frozenset(
+    (group, unicodedata.normalize("NFKC", value).upper())
+    for group, value in CUSTOMER_LIMITED_BASE_LOOKUPS
+)
+
+BASE_RULE_SCOPE_ORDER = (
+    "正式映射表",
+    "编码规范",
+    "确定性算法",
+    "总芯厚转换表",
+    "业务补充",
+)
+
+BUSINESS_RULE_CATEGORIES = {
+    "胶系": {
+        "description": "按老版胶系表、最新版胶系表及业务正式补充维护场内胶系代码；同名多码会明确标记待核实。",
+        "lookup_groups": ("glue_code",),
+        "asset_groups": ("Agent胶系主表", "Agent胶系兼容别名"),
+        "scope_order": ("老表", "新表", "额外正式补充"),
+    },
+    "基板厚度": {
+        "description": "维护标准厚度、高频高速厚度写法及厚度换算关系。",
+        "lookup_groups": ("high_speed_mil",),
+        "asset_groups": (),
+        "scope_order": BASE_RULE_SCOPE_ORDER,
+    },
+    "铜箔规格": {
+        "description": "维护铜厚写法、铜箔组合及对应的标准结果。",
+        "lookup_groups": ("copper_micron", "copper_valid"),
+        "asset_groups": (),
+        "scope_order": BASE_RULE_SCOPE_ORDER,
+    },
+    "基板尺寸": {
+        "description": "维护毫米、英寸和厂内标准尺寸之间的换算关系。客户专属尺寸在对应客户下维护。",
+        "lookup_groups": ("standard_size", "size_range"),
+        "asset_groups": (),
+        "scope_order": BASE_RULE_SCOPE_ORDER,
+    },
+    "胶水类别": {
+        "description": "维护胶系与胶水类别之间的对应关系。",
+        "lookup_groups": ("glue_category",),
+        "asset_groups": (),
+        "scope_order": BASE_RULE_SCOPE_ORDER,
+    },
+    "铜箔类型+印字/非印字": {
+        "description": "维护铜箔类型及印字、非印字写法对应的标准结果。",
+        "lookup_groups": ("copper_type",),
+        "asset_groups": (),
+        "scope_order": BASE_RULE_SCOPE_ORDER,
+    },
+    "基板级别": {
+        "description": "维护业务正式来源中的基板级别编码和确定性判断规则。",
+        "lookup_groups": ("grade_code", "grade_trigger"),
+        "asset_groups": (),
+        "scope_order": BASE_RULE_SCOPE_ORDER,
+    },
+    "总/芯厚": {
+        "description": "维护总厚、芯厚判断及铜箔组合对应的厚度换算。",
+        "lookup_groups": ("total_to_core", "core_to_total"),
+        "asset_groups": (),
+        "scope_order": BASE_RULE_SCOPE_ORDER,
+    },
+}
+
+ASSET_RESULT_FIELDS_BY_CATEGORY = {
+    "胶系": ("输出胶系代码", "覆盖胶系代码"),
+    "胶水类别": ("覆盖胶水类别",),
+    "基板级别": ("覆盖基板级别",),
+}
 ASSET_GROUPS = {
     "Agent胶系主表": {
         "label": "最新版胶系主表",
         "description": "按最新业务胶系编号和名称维护场内胶系代码。",
         "fields": ("启用", "胶系编号", "胶系名称", "胶系分类", "输出胶系代码", "备注"),
+        "field_labels": {"输出胶系代码": "标准胶系代码"},
     },
     "Agent胶系兼容别名": {
-        "label": "胶系兼容写法",
-        "description": "维护历史名称、简称和口语写法对应的标准胶系。",
+        "label": "额外正式补充",
+        "description": "维护老表和新表未收录、但已经由业务确认的正式胶系写法。",
         "fields": ("启用", "兼容名称", "标准胶系编号", "标准胶系名称", "输出胶系代码", "备注"),
+        "field_labels": {"兼容名称": "业务名称", "输出胶系代码": "标准胶系代码"},
     },
     "Agent胶系选择规则": {
         "label": "胶系多码选择条件",
@@ -94,8 +176,8 @@ ASSET_GROUPS = {
         "fields": ("启用", "胶系名称", "条件客户代码", "条件客户简称", "条件关键词", "输出胶系代码", "优先级", "备注"),
     },
     "Agent基础条件规则": {
-        "label": "基础条件规则",
-        "description": "适用于全部客户的胶系、胶水类别和基板级别条件覆盖。",
+        "label": "全客户特殊规则",
+        "description": "适用于全部客户、但需要满足胶系或关键词条件的特殊覆盖。",
         "fields": ("启用", "物料类别", "条件胶系", "条件关键词", "关键词模式", "覆盖胶系代码", "覆盖胶水类别", "覆盖基板级别", "规则文本", "备注"),
     },
     "客户尺寸映射": {
@@ -391,6 +473,16 @@ def build_rule_center_lookup_tables(
 ) -> dict[str, Any]:
     """Build the business-facing mapping view from the same assets used at runtime."""
     tables = dict(engine_tables)
+    old_glue: dict[str, str] = {}
+    for map_name in ("glue_exact_map", "glue_model_map"):
+        for name, code in (engine_tables.get(map_name) or {}).items():
+            clean_name = _clean(name).upper()
+            clean_code = _clean(code).upper()
+            if clean_name and clean_code and not is_retired_agent_glue_mapping(
+                {"胶系名称": clean_name, "输出胶系代码": clean_code}
+            ):
+                old_glue.setdefault(clean_name, clean_code)
+
     latest_glue: dict[str, str] = {}
     sources: dict[str, dict[str, str]] = {}
     for row in mapping_tables.get("Agent胶系主表", []):
@@ -400,8 +492,11 @@ def build_rule_center_lookup_tables(
         code = _clean(row.get("输出胶系代码")).upper()
         if name and code:
             latest_glue.setdefault(name, code)
-    tables["rule_center_glue_code"] = latest_glue
-    sources["glue_code"] = {key: "最新版胶系主表" for key in latest_glue}
+    # 老表与最新版主表在页面上分别展示。最新版主表由 Agent 映射资产承接，
+    # 这里仅保留基础 transcode_rules 胶系表，避免同一批新表数据重复出现。
+    tables["rule_center_glue_code"] = old_glue
+    tables["rule_center_latest_glue_code"] = latest_glue
+    sources["glue_code"] = {key: "老表" for key in old_glue}
 
     official = {str(code).upper(): str(code).upper() for code in official_grade_codes}
     tables["rule_center_grade_code"] = official
@@ -434,7 +529,12 @@ def build_rule_center_lookup_tables(
     return tables
 
 
-def list_lookup_rows(tables: dict[str, Any], *, group_key: str = "glue_code") -> list[dict[str, Any]]:
+def list_lookup_rows(
+    tables: dict[str, Any],
+    *,
+    group_key: str = "glue_code",
+    preserve_order: bool = False,
+) -> list[dict[str, Any]]:
     group = group_key if group_key in LOOKUP_GROUPS else "glue_code"
     source_name = {
         "glue_code": "rule_center_glue_code",
@@ -467,13 +567,17 @@ def list_lookup_rows(tables: dict[str, Any], *, group_key: str = "glue_code") ->
             (group,),
         ).fetchall()
     override_map = {str(row["input_value"]): row for row in overrides}
-    keys = sorted(set(base_map) | set(override_map), key=lambda item: str(item).upper())
+    if preserve_order:
+        keys = list(base_map)
+        keys.extend(key for key in override_map if key not in base_map)
+    else:
+        keys = sorted(set(base_map) | set(override_map), key=lambda item: str(item).upper())
     result = []
     for key in keys:
         override = override_map.get(str(key))
         deleted = bool(override and override["deleted"])
         output = override["output_value"] if override and not deleted else base_map.get(key, "")
-        baseline_source = str((tables.get("__lookup_sources") or {}).get(group, {}).get(str(key), "系统内置"))
+        baseline_source = str((tables.get("__lookup_sources") or {}).get(group, {}).get(str(key), "正式业务规则"))
         result.append(
             {
                 "group_key": group,
@@ -485,12 +589,48 @@ def list_lookup_rows(tables: dict[str, Any], *, group_key: str = "glue_code") ->
                     if deleted
                     else ("页面调整" if override else baseline_source)
                 ),
+                "has_baseline": key in base_map,
                 "deleted": deleted,
                 "updated_by": str(override["updated_by"] or "") if override else "",
                 "updated_at": str(override["updated_at"] or "") if override else "",
             }
         )
     return result
+
+
+def summarize_lookup_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group equivalent lookup outputs for the business-facing read view."""
+    grouped: dict[tuple[str, bool], dict[str, Any]] = {}
+    for row in rows:
+        output = _clean(row.get("output_value")) or "未配置"
+        deleted = bool(row.get("deleted"))
+        key = (output, deleted)
+        item = grouped.setdefault(
+            key,
+            {
+                "output_value": output,
+                "deleted": deleted,
+                "rows": [],
+                "inputs": [],
+                "sources": [],
+            },
+        )
+        item["rows"].append(row)
+        input_value = _clean(row.get("input_value"))
+        source = _clean(row.get("source"))
+        if input_value and input_value not in item["inputs"]:
+            item["inputs"].append(input_value)
+        if source and source not in item["sources"]:
+            item["sources"].append(source)
+
+    result = []
+    for item in grouped.values():
+        inputs = item["inputs"]
+        item["count"] = len(item["rows"])
+        item["input_preview"] = "、".join(inputs[:4]) + (f" 等{len(inputs)}种写法" if len(inputs) > 4 else "")
+        item["source_summary"] = "、".join(item["sources"])
+        result.append(item)
+    return sorted(result, key=lambda item: (item["deleted"], item["output_value"].upper()))
 
 
 def save_lookup_override(form: Mapping[str, Any], *, updated_by: str) -> None:
@@ -586,6 +726,254 @@ def asset_group_meta() -> dict[str, dict[str, Any]]:
     return {key: {**value, "fields": tuple(value["fields"])} for key, value in ASSET_GROUPS.items()}
 
 
+def business_rule_category_meta() -> dict[str, dict[str, Any]]:
+    return {key: dict(value) for key, value in BUSINESS_RULE_CATEGORIES.items()}
+
+
+def list_business_rule_rows(
+    lookup_tables: Mapping[str, Any],
+    mapping_tables: Mapping[str, list[dict[str, Any]]],
+    *,
+    category: str,
+) -> list[dict[str, Any]]:
+    """Project the runtime rule stores into one business-facing parameter list."""
+    selected = category if category in BUSINESS_RULE_CATEGORIES else BUSINESS_FIELDS[0]
+    meta = BUSINESS_RULE_CATEGORIES[selected]
+    rows: list[dict[str, Any]] = []
+    glue_pairs_by_scope: dict[str, set[tuple[str, str]]] = {
+        "老表": set(),
+        "新表": set(),
+        "额外正式补充": set(),
+    }
+    for group in meta["lookup_groups"]:
+        group_meta = LOOKUP_GROUPS[group]
+        for row in list_lookup_rows(
+            lookup_tables,
+            group_key=group,
+            preserve_order=selected == "胶系",
+        ):
+            if _is_customer_limited_base_lookup(group, row["input_value"]):
+                continue
+            source_scope = ""
+            type_label = _lookup_business_type(group)
+            if selected == "胶系":
+                source_scope = "老表" if row.get("has_baseline") else "额外正式补充"
+                type_label = source_scope
+                if _is_hidden_glue_mapping(row["input_value"], row["output_value"]):
+                    continue
+                pair = _glue_display_pair(row["input_value"], row["output_value"])
+                if pair in glue_pairs_by_scope[source_scope]:
+                    continue
+                glue_pairs_by_scope[source_scope].add(pair)
+            else:
+                source_scope = _lookup_rule_scope(group, row)
+                type_label = source_scope
+            rows.append(
+                {
+                    "kind": "lookup",
+                    "category": selected,
+                    "type_label": type_label,
+                    "source_scope": source_scope,
+                    "title": row["input_value"],
+                    "detail": group_meta["label"],
+                    "result": row["output_value"],
+                    "enabled": not row["deleted"],
+                    "lookup_group": group,
+                    "lookup_input": row["input_value"],
+                    "lookup_output": row["output_value"],
+                    "conflict": False,
+                    "eligible_for_formal_score": not row["deleted"],
+                    "status_label": "生效中" if not row["deleted"] else "已停用",
+                }
+            )
+    for group in meta["asset_groups"]:
+        result_fields = ASSET_RESULT_FIELDS_BY_CATEGORY.get(selected, ())
+        for row in list_asset_rows(mapping_tables, asset_group=group):
+            result_field = next((field for field in result_fields if _clean(row.get(field))), "")
+            if result_fields and not result_field:
+                continue
+            source_scope = ""
+            if selected == "胶系":
+                if group == "Agent胶系兼容别名":
+                    source_scope = "额外正式补充"
+                elif group == "Agent胶系主表" and not str(row.get("_row_id") or "").startswith("GLUE-PAGE-"):
+                    source_scope = "新表"
+                else:
+                    source_scope = "额外正式补充"
+                candidate_result = _clean(row.get(result_field)) if result_field else "-"
+                candidate_title = _asset_business_title(row)
+                if _is_hidden_glue_mapping(candidate_title, candidate_result):
+                    continue
+                pair = _glue_display_pair(candidate_title, candidate_result)
+                if group == "Agent胶系兼容别名" and (
+                    pair in glue_pairs_by_scope["老表"]
+                    or pair in glue_pairs_by_scope["新表"]
+                ):
+                    continue
+                if pair in glue_pairs_by_scope[source_scope]:
+                    continue
+                glue_pairs_by_scope[source_scope].add(pair)
+            rows.append(
+                {
+                    "kind": "asset",
+                    "category": selected,
+                    "type_label": _asset_business_type(group),
+                    "source_scope": source_scope,
+                    "title": candidate_title if selected == "胶系" else _asset_business_title(row),
+                    "detail": _asset_business_detail(row),
+                    "result": _clean(row.get(result_field)) if result_field else "-",
+                    "enabled": _clean(row.get("启用")) != "否",
+                    "asset_group": group,
+                    "asset_row_id": row.get("_row_id") or row.get("映射ID"),
+                    "conflict": False,
+                    "eligible_for_formal_score": _clean(row.get("启用")) != "否",
+                    "status_label": "生效中" if _clean(row.get("启用")) != "否" else "已停用",
+                }
+            )
+    if selected == "胶系":
+        _mark_glue_conflicts(rows)
+        source_rank = {"老表": 0, "新表": 1, "额外正式补充": 2}
+        rows.sort(key=lambda item: source_rank.get(item.get("source_scope", ""), 3))
+        previous_scope = ""
+        for row in rows:
+            scope = str(row.get("source_scope") or "")
+            row["group_start"] = bool(scope and scope != previous_scope)
+            previous_scope = scope
+    else:
+        rows = _dedupe_business_rule_rows(rows)
+        rows.sort(key=lambda item: (not item["enabled"], item["type_label"], item["title"], item["result"]))
+    return rows
+
+
+def _lookup_business_type(group: str) -> str:
+    algorithm_labels = {
+        "total_to_core": "总厚转芯厚",
+        "core_to_total": "芯厚转总厚",
+        "standard_size": "毫米尺寸换算",
+        "high_speed_mil": "高频高速厚度换算",
+        "copper_micron": "微米铜厚换算",
+        "size_range": "标准尺寸区间",
+    }
+    if group in algorithm_labels:
+        return algorithm_labels[group]
+    return "正式业务映射"
+
+
+def _lookup_rule_scope(group: str, row: Mapping[str, Any]) -> str:
+    """Return a business-readable scope without exposing storage implementation names."""
+    if not bool(row.get("has_baseline")):
+        return "业务补充"
+    if group in {"total_to_core", "core_to_total"}:
+        return "总芯厚转换表"
+    if group in {"standard_size", "high_speed_mil", "grade_code"}:
+        return "编码规范"
+    if group in {"size_range"}:
+        return "确定性算法"
+    return "正式映射表"
+
+
+def _is_customer_limited_base_lookup(group: str, value: Any) -> bool:
+    normalized = unicodedata.normalize("NFKC", _clean(value)).upper()
+    return (group, normalized) in CUSTOMER_LIMITED_BASE_LOOKUP_KEYS
+
+
+def _asset_business_type(group: str) -> str:
+    return {
+        "Agent胶系主表": "新表",
+        "Agent胶系兼容别名": "额外正式补充",
+        "Agent胶系选择规则": "客户特殊规则",
+        "Agent基础条件规则": "全客户特殊规则",
+    }.get(group, "正式业务规则")
+
+
+def _normalize_glue_identity(value: Any) -> str:
+    # 保留中文用途限定，避免把“NY1600”和“NY1600降本”等不同正式胶系误判为同名冲突。
+    normalized = unicodedata.normalize("NFKC", _clean(value)).upper()
+    return re.sub(r"[\s\-_/]+", "", normalized)
+
+
+def _glue_display_pair(name: Any, code: Any) -> tuple[str, str]:
+    return _normalize_glue_identity(name), _clean(code).upper()
+
+
+def _dedupe_business_rule_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse duplicate projections while preserving distinct conversion directions."""
+    result: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str, bool]] = set()
+    for row in rows:
+        direction = _clean(row.get("lookup_group"))
+        if direction not in {"total_to_core", "core_to_total"}:
+            direction = ""
+        key = (
+            _clean(row.get("category")),
+            direction,
+            re.sub(r"\s+", "", _clean(row.get("title")).upper()),
+            re.sub(r"\s+", "", _clean(row.get("result")).upper()),
+            bool(row.get("enabled")),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(row)
+    return result
+
+
+def _is_hidden_glue_mapping(name: Any, code: Any) -> bool:
+    """NY-A1 -> 2Z is retired and must not be exposed as a maintainable rule."""
+    return _normalize_glue_identity(name) == "NYA1" and _clean(code).upper() == "2Z"
+
+
+def _mark_glue_conflicts(rows: list[dict[str, Any]]) -> None:
+    codes_by_name: dict[str, list[str]] = {}
+    for row in rows:
+        if not row.get("enabled"):
+            continue
+        name = _normalize_glue_identity(row.get("title"))
+        code = _clean(row.get("result")).upper()
+        if not name or not code or code == "-":
+            continue
+        codes = codes_by_name.setdefault(name, [])
+        if code not in codes:
+            codes.append(code)
+    for row in rows:
+        codes = codes_by_name.get(_normalize_glue_identity(row.get("title")), [])
+        row["conflict"] = bool(row.get("enabled")) and len(codes) > 1
+        row["conflict_codes"] = tuple(codes)
+        row["eligible_for_formal_score"] = bool(row.get("enabled")) and not row["conflict"]
+        row["status_label"] = "冲突待核实" if row["conflict"] else ("生效中" if row.get("enabled") else "已停用")
+        if row["conflict"]:
+            detail = _clean(row.get("detail"))
+            warning = f"同名胶系存在多个正式代码：{' / '.join(codes)}"
+            row["detail"] = f"{detail}；{warning}" if detail and detail != "-" else warning
+
+
+def _asset_business_title(row: Mapping[str, Any]) -> str:
+    return next(
+        (
+            _clean(row.get(field))
+            for field in ("胶系名称", "兼容名称", "条件胶系", "规则文本", "映射ID")
+            if _clean(row.get(field))
+        ),
+        "未命名规则",
+    )
+
+
+def _asset_business_detail(row: Mapping[str, Any]) -> str:
+    return next(
+        (
+            _clean(row.get(field))
+            for field in ("规则文本", "条件关键词", "备注", "胶系分类")
+            if _clean(row.get(field))
+        ),
+        "-",
+    )
+
+
+def _base_condition_summary(conditions: Mapping[str, Any]) -> str:
+    parts = [f"{key}={value}" for key, value in conditions.items() if _clean(value)]
+    return "；".join(parts) or "适用于全部规格"
+
+
 def merge_agent_mapping_overrides(
     tables: dict[str, list[dict]],
 ) -> dict[str, list[dict]]:
@@ -645,6 +1033,11 @@ def merge_agent_mapping_overrides(
                     "备注": "页面维护",
                 }
             )
+    for group in ("Agent胶系主表", "Agent胶系兼容别名", "Agent胶系选择规则"):
+        merged[group] = [
+            row for row in merged.get(group, [])
+            if not is_retired_agent_glue_mapping(row)
+        ]
     return merged
 
 
@@ -670,6 +1063,133 @@ def list_asset_rows(
         item["_updated_at"] = str(override["updated_at"] or "") if override else ""
         result.append(item)
     return result
+
+
+def summarize_asset_rows(
+    rows: list[dict[str, Any]], *, asset_group: str
+) -> list[dict[str, Any]]:
+    """Build a customer/code archive without changing the executable asset rows."""
+
+    def first(row: dict[str, Any], *keys: str) -> str:
+        return next((_clean(row.get(key)) for key in keys if _clean(row.get(key))), "")
+
+    customer_groups = {
+        "客户尺寸映射",
+        "客户单边尺寸映射",
+        "客户尺寸算法",
+        "客户厚度映射",
+        "客户物料编码口径",
+        "外部尺寸表引用",
+        "待接入规则",
+    }
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if asset_group in customer_groups:
+            label = first(row, "客户简称", "客户代码") or "未指定客户"
+            sublabel = first(row, "客户代码")
+        elif asset_group == "Agent胶系主表":
+            label = first(row, "输出胶系代码") or "未配置代码"
+            sublabel = "场内胶系代码"
+        elif asset_group == "Agent胶系兼容别名":
+            label = first(row, "标准胶系名称", "标准胶系编号", "输出胶系代码") or "未指定标准胶系"
+            sublabel = first(row, "输出胶系代码")
+        else:
+            label = first(row, "胶系名称", "条件胶系", "技术类型", "映射ID") or "其他规则"
+            sublabel = first(row, "条件客户简称", "条件客户代码")
+
+        title = first(row, "客户简称", "胶系名称", "兼容名称", "技术类型", "映射ID") or "未命名规则"
+        size_detail = " × ".join(
+            value for value in (first(row, "客户尺寸W"), first(row, "客户尺寸H")) if value
+        )
+        detail = first(
+            row,
+            "规则文本",
+            "原始规则",
+            "客户厚度写法",
+            "条件关键词",
+            "适用条件",
+            "胶系分类",
+        ) or size_detail or first(row, "备注") or "-"
+        result_value = first(
+            row,
+            "输出胶系代码",
+            "覆盖基板级别",
+            "目标size_code",
+            "厂内单边尺寸",
+            "总芯厚口径",
+            "算法类型",
+        ) or "-"
+        key = f"{label}\x1f{sublabel}"
+        item = grouped.setdefault(
+            key,
+            {"label": label, "sublabel": sublabel, "rows": [], "results": [], "sources": [], "enabled_count": 0},
+        )
+        item["rows"].append({"native": row, "title": title, "detail": detail, "result": result_value})
+        if result_value not in item["results"]:
+            item["results"].append(result_value)
+        source = first(row, "_source")
+        if source and source not in item["sources"]:
+            item["sources"].append(source)
+        if first(row, "启用") != "否":
+            item["enabled_count"] += 1
+
+    result = []
+    for item in grouped.values():
+        item["count"] = len(item["rows"])
+        item["result_summary"] = "、".join(item["results"][:4]) + (
+            f" 等{len(item['results'])}种结果" if len(item["results"]) > 4 else ""
+        )
+        item["source_summary"] = "、".join(item["sources"])
+        result.append(item)
+    return sorted(result, key=lambda item: (item["label"].upper(), item["sublabel"].upper()))
+
+
+def summarize_semantic_rules(rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group customer semantic rules by their confirmed business outcome."""
+    business_value_labels = {
+        "core": "芯厚",
+        "total": "总厚",
+        "core_after_total_to_core_conversion": "按总芯厚转换表转为芯厚",
+        "total_after_core_to_total_conversion": "按总芯厚转换表转为总厚",
+        "printed": "有印字/水印",
+        "unprinted": "无印字/水印",
+        "present": "有",
+        "absent": "无",
+    }
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    for rule in rules:
+        field = _clean(rule.get("business_field")) or "未分类参数"
+        normalized = [
+            _clean(value) for value in (rule.get("normalized_values") or []) if _clean(value)
+        ]
+        target = "、".join(business_value_labels.get(value, value) for value in normalized) or "仅语义识别"
+        key = (field, target)
+        item = grouped.setdefault(
+            key,
+            {"business_field": field, "target": target, "rules": [], "customers": [], "phrases": [], "enabled_count": 0},
+        )
+        item["rules"].append(rule)
+        customer = _clean(rule.get("customer_name")) or _clean(rule.get("customer_code")) or "通用"
+        if customer not in item["customers"]:
+            item["customers"].append(customer)
+        phrase = _clean(rule.get("source_text"))
+        if phrase and phrase not in item["phrases"]:
+            item["phrases"].append(phrase)
+        if bool(rule.get("enabled", True)):
+            item["enabled_count"] += 1
+
+    result = []
+    for item in grouped.values():
+        item["count"] = len(item["rules"])
+        item["customer_count"] = len(item["customers"])
+        item["customer_preview"] = "、".join(item["customers"][:4]) + (
+            f" 等{len(item['customers'])}个客户" if len(item["customers"]) > 4 else ""
+        )
+        item["phrase_preview"] = "；".join(item["phrases"][:2]) + (
+            f" 等{len(item['phrases'])}种说法" if len(item["phrases"]) > 2 else ""
+        )
+        result.append(item)
+    return sorted(result, key=lambda item: (item["business_field"], item["target"]))
 
 
 def find_asset_row(
@@ -1051,7 +1571,9 @@ def rule_center_summary(
     }
     return {
         "base_override_count": len(list_base_overrides()),
-        "base_mapping_count": sum(mapping_counts.values()),
+        # 总览中的基础规则数量由业务参数投影单独计算。这里不再把客户映射表
+        # 和语义资产混入“基础规则”统计。
+        "base_mapping_count": 0,
         "mapping_counts": mapping_counts,
         "customer_count": len(customer_keys),
         "agent_rule_count": len(agent_rules),

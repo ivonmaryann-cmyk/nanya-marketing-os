@@ -233,7 +233,11 @@ def main() -> None:
             evidence_headers = [cell.value for cell in evidence_ws[1]]
             assert evidence_headers[:5] == ["行号", "客户代码", "客户", "规格", "状态"], evidence_headers
             evidence_rows = list(evidence_ws.iter_rows(min_row=2, values_only=True))
-            agent_evidence_rows = [row for row in evidence_rows if row[9] == "Agent规则覆盖"]
+            agent_evidence_rows = [
+                row
+                for row in evidence_rows
+                if row[9] in {"Agent规则覆盖", "业务正式规则"}
+            ]
             assert agent_evidence_rows, "no Agent rule evidence rows"
             assert not any(row[5] == "结构码" for row in agent_evidence_rows), agent_evidence_rows[:5]
 

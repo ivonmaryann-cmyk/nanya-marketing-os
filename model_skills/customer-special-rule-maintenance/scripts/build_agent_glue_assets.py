@@ -21,12 +21,26 @@ from fangzheng_web_app.transcode_agent_rules import MAPPING_TABLE_HEADERS  # noq
 SOURCE_FILENAME = "_ 胶系主表维护view20260724092307.xlsx"
 CONFLICT_NAMES = {
     "NY-A2 非汽车板用途": "2G",
-    "NY-A1": "2Z",
     "NY3170HF 汽车板": "3C",
     "NY6300S": "6C",
     "NY-P4": "RA",
     "NY-P4(C)": "AB",
     "NY-P5Q 华为可靠性": "BX",
+}
+
+# 2Z has been retired for new output. Keep historical inputs readable, but
+# normalize both the business name and the old material id to the confirmed code.
+RETIRED_INPUT_ALIASES = {
+    "NY-A1": {
+        "standard_id": "2ZNA",
+        "standard_name": "NY-A1",
+        "output_code": "RC",
+    },
+    "2ZZN": {
+        "standard_id": "2ZNA",
+        "standard_name": "NY-A1",
+        "output_code": "RC",
+    }
 }
 
 
@@ -41,8 +55,14 @@ def main() -> None:
 
 
 def build_assets(source: Path, legacy_rules: Path, mapping_workbook: Path) -> dict[str, int]:
-    source_rows = _read_rows(source, openpyxl.load_workbook(source, data_only=True).active.title)
-    legacy_rows = _read_rows(legacy_rules, "胶系代码", require_valid_code=False)
+    source_sheet = openpyxl.load_workbook(source, data_only=True).active.title
+    source_all_rows = _read_rows(source, source_sheet)
+    source_rows = [row for row in source_all_rows if not _is_retired_mapping(row)]
+    legacy_rows = [
+        row
+        for row in _read_rows(legacy_rules, "胶系代码", require_valid_code=False)
+        if not _is_retired_mapping(row)
+    ]
     legacy_ids = {row["id"] for row in legacy_rows}
     legacy_names = {_normalize(row["name"]) for row in legacy_rows}
     grouped_names: dict[str, list[dict]] = defaultdict(list)
@@ -50,18 +70,21 @@ def build_assets(source: Path, legacy_rules: Path, mapping_workbook: Path) -> di
         grouped_names[_normalize(row["name"])].append(row)
 
     master = []
-    for index, row in enumerate(source_rows, 1):
+    for index, row in enumerate(source_all_rows, 1):
+        retired = _is_retired_mapping(row)
         flags = []
-        if row["id"] not in legacy_ids:
+        if retired:
+            flags.extend(["业务确认：2Z已废弃", "仅保留禁用历史记录"])
+        elif row["id"] not in legacy_ids:
             flags.append("新增胶系")
         elif _normalize(row["name"]) not in legacy_names:
             flags.append("新版名称")
-        if len({item["code"] for item in grouped_names[_normalize(row["name"])]}) > 1:
+        if not retired and len({item["code"] for item in grouped_names[_normalize(row["name"])]}) > 1:
             flags.append("同名多码")
         master.append(
             {
                 "映射ID": f"TGM-MASTER-{index:04d}",
-                "启用": "是",
+                "启用": "否" if retired else "是",
                 "胶系编号": row["id"],
                 "胶系名称": row["name"],
                 "胶系分类": row["classification"],
@@ -95,12 +118,31 @@ def build_assets(source: Path, legacy_rules: Path, mapping_workbook: Path) -> di
             }
         )
 
+    for alias_name, replacement in RETIRED_INPUT_ALIASES.items():
+        alias_key = _normalize(alias_name)
+        if alias_key in seen_aliases:
+            continue
+        seen_aliases.add(alias_key)
+        aliases.append(
+            {
+                "映射ID": f"TGM-ALIAS-{len(aliases) + 1:04d}",
+                "启用": "是",
+                "兼容名称": alias_name,
+                "标准胶系编号": replacement["standard_id"],
+                "标准胶系名称": replacement["standard_name"],
+                "输出胶系代码": replacement["output_code"],
+                "来源批次": "业务确认废弃代码兼容",
+                "规则文本": f"历史胶系编号{alias_name}兼容识别，统一输出{replacement['output_code']}",
+                "备注": "2Z已废弃；仅保留旧输入识别，不再生成2Z",
+            }
+        )
+
     selections = []
     for index, (name, code) in enumerate(CONFLICT_NAMES.items(), 1):
         selections.append(
             {
                 "映射ID": f"TGM-SELECT-{index:04d}",
-                "启用": "是",
+                "启用": "否",
                 "胶系名称": name,
                 "条件客户代码": "",
                 "条件客户简称": "",
@@ -108,8 +150,8 @@ def build_assets(source: Path, legacy_rules: Path, mapping_workbook: Path) -> di
                 "输出胶系代码": code,
                 "优先级": 100,
                 "来源批次": "20260724新版胶系表冲突兼容",
-                "规则文本": f"{name}同名多码未给选择条件，保持历史稳定输出{code}",
-                "备注": "出现四位胶系编号时优先按编号；后续可补客户或用途条件",
+                "规则文本": f"{name}同名多码未给选择条件，停用并进入冲突门禁",
+                "备注": "出现四位胶系编号时优先按编号；未补客户或用途条件前不得正式出码",
             }
         )
 
@@ -120,6 +162,7 @@ def build_assets(source: Path, legacy_rules: Path, mapping_workbook: Path) -> di
     workbook.save(mapping_workbook)
     return {
         "master": len(master),
+        "retired_history": sum(row["启用"] == "否" for row in master),
         "aliases": len(aliases),
         "selections": len(selections),
         "new_ids": sum("新增胶系" in row["备注"] for row in master),
@@ -178,6 +221,10 @@ def _valid_code(value: str) -> bool:
 def _normalize(value: str) -> str:
     text = unicodedata.normalize("NFKC", str(value or "")).upper()
     return re.sub(r"[\s_\-]+", "", text)
+
+
+def _is_retired_mapping(row: dict[str, str]) -> bool:
+    return _normalize(row.get("name", "")) == "NYA1" and str(row.get("code", "")).upper() == "2Z"
 
 
 if __name__ == "__main__":

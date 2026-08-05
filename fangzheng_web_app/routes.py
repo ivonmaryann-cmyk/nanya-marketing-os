@@ -147,10 +147,12 @@ from .transcode_agent_service import (
     queue_transcode_agent_job,
     queue_transcode_agent_single_job,
     reevaluate_transcode_agent_confirmations,
+    refresh_transcode_agent_audit_sheet,
     skip_transcode_agent_confirmation_row,
 )
 from .transcode_customer_rule_admin import (
     AGENT_ASSET_TYPE,
+    MAPPING_ASSET_TYPE,
     AGENT_OVERRIDE_TO_BUSINESS_FIELD,
     BUSINESS_FIELDS as CUSTOMER_RULE_BUSINESS_FIELDS,
     BUSINESS_FIELD_TARGETS as CUSTOMER_RULE_FIELD_TARGETS,
@@ -168,10 +170,12 @@ from .transcode_customer_rule_admin import (
     find_rule,
     list_customer_rule_changes,
     make_customer_key,
+    project_customer_rule_assets_for_workspace,
     restore_customer_rule_change,
     save_agent_rule_override,
     save_rule_override,
     validate_customer_maintained_rule,
+    _rule_view,
 )
 from .transcode_model_config import (
     load_user_model_config,
@@ -188,6 +192,8 @@ from .transcode_rule_center import (
     build_base_rule_from_form,
     build_asset_row_from_form,
     build_rule_center_lookup_tables,
+    business_rule_category_meta,
+    list_business_rule_rows,
     build_confirmation_policy_from_form,
     confirmation_field_meta,
     create_backup as create_rule_center_backup,
@@ -1046,9 +1052,6 @@ def transcode_agent():
     return render_template(
         "transcode_agent.html",
         jobs=jobs,
-        active_rule_version=get_active_transcode_rule_version(),
-        active_agent_rule_version=get_active_transcode_agent_rule_version() or "未上传Agent规则",
-        agent_rule_count=get_transcode_agent_rule_count(),
         model_config=model_config,
         active_job=_active_job_for(TRANSCODE_AGENT_FEATURE, jobs),
         auto_confirm=request.args.get("auto_confirm") == "1",
@@ -1061,26 +1064,15 @@ def admin_transcode_rule_center():
     if redirect_resp:
         return redirect_resp
     employee_id = current_employee() or ""
-    section = str(request.values.get("section") or "overview").strip()
+    section = str(request.values.get("section") or "active").strip()
+    if section == "overview":
+        # 兼容旧收藏地址：仍直接返回页面，但按新的“生效规则”口径渲染。
+        section = "active"
+    if section == "semantic":
+        return redirect(url_for("main.admin_transcode_rule_center", section="customer"))
     if request.method == "POST":
         action = str(request.form.get("action") or "").strip()
         try:
-            if action == "save_base":
-                existing = find_base_override(request.form.get("rule_id") or "")
-                rule = build_base_rule_from_form(request.form, existing=existing)
-                save_base_override(rule, updated_by=employee_id)
-                flash(f"基础规则已保存并立即生效：{rule['rule_id']}", "success")
-                return redirect(
-                    url_for(
-                        "main.admin_transcode_rule_center",
-                        section="base",
-                        rule_id=rule["rule_id"],
-                    )
-                )
-            if action == "delete_base":
-                delete_base_override(request.form.get("rule_id") or "", updated_by=employee_id)
-                flash("基础规则已停用并保留修改记录。", "success")
-                return redirect(url_for("main.admin_transcode_rule_center", section="base"))
             if action == "save_lookup":
                 save_lookup_override(request.form, updated_by=employee_id)
                 flash("基础映射已保存并立即生效。", "success")
@@ -1088,8 +1080,9 @@ def admin_transcode_rule_center():
                     url_for(
                         "main.admin_transcode_rule_center",
                         section="base",
-                        base_view="mapping",
+                        business_category=request.form.get("business_category") or "胶系",
                         lookup_group=request.form.get("lookup_group") or "glue_code",
+                        lookup_input=request.form.get("lookup_input") or "",
                     )
                 )
             if action == "delete_lookup":
@@ -1103,8 +1096,7 @@ def admin_transcode_rule_center():
                     url_for(
                         "main.admin_transcode_rule_center",
                         section="base",
-                        base_view="mapping",
-                        lookup_group=request.form.get("lookup_group") or "glue_code",
+                        business_category=request.form.get("business_category") or "胶系",
                     )
                 )
             if action == "save_asset":
@@ -1123,7 +1115,7 @@ def admin_transcode_rule_center():
                     url_for(
                         "main.admin_transcode_rule_center",
                         section="base",
-                        base_view="assets",
+                        business_category=request.form.get("business_category") or "胶系",
                         asset_group=group,
                         asset_row_id=row["映射ID"],
                     )
@@ -1140,8 +1132,7 @@ def admin_transcode_rule_center():
                     url_for(
                         "main.admin_transcode_rule_center",
                         section="base",
-                        base_view="assets",
-                        asset_group=group,
+                        business_category=request.form.get("business_category") or "胶系",
                     )
                 )
             if action == "save_score":
@@ -1212,6 +1203,10 @@ def admin_transcode_rule_center():
         size_ranges=engine.STANDARD_SIZE_RANGES,
     )
     lookup_groups = lookup_group_meta()
+    business_categories = business_rule_category_meta()
+    business_category = request.args.get("business_category") or RULE_CENTER_BUSINESS_FIELDS[0]
+    if business_category not in business_categories:
+        business_category = RULE_CENTER_BUSINESS_FIELDS[0]
     lookup_group = request.args.get("lookup_group") or "glue_code"
     if lookup_group not in lookup_groups:
         lookup_group = "glue_code"
@@ -1225,8 +1220,6 @@ def admin_transcode_rule_center():
         asset_group,
         request.args.get("asset_row_id") or "",
     )
-    base_rules = list_base_overrides()
-    selected_rule = find_base_override(request.args.get("rule_id") or "")
     confirmation_policies = list_confirmation_policy_views()
     selected_confirmation_policy = next(
         (
@@ -1241,22 +1234,46 @@ def admin_transcode_rule_center():
         agent_rules=agent_rules,
         semantic_rules=semantic_rules,
     )
+    customer_special_rules = project_customer_rule_assets_for_workspace(
+        semantic_rules,
+        agent_rules,
+        mapping_tables,
+    )
+    customer_rule_summary = customer_rule_workspace(customer_special_rules)
+    summary["base_rule_count"] = sum(
+        len(list_business_rule_rows(lookup_tables, mapping_tables, category=category))
+        for category in business_categories
+    )
+    summary["customer_special_count"] = len(customer_special_rules)
+    summary["customer_count"] = len(
+        {
+            make_customer_key(rule.get("customer_code"), rule.get("customer_name"))
+            for rule in customer_special_rules
+            if rule.get("customer_code") or rule.get("customer_name")
+        }
+    )
     coverage_rows = [
-        {"category": "标准映射", "source": "最新版胶系主表及官方编码规范", "count": sum(len(list_lookup_rows(lookup_tables, group_key=key)) for key in lookup_groups), "status": "已可视化维护"},
-        {"category": "客户与算法规则", "source": "活动Agent辅助映射表", "count": sum(len(mapping_tables.get(key, [])) for key in asset_groups), "status": "已可视化维护"},
-        {"category": "客户确定性规则", "source": "活动Agent机器规则", "count": len(agent_rules), "status": "按客户维护"},
-        {"category": "订单备注语义", "source": "活动语义规则", "count": len(semantic_rules), "status": "按客户维护"},
-        {"category": "旧特殊需求兼容", "source": "基础规则表/特殊需求", "count": len(lookup_tables.get("special_by_name") or {}), "status": "只读兼容回退"},
-        {"category": "客户下单兼容", "source": "基础规则表/客户下单与胶系基板转换", "count": len(lookup_tables.get("customer_order_rules") or []), "status": "只读兼容回退"},
-        {"category": "评分与人工确认", "source": "统一规则配置页面", "count": len(confirmation_policies), "status": "已可视化维护"},
+        {"category": "基础规则", "source": "正式业务映射、编码规范、正式胶系表及确定性算法", "count": summary["base_rule_count"], "status": "生效规则"},
+        {"category": "客户特殊规则", "source": "按客户统一维护全客户、客户专属和后台运行规则", "count": customer_rule_summary["display_scope_counts"].get("active", 0), "status": "生效规则"},
+        {"category": "待完善事项", "source": "待业务确认、待技术支持；不会参与自动出码", "count": customer_rule_summary["display_scope_counts"].get("pending", 0), "status": "待完善"},
+        {"category": "历史资料", "source": "历史样本和外部资料；仅在备份与修改记录中追溯", "count": customer_rule_summary["display_scope_counts"].get("reference", 0), "status": "历史追溯"},
+        {"category": "出码与人工确认", "source": "统一维护100分出码及人工确认标准", "count": len(confirmation_policies), "status": "统一维护"},
     ]
+    lookup_rows = list_lookup_rows(lookup_tables, group_key=lookup_group)
+    business_rule_rows = list_business_rule_rows(
+        lookup_tables,
+        mapping_tables,
+        category=business_category,
+    )
     return render_template(
         "transcode_rule_center.html",
         section=section,
         summary=summary,
+        customer_rule_summary=customer_rule_summary,
         business_fields=RULE_CENTER_BUSINESS_FIELDS,
-        base_rules=base_rules,
-        selected_rule=selected_rule,
+        business_categories=business_categories,
+        business_category=business_category,
+        business_rule_rows=business_rule_rows,
         score_config=load_score_config(),
         confirmation_fields=confirmation_field_meta(),
         confirmation_policies=confirmation_policies,
@@ -1266,7 +1283,7 @@ def admin_transcode_rule_center():
         backups=list_rule_center_backups(),
         lookup_groups=lookup_groups,
         lookup_group=lookup_group,
-        lookup_rows=list_lookup_rows(lookup_tables, group_key=lookup_group),
+        lookup_rows=lookup_rows,
         asset_groups=asset_groups,
         asset_group=asset_group,
         asset_rows=asset_rows,
@@ -1325,8 +1342,10 @@ def transcode_agent_model_config():
             if action == "test":
                 result = test_user_model_connection(config)
                 flash(f"模型{result['status']}：{result['model']}。", "success")
+                return redirect(url_for("main.transcode_agent_model_config"))
             else:
                 flash("当前用户的模型配置已保存。", "success")
+                return redirect(url_for("main.transcode_agent"))
         except Exception as exc:
             flash(f"模型配置失败：{exc}", "error")
         return redirect(url_for("main.transcode_agent_model_config"))
@@ -1345,17 +1364,32 @@ def admin_transcode_agent_customer_rules():
     active_version = get_active_transcode_semantic_rule_version()
     semantic_rules = load_transcode_semantic_rules(active_version) if active_version else []
     agent_rules = load_transcode_agent_rules()
-    rules = semantic_rules + agent_rules_for_customer_workspace(agent_rules)
+    from .transcode_agent_rules import load_transcode_agent_mapping_tables
+
+    customer_mapping_tables = load_transcode_agent_mapping_tables()
+    rules = project_customer_rule_assets_for_workspace(
+        semantic_rules,
+        agent_rules,
+        customer_mapping_tables,
+    )
     if request.method == "POST":
         action = str(request.form.get("action") or "save").strip()
-        rule_kind = str(request.form.get("rule_kind") or "all").strip()
-        if rule_kind not in {"all", "deterministic", "semantic"}:
-            rule_kind = "all"
         try:
             if action == "save":
                 existing = find_rule(rules, request.form.get("rule_id") or "")
                 asset_type = str(request.form.get("asset_type") or "semantic").strip()
-                if asset_type == AGENT_ASSET_TYPE:
+                if asset_type == MAPPING_ASSET_TYPE:
+                    mapping_group = str(request.form.get("mapping_group") or "").strip()
+                    native_existing = dict((existing or {}).get("mapping_row") or {})
+                    group, row = build_asset_row_from_form(request.form, existing=native_existing)
+                    if group != mapping_group:
+                        raise CustomerRuleMaintenanceError("客户转换规则分类不匹配。")
+                    save_asset_override(group, row, updated_by=employee_id)
+                    redirect_code = row.get("客户代码") or ""
+                    redirect_name = row.get("客户简称") or ""
+                    redirect_field = (existing or {}).get("business_field") or "基板尺寸"
+                    redirect_rule_id = (existing or {}).get("rule_id") or f"MAP::{group}::{row['映射ID']}"
+                elif asset_type == AGENT_ASSET_TYPE:
                     native_existing = dict((existing or {}).get("agent_rule") or {})
                     native_rule = build_agent_rule_from_form(
                         request.form,
@@ -1385,14 +1419,20 @@ def admin_transcode_agent_customer_rules():
                         customer_key=make_customer_key(redirect_code, redirect_name),
                         business_field=redirect_field,
                         rule_id=redirect_rule_id,
-                        rule_kind=rule_kind,
+                        scope=request.form.get("scope") or "active",
                     )
                 )
             if action == "delete":
                 rule = find_rule(rules, request.form.get("rule_id") or "")
                 if rule is None:
                     raise CustomerRuleMaintenanceError("要删除的规则不存在。")
-                if str(rule.get("asset_type") or "") == AGENT_ASSET_TYPE:
+                if str(rule.get("asset_type") or "") == MAPPING_ASSET_TYPE:
+                    delete_asset_override(
+                        str(rule.get("mapping_group") or ""),
+                        str((rule.get("mapping_row") or {}).get("映射ID") or ""),
+                        updated_by=employee_id,
+                    )
+                elif str(rule.get("asset_type") or "") == AGENT_ASSET_TYPE:
                     delete_agent_rule_override(dict(rule.get("agent_rule") or {}), updated_by=employee_id)
                 else:
                     delete_rule_override(rule, updated_by=employee_id)
@@ -1402,7 +1442,7 @@ def admin_transcode_agent_customer_rules():
                         "main.admin_transcode_agent_customer_rules",
                         customer_key=make_customer_key(rule["customer_code"], rule["customer_name"]),
                         business_field=rule["business_field"],
-                        rule_kind=rule_kind,
+                        scope=request.form.get("scope") or "active",
                     )
                 )
             if action == "restore":
@@ -1415,7 +1455,6 @@ def admin_transcode_agent_customer_rules():
                     url_for(
                         "main.admin_transcode_agent_customer_rules",
                         show_history="1",
-                        rule_kind=rule_kind,
                     )
                 )
             raise CustomerRuleMaintenanceError("未知的客户规则维护操作。")
@@ -1428,39 +1467,82 @@ def admin_transcode_agent_customer_rules():
         customer_key=request.values.get("customer_key") or "",
         business_field=request.values.get("business_field") or "",
         rule_id=request.values.get("rule_id") or "",
-        rule_kind=request.values.get("rule_kind") or "all",
+        rule_kind="all",
+        rule_scope=request.values.get("scope") or "active",
+        status_filter=request.values.get("status") or "all",
     )
     if request.args.get("new") == "1" or request.args.get("new_customer") == "1":
         selected_customer = workspace.get("selected_customer") or {}
         is_new_customer = request.args.get("new_customer") == "1"
         selected_field = workspace["selected_field"]
-        new_is_semantic = workspace["rule_kind"] == "semantic"
+        new_rule_type = str(request.args.get("rule_type") or "deterministic").strip()
+        is_order_semantic = new_rule_type == "order_semantic"
+        default_override_field = next(
+            (
+                key
+                for key, field in AGENT_OVERRIDE_TO_BUSINESS_FIELD.items()
+                if field == selected_field
+            ),
+            "grade_code",
+        )
         workspace["selected_rule"] = {
             "rule_id": "",
-            "asset_type": "semantic",
+            "asset_type": "semantic" if is_order_semantic else AGENT_ASSET_TYPE,
             "customer_code": "" if is_new_customer else selected_customer.get("code", ""),
             "customer_name": "" if is_new_customer else selected_customer.get("name", ""),
             "business_field": selected_field,
             "source_text": "",
-            "input_source": "订单备注" if new_is_semantic else "客户规格",
+            "input_source": "客户规格",
             "conditions": [
                 {
-                    "field": "订单备注" if new_is_semantic else "客户规格",
-                    "operator": "contains_any",
+                    "field": "订单备注" if is_order_semantic else "客户规格",
+                    "operator": "contains_any" if is_order_semantic else "present",
                     "value": "",
                 }
             ],
-            "condition_summary": "",
+            "semantic_enabled": is_order_semantic,
+            "agent_rule": {
+                "覆盖字段": default_override_field,
+                "条件胶系": "",
+                "条件关键词": "",
+                "条件铜厚": "",
+                "条件厚度": "",
+                "条件尺寸": "",
+            },
+            "target_fields": [],
+            "normalized_values": [],
             "target_field": CUSTOMER_RULE_FIELD_TARGETS[selected_field][0],
             "target_value": "",
+            "condition_summary": "",
             "priority": 100,
             "enabled": True,
-            "semantic_enabled": new_is_semantic,
-            "approval_basis": "",
+            "editable": True,
+            "status_label": "新增规则",
             "origin": "新增规则",
             "machine_rule": None,
-            "agent_rule": {},
+            "approval": {"basis": ""},
+            "approval_basis": "",
         }
+    elif request.args.get("migrate_rule_id"):
+        migration_rule = find_rule(rules, request.args.get("migrate_rule_id") or "")
+        if migration_rule is None or str(migration_rule.get("review_state") or "") != "migration":
+            flash("要迁移的运行中规则不存在，或其状态已变化。", "error")
+        else:
+            migration_view = _rule_view(migration_rule, overridden=False)
+            workspace["selected_rule"] = {
+                **migration_view,
+                "rule_id": "",
+                "asset_type": "semantic",
+                "editable": True,
+                "enabled": True,
+                "priority": max(100, int(migration_view.get("priority") or 0)),
+                "source_text": "迁移确认：" + (migration_view.get("source_text") or ""),
+                "approval_basis": "由运行中规则迁移确认：" + (migration_view.get("rule_id") or ""),
+                "status_label": "迁移确认",
+                "origin": "运行中规则迁移确认",
+                "semantic_enabled": False,
+                "migration_source_rule_id": migration_view.get("rule_id") or "",
+            }
     return render_template(
         "admin_transcode_agent_customer_rules.html",
         workspace=workspace,
@@ -1473,6 +1555,8 @@ def admin_transcode_agent_customer_rules():
         condition_fields=CUSTOMER_RULE_CONDITION_FIELDS,
         condition_operators=CUSTOMER_RULE_CONDITION_OPERATORS,
         condition_operator_labels=CUSTOMER_RULE_CONDITION_OPERATOR_LABELS,
+        mapping_asset_type=MAPPING_ASSET_TYPE,
+        mapping_asset_groups=asset_group_meta(),
         rule_changes=list_customer_rule_changes(),
         show_history=request.args.get("show_history") == "1",
     )
@@ -2932,6 +3016,11 @@ def download(job_id: int, kind: str):
     if not file_path or not Path(file_path).exists():
         flash("文件不存在。", "error")
         return redirect(url_for("main.history"))
+    if kind == "result" and job["feature"] == TRANSCODE_AGENT_FEATURE:
+        try:
+            refresh_transcode_agent_audit_sheet(job_id)
+        except (OSError, ValueError):
+            pass
     return send_file(file_path, as_attachment=True)
 
 
@@ -3482,6 +3571,8 @@ def rule_doc(feature: str):
     redirect_resp = require_login()
     if redirect_resp:
         return redirect_resp
+    if feature == "transcode_agent":
+        return redirect(url_for("main.admin_transcode_rule_center"))
     docs = {
         "fangzheng": {
             "title": "方正价格计算规则说明",
@@ -3501,16 +3592,6 @@ def rule_doc(feature: str):
                 "转码规则由胶系代码、胶系类别、编码规则、特殊需求、总芯厚转换、客户下单与胶系基板转换六张表组成。",
                 "结果写入每行最后一个有数据列之后的新列。",
                 "输出文件会新增转码说明 Sheet，记录命中情况和未识别原因。",
-            ],
-        },
-        "transcode_agent": {
-            "title": "营销转码Agent规则说明",
-            "items": [
-                "系统复用当前基础转码规则生成候选编码，再按Agent规则包进行客户特殊规则覆盖。",
-                "Agent结果列只写高置信制造码；中低置信结果只写待确认或未识别原因。",
-                "输出文件会新增字段证据链、待确认清单和规则命中汇总 Sheet。",
-                "客户特殊规则来源于业务清洗后的客户特殊清单母表，并转换为独立的Agent机器规则包。",
-                "首版仅覆盖CCL；PP/RC/%规格会跳过，不输出制造编码。",
             ],
         },
         "shennan": {

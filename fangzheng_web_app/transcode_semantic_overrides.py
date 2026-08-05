@@ -70,6 +70,13 @@ def apply_confirmed_semantic_overrides(
             conflicts.append(f"{field}: 已批准语义规则同字段多值 {'/'.join(values)}")
             continue
         code = values[0]
+        if field == "tc_code":
+            explicit_total_core = _explicit_total_core_from_spec(analysis.get("spec"))
+            if explicit_total_core and explicit_total_core != code:
+                # Customer defaults such as "默认含铜，不含铜会备注" may fill
+                # a missing value, but may never overwrite an explicit value in
+                # the uploaded specification itself.
+                continue
         prior_semantic = {value for value in existing_semantic_values.get(field, set()) if value}
         if prior_semantic and code not in prior_semantic:
             conflicts.append(
@@ -124,6 +131,18 @@ def apply_confirmed_semantic_overrides(
             }
         )
     return applied, conflicts
+
+
+def _explicit_total_core_from_spec(value: Any) -> str:
+    text = str(value or "").upper()
+    if any(term in text for term in (
+        "不含铜", "不连铜", "不連銅", "芯厚",
+        "EXCLUDING COPPER", "WITHOUT COPPER", "NO COPPER",
+    )):
+        return "C"
+    if any(term in text for term in ("含铜", "总厚", "總厚", "OVERALL", "TOTAL")):
+        return "T"
+    return ""
 
 
 def _uses_order_remark(item: dict[str, Any]) -> bool:

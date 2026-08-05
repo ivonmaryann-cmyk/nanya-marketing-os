@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 from werkzeug.datastructures import MultiDict
@@ -15,6 +16,7 @@ from fangzheng_web_app.transcode_confirmation_policy import (
     match_confirmation_policy_rules,
 )
 from fangzheng_web_app.transcode_rule_center import (
+    BUSINESS_FIELDS,
     build_rule_center_lookup_tables,
     build_base_rule_from_form,
     build_confirmation_policy_from_form,
@@ -23,6 +25,7 @@ from fangzheng_web_app.transcode_rule_center import (
     list_backups,
     ensure_daily_backup,
     find_base_override,
+    list_business_rule_rows,
     list_lookup_rows,
     load_score_config,
     merge_base_rule_overrides,
@@ -34,6 +37,9 @@ from fangzheng_web_app.transcode_rule_center import (
     save_base_override,
     save_lookup_override,
     save_score_config,
+    summarize_asset_rows,
+    summarize_lookup_rows,
+    summarize_semantic_rules,
     restore_backup,
     RuleCenterError,
 )
@@ -48,7 +54,7 @@ def _use_temp_database(monkeypatch, tmp_path) -> None:
     db.init_db()
 
 
-def test_global_base_rule_is_page_maintainable_and_runtime_matchable(monkeypatch, tmp_path):
+def test_legacy_global_override_remains_runtime_matchable(monkeypatch, tmp_path):
     _use_temp_database(monkeypatch, tmp_path)
     form = MultiDict(
         [
@@ -100,10 +106,14 @@ def test_lookup_override_takes_priority_without_changing_baseline(monkeypatch, t
     assert rows[0]["source"] == "页面调整"
 
 
-def test_rule_center_lookup_view_uses_latest_runtime_assets(monkeypatch, tmp_path):
+def test_rule_center_lookup_view_separates_old_and_latest_glue_tables(monkeypatch, tmp_path):
     _use_temp_database(monkeypatch, tmp_path)
     tables = build_rule_center_lookup_tables(
-        {"grade_desc_to_code": {"汽车板": "AC"}},
+        {
+            "grade_desc_to_code": {"汽车板": "AC"},
+            "glue_exact_map": {"NY1140": "1A", "NY2150": "2B"},
+            "glue_model_map": {"NY2150": "2B", "NY3150HC": "3H"},
+        },
         {
             "Agent胶系主表": [
                 {"启用": "是", "胶系名称": "NY2150", "输出胶系代码": "2B"},
@@ -123,10 +133,268 @@ def test_rule_center_lookup_view_uses_latest_runtime_assets(monkeypatch, tmp_pat
     grade_rows = list_lookup_rows(tables, group_key="grade_code")
     size_rows = list_lookup_rows(tables, group_key="standard_size")
 
-    assert {row["input_value"] for row in glue_rows} == {"NY2150", "NY6300S"}
-    assert all(row["source"] == "最新版胶系主表" for row in glue_rows)
+    assert {row["input_value"] for row in glue_rows} == {"NY1140", "NY2150", "NY3150HC"}
+    assert all(row["source"] == "老表" for row in glue_rows)
+    assert tables["rule_center_latest_glue_code"] == {"NY2150": "2B", "NY6300S": "6C"}
     assert {row["input_value"] for row in grade_rows} == {"A1", "AC", "AY"}
     assert {row["input_value"] for row in size_rows} == {"940.0", "1245.0"}
+
+
+def test_glue_business_rows_keep_table_order_and_business_source_scope(monkeypatch, tmp_path):
+    _use_temp_database(monkeypatch, tmp_path)
+    lookup_tables = {
+        "rule_center_glue_code": {"OLD-B": "OB", "OLD-A": "OA"},
+        "__lookup_sources": {"glue_code": {"OLD-B": "老表", "OLD-A": "老表"}},
+    }
+    mapping_tables = {
+        "Agent胶系主表": [
+            {"映射ID": "NEW-2", "启用": "是", "胶系名称": "NEW-B", "输出胶系代码": "NB"},
+            {"映射ID": "NEW-1", "启用": "是", "胶系名称": "NEW-A", "输出胶系代码": "NA"},
+        ],
+        "Agent胶系兼容别名": [
+            {"映射ID": "ALIAS-DUP-OLD", "启用": "是", "兼容名称": "OLD-B", "输出胶系代码": "OB"},
+            {"映射ID": "ALIAS-DUP-NEW", "启用": "是", "兼容名称": "NEW-B", "输出胶系代码": "NB"},
+            {"映射ID": "ALIAS-1", "启用": "是", "兼容名称": "OLD-ALIAS", "输出胶系代码": "OA"},
+            {"映射ID": "ALIAS-2", "启用": "是", "兼容名称": "OLD-ALIAS", "输出胶系代码": "OA"},
+        ],
+        "Agent胶系选择规则": [
+            {"映射ID": "SELECT-1", "启用": "是", "胶系名称": "MULTI", "输出胶系代码": "MX"},
+        ],
+        "Agent基础条件规则": [
+            {"映射ID": "COND-1", "启用": "是", "条件胶系": "TFT-GLUE", "覆盖胶系代码": "TG"},
+        ],
+    }
+
+    rows = list_business_rule_rows(lookup_tables, mapping_tables, category="胶系")
+
+    assert [(row["source_scope"], row["title"]) for row in rows] == [
+        ("老表", "OLD-B"),
+        ("老表", "OLD-A"),
+        ("新表", "NEW-B"),
+        ("新表", "NEW-A"),
+        ("额外正式补充", "OLD-ALIAS"),
+    ]
+    assert [row["type_label"] for row in rows] == [
+        "老表",
+        "老表",
+        "新表",
+        "新表",
+        "额外正式补充",
+    ]
+    assert "MULTI" not in {row["title"] for row in rows}
+    assert "TFT-GLUE" not in {row["title"] for row in rows}
+    assert [row["group_start"] for row in rows] == [True, False, True, False, True]
+
+
+def test_all_eight_base_categories_keep_formal_mappings_maintainable(monkeypatch, tmp_path):
+    _use_temp_database(monkeypatch, tmp_path)
+    lookup_tables = {
+        "rule_center_glue_code": {"NY2150": "2B"},
+        "__lookup_sources": {"glue_code": {"NY2150": "老表"}},
+        "rule_center_high_speed_mil": {3.0: 0.079},
+        "rule_center_copper_micron": {"18": "H"},
+        "rule_center_copper_valid": {"H/H": "HH"},
+        "rule_center_standard_size": {940.0: 37.0},
+        "rule_center_size_range": {"36.9-37.1 × 48.9-49.1": "37 × 49"},
+        "glue_cat_map": {"NY2150": "R"},
+        "rule_center_copper_type": {"HTE": "W"},
+        "rule_center_grade_code": {"AC": "AC"},
+        "rule_center_grade_trigger": {"汽车板": "AC"},
+        "thick_total_to_core": {"H/H": 0.07},
+        "thick_core_to_total": {"H/H": 0.07},
+    }
+
+    projected = {
+        category: list_business_rule_rows(lookup_tables, {}, category=category)
+        for category in BUSINESS_FIELDS
+    }
+
+    assert all(projected[category] for category in BUSINESS_FIELDS)
+    assert all(
+        row["kind"] in {"lookup", "asset"}
+        for rows in projected.values()
+        for row in rows
+    )
+    assert all(row["source_scope"] for rows in projected.values() for row in rows)
+    assert {row["source_scope"] for row in projected["基板尺寸"]} == {
+        "编码规范",
+        "确定性算法",
+    }
+    total_core = projected["总/芯厚"]
+    assert [(row["source_scope"], row["lookup_group"], row["detail"]) for row in total_core] == [
+        ("总芯厚转换表", "total_to_core", "总厚转芯厚"),
+        ("总芯厚转换表", "core_to_total", "芯厚转总厚"),
+    ]
+
+
+def test_glue_business_rows_hide_retired_ny_a1_2z_and_mark_multi_code_conflicts(monkeypatch, tmp_path):
+    _use_temp_database(monkeypatch, tmp_path)
+    rows = list_business_rule_rows(
+        {
+            "rule_center_glue_code": {"NY-A1": "2Z", "NY2150": "2B"},
+            "__lookup_sources": {"glue_code": {"NY-A1": "老表", "NY2150": "老表"}},
+        },
+        {
+            "Agent胶系主表": [
+                {"映射ID": "NEW-1", "启用": "是", "胶系名称": "NY2150", "输出胶系代码": "2T"},
+            ]
+        },
+        category="胶系",
+    )
+
+    assert "NY-A1" not in {row["title"] for row in rows}
+    ny2150 = [row for row in rows if row["title"] == "NY2150"]
+    assert {row["result"] for row in ny2150} == {"2B", "2T"}
+    assert all(row["conflict"] is True for row in ny2150)
+    assert all(row["status_label"] == "冲突待核实" for row in ny2150)
+    assert all(row["eligible_for_formal_score"] is False for row in ny2150)
+
+
+def test_latest_glue_table_keeps_same_name_multi_code_visible_and_pending(monkeypatch, tmp_path):
+    _use_temp_database(monkeypatch, tmp_path)
+    rows = list_business_rule_rows(
+        {},
+        {
+            "Agent胶系主表": [
+                {"映射ID": "NEW-1", "启用": "是", "胶系名称": "NY6300S", "输出胶系代码": "6C"},
+                {"映射ID": "NEW-2", "启用": "是", "胶系名称": "NY6300S", "输出胶系代码": "B1"},
+                {"映射ID": "NEW-3", "启用": "否", "胶系名称": "NY6300S", "输出胶系代码": "OLD"},
+            ]
+        },
+        category="胶系",
+    )
+
+    assert [(row["source_scope"], row["title"], row["result"]) for row in rows] == [
+        ("新表", "NY6300S", "6C"),
+        ("新表", "NY6300S", "B1"),
+        ("新表", "NY6300S", "OLD"),
+    ]
+    assert [row["status_label"] for row in rows] == ["冲突待核实", "冲突待核实", "已停用"]
+    assert [row["eligible_for_formal_score"] for row in rows] == [False, False, False]
+
+
+def test_glue_page_keeps_rc_compatibility_but_hides_only_retired_2z(monkeypatch, tmp_path):
+    _use_temp_database(monkeypatch, tmp_path)
+    rows = list_business_rule_rows(
+        {
+            "rule_center_glue_code": {
+                "NY-A1": "2Z",
+                "NY-A1白纹改善": "RC",
+                "2ZZN": "RC",
+            },
+            "__lookup_sources": {
+                "glue_code": {
+                    "NY-A1": "老表",
+                    "NY-A1白纹改善": "老表",
+                    "2ZZN": "老表",
+                }
+            },
+        },
+        {
+            "Agent胶系主表": [],
+            "Agent胶系兼容别名": [
+                {
+                    "映射ID": "ALIAS-NY-A1-RC",
+                    "启用": "是",
+                    "兼容名称": "NY-A1",
+                    "输出胶系代码": "RC",
+                }
+            ],
+        },
+        category="胶系",
+    )
+
+    pairs = {(row["title"], row["result"]) for row in rows}
+    assert ("NY-A1", "2Z") not in pairs
+    assert ("NY-A1", "RC") in pairs
+    assert ("NY-A1白纹改善", "RC") in pairs
+    assert ("2ZZN", "RC") in pairs
+
+
+def test_customer_limited_grade_writes_are_not_projected_as_base_rules(monkeypatch, tmp_path):
+    _use_temp_database(monkeypatch, tmp_path)
+    rows = list_business_rule_rows(
+        {
+            "rule_center_grade_code": {"AC": "AC"},
+            "rule_center_grade_trigger": {
+                "汽车板": "AC",
+                "深南90022-1": "D1",
+                "深南90022-2": "D2",
+                "深南测试": "D5",
+                "江西测试": "A8",
+            },
+        },
+        {},
+        category="基板级别",
+    )
+
+    titles = {row["title"] for row in rows}
+    assert "汽车板" in titles
+    assert "AC" in titles
+    assert titles.isdisjoint({"深南90022-1", "深南90022-2", "深南测试", "江西测试"})
+    assert {row["source_scope"] for row in rows} == {"正式映射表", "编码规范"}
+
+
+def test_base_rule_template_exposes_business_search_filters_and_explicit_edit_action():
+    template = (
+        Path(__file__).resolve().parents[1]
+        / "templates"
+        / "transcode_rule_center.html"
+    ).read_text(encoding="utf-8")
+
+    assert 'data-rule-list' in template
+    assert 'data-source-label="规则范围"' in template
+    assert 'data-source-all-label="全部范围"' in template
+    assert 'data-status=' in template
+    assert 'rc-edit-action' in template
+    assert '>编辑</a>' in template
+    assert '新增直接对应' not in template
+    assert '新增条件规则' not in template
+
+
+def test_lookup_business_summary_groups_same_output_without_changing_rows():
+    rows = [
+        {"input_value": "NY2150", "output_value": "2B", "source": "最新版胶系主表", "deleted": False},
+        {"input_value": "NY2150H", "output_value": "2B", "source": "最新版胶系主表", "deleted": False},
+        {"input_value": "NY3150HF", "output_value": "AH", "source": "页面调整", "deleted": False},
+    ]
+
+    summary = summarize_lookup_rows(rows)
+
+    grouped = next(item for item in summary if item["output_value"] == "2B")
+    assert grouped["count"] == 2
+    assert grouped["inputs"] == ["NY2150", "NY2150H"]
+    assert len(rows) == 3
+
+
+def test_asset_business_summary_groups_customer_rules_by_customer():
+    rows = [
+        {"_row_id": "SIZE-1", "_source": "活动Agent资产", "启用": "是", "客户代码": "100", "客户简称": "客户A", "客户尺寸W": "37", "客户尺寸H": "49", "目标size_code": "37004900"},
+        {"_row_id": "SIZE-2", "_source": "页面调整", "启用": "是", "客户代码": "100", "客户简称": "客户A", "客户尺寸W": "37.3", "客户尺寸H": "49.3", "目标size_code": "37304930"},
+        {"_row_id": "SIZE-3", "_source": "活动Agent资产", "启用": "否", "客户代码": "200", "客户简称": "客户B", "客户尺寸W": "41", "客户尺寸H": "49", "目标size_code": "41004900"},
+    ]
+
+    summary = summarize_asset_rows(rows, asset_group="客户尺寸映射")
+
+    customer_a = next(item for item in summary if item["label"] == "客户A")
+    assert customer_a["count"] == 2
+    assert customer_a["enabled_count"] == 2
+    assert customer_a["result_summary"] == "37004900、37304930"
+
+
+def test_semantic_business_summary_groups_shared_intent_across_customers():
+    rules = [
+        {"rule_id": "S1", "enabled": True, "customer_name": "客户A", "business_field": "基板级别", "source_text": "下汽车板", "normalized_values": ["AC"]},
+        {"rule_id": "S2", "enabled": True, "customer_name": "客户B", "business_field": "基板级别", "source_text": "要汽板", "normalized_values": ["AC"]},
+        {"rule_id": "S3", "enabled": True, "customer_name": "客户A", "business_field": "基板级别", "source_text": "需要AP板", "normalized_values": ["AP"]},
+    ]
+
+    summary = summarize_semantic_rules(rules)
+
+    ac = next(item for item in summary if item["target"] == "AC")
+    assert ac["count"] == 2
+    assert ac["customer_count"] == 2
+    assert ac["customer_preview"] == "客户A、客户B"
 
 
 def test_page_asset_override_merges_into_runtime_without_mutating_source(monkeypatch, tmp_path):

@@ -150,8 +150,9 @@ def main() -> None:
 
 
 def _assert_evidence(rows, customer: str, field: str, code: str, hit_type: str) -> None:
+    accepted_hit_types = {hit_type, "业务正式规则"} if hit_type.startswith("Agent") else {hit_type}
     for row in rows:
-        if row[2] == customer and row[5] == field and row[7] == code and row[9] == hit_type:
+        if row[2] == customer and row[5] == field and row[7] == code and row[9] in accepted_hit_types:
             return
     raise AssertionError((customer, field, code, hit_type))
 
@@ -163,8 +164,9 @@ def _assert_no_evidence(rows, customer: str, field: str, hit_type: str) -> None:
 
 
 def _assert_summary_count(rows, label: str, minimum_count: int) -> None:
+    accepted_labels = {label, "业务正式规则"} if label.startswith("Agent") else {label}
     for row in rows:
-        if row and row[0] == label and int(row[1] or 0) >= minimum_count:
+        if row and row[0] in accepted_labels and int(row[1] or 0) >= minimum_count:
             return
     raise AssertionError((label, minimum_count))
 

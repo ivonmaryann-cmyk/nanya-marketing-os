@@ -24,6 +24,7 @@ from fangzheng_web_app.transcode_agent_service import (
     confirm_transcode_agent_item,
     list_transcode_agent_confirmations,
     reevaluate_transcode_agent_confirmations,
+    refresh_transcode_agent_audit_sheet,
 )
 from fangzheng_web_app.transcode_semantic_overrides import apply_confirmed_semantic_overrides
 from fangzheng_web_app.transcode_customer_rule_admin import make_customer_key
@@ -290,6 +291,7 @@ def main() -> None:
             assert job["fail_count"] == 0, dict(job)
             assert job["confirm_count"] == 0, dict(job)
 
+            refresh_transcode_agent_audit_sheet(job_id)
             result_book = openpyxl.load_workbook(output_path, data_only=True)
             result_sheet = result_book["转码需求表"]
             assert result_sheet.cell(2, 3).value == "2B008001137004900YWACT*"
