@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from fangzheng_web_app.transcode_agent_engine import get_grade_code, match_exact_grade_desc
-from fangzheng_web_app.transcode_agent_service import _load_runtime, _score_field, analyze_spec
+from fangzheng_web_app.transcode_agent_service import (
+    _business_field_evidence,
+    _load_runtime,
+    _score_field,
+    analyze_spec,
+)
 from fangzheng_web_app.transcode_semantic_overrides import apply_confirmed_semantic_overrides
 
 
@@ -73,6 +78,72 @@ def test_default_a1_spec_goes_to_confirmation():
     assert analysis["engine_steps"]["step7_grade_code"] == "A1"
     assert analysis["status"] == "待确认"
     assert analysis["formal_code"] == ""
+
+
+def test_business_field_evidence_is_readable_without_internal_ids():
+    analysis = {
+        "engine_steps": {
+            "agent_glue_name": "NY2170",
+            "glue_model": "NY2170",
+            "step1_glue_code": "2C",
+            "thickness_raw": "16±1.5MIL",
+            "step2_thick_code": "00406",
+            "copper_spec_raw": "H/H",
+            "step3_copper_code": "HH",
+            "size_w": 82,
+            "size_h": 49,
+            "step4_size_code": "82004900",
+            "glue_category": "普通",
+            "step5_glue_cat_code": "Y",
+            "step6_copper_type_code": "W",
+            "step7_grade_code": "AC",
+            "order_type": "芯厚",
+            "step8_tc_code": "C",
+        },
+        "order_semantic_model": {
+            "source_fields": {"订单备注": "qiche"},
+            "result": {
+                "semantic_items": [
+                    {
+                        "target_field": "grade_intent",
+                        "stated_target_value": "qiche",
+                        "normalized_value": "汽车板",
+                    }
+                ]
+            },
+        },
+        "applied_rules": [],
+    }
+
+    glue = _business_field_evidence(analysis, {"field_key": "glue", "code": "2C"})
+    thickness = _business_field_evidence(
+        analysis,
+        {"field_key": "thickness", "code": "00406"},
+    )
+    copper_type = _business_field_evidence(
+        analysis,
+        {"field_key": "copper_type", "code": "W"},
+    )
+    grade = _business_field_evidence(
+        analysis,
+        {
+            "field_key": "grade",
+            "code": "AC",
+            "score": 98,
+            "hit_type": "模型语义标准化",
+        },
+    )
+
+    assert glue == "规格识别出NY2170 → 胶系代码2C"
+    assert thickness == "规格厚度16±1.5MIL → 厚度码00406"
+    assert copper_type == "未指定特殊铜箔类型，按业务确认常规 HTE/W"
+    assert "订单备注「qiche」" in grade
+    assert "基板级别=AC" in grade
+    for text in (glue, thickness, copper_type, grade):
+        assert "TSR-" not in text
+        assert "TGM-" not in text
+        assert "transcode_rules.xlsx" not in text
+        assert "BASE-" not in text
 
 
 def test_semantic_override_cannot_overwrite_exact_spec_grade():

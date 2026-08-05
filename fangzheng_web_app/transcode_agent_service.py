@@ -318,6 +318,13 @@ def calculate_transcode_agent_quote(
         employee_id=employee_id,
     )
     incomplete_fields = _incomplete_output_fields(analysis)
+    business_evidence = [
+        {
+            **dict(ev),
+            "business_evidence": _business_field_evidence(analysis, ev),
+        }
+        for ev in analysis.get("field_evidence") or []
+    ]
     return {
         "status": analysis["status"],
         "result": analysis["formal_code"],
@@ -326,7 +333,7 @@ def calculate_transcode_agent_quote(
         "note": analysis["summary"],
         "error": analysis["reason"] if analysis["status"] != "成功" else "",
         "confidence": analysis["overall_score"],
-        "field_evidence": analysis["field_evidence"],
+        "field_evidence": business_evidence,
         "rule_version": base_version,
         "agent_rule_version": agent_version or "未上传",
         "order_semantic_model": analysis.get("order_semantic_model") or {},
@@ -2834,6 +2841,30 @@ def list_transcode_agent_confirmations(
         item["decision_options"] = candidate_codes
         item["options"] = _json_loads(item.pop("options_json", "[]"), [])
         item["evidence"] = _json_loads(item.pop("evidence_json", "{}"), {})
+        if str(item["status"]) == "pending":
+            field_evidence = next(
+                (
+                    ev
+                    for ev in analysis.get("field_evidence") or []
+                    if str(ev.get("field_key") or "") == str(item["field_key"])
+                    and ev.get("gate")
+                ),
+                None,
+            )
+            if field_evidence:
+                business = _business_field_evidence(analysis, field_evidence)
+            else:
+                business = _business_field_evidence(
+                    analysis,
+                    {
+                        "field_key": str(item["field_key"]),
+                        "field": str(item["field_label"]),
+                        "code": str(item.get("current_code") or ""),
+                    },
+                )
+            item["evidence"]["business_evidence"] = business
+            item["business_reason"] = business
+            item["decision_reason"] = business
         item.pop("analysis_json", None)
         items.append(item)
     records = _load_transcode_agent_trace_records(str(job["stored_result_path"] or ""))
@@ -2931,6 +2962,98 @@ def _load_transcode_agent_trace_records(output_path: str) -> list[dict[str, Any]
     except (BadZipFile, EOFError, OSError):
         _cached_transcode_agent_trace_records.cache_clear()
         return []
+
+
+def _business_field_evidence(
+    analysis: dict[str, Any],
+    evidence: dict[str, Any],
+) -> str:
+    """Build a business-readable explanation for one field evidence item."""
+    field_key = str(evidence.get("field_key") or "")
+    code = str(evidence.get("code") or "").strip()
+    steps = analysis.get("engine_steps") or {}
+
+    if field_key == "glue":
+        name = str(
+            steps.get("agent_glue_name") or steps.get("glue_model") or "未识别胶系"
+        ).strip()
+        return f"规格识别出{name} → 胶系代码{code}"
+    if field_key == "thickness":
+        raw = str(steps.get("thickness_raw") or "未识别厚度").strip()
+        return f"规格厚度{raw} → 厚度码{code}"
+    if field_key == "copper":
+        raw = str(steps.get("copper_spec_raw") or "未识别铜箔").strip()
+        return f"铜箔{raw} → 铜箔码{code}"
+    if field_key == "size":
+        width = str(steps.get("size_w") or "").strip()
+        height = str(steps.get("size_h") or "").strip()
+        return f"尺寸{width}×{height} → 尺寸码{code}"
+    if field_key == "glue_category":
+        category = str(steps.get("glue_category") or "未识别胶水类别").strip()
+        return f"胶水类别{category} → {code}"
+    if field_key == "copper_type":
+        if code == "W":
+            return "未指定特殊铜箔类型，按业务确认常规 HTE/W"
+        return f"铜箔类型{steps.get('copper_type_raw') or '特殊类型'} → {code}"
+    if field_key == "grade":
+        model_record = analysis.get("order_semantic_model") or {}
+        if str(evidence.get("hit_type") or "") == "模型语义标准化":
+            remark = str(
+                (model_record.get("source_fields") or {}).get("订单备注") or ""
+            ).strip()
+            stated = _model_grade_stated_value(model_record.get("result") or {})
+            return (
+                f"订单备注「{remark}」被识别为「{stated or '汽车板'}」，"
+                f"基板级别={code}，需人工确认"
+            )
+        grade_note = str(steps.get("grade_note") or "").strip()
+        if grade_note.startswith("基板级别写法："):
+            desc = grade_note.split("：", 1)[1].split("→", 1)[0].strip()
+            return f"规格包含「{desc}」，基板级别={code}"
+        applied = next(
+            (
+                item
+                for item in analysis.get("applied_rules") or []
+                if str(item.get("field") or "") == "grade_code"
+            ),
+            None,
+        )
+        if applied:
+            text = str(applied.get("text") or "").strip()
+            if text and not text.startswith("字段=") and "| 目标=" not in text:
+                return f"客户规则：{text}"
+        return f"基板级别未命中明确规则，当前值{code}，需人工确认"
+    if field_key == "total_core":
+        order_type = str(steps.get("order_type") or "未识别").strip()
+        return f"规格按{order_type}处理 → {code}"
+    return str(evidence.get("evidence") or "").strip()
+
+
+def _model_grade_stated_value(result: dict[str, Any]) -> str:
+    for item in result.get("semantic_items") or []:
+        if str(item.get("target_field") or "") == "grade_intent":
+            return str(item.get("stated_target_value") or item.get("normalized_value") or "")
+    return ""
+
+
+def _business_confirmation_reason(
+    analysis: dict[str, Any],
+    low_evidence: list[dict[str, Any]],
+) -> str:
+    labels = list(
+        dict.fromkeys(str(item.get("field") or "") for item in low_evidence)
+    )
+    parts = list(
+        dict.fromkeys(
+            _business_field_evidence(analysis, item)
+            for item in low_evidence
+            if item.get("evidence")
+        )
+    )
+    reason = f"需人工确认字段：{', '.join(labels)}"
+    if parts:
+        reason += "；" + "；".join(parts)
+    return reason
 
 
 @lru_cache(maxsize=16)

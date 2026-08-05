@@ -242,7 +242,7 @@
         : "";
       reason.textContent = `${item.decision_reason}${options}`;
     } else {
-      reason.textContent = item.reason || item.evidence?.evidence || "转码处理记录";
+      reason.textContent = item.evidence?.business_evidence || item.reason || item.evidence?.evidence || "转码处理记录";
     }
     wrapper.append(heading, input, reason);
 
