@@ -22,6 +22,19 @@
 <section class="card model-config-card">
   <form method="post" class="form-grid model-config-form">
     <label class="model-switch-row">
+      <span>全局启用订单备注语义模型</span>
+      <input type="checkbox" name="enabled" value="1" {% if global_model_enabled %}checked{% endif %}>
+    </label>
+    <p class="muted-note">开启后所有用户任务自动使用模型；API Key 优先使用当前用户配置，否则使用全局配置。</p>
+    <div class="model-config-actions">
+      <button type="submit" name="action" value="save_global_enabled">保存全局开关</button>
+    </div>
+  </form>
+</section>
+
+<section class="card model-config-card">
+  <form method="post" class="form-grid model-config-form">
+    <label class="model-switch-row">
       <span>启用订单备注语义模型</span>
       <input type="checkbox" name="enabled" value="1" {% if model_config.enabled %}checked{% endif %}>
     </label>
