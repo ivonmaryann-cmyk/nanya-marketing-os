@@ -123,6 +123,7 @@ def test_transcode_agent_page_hides_legacy_rule_display(monkeypatch, tmp_path):
     assert "规则配置" in body
     assert "当前规则" not in body
     assert "Agent规则说明" not in body
+    assert "旧版转码" not in body
 
 
 def test_confirmation_center_buttons_and_auto_basis_are_business_friendly():
