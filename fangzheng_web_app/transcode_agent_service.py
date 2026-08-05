@@ -7,9 +7,11 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import traceback
 import unicodedata
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -613,10 +615,21 @@ def run_transcode_agent_job(job_id: int, employee_id: str) -> None:
         evidence_model_call_count = 0
         order_semantic_call_count = 0
         order_semantic_cache: dict[str, dict[str, Any]] = {}
-        for processed, i in enumerate(data_indices, start=1):
+        _model_limit_lock = threading.Lock()
+        processed = 0
+
+        def process_one(i: int) -> dict[str, Any]:
             row = df_req.iloc[i]
-            customer_code = engine._clean_cell(row.iloc[customer_code_col]) if customer_code_col is not None and len(row) > customer_code_col else ""
-            customer = str(row.iloc[customer_col]).strip() if customer_col is not None and len(row) > customer_col and pd.notna(row.iloc[customer_col]) else ""
+            customer_code = (
+                engine._clean_cell(row.iloc[customer_code_col])
+                if customer_code_col is not None and len(row) > customer_code_col
+                else ""
+            )
+            customer = (
+                str(row.iloc[customer_col]).strip()
+                if customer_col is not None and len(row) > customer_col and pd.notna(row.iloc[customer_col])
+                else ""
+            )
             spec = engine._clean_cell(row.iloc[spec_col])
             context = engine.build_context_text_from_row(row, context_cols)
             parse_fallback_text = engine.build_context_text_from_row(row, parse_fallback_cols)
@@ -627,9 +640,7 @@ def run_transcode_agent_job(job_id: int, employee_id: str) -> None:
             excel_row = i + 1
 
             if engine.is_pp_or_rc_spec(pp_check_text):
-                skip_count += 1
                 result_text = "跳过：PP/RC/% 暂不输出CCL制造编码"
-                df_req.iloc[i, result_col] = result_text
                 skip_analysis = _skip_analysis(excel_row, customer_code, customer, spec, result_text)
                 _attach_semantic_shadow_metadata(
                     skip_analysis,
@@ -648,9 +659,13 @@ def run_transcode_agent_job(job_id: int, employee_id: str) -> None:
                     "model": order_semantic_runtime.model,
                     "reason": "PP/RC/%不属于本轮CCL语义标准化范围",
                 }
-                analyses.append(skip_analysis)
-                append_job_log(job_id, f"第 {excel_row} 行跳过：PP/RC/%", skip_count=skip_count, current_row=processed, total_rows=total_rows)
-                continue
+                return {
+                    "i": i,
+                    "excel_row": excel_row,
+                    "analysis": skip_analysis,
+                    "skip": True,
+                    "log_text": f"第 {excel_row} 行跳过：PP/RC/%",
+                }
 
             analysis = analyze_spec(
                 engine,
@@ -733,41 +748,45 @@ def run_transcode_agent_job(job_id: int, employee_id: str) -> None:
                 cached = order_semantic_cache.get(cache_key)
                 if cached is not None:
                     analysis["order_semantic_model"] = dict(cached, cached=True)
-                elif order_semantic_call_count >= order_semantic_runtime.max_calls:
-                    analysis["order_semantic_model"].update(
-                        {"status": "限流跳过", "reason": "达到单任务DeepSeek调用上限"}
-                    )
                 else:
-                    order_semantic_call_count += 1
-                    try:
-                        normalized = normalize_order_shadow(
-                            order_semantic_runtime,
-                            customer_code=customer_code,
-                            customer_name=customer,
-                            source_fields=semantic_source_fields,
-                            semantic_evaluations=shadow_results,
+                    with _model_limit_lock:
+                        call_allowed = order_semantic_call_count < order_semantic_runtime.max_calls
+                        if call_allowed:
+                            order_semantic_call_count += 1
+                    if not call_allowed:
+                        analysis["order_semantic_model"].update(
+                            {"status": "限流跳过", "reason": "达到单任务DeepSeek调用上限"}
                         )
-                        model_record = {
-                            "mode": order_semantic_runtime.mode,
-                            "status": "成功",
-                            "model": order_semantic_runtime.model,
-                            "cached": False,
-                            "source_fields": semantic_source_fields,
-                            "rule_ids": analysis["order_semantic_model"]["rule_ids"],
-                            "result": normalized,
-                        }
-                    except Exception as exc:
-                        model_record = {
-                            "mode": order_semantic_runtime.mode,
-                            "status": "失败",
-                            "model": order_semantic_runtime.model,
-                            "cached": False,
-                            "source_fields": semantic_source_fields,
-                            "rule_ids": analysis["order_semantic_model"]["rule_ids"],
-                            "error": str(exc),
-                        }
-                    order_semantic_cache[cache_key] = model_record
-                    analysis["order_semantic_model"] = model_record
+                    else:
+                        try:
+                            normalized = normalize_order_shadow(
+                                order_semantic_runtime,
+                                customer_code=customer_code,
+                                customer_name=customer,
+                                source_fields=semantic_source_fields,
+                                semantic_evaluations=shadow_results,
+                            )
+                            model_record = {
+                                "mode": order_semantic_runtime.mode,
+                                "status": "成功",
+                                "model": order_semantic_runtime.model,
+                                "cached": False,
+                                "source_fields": semantic_source_fields,
+                                "rule_ids": analysis["order_semantic_model"]["rule_ids"],
+                                "result": normalized,
+                            }
+                        except Exception as exc:
+                            model_record = {
+                                "mode": order_semantic_runtime.mode,
+                                "status": "失败",
+                                "model": order_semantic_runtime.model,
+                                "cached": False,
+                                "source_fields": semantic_source_fields,
+                                "rule_ids": analysis["order_semantic_model"]["rule_ids"],
+                                "error": str(exc),
+                            }
+                        order_semantic_cache[cache_key] = model_record
+                        analysis["order_semantic_model"] = model_record
                 model_result = (analysis.get("order_semantic_model") or {}).get("result")
                 if model_result:
                     model_evaluations, model_notes = build_model_rule_evaluations(
@@ -832,17 +851,20 @@ def run_transcode_agent_job(job_id: int, employee_id: str) -> None:
                 and evidence_model_runtime.client is not None
                 and evidence_score_matrix
                 and analysis["evidence_score_shadow"].get("field_reviews")
-                and evidence_model_call_count < evidence_model_max_calls
             ):
-                analysis["evidence_score_shadow"] = review_evidence_shadow(
-                    analysis,
-                    semantic_evaluations=shadow_results,
-                    matrix=evidence_score_matrix,
-                    client=evidence_model_runtime.client,
-                )
-                evidence_model_call_count += int(
-                    analysis["evidence_score_shadow"].get("model_call_count") or 0
-                )
+                with _model_limit_lock:
+                    allow_evidence = evidence_model_call_count < evidence_model_max_calls
+                if allow_evidence:
+                    analysis["evidence_score_shadow"] = review_evidence_shadow(
+                        analysis,
+                        semantic_evaluations=shadow_results,
+                        matrix=evidence_score_matrix,
+                        client=evidence_model_runtime.client,
+                    )
+                    with _model_limit_lock:
+                        evidence_model_call_count += int(
+                            analysis["evidence_score_shadow"].get("model_call_count") or 0
+                        )
             gate_result = evidence_gate_decision(analysis, mode=evidence_gate_mode)
             analysis["evidence_gate"] = gate_result
             if analysis.get("status") == "成功" and gate_result["blocked"]:
@@ -857,31 +879,65 @@ def run_transcode_agent_job(job_id: int, employee_id: str) -> None:
                     analysis["reason"],
                     analysis.get("applied_rules") or [],
                 )
-            analyses.append(analysis)
             if analysis["status"] == "成功":
-                success_count += 1
-                df_req.iloc[i, result_col] = analysis["formal_code"]
                 log_text = f"第 {excel_row} 行高置信出码：{analysis['formal_code']}"
             elif analysis["status"] == "待确认":
-                confirm_count += 1
                 analysis["formal_code"] = ""
-                fail_count += 1
-                df_req.iloc[i, result_col] = ""
                 log_text = f"第 {excel_row} 行待确认：{analysis['reason']}"
             else:
-                fail_count += 1
-                df_req.iloc[i, result_col] = f"未识别：{analysis['reason']}"
                 log_text = f"第 {excel_row} 行未识别：{analysis['reason']}"
-            append_job_log(
-                job_id,
-                log_text,
-                success_count=success_count,
-                fail_count=fail_count,
-                skip_count=skip_count,
-                current_row=processed,
-                total_rows=total_rows,
-            )
+            return {
+                "i": i,
+                "excel_row": excel_row,
+                "analysis": analysis,
+                "skip": False,
+                "log_text": log_text,
+            }
 
+        for chunk_start in range(0, len(data_indices), 5):
+            chunk = data_indices[chunk_start:chunk_start + 5]
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = {executor.submit(process_one, i): i for i in chunk}
+                results = {}
+                for future in as_completed(futures):
+                    result = future.result()
+                    results[result["i"]] = result
+            for i in chunk:
+                result = results[i]
+                excel_row = result["excel_row"]
+                analysis = result["analysis"]
+                processed += 1
+                if result["skip"]:
+                    skip_count += 1
+                    df_req.iloc[i, result_col] = "跳过：PP/RC/% 暂不输出CCL制造编码"
+                    append_job_log(
+                        job_id,
+                        result["log_text"],
+                        skip_count=skip_count,
+                        current_row=processed,
+                        total_rows=total_rows,
+                    )
+                    continue
+                analyses.append(analysis)
+                if analysis["status"] == "成功":
+                    success_count += 1
+                    df_req.iloc[i, result_col] = analysis["formal_code"]
+                elif analysis["status"] == "待确认":
+                    confirm_count += 1
+                    fail_count += 1
+                    df_req.iloc[i, result_col] = ""
+                else:
+                    fail_count += 1
+                    df_req.iloc[i, result_col] = f"未识别：{analysis['reason']}"
+                append_job_log(
+                    job_id,
+                    result["log_text"],
+                    success_count=success_count,
+                    fail_count=fail_count,
+                    skip_count=skip_count,
+                    current_row=processed,
+                    total_rows=total_rows,
+                )
         input_path = Path(job["stored_input_path"])
         output_path = input_path.with_name(f"{input_path.stem}_Agent转码结果.xlsx")
         _save_agent_result(
