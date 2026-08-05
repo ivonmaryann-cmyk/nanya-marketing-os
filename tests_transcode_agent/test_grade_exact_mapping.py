@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fangzheng_web_app.transcode_agent_engine import get_grade_code, match_exact_grade_desc
-from fangzheng_web_app.transcode_agent_service import _load_runtime
+from fangzheng_web_app.transcode_agent_service import _load_runtime, _score_field, analyze_spec
 from fangzheng_web_app.transcode_semantic_overrides import apply_confirmed_semantic_overrides
 
 
@@ -38,6 +38,41 @@ def test_get_grade_code_rejects_fuzzy_and_pinyin():
     assert get_grade_code("NY2150 1.0 1/1 41*49 车", "", "", {}, GRADE_DESC_TO_CODE) == "A1"
     assert get_grade_code("NY2150 1.0 1/1 41*49 qiche", "", "", {}, GRADE_DESC_TO_CODE) == "A1"
     assert get_grade_code("NY2150 1.0 1/1 41*49 qicheban", "", "", {}, GRADE_DESC_TO_CODE) == "A1"
+
+
+def test_default_a1_without_explicit_rule_is_not_100():
+    score, hit_type, _source, _note = _score_field(
+        "grade",
+        "A1",
+        {
+            "glue_model": "NY2150",
+            "thickness_raw": "1.0",
+            "thickness_mm": 1.0,
+            "copper_spec_raw": "1/1",
+            "size_w": 41,
+            "size_h": 49,
+        },
+        [],
+        {},
+        [],
+    )
+    assert score == 99
+    assert hit_type == "解析来源待确认"
+
+
+def test_default_a1_spec_goes_to_confirmation():
+    engine, tables, agent_rules, _mapping_tables, _base_version, _agent_version = _load_runtime()
+    analysis = analyze_spec(
+        engine,
+        tables,
+        agent_rules,
+        "NY2150 1.0 1/1 41*49",
+        customer="",
+        customer_code="",
+    )
+    assert analysis["engine_steps"]["step7_grade_code"] == "A1"
+    assert analysis["status"] == "待确认"
+    assert analysis["formal_code"] == ""
 
 
 def test_semantic_override_cannot_overwrite_exact_spec_grade():

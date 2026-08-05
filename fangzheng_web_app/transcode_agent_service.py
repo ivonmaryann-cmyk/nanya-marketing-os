@@ -2431,10 +2431,6 @@ def _score_confirmed_base_field(
         input_text = str(steps.get("agent_input_text") or "").upper()
         if grade_note:
             return 100, "业务确定性等级规则", "transcode_rules.xlsx/客户下单与胶系基板转换", grade_note
-        if code_value == "A1" and (glue_model or thickness_raw or copper_raw or has_size):
-            return 100, "已确认默认规则", "BASE-DEFAULT-GRADE-A1", (
-                "未命中特殊基板等级时按已确认默认A1"
-            )
         if code_value == "AC" and (
             "汽车板" in glue_model
             or any(keyword in input_text for keyword in ("汽车板", "汽车专用"))
