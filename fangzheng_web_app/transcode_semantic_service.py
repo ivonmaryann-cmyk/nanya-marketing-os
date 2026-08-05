@@ -101,7 +101,7 @@ class SemanticModelConfig:
     base_url: str = "https://api.deepseek.com"
     model: str = "deepseek-chat"
     mode: str = "off"
-    timeout_seconds: float = 60.0
+    timeout_seconds: float = 120.0
     max_order_calls: int = 50
     key_file: Path = DEFAULT_KEY_FILE
 
@@ -136,7 +136,7 @@ def load_semantic_model_config(
     timeout_raw = str(
         env.get("TRANSCODE_SEMANTIC_MODEL_TIMEOUT")
         or file_values.get("timeout_seconds")
-        or "60"
+        or "120"
     ).strip()
     max_order_calls_raw = str(
         env.get("TRANSCODE_ORDER_SEMANTIC_MODEL_MAX_CALLS")

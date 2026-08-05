@@ -12,7 +12,7 @@ from .transcode_semantic_service import (
 
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-v4-pro"
-DEFAULT_TIMEOUT_SECONDS = 60.0
+DEFAULT_TIMEOUT_SECONDS = 120.0
 DEFAULT_MAX_ORDER_CALLS = 50
 
 
