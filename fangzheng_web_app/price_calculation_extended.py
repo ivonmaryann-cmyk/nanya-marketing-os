@@ -3938,8 +3938,8 @@ def _calculate_yingchuangli_pp(desc: str, rules: ExtRules) -> ExtCalcResult:
         length_relaxed = True
     if not best or best.price is None:
         return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width), _fmt_length(length), "未命中英创力PP报价：型号/TG、玻布、RC或卷长不匹配")
-    price = _round_money(best.price)
-    note = f"命中英创力PP报价 Sheet {best.sheet} 第 {best.excel_row} 行，型号={best.product}，玻布={glass}，RC={rc:g}，每米单价={price:.2f}"
+    price = _round_half_up(best.price, 1)
+    note = f"命中英创力PP报价 Sheet {best.sheet} 第 {best.excel_row} 行，型号={best.product}，玻布={glass}，RC={rc:g}，每米单价={price:.1f}"
     if length:
         if length_relaxed and best.length:
             note += f"，规格卷长{length}m未找到同卷长报价，按报价单卷长{best.length}m取价"
@@ -3962,9 +3962,9 @@ def _calculate_yingchuangli_ccl(desc: str, rules: ExtRules, quantity: Any = None
     if special:
         factor, size_label = _yingchuangli_ccl_size_factor(desc)
         base_price = float(special.prices["PRICE"])
-        price = _round_money(base_price * factor)
+        price = _round_half_up(base_price * factor, 0)
         total = _calc_total(quantity, price)
-        note = f"命中英创力特殊规格基板 Sheet {special.sheet} 第 {special.excel_row} 行，取最新月份单价={base_price:.2f}，尺寸={size_label}，系数={factor:g}，新价={price:.2f}"
+        note = f"命中英创力特殊规格基板 Sheet {special.sheet} 第 {special.excel_row} 行，取最新月份单价={base_price:.2f}，尺寸={size_label}，系数={factor:g}，新价={price:.0f}"
         return ExtCalcResult("成功", "CCL", price, total, "", "", note, special.excel_row, "最新月份单价")
 
     regular = _yingchuangli_best_ccl_row(rules.ccl_rows, product, thickness_mm, copper, foil, stack, thickness_scope, special=False)
@@ -3972,9 +3972,9 @@ def _calculate_yingchuangli_ccl(desc: str, rules: ExtRules, quantity: Any = None
         return ExtCalcResult("失败", "CCL", "待确认", "", "", "", "未命中英创力CCL报价：型号/TG、厚度、铜厚、铜箔或叠构不匹配")
     factor, size_label = _yingchuangli_ccl_size_factor(desc)
     base_price = float(regular.prices["PRICE"])
-    price = _round_money(base_price * factor)
+    price = _round_half_up(base_price * factor, 0)
     total = _calc_total(quantity, price)
-    note = f"命中英创力CCL报价 Sheet {regular.sheet} 第 {regular.excel_row} 行，按G:J最新价格列取价={base_price:.2f}，尺寸={size_label}，系数={factor:g}，新价={price:.2f}"
+    note = f"命中英创力CCL报价 Sheet {regular.sheet} 第 {regular.excel_row} 行，按G:J最新价格列取价={base_price:.2f}，尺寸={size_label}，系数={factor:g}，新价={price:.0f}"
     return ExtCalcResult("成功", "CCL", price, total, "", "", note, regular.excel_row, "G:J最新价格")
 
 
@@ -4084,16 +4084,26 @@ def _calculate_pp(customer_key: str, desc: str, rules: ExtRules) -> ExtCalcResul
             f"公式={per_m_text}*{small_length_m:.3f}/{split}={price_text}"
         )
         return ExtCalcResult("成功", "PP", price, "", _fmt_width(small_width_in), "", note, best.excel_row, best.sheet)
-    if customer_key == "hanyu" and length:
-        if best.price is None:
-            return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width), _fmt_length(length), "命中瀚宇PP规格但报价行缺少Per M")
-        price = _hanyu_price(best.price)
-        note = (
-            f"命中瀚宇PP报价 Sheet {best.sheet} 第 {best.excel_row} 行，"
-            f"玻布={glass}，RC={rc:g}，报价宽幅={_fmt_width(best.width) or '未写'}，"
-            f"卷长按{length}m匹配，Per M={price:.6f}"
-        )
-        return ExtCalcResult("成功", "PP", price, "", _fmt_width(width or best.width), _fmt_length(length), note, best.excel_row, best.sheet)
+    if customer_key == "hanyu":
+        roll_length = length or best.length
+        if best.roll_price is not None:
+            price = _hanyu_price(best.roll_price)
+            note = (
+                f"命中瀚宇PP报价 Sheet {best.sheet} 第 {best.excel_row} 行，"
+                f"玻布={glass}，RC={rc:g}，报价宽幅={_fmt_width(best.width) or '未写'}，"
+                f"整卷价格={price:.6f}"
+            )
+            if roll_length:
+                note += f"，卷长按{roll_length}m匹配"
+            return ExtCalcResult("成功", "PP", price, "", _fmt_width(width or best.width), _fmt_length(roll_length), note, best.excel_row, best.sheet)
+        if best.price is not None and roll_length:
+            price = _hanyu_price(float(best.price) * roll_length)
+            note = (
+                f"命中瀚宇PP报价 Sheet {best.sheet} 第 {best.excel_row} 行，"
+                f"报价行缺少整卷价，按 Per M={best.price:.6f}*卷长{roll_length}m 计算整卷价格={price:.6f}"
+            )
+            return ExtCalcResult("成功", "PP", price, "", _fmt_width(width or best.width), _fmt_length(roll_length), note, best.excel_row, best.sheet)
+        return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width), _fmt_length(roll_length), "命中瀚宇PP规格但报价行缺少Per Roll/Per M")
     if customer_key == "wutong" and small_length_m is None and small_width_in is None:
         if best.roll_price is not None:
             price = _round_money(best.roll_price)
@@ -4286,6 +4296,11 @@ def _to_float(value: Any) -> float | None:
 
 def _round_money(value: Any) -> float:
     return round(float(value) + 1e-9, 2)
+
+
+def _round_half_up(value: Any, digits: int = 0) -> float:
+    factor = 10 ** digits
+    return math.floor(float(value) * factor + 0.5 + 1e-9) / factor
 
 
 def _taixing_precise_price(value: Any) -> float:
