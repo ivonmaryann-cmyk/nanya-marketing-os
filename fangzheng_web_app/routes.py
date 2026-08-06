@@ -179,7 +179,6 @@ from .transcode_model_config import (
     test_user_model_connection,
     update_user_model_config,
 )
-from .transcode_order_semantic_model import is_order_model_globally_enabled
 from .transcode_semantic_rules import (
     get_active_transcode_semantic_rule_version,
     load_transcode_semantic_rules,
@@ -1407,19 +1406,6 @@ def transcode_agent_model_config():
     employee_id = current_employee() or ""
     if request.method == "POST":
         action = str(request.form.get("action") or "save").strip()
-        if action == "save_global_enabled":
-            from .db import set_setting
-            from .transcode_order_semantic_model import GLOBAL_ORDER_MODEL_SETTING
-
-            enabled = bool(request.form.get("enabled"))
-            set_setting(GLOBAL_ORDER_MODEL_SETTING, "1" if enabled else "0")
-            flash(
-                "全局订单备注语义模型已启用，所有用户任务自动使用模型。"
-                if enabled
-                else "全局订单备注语义模型已关闭。",
-                "success",
-            )
-            return redirect(url_for("main.transcode_agent_model_config"))
         api_key_text = str(request.form.get("api_key") or "").strip()
         clear_key = bool(request.form.get("clear_api_key"))
         api_key: str | None = "" if clear_key else (api_key_text or None)
@@ -1444,7 +1430,6 @@ def transcode_agent_model_config():
     return render_template(
         "transcode_agent_model_config.html",
         model_config=load_user_model_config(employee_id),
-        global_model_enabled=is_order_model_globally_enabled(),
     )
 
 

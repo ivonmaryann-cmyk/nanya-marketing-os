@@ -6,12 +6,8 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
-from .db import get_setting
 from .transcode_semantic_service import DeepSeekSemanticClient, load_semantic_model_config
 from .transcode_model_config import load_user_model_config
-
-
-GLOBAL_ORDER_MODEL_SETTING = "transcode_agent_order_model_global_enabled"
 
 
 @dataclass(frozen=True)
@@ -23,21 +19,8 @@ class OrderSemanticRuntime:
     load_error: str = ""
 
 
-def is_order_model_globally_enabled() -> bool:
-    value = str(get_setting(GLOBAL_ORDER_MODEL_SETTING, "0") or "0").strip().lower()
-    return value in {"1", "true", "yes", "on"}
-
-
 def load_order_semantic_runtime(employee_id: str = "") -> OrderSemanticRuntime:
     try:
-        if is_order_model_globally_enabled():
-            config = _global_order_model_config(employee_id)
-            return OrderSemanticRuntime(
-                mode="active",
-                client=DeepSeekSemanticClient(config),
-                model=config.model,
-                max_calls=config.max_order_calls,
-            )
         config = (
             load_user_model_config(employee_id).to_runtime_config()
             if str(employee_id or "").strip()
@@ -52,31 +35,6 @@ def load_order_semantic_runtime(employee_id: str = "") -> OrderSemanticRuntime:
         client=DeepSeekSemanticClient(config),
         model=config.model,
         max_calls=config.max_order_calls,
-    )
-
-
-def _global_order_model_config(employee_id: str):
-    from .transcode_semantic_service import SemanticModelConfig
-
-    if str(employee_id or "").strip():
-        user = load_user_model_config(employee_id)
-        if user.api_key:
-            return SemanticModelConfig(
-                api_key=user.api_key,
-                base_url=user.base_url,
-                model=user.model,
-                mode="active",
-                timeout_seconds=user.timeout_seconds,
-                max_order_calls=user.max_order_calls,
-            )
-    base = load_semantic_model_config()
-    return SemanticModelConfig(
-        api_key=base.api_key,
-        base_url=base.base_url,
-        model=base.model,
-        mode="active",
-        timeout_seconds=base.timeout_seconds,
-        max_order_calls=base.max_order_calls,
     )
 
 

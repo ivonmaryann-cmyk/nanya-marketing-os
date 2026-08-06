@@ -95,9 +95,7 @@
   <span>任务 #{{ job.id }}</span>
   <div>
     <button type="button" class="secondary-button hidden" id="confirm-verify-all">批量核对已出码</button>
-    <button type="button" class="secondary-button" id="confirm-reevaluate">按当前规则重新评估</button>
     <a class="secondary-link" href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载当前结果</a>
-    <button type="button" class="secondary-button" id="confirm-finalize">暂不处理剩余项并生成结果</button>
   </div>
 </div>
 
@@ -356,8 +354,6 @@
       completed: "已完成（全部核对）",
       failed: "失败"
     }[confirmationData.status] || confirmationData.status || "-";
-    document.getElementById("confirm-finalize").disabled = !(confirmationData.confirm_count > 0);
-    document.getElementById("confirm-reevaluate").disabled = !(confirmationData.confirm_count > 0);
     document.getElementById("confirm-verify-all").classList.toggle(
       "hidden",
       !(confirmationData.verify_count > 0)
@@ -518,17 +514,6 @@
     await refreshData(row.excel_row, true);
   });
 
-  document.getElementById("confirm-finalize").addEventListener("click", async () => {
-    if (!window.confirm("暂不处理所有剩余项并生成结果？正式码将保持为空。")) return;
-    const response = await fetch(`/api/transcode-agent/jobs/${confirmationJobId}/finalize-pending`, {method: "POST"});
-    const result = await response.json();
-    if (!response.ok) {
-      messageEl.textContent = result.error || "操作失败";
-      return;
-    }
-    await refreshData();
-  });
-
   document.getElementById("confirm-verify-all").addEventListener("click", async () => {
     if (!window.confirm(`确认批量核对全部 ${confirmationData.verify_count || 0} 行已出码结果？核对后标记为“已人工核对”。`)) return;
     messageEl.textContent = "正在批量核对...";
@@ -546,22 +531,6 @@
       return;
     }
     messageEl.textContent = `已完成 ${result.verified_count} 行批量核对，结果文件已更新，请重新下载。`;
-    recordScope = "all";
-    recordPage = 1;
-    confirmationIndex = 0;
-    await refreshData();
-  });
-
-  document.getElementById("confirm-reevaluate").addEventListener("click", async () => {
-    if (!window.confirm("按当前活动规则重新评估所有待确认行？达到100分的行会进入“已出码需核对”，仍需人工核对。")) return;
-    messageEl.textContent = "正在按当前规则重新评估...";
-    const response = await fetch(`/api/transcode-agent/jobs/${confirmationJobId}/reevaluate-pending`, {method: "POST"});
-    const result = await response.json();
-    if (!response.ok) {
-      messageEl.textContent = result.error || "重新评估失败";
-      return;
-    }
-    messageEl.textContent = `重新评估完成：${result.resolved_rows}行达到100分，${result.unresolved_rows}行仍待确认。`;
     recordScope = "all";
     recordPage = 1;
     confirmationIndex = 0;

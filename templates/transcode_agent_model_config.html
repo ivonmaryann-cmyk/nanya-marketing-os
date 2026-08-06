@@ -6,46 +6,42 @@
   <span>营销转码Agent / 模型配置</span>
 </div>
 
-<section class="hero compact-hero">
+<header class="model-config-header">
   <div>
-    <div class="panel-tag">用户级配置</div>
-    <h1>订单备注语义模型</h1>
-    <p>配置只对当前登录用户生效。模型只做语义标准化，不直接生成制造编码。</p>
+    <div class="panel-tag">订单备注语义模型</div>
+    <h1>模型配置</h1>
+    <p>模型只负责把订单备注中的口语表达归一化到标准业务词，不直接生成制造编码。</p>
   </div>
-  <div class="hero-note">
-    <div>当前状态</div>
-    <strong>{{ '已启用' if model_config.enabled else '未启用' }}</strong>
-    <em>{{ model_config.model }} / {{ '已配置Key' if model_config.key_configured else '未配置Key' }}</em>
+  <div class="model-config-summary">
+    <div><span>我的配置</span><strong>{{ '已启用' if model_config.enabled else '未启用' }}</strong></div>
+    <div><span>当前模型</span><strong>{{ model_config.model }}</strong></div>
+    <div><span>API Key</span><strong>{{ '已配置' if model_config.key_configured else '未配置' }}</strong></div>
   </div>
-</section>
+</header>
 
-<section class="card model-config-card">
-  <form method="post" class="form-grid model-config-form">
-    <label class="model-switch-row">
-      <span>全局启用订单备注语义模型</span>
-      <input type="checkbox" name="enabled" value="1" {% if global_model_enabled %}checked{% endif %}>
-    </label>
-    <p class="muted-note">开启后所有用户任务自动使用模型；API Key 优先使用当前用户配置，否则使用全局配置。</p>
-    <div class="model-config-actions">
-      <button type="submit" name="action" value="save_global_enabled">保存全局开关</button>
+<section class="card model-config-card model-config-section">
+  <div class="model-config-section-head">
+    <span>01</span>
+    <div>
+      <h2>我的模型配置</h2>
+      <p>只对当前登录用户生效；谁需要用订单备注语义模型，谁就在这里配置。</p>
     </div>
-  </form>
-</section>
-
-<section class="card model-config-card">
+  </div>
   <form method="post" class="form-grid model-config-form">
     <label class="model-switch-row">
       <span>启用订单备注语义模型</span>
       <input type="checkbox" name="enabled" value="1" {% if model_config.enabled %}checked{% endif %}>
     </label>
-    <label>
-      <span>API URL</span>
-      <input type="url" name="base_url" value="{{ model_config.base_url }}" required>
-    </label>
-    <label>
-      <span>模型名称</span>
-      <input type="text" name="model" value="{{ model_config.model }}" required>
-    </label>
+    <div class="model-config-fields">
+      <label>
+        <span>API URL</span>
+        <input type="url" name="base_url" value="{{ model_config.base_url }}" required>
+      </label>
+      <label>
+        <span>模型名称</span>
+        <input type="text" name="model" value="{{ model_config.model }}" required>
+      </label>
+    </div>
     <label>
       <span>API Key</span>
       <span class="secret-input-wrap">
@@ -67,13 +63,7 @@
         </button>
       </span>
     </label>
-    {% if model_config.key_configured %}
-    <label class="model-clear-key">
-      <input type="checkbox" name="clear_api_key" value="1">
-      <span>清除已保存的 API Key</span>
-    </label>
-    {% endif %}
-    <div class="model-config-actions">
+    <div class="model-config-actions model-config-actions-bottom">
       <button type="submit" name="action" value="save">保存配置</button>
       <button type="submit" name="action" value="test" class="secondary-button">测试连接</button>
     </div>
