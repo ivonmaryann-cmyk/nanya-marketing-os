@@ -2926,8 +2926,13 @@ def list_transcode_agent_confirmations(
         int(row["excel_row"]): dict(row)
         for row in verifications
     }
+    item_pending_codes_by_row: dict[int, str] = {}
     for item in items:
-        item_statuses_by_row.setdefault(int(item["excel_row"]), set()).add(str(item["status"] or ""))
+        excel_row = int(item["excel_row"])
+        item_statuses_by_row.setdefault(excel_row, set()).add(str(item["status"] or ""))
+        pending_code = str(item.get("pending_code") or "").strip()
+        if pending_code:
+            item_pending_codes_by_row.setdefault(excel_row, pending_code)
     records_by_row = {int(record["excel_row"]): record for record in records}
     workbook_refreshed = False
     for excel_row, statuses in item_statuses_by_row.items():
@@ -2956,6 +2961,8 @@ def list_transcode_agent_confirmations(
         verification = verifications_by_row.get(excel_row)
         record["verified"] = bool(verification)
         record["verification"] = verification
+        if not str(record.get("display_code") or "").strip():
+            record["display_code"] = item_pending_codes_by_row.get(excel_row, "")
         analysis = analyses_by_confirmation_row.get(int(record.get("excel_row") or 0))
         if analysis:
             for trace_item in record.get("trace_items") or []:
@@ -3570,13 +3577,14 @@ def confirm_transcode_agent_item(
         int(item["excel_row"]),
         analysis,
     )
-    newly_formal = _update_confirmation_workbook_row(
+    _update_confirmation_workbook_row(
         str(job["stored_result_path"] or ""),
         int(item["excel_row"]),
         analysis,
         confirmation_note=f"当前任务人工确认：{item['field_label']}={normalized_code}"
         + (f"；依据：{basis}" if basis else ""),
     )
+    newly_formal = bool(analysis["status"] == "成功" and item["status"] == "pending")
     if analysis["status"] == "成功":
         db_upsert_transcode_agent_row_verification(
             job_id=int(item["job_id"]),
@@ -4417,7 +4425,11 @@ def _update_confirmation_workbook_row(
                 value=confirmation_note,
             ).fill = green_fill
     else:
-        formal_cell.value = None
+        formal_cell.value = (
+            analysis.get("candidate_code")
+            or formal_cell.value
+            or None
+        )
         formal_cell.fill = red_fill
         if pending_col:
             ws.cell(
@@ -4970,10 +4982,13 @@ def _save_agent_result(
         system_analysis_col = _find_or_append_header_column(ws, SYSTEM_ANALYSIS_HEADER)
         ws.column_dimensions[get_column_letter(system_analysis_col)].width = 90
     else:
-        status_col = result_excel_col + 1
-        explanation_col = result_excel_col + 2
+        pending_col = result_excel_col + 1
+        status_col = result_excel_col + 2
+        explanation_col = result_excel_col + 3
+        ws.cell(row=1, column=pending_col, value=PENDING_RESULT_HEADER)
         ws.cell(row=1, column=status_col, value=RESULT_STATUS_HEADER)
         ws.cell(row=1, column=explanation_col, value=RESULT_EXPLANATION_HEADER)
+        ws.column_dimensions[get_column_letter(pending_col)].width = 34
         ws.column_dimensions[get_column_letter(status_col)].width = 18
         ws.column_dimensions[get_column_letter(explanation_col)].width = 80
     product_name_col = _find_product_name_column(ws)
@@ -5033,7 +5048,8 @@ def _save_agent_result(
                 if analysis.get("status") == "待确认"
                 else ""
             )
-            cell = ws.cell(row=i + 1, column=result_excel_col, value=formal_value or None)
+            display_value = pending_value or formal_value
+            cell = ws.cell(row=i + 1, column=result_excel_col, value=display_value or None)
             pending_cell = ws.cell(row=i + 1, column=pending_col, value=pending_value or None)
             if comparison_failed or policy_difference_reason or analysis.get("status") == "待确认":
                 result_fill = red_fill
@@ -5046,6 +5062,7 @@ def _save_agent_result(
             if formal_value:
                 cell.fill = result_fill
             if pending_value:
+                cell.fill = red_fill
                 pending_cell.fill = red_fill
             difference_cell = ws.cell(
                 row=i + 1,
@@ -5055,6 +5072,11 @@ def _save_agent_result(
             difference_cell.fill = result_fill
         else:
             status_value = _export_transcode_status(analysis, value)
+            pending_value = (
+                str(analysis.get("candidate_code") or "").strip()
+                if analysis.get("status") == "待确认"
+                else ""
+            )
             if analysis.get("status") == "待确认":
                 explanation = f"待确认：{analysis.get('reason', '')}"
             elif analysis.get("status") == "成功":
@@ -5064,17 +5086,22 @@ def _save_agent_result(
             else:
                 explanation = str(analysis.get("reason") or "未出码")
             ws.cell(row=i + 1, column=status_col, value=status_value)
+            pending_cell = ws.cell(row=i + 1, column=pending_col, value=pending_value or None)
             explanation_cell = ws.cell(row=i + 1, column=explanation_col, value=explanation or None)
             explanation_cell.alignment = Alignment(wrap_text=True, vertical="top")
-            cell = ws.cell(row=i + 1, column=result_excel_col, value=formal_value or None)
+            display_value = pending_value or formal_value
+            cell = ws.cell(row=i + 1, column=result_excel_col, value=display_value or None)
             if analysis.get("status") == "待确认" or formal_value.startswith("未识别"):
                 result_fill = red_fill
             elif analysis.get("status") == "跳过":
                 result_fill = yellow_fill
             else:
                 result_fill = green_fill
-            if formal_value:
+            if display_value:
                 cell.fill = result_fill
+            if pending_value:
+                cell.fill = red_fill
+                pending_cell.fill = red_fill
             explanation_cell.fill = result_fill
 
     if detail_mode and not any(
@@ -5173,6 +5200,7 @@ def _result_header_columns(ws) -> dict[str, int]:
         next_column += 1
 
     add(FORMAL_RESULT_HEADER)
+    add(PENDING_RESULT_HEADER)
     if RESULT_STATUS_HEADER not in headers and TRANSCODE_STATUS_HEADER not in headers:
         add(RESULT_STATUS_HEADER)
     if (

@@ -86,7 +86,7 @@ def test_technical_pending_with_cleanup_marker_is_hidden():
     assert _technical_pending_assets(rows) == []
 
 
-def test_customer_workspace_merges_same_customer_across_code_and_name_forms():
+def test_customer_workspace_merges_no_code_rule_into_exact_coded_customer():
     rules = [
         {
             "rule_id": "R1",
@@ -120,9 +120,47 @@ def test_customer_workspace_merges_same_customer_across_code_and_name_forms():
         },
     ]
     workspace = customer_rule_workspace(rules)
-    assert len(workspace["customers"]) == 1
-    assert workspace["customers"][0]["rule_count"] == 3
-    assert len(workspace["rules"]) == 3
+    assert len(workspace["customers"]) == 2
+    assert any(customer["rule_count"] == 2 for customer in workspace["customers"])
+    assert sum(customer["rule_count"] for customer in workspace["customers"]) == 3
+    assert "广州伊顿" in {customer["name"] for customer in workspace["customers"]}
+
+
+def test_customer_workspace_does_not_merge_regional_customers_by_generic_name():
+    rules = [
+        {
+            "rule_id": "R1",
+            "customer_code": "103890",
+            "customer_name": "珠海景旺",
+            "business_field": "基板级别",
+            "target_fields": ["grade_intent"],
+            "normalized_values": ["A1"],
+            "review_state": "migration",
+            "enabled": True,
+        },
+        {
+            "rule_id": "R2",
+            "customer_code": "123114",
+            "customer_name": "赣州景旺",
+            "business_field": "基板级别",
+            "target_fields": ["grade_intent"],
+            "normalized_values": ["AC"],
+            "review_state": "migration",
+            "enabled": True,
+        },
+        {
+            "rule_id": "R3",
+            "customer_code": "",
+            "customer_name": "景旺",
+            "business_field": "基板级别",
+            "target_fields": ["grade_intent"],
+            "normalized_values": ["AC"],
+            "review_state": "migration",
+            "enabled": True,
+        },
+    ]
+    workspace = customer_rule_workspace(rules)
+    assert len(workspace["customers"]) == 3
 
 
 def test_global_conditional_assets_are_grouped_under_all_customers():

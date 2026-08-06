@@ -4814,6 +4814,31 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+#agent-result-code.is-ok {
+  color: var(--accent);
+}
+
+#agent-result-code.is-warn {
+  color: var(--warn);
+}
+
+.agent-result-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.agent-result-copy {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 10px;
+  color: var(--accent);
+  background: var(--panel);
+  font-size: 12px;
+  cursor: pointer;
+}
+
 .agent-result-codes .agent-pending-code {
   border-color: #efb8be;
   background: #fff1f2;

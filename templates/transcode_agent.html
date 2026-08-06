@@ -44,10 +44,28 @@
     <button type="submit" id="agent-quote-submit">开始单条Agent转码</button>
   </form>
   <div class="agent-quote-result" id="agent-quote-result" aria-live="polite">
-    <div class="agent-result-head">
-      <span id="agent-result-status">等待输入</span>
+    <div class="agent-result-codes">
+      <div>
+        <div class="agent-result-code-head">
+          <span>当前码值</span>
+          <button type="button" id="agent-result-copy" class="agent-result-copy">复制</button>
+        </div>
+        <strong id="agent-result-code">-</strong>
+      </div>
+      <div>
+        <span>状态</span>
+        <strong id="agent-result-state">等待输入</strong>
+      </div>
+      <div>
+        <span>客户</span>
+        <strong id="agent-result-customer">-</strong>
+      </div>
+      <div>
+        <span>订单备注</span>
+        <strong id="agent-result-remark">-</strong>
+      </div>
     </div>
-    <p id="agent-result-note">单条数据会创建 1 行Agent任务，与Excel批量处理共用解析、语义规则、100分门禁和人工确认中心。</p>
+    <a id="agent-result-confirm-link" class="primary-link hidden" href="#">进入确认中心</a>
   </div>
 </section>
 
@@ -185,14 +203,112 @@
   const quoteForm = document.getElementById("agent-quote-form");
   const quoteSubmit = document.getElementById("agent-quote-submit");
   const resultBox = document.getElementById("agent-quote-result");
-  const statusEl = document.getElementById("agent-result-status");
-  const noteEl = document.getElementById("agent-result-note");
+  const resultStateEl = document.getElementById("agent-result-state");
+  const resultCodeEl = document.getElementById("agent-result-code");
+  const resultCustomerEl = document.getElementById("agent-result-customer");
+  const resultRemarkEl = document.getElementById("agent-result-remark");
+  const resultConfirmLink = document.getElementById("agent-result-confirm-link");
+  const singleResultCacheKey = "transcode-agent-single-result";
+
+  const agentJobStateLabels = {
+    queued: "排队中",
+    running: "转码中",
+    awaiting_confirmation: "待人工确认",
+    awaiting_verification: "待核对",
+    completed: "已完成（全部核对）",
+    failed: "失败",
+    canceled: "已取消"
+  };
+  const agentRecordStateLabels = {
+    pending: "待人工确认",
+    confirmed: "已人工核对",
+    automatic: "已出码需核对",
+    deferred: "暂不处理",
+    failed: "未出码",
+    skipped: "跳过"
+  };
+
+  function renderSingleResult(listing) {
+    const record = (listing.records || [])[0] || {};
+    resultCodeEl.textContent = record.display_code || record.pending_code || "-";
+    resultStateEl.textContent = agentRecordStateLabels[record.record_state] || record.record_state || "-";
+    resultCustomerEl.textContent = record.customer_name || record.customer_code || "-";
+    resultRemarkEl.textContent = record.context_text || "-";
+    const score = Number(record.score || 0);
+    const isFullScore = score >= 100 || ["confirmed", "automatic"].includes(record.record_state);
+    const codeColor = isFullScore ? "var(--accent)" : "var(--warn)";
+    resultCodeEl.style.color = codeColor;
+    resultCodeEl.classList.toggle("is-ok", isFullScore);
+    resultCodeEl.classList.toggle("is-warn", !isFullScore && Boolean(record.display_code || record.pending_code));
+    if (listing.job_id) {
+      resultConfirmLink.href = `/features/transcode-agent/confirmations/${listing.job_id}`;
+      resultConfirmLink.classList.remove("hidden");
+    }
+    sessionStorage.setItem(singleResultCacheKey, JSON.stringify({
+      job_id: listing.job_id,
+      listing: listing
+    }));
+  }
+
+  async function loadSingleResult(jobId) {
+    const response = await fetch(`/api/transcode-agent/jobs/${jobId}/confirmations`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "结果查询失败");
+    return data;
+  }
+
+  function restoreSingleResult() {
+    let cached;
+    try {
+      cached = JSON.parse(sessionStorage.getItem(singleResultCacheKey) || "null");
+    } catch (error) {
+      return;
+    }
+    if (!cached || !cached.job_id) return;
+    renderSingleResult(cached.listing);
+    loadSingleResult(cached.job_id)
+      .then(latest => renderSingleResult(latest))
+      .catch(() => {});
+  }
+
+  function pollSingleJob(jobId) {
+    const timer = window.setInterval(async () => {
+      try {
+        const jobResponse = await fetch(`/api/jobs/${jobId}`);
+        const job = await jobResponse.json();
+        if (!jobResponse.ok) throw new Error(job.error || "任务查询失败");
+        resultStateEl.textContent = agentJobStateLabels[job.status] || job.status;
+        if (!["queued", "running"].includes(job.status)) {
+          window.clearInterval(timer);
+          if (job.status === "failed" || job.status === "canceled") {
+            resultBox.className = "agent-quote-result is-warning";
+            resultStateEl.textContent = agentJobStateLabels[job.status] || job.status;
+            quoteSubmit.disabled = false;
+            quoteSubmit.textContent = "开始单条Agent转码";
+            return;
+          }
+          const listing = await loadSingleResult(jobId);
+          renderSingleResult(listing);
+          resultBox.className = "agent-quote-result is-success";
+          quoteSubmit.disabled = false;
+          quoteSubmit.textContent = "开始单条Agent转码";
+        }
+      } catch (error) {
+        window.clearInterval(timer);
+        resultBox.className = "agent-quote-result is-warning";
+        resultStateEl.textContent = "单条结果获取失败";
+        quoteSubmit.disabled = false;
+        quoteSubmit.textContent = "开始单条Agent转码";
+      }
+    }, 1000);
+  }
 
   quoteForm.addEventListener("submit", event => {
     event.preventDefault();
+    sessionStorage.removeItem(singleResultCacheKey);
     const payload = Object.fromEntries(new FormData(quoteForm).entries());
     if (!payload.spec || !payload.spec.trim()) {
-      statusEl.textContent = "请输入客户规格";
+      resultStateEl.textContent = "请输入客户规格";
       return;
     }
     quoteSubmit.disabled = true;
@@ -210,19 +326,42 @@
       })
       .then(data => {
         resultBox.className = "agent-quote-result is-success";
-        statusEl.textContent = `已创建单条任务 #${data.job_id}`;
-        noteEl.textContent = "正在进入与批量转码相同的处理与确认流程...";
-        window.location.assign(data.task_url);
+        pollSingleJob(data.job_id);
       })
       .catch(error => {
         resultBox.className = "agent-quote-result is-warning";
-        statusEl.textContent = "单条任务创建失败";
-        noteEl.textContent = error.message;
-      })
-      .finally(() => {
+        resultStateEl.textContent = "单条任务创建失败";
         quoteSubmit.disabled = false;
         quoteSubmit.textContent = "开始单条Agent转码";
+      })
+      .finally(() => {
+        if (resultBox.classList.contains("is-warning")) {
+          quoteSubmit.disabled = false;
+          quoteSubmit.textContent = "开始单条Agent转码";
+        }
       });
+  });
+
+  restoreSingleResult();
+
+  const resultCopyButton = document.getElementById("agent-result-copy");
+  resultCopyButton.addEventListener("click", async () => {
+    const code = resultCodeEl.textContent.trim();
+    if (!code || code === "-") return;
+    try {
+      await navigator.clipboard.writeText(code);
+    } catch (error) {
+      const textarea = document.createElement("textarea");
+      textarea.value = code;
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      textarea.remove();
+    }
+    resultCopyButton.textContent = "已复制";
+    window.setTimeout(() => {
+      resultCopyButton.textContent = "复制";
+    }, 1500);
   });
 
   const uploadForm = document.getElementById("agent-upload-form");

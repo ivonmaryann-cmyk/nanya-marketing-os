@@ -12,7 +12,6 @@ import openpyxl
 from .db import db_cursor
 from .transcode_customer_identity import (
     CUSTOMER_ALIAS_GROUPS,
-    customer_names_match,
     normalize_customer_name,
 )
 from .transcode_agent_standard import OFFICIAL_GRADE_CODES
@@ -1065,12 +1064,14 @@ def customer_rule_workspace(
             {
                 "key": key,
                 "code": _clean(rule.get("customer_code")),
-                "name": _clean(rule.get("customer_name")) or "未命名客户",
+                "name": _customer_display_name(rule) or "未命名客户",
                 "rule_count": 0,
                 "field_counts": {field: 0 for field in BUSINESS_FIELDS},
                 "global_scope": _rule_scope(rule) == "global",
             },
         )
+        if not customer["code"] and _clean(rule.get("customer_code")):
+            customer["code"] = _clean(rule.get("customer_code"))
         customer["global_scope"] = bool(
             customer["global_scope"]
             or rule.get("global_scope")
@@ -1104,7 +1105,7 @@ def customer_rule_workspace(
                 {
                     "key": key,
                     "code": _clean(item.get("customer_code")),
-                    "name": _clean(item.get("customer_name")) or "未命名客户",
+                    "name": _customer_display_name(item) or "未命名客户",
                     "rule_count": 0,
                     "field_counts": {field: 0 for field in BUSINESS_FIELDS},
                     "global_scope": False,
@@ -1721,51 +1722,39 @@ def make_customer_key(code: Any, name: Any) -> str:
     return f"name:{_clean(name)}"
 
 
-def _customer_code_tokens(value: Any) -> set[str]:
-    return {
-        token
-        for token in re.findall(r"\d+", str(value or ""))
-        if token
-    }
+def _customer_display_name(rule: Mapping[str, Any]) -> str:
+    name = _clean(rule.get("customer_name"))
+    code = _clean(rule.get("customer_code"))
+    if code == "103901/104686" or normalize_customer_name(name) == "广东依顿/广州伊顿":
+        return "广州伊顿"
+    return name
 
 
 def _canonical_customer_key_map(
     rules: Iterable[Mapping[str, Any]],
 ) -> dict[str, str]:
-    """Merge customer groups that share a code or an exact/alias name."""
-    entries = [
-        {
-            "key": make_customer_key(rule.get("customer_code"), rule.get("customer_name")),
-            "codes": _customer_code_tokens(rule.get("customer_code")),
-            "name": _clean(rule.get("customer_name")),
-        }
-        for rule in rules
-        if rule.get("customer_code") or rule.get("customer_name")
-    ]
-    parent = {entry["key"]: entry["key"] for entry in entries}
-
-    def find(key: str) -> str:
-        while parent[key] != key:
-            parent[key] = parent[parent[key]]
-            key = parent[key]
-        return key
-
-    def union(left: str, right: str) -> None:
-        left_root, right_root = find(left), find(right)
-        if left_root != right_root:
-            parent[right_root] = left_root
-
-    for left_index, left in enumerate(entries):
-        for right in entries[left_index + 1 :]:
-            shares_code = bool(left["codes"] & right["codes"])
-            shares_name = bool(
-                left["name"]
-                and right["name"]
-                and customer_names_match(left["name"], right["name"])
-            )
-            if shares_code or shares_name:
-                union(left["key"], right["key"])
-    return {entry["key"]: find(entry["key"]) for entry in entries}
+    """Merge a no-code rule into a coded customer only when display names match exactly."""
+    entries = []
+    coded_by_name: dict[str, str] = {}
+    for rule in rules:
+        if not (rule.get("customer_code") or rule.get("customer_name")):
+            continue
+        key = make_customer_key(rule.get("customer_code"), rule.get("customer_name"))
+        display_name = normalize_customer_name(_customer_display_name(rule))
+        entries.append(
+            {
+                "key": key,
+                "code": _clean(rule.get("customer_code")),
+                "name": display_name,
+            }
+        )
+        if _clean(rule.get("customer_code")) and display_name:
+            coded_by_name.setdefault(display_name, key)
+    result = {entry["key"]: entry["key"] for entry in entries}
+    for entry in entries:
+        if not entry["code"] and entry["name"] and entry["name"] in coded_by_name:
+            result[entry["key"]] = coded_by_name[entry["name"]]
+    return result
 
 
 def _customer_names_by_code(rules: Iterable[Mapping[str, Any]]) -> dict[str, str]:
@@ -2044,7 +2033,7 @@ def _rule_view(rule: dict[str, Any], *, overridden: bool) -> dict[str, Any]:
         "rule_id": _clean(rule.get("rule_id")),
         "asset_type": asset_type,
         "customer_code": _clean(rule.get("customer_code")),
-        "customer_name": _clean(rule.get("customer_name")),
+        "customer_name": _customer_display_name(rule),
         "business_field": _clean(rule.get("business_field")),
         "source_text": _clean(rule.get("source_text")),
         "input_source": " + ".join(source_fields),
