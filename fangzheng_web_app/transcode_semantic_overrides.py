@@ -119,6 +119,17 @@ def apply_confirmed_semantic_overrides(
             str(item.get("model") or "").strip() == "确认中心人工规则"
             or str(item.get("source_column") or "").strip() == "确认中心"
         )
+        # 模型归一化属于语义推断，命中后保留为待人工确认；
+        # 只有订单备注原文直接命中规则时，才允许作为100分正式依据。
+        source = (
+            "已确认人工长期规则"
+            if is_manual_long_term and not item.get("model_normalized")
+            else "模型标准化+已确认人工长期规则"
+            if is_manual_long_term and item.get("model_normalized")
+            else "模型标准化+已批准语义规则"
+            if item.get("model_normalized")
+            else "已批准语义规则"
+        )
         applied.append(
             {
                 "rule_id": item.get("rule_id", ""),
@@ -126,17 +137,12 @@ def apply_confirmed_semantic_overrides(
                 "old": old,
                 "new": code,
                 "text": item.get("source_text", ""),
-                "source": (
-                    "已确认人工长期规则"
-                    if is_manual_long_term
-                    else "模型标准化+已批准语义规则"
-                    if item.get("model_normalized")
-                    else "已批准语义规则"
-                ),
+                "source": source,
                 "source_row": "",
                 "source_field": item.get("business_field", ""),
                 "source_column": item.get("source_column", ""),
                 "rule_type": "客户人工长期规则" if is_manual_long_term else "已批准模型语义规则",
+                "model_normalized": bool(item.get("model_normalized")),
             }
         )
     return applied, conflicts

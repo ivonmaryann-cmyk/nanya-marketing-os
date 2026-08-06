@@ -13,6 +13,7 @@ from werkzeug.datastructures import FileStorage
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+os.environ["TRANSCODE_AGENT_DETAIL_SHEETS"] = "1"
 
 from fangzheng_web_app import db
 from fangzheng_web_app import transcode_agent_rules as agent_rules

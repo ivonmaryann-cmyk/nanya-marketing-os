@@ -145,10 +145,9 @@ def _assert_policy_confirmation_export(analysis: dict, old_code: str) -> None:
         result_book = openpyxl.load_workbook(output_path, data_only=True)
         result_sheet = result_book["Sheet1"]
         headers = {str(cell.value or ""): cell.column for cell in result_sheet[1]}
-        assert result_sheet.cell(2, headers["结果对比"]).value is True
-        assert result_sheet.cell(2, headers["转码状态"]).value == "可直接采用"
-        prompt = str(result_sheet.cell(2, headers["人工确认提示"]).value or "")
-        assert not prompt, prompt
+        assert result_sheet.cell(2, headers["状态"]).value == "已出码需核对"
+        prompt = str(result_sheet.cell(2, headers["说明"]).value or "")
+        assert prompt == "系统100分出码，待人工核对", prompt
         fill = result_sheet.cell(2, headers["Agent转码结果"]).fill.fgColor.rgb or ""
         assert fill.endswith("FFCDD2"), fill
 

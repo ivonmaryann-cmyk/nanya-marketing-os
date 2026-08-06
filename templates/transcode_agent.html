@@ -96,10 +96,10 @@
           <tr>
             <td class="agent-job-id">#{{ job.id }}</td>
             <td class="agent-job-file"><a href="{{ url_for('main.job_detail', job_id=job.id) }}" title="{{ job.source_filename }}">{{ job.source_filename }}</a></td>
-            <td class="agent-job-status"><span class="status {{ job.status }}">{{ '待人工确认' if job.status == 'awaiting_confirmation' else job.status }}</span></td>
+            <td class="agent-job-status"><span class="status {{ job.status }}">{{ '待人工确认' if job.status == 'awaiting_confirmation' else '待核对' if job.status == 'awaiting_verification' else job.status }}</span></td>
             <td class="agent-job-time">{{ job.created_at }}</td>
             <td class="agent-job-actions">
-              {% if job.status == 'awaiting_confirmation' %}
+              {% if job.status == 'awaiting_confirmation' or job.status == 'awaiting_verification' %}
               <div class="result-actions">
                 <a class="task-action task-action-primary" href="{{ url_for('main.transcode_agent_confirmation_center', job_id=job.id) }}">进入确认中心</a>
               </div>
@@ -163,10 +163,10 @@
           <button type="submit" class="danger-button">停止任务</button>
         </form>
         {% endif %}
-        <div id="live-download" class="{% if active_job.status not in ['completed', 'awaiting_confirmation'] %}hidden{% endif %}">
+        <div id="live-download" class="{% if active_job.status not in ['completed', 'awaiting_confirmation', 'awaiting_verification'] %}hidden{% endif %}">
           <div class="result-ready">
-            {% if active_job.status == 'awaiting_confirmation' %}
-            <a class="primary-link" id="live-confirmation-link" href="{{ url_for('main.transcode_agent_confirmation_center', job_id=active_job.id) }}">进入确认中心</a>
+            {% if active_job.status in ['awaiting_confirmation', 'awaiting_verification'] %}
+            <a class="primary-link" id="live-confirmation-link" href="{{ url_for('main.transcode_agent_confirmation_center', job_id=active_job.id) }}">{{ '进入确认中心' if active_job.status == 'awaiting_confirmation' else '进入核对中心' }}</a>
             {% else %}
             <a class="primary-link" href="{{ url_for('main.transcode_agent_confirmation_center', job_id=active_job.id) }}">查看转码记录</a>
             {% endif %}
@@ -297,7 +297,14 @@
   const refreshAfterTerminal = ["queued", "running"].includes(panel.dataset.initialStatus);
 
   function render(data) {
-    liveStatusEl.textContent = data.status;
+    liveStatusEl.textContent = {
+      queued: "排队中",
+      running: "转码中",
+      awaiting_confirmation: "待人工确认",
+      awaiting_verification: "待核对",
+      completed: "已完成（全部核对）",
+      failed: "失败"
+    }[data.status] || data.status;
     progressEl.textContent = `${data.current_row}/${data.total_rows}`;
     successEl.textContent = data.success_count;
     failEl.textContent = data.fail_count;
@@ -306,14 +313,18 @@
     logEl.scrollTop = logEl.scrollHeight;
     const percent = data.total_rows ? Math.min(100, Math.round(data.current_row * 100 / data.total_rows)) : 0;
     bar.style.width = `${percent}%`;
-    if (data.status === "completed" || data.status === "awaiting_confirmation") {
+    if (data.status === "completed" || data.status === "awaiting_confirmation" || data.status === "awaiting_verification") {
       downloadEl.classList.remove("hidden");
     }
-    if (data.status === "awaiting_confirmation" && autoRedirectToConfirmation && !redirectedToConfirmation) {
+    if (
+      (data.status === "awaiting_confirmation" || data.status === "awaiting_verification")
+      && autoRedirectToConfirmation
+      && !redirectedToConfirmation
+    ) {
       redirectedToConfirmation = true;
       window.location.assign(panel.dataset.confirmationUrl);
     } else if (
-      (data.status === "completed" || data.status === "awaiting_confirmation")
+      (data.status === "completed" || data.status === "awaiting_confirmation" || data.status === "awaiting_verification")
       && refreshAfterTerminal
       && !terminalRefreshScheduled
     ) {

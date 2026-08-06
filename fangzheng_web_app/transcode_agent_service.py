@@ -14,7 +14,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
@@ -29,22 +29,33 @@ from werkzeug.utils import secure_filename
 
 from .db import (
     append_job_log,
+    create_transcode_agent_pending_rule as db_create_transcode_agent_pending_rule,
     create_job,
+    get_transcode_agent_pending_rule as db_get_transcode_agent_pending_rule,
     get_job,
     get_transcode_agent_confirmation_item,
+    is_admin_user,
+    list_transcode_agent_pending_rules as db_list_transcode_agent_pending_rules,
+    list_transcode_agent_row_verifications as db_list_transcode_agent_row_verifications,
     list_transcode_agent_confirmation_events,
     list_transcode_agent_confirmation_items,
     prune_jobs_for_employee,
     refresh_transcode_agent_confirmation_item,
     replace_transcode_agent_confirmation_items,
+    set_transcode_agent_pending_rule_status as db_set_transcode_agent_pending_rule_status,
     transcode_agent_confirmation_counts,
     update_job_status,
+    update_transcode_agent_pending_rule as db_update_transcode_agent_pending_rule,
+    upsert_transcode_agent_row_verification as db_upsert_transcode_agent_row_verification,
     update_transcode_agent_confirmation_item,
     update_transcode_agent_row_analysis,
 )
 from .transcode_customer_rule_admin import (
+    BUSINESS_FIELD_TARGETS,
+    CONDITION_OPERATOR_LABELS,
     CustomerRuleMaintenanceError,
     build_rule_from_form,
+    project_customer_rule_assets_for_workspace,
     resolve_customer_code_by_name,
     save_rule_override,
     validate_customer_maintained_rule,
@@ -122,6 +133,8 @@ OUTPUT_STATUS_HEADER = "结果对比"
 TRANSCODE_STATUS_HEADER = "转码状态"
 CONFIRMATION_HEADER = "人工确认提示"
 SYSTEM_ANALYSIS_HEADER = "系统分析原因"
+RESULT_STATUS_HEADER = "状态"
+RESULT_EXPLANATION_HEADER = "说明"
 
 
 FIELD_DEFS = [
@@ -972,7 +985,13 @@ def run_transcode_agent_job(job_id: int, employee_id: str) -> None:
         )
         confirmation_items = _build_confirmation_items(analyses)
         replace_transcode_agent_confirmation_items(job_id, employee_id, confirmation_items)
-        final_status = "awaiting_confirmation" if confirmation_items else "completed"
+        if confirmation_items:
+            final_status = "awaiting_confirmation"
+        elif success_count:
+            final_status = "awaiting_verification"
+        else:
+            final_status = "completed"
+        verify_count = success_count
         update_job_status(
             job_id,
             status=final_status,
@@ -981,15 +1000,27 @@ def run_transcode_agent_job(job_id: int, employee_id: str) -> None:
             fail_count=fail_count,
             skip_count=skip_count,
             confirm_count=confirm_count,
+            verify_count=verify_count,
             current_row=total_rows,
             total_rows=total_rows,
-            completed=not confirmation_items,
+            completed=not confirmation_items and not verify_count,
         )
         if confirmation_items:
             append_job_log(
                 job_id,
-                f"第一遍解析完成，{confirm_count} 行进入待人工确认中心",
+                f"第一遍解析完成，{confirm_count} 行进入待人工确认中心"
+                + (f"，{verify_count} 行已出码待人工核对" if verify_count else ""),
                 confirm_count=confirm_count,
+                verify_count=verify_count,
+                current_row=total_rows,
+                total_rows=total_rows,
+            )
+        elif verify_count:
+            append_job_log(
+                job_id,
+                f"Agent结果文件已生成，{verify_count} 行已出码需人工核对",
+                confirm_count=0,
+                verify_count=verify_count,
                 current_row=total_rows,
                 total_rows=total_rows,
             )
@@ -998,6 +1029,7 @@ def run_transcode_agent_job(job_id: int, employee_id: str) -> None:
                 job_id,
                 "Agent结果文件已生成，任务完成",
                 confirm_count=0,
+                verify_count=0,
                 current_row=total_rows,
                 total_rows=total_rows,
             )
@@ -2881,6 +2913,11 @@ def list_transcode_agent_confirmations(
         items.append(item)
     records = _load_transcode_agent_trace_records(str(job["stored_result_path"] or ""))
     item_statuses_by_row: dict[int, set[str]] = {}
+    verifications = db_list_transcode_agent_row_verifications(job_id)
+    verifications_by_row = {
+        int(row["excel_row"]): dict(row)
+        for row in verifications
+    }
     for item in items:
         item_statuses_by_row.setdefault(int(item["excel_row"]), set()).add(str(item["status"] or ""))
     records_by_row = {int(record["excel_row"]): record for record in records}
@@ -2890,7 +2927,7 @@ def list_transcode_agent_confirmations(
         if (
             "confirmed" in statuses
             and "pending" not in statuses
-            and str(record.get("transcode_status") or "") != "人工已确认"
+            and str(record.get("transcode_status") or "") != "人工已核对"
         ):
             confirmed_fields = [
                 f"{item['field_label']}={item.get('confirmed_code') or item.get('current_code') or ''}"
@@ -2901,12 +2938,16 @@ def list_transcode_agent_confirmations(
                 str(job["stored_result_path"] or ""),
                 excel_row,
                 analyses_by_confirmation_row.get(excel_row, {}),
-                confirmation_note="人工已确认：" + "、".join(confirmed_fields),
+                confirmation_note="人工已核对：" + "、".join(confirmed_fields),
             )
             workbook_refreshed = True
     if workbook_refreshed:
         records = _load_transcode_agent_trace_records(str(job["stored_result_path"] or ""))
     for record in records:
+        excel_row = int(record.get("excel_row") or 0)
+        verification = verifications_by_row.get(excel_row)
+        record["verified"] = bool(verification)
+        record["verification"] = verification
         analysis = analyses_by_confirmation_row.get(int(record.get("excel_row") or 0))
         if analysis:
             for trace_item in record.get("trace_items") or []:
@@ -2929,6 +2970,7 @@ def list_transcode_agent_confirmations(
         record["record_state"] = _trace_record_state(
             record,
             item_statuses_by_row.get(int(record["excel_row"]), set()),
+            set(verifications_by_row),
         )
     state_order = {
         "pending": 0,
@@ -2955,6 +2997,7 @@ def list_transcode_agent_confirmations(
     record_page = max(1, min(int(record_page or 1), record_page_count))
     start = (record_page - 1) * record_page_size
     record_counts = Counter(str(record.get("record_state") or "") for record in records)
+    verify_count = int(record_counts.get("automatic", 0))
     counts = transcode_agent_confirmation_counts(job_id)
     pending_rows = len({item["excel_row"] for item in items if item["status"] == "pending"})
     return {
@@ -2964,6 +3007,7 @@ def list_transcode_agent_confirmations(
         "fail_count": int(job["fail_count"] or 0),
         "skip_count": int(job["skip_count"] or 0),
         "confirm_count": pending_rows,
+        "verify_count": verify_count,
         "counts": counts,
         "items": items,
         "records": scoped_records[start : start + record_page_size],
@@ -3052,12 +3096,75 @@ def _business_field_evidence(
         if applied:
             text = str(applied.get("text") or "").strip()
             if text and not text.startswith("字段=") and "| 目标=" not in text:
-                return f"客户规则：{text}"
+                return f"客户规则：{_business_rule_plain_text(text)}"
         return f"基板级别未命中明确规则，当前值{code}，需人工确认"
     if field_key == "total_core":
         order_type = str(steps.get("order_type") or "未识别").strip()
         return f"规格按{order_type}处理 → {code}"
-    return str(evidence.get("evidence") or "").strip()
+    return _business_rule_plain_text(evidence.get("evidence"))
+
+
+def _business_rule_plain_text(value: Any) -> str:
+    """Strip rule IDs and internal table names from user-facing explanations."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    segments = [
+        segment.strip()
+        for segment in re.split(r"[；;]", text)
+        if segment.strip()
+    ]
+    kept: list[str] = []
+    for segment in segments:
+        normalized = segment.strip()
+        if not normalized:
+            continue
+        if re.fullmatch(r"[A-Z0-9]+[-_][A-Z0-9_-]+", normalized):
+            continue
+        if any(
+            marker in normalized
+            for marker in (
+                "业务正式规则",
+                "正式基础映射",
+                "已确认默认规则",
+                "确定性厚度算法",
+                "确定性尺寸映射",
+                "确定性总芯厚算法",
+                "确定性胶系算法",
+                "Agent规则",
+                "transcode_rules.xlsx",
+                "transcode_agent_rules",
+                "NYG-ATD",
+                "TGM-",
+                "TAR-",
+                "BASE-",
+                "PAGE-",
+                "MAP::",
+                "CODE::",
+                "字段=",
+                "| 目标=",
+            )
+        ):
+            continue
+        kept.append(normalized)
+    return "；".join(kept) or "系统按已确认规则处理"
+
+
+def _business_rule_source_label(value: Any) -> str:
+    source = str(value or "").strip()
+    if not source:
+        return "已确认规则"
+    if "transcode_rules" in source or "NYG-ATD" in source:
+        return "基础映射"
+    if "客户下单与胶系基板转换" in source or "客户下单" in source:
+        return "客户等级规则"
+    if "BASE-DEFAULT" in source:
+        return "已确认默认规则"
+    if "Agent" in source:
+        return "Agent规则"
+    if re.fullmatch(r"[A-Z0-9]+[-_][A-Z0-9_-]+", source):
+        return "已确认规则"
+    return source
 
 
 def _model_grade_stated_value(result: dict[str, Any]) -> str:
@@ -3106,7 +3213,10 @@ def _cached_transcode_agent_trace_records(
     formal_col = headers.get(_normalize_semantic_header(FORMAL_RESULT_HEADER))
     pending_col = headers.get(_normalize_semantic_header(PENDING_RESULT_HEADER))
     comparison_col = headers.get(_normalize_semantic_header(OUTPUT_STATUS_HEADER))
-    status_col = headers.get(_normalize_semantic_header(TRANSCODE_STATUS_HEADER))
+    status_col = (
+        headers.get(_normalize_semantic_header(RESULT_STATUS_HEADER))
+        or headers.get(_normalize_semantic_header(TRANSCODE_STATUS_HEADER))
+    )
     confirmation_col = headers.get(_normalize_semantic_header(CONFIRMATION_HEADER))
     system_col = headers.get(_normalize_semantic_header(SYSTEM_ANALYSIS_HEADER))
     context_cols = [
@@ -3223,17 +3333,29 @@ def _trace_row_value(row_values: tuple[Any, ...], column: int | None) -> str:
     return "" if value is None else str(value).strip()
 
 
-def _trace_record_state(record: dict[str, Any], item_statuses: set[str]) -> str:
+def _trace_record_state(
+    record: dict[str, Any],
+    item_statuses: set[str],
+    verified_rows: set[int] | None = None,
+) -> str:
     if "pending" in item_statuses:
         return "pending"
-    if "confirmed" in item_statuses or "人工已确认" in str(record.get("transcode_status") or ""):
+    workbook_status = str(record.get("transcode_status") or "")
+    if (
+        int(record.get("excel_row") or 0) in (verified_rows or set())
+        or "人工已核对" in workbook_status
+        or "人工已确认" in workbook_status
+    ):
+        return "confirmed"
+    if "confirmed" in item_statuses:
+        if "已出码需核对" in workbook_status or "可直接采用" in workbook_status:
+            return "automatic"
         return "confirmed"
     if "skipped" in item_statuses:
         return "deferred"
-    status = str(record.get("transcode_status") or "")
-    if status == "跳过":
+    if workbook_status == "跳过":
         return "skipped"
-    if status == "未出码":
+    if workbook_status == "未出码":
         return "failed"
     return "automatic"
 
@@ -3313,7 +3435,7 @@ def reevaluate_transcode_agent_confirmations(job_id: int, employee_id: str) -> d
     _refresh_confirmation_audit_sheet(job_id, str(job["stored_result_path"] or ""))
     append_job_log(
         job_id,
-        f"按当前规则重新评估：{resolved_rows}行达到100分，{unresolved_rows}行仍待确认",
+        f"按当前规则重新评估：{resolved_rows}行达到100分待人工核对，{unresolved_rows}行仍待确认",
     )
     return {
         "job_id": job_id,
@@ -3350,6 +3472,7 @@ def confirm_transcode_agent_item(
         analysis,
     )
     saved_rule: dict[str, Any] | None = None
+    pending_rule_id: int | None = None
     if save_long_term:
         saved_rule = _build_long_term_confirmation_rule(
             item,
@@ -3358,10 +3481,19 @@ def confirm_transcode_agent_item(
             payload=long_term_rule or {},
         )
         validate_customer_maintained_rule(saved_rule)
-        save_rule_override(
-            saved_rule,
-            updated_by=employee_id,
-            previous_rule=None,
+        pending_rule_id = db_create_transcode_agent_pending_rule(
+            rule_id=str(saved_rule["rule_id"]),
+            rule_json=json.dumps(saved_rule, ensure_ascii=False, default=str),
+            employee_id=employee_id,
+            customer_code=str(saved_rule.get("customer_code") or ""),
+            customer_name=str(saved_rule.get("customer_name") or ""),
+            business_field=str(saved_rule.get("business_field") or ""),
+            target_value=str(
+                (saved_rule.get("normalized_values") or [""])[0] or ""
+            ),
+            condition_summary=_pending_rule_condition_summary(saved_rule),
+            source_task_id=int(item["job_id"]),
+            source_excel_row=int(item["excel_row"]),
         )
     _apply_manual_confirmation_to_analysis(
         analysis,
@@ -3378,6 +3510,7 @@ def confirm_transcode_agent_item(
         confirmed_by=employee_id,
         analysis=analysis,
         long_term_rule_id=(saved_rule or {}).get("rule_id") if saved_rule else None,
+        pending_rule_id=str(pending_rule_id) if pending_rule_id else None,
     )
 
     row_items = [
@@ -3423,11 +3556,25 @@ def confirm_transcode_agent_item(
         confirmation_note=f"当前任务人工确认：{item['field_label']}={normalized_code}"
         + (f"；依据：{basis}" if basis else ""),
     )
+    if analysis["status"] == "成功":
+        db_upsert_transcode_agent_row_verification(
+            job_id=int(item["job_id"]),
+            excel_row=int(item["excel_row"]),
+            employee_id=employee_id,
+            action="confirmed",
+            before_code=str(item["current_code"] or ""),
+            after_code=normalized_code,
+            basis=basis,
+        )
+        _refresh_confirmation_audit_sheet(
+            int(item["job_id"]),
+            str(job["stored_result_path"] or ""),
+        )
     _refresh_confirmation_job_status(int(item["job_id"]), newly_formal=newly_formal)
     if saved_rule:
         append_job_log(
             int(item["job_id"]),
-            f"人工确认已保存为长期原子规则：{saved_rule['rule_id']}",
+            f"人工确认已提交待生效规则：{saved_rule['rule_id']}，等待维护人确认",
         )
     return {
         "item_id": item_id,
@@ -3439,6 +3586,7 @@ def confirm_transcode_agent_item(
         "overall_score": int(analysis.get("overall_score") or 0),
         "remaining": transcode_agent_confirmation_counts(int(item["job_id"]))["pending"],
         "long_term_rule_id": (saved_rule or {}).get("rule_id", ""),
+        "pending_rule_id": pending_rule_id,
     }
 
 
@@ -3473,16 +3621,16 @@ def finalize_transcode_agent_confirmations(job_id: int, employee_id: str) -> dic
         job_id,
         str(job["stored_result_path"] or ""),
     )
-    update_job_status(
+    _refresh_confirmation_job_status(job_id, newly_formal=0)
+    current_job = get_job(job_id)
+    append_job_log(
         job_id,
-        status="completed",
+        f"已暂不处理 {len(rows)} 行并生成结果，状态：{current_job['status']}",
         confirm_count=0,
-        completed=True,
     )
-    append_job_log(job_id, f"已暂不处理 {len(rows)} 行并生成结果", confirm_count=0)
     return {
         "job_id": job_id,
-        "status": "completed",
+        "status": current_job["status"],
         "skipped_rows": len(rows),
     }
 
@@ -3532,6 +3680,175 @@ def skip_transcode_agent_confirmation_row(
     }
 
 
+def verify_transcode_agent_row(
+    job_id: int,
+    excel_row: int,
+    employee_id: str,
+    *,
+    code: str = "",
+    basis: str = "",
+) -> dict[str, Any]:
+    job = get_job(job_id)
+    if not job or job["employee_id"] != employee_id or job["feature"] != FEATURE_KEY:
+        raise LookupError("未找到营销转码Agent任务")
+    records = _load_transcode_agent_trace_records(str(job["stored_result_path"] or ""))
+    record = next(
+        (item for item in records if int(item.get("excel_row") or 0) == int(excel_row)),
+        None,
+    )
+    before_code = str(record.get("formal_code") or "").strip() if record else ""
+    if not before_code:
+        raise ValueError("该行没有可核对的已出码结果")
+    after_code = re.sub(r"\s+", "", str(code or before_code).upper())
+    if not after_code:
+        raise ValueError("核对码值不能为空")
+    action = "verified" if after_code == before_code.upper().replace(" ", "") else "corrected"
+    db_upsert_transcode_agent_row_verification(
+        job_id=job_id,
+        excel_row=int(excel_row),
+        employee_id=employee_id,
+        action=action,
+        before_code=before_code,
+        after_code=after_code,
+        basis=str(basis or "").strip(),
+    )
+    _update_confirmation_workbook_row(
+        str(job["stored_result_path"] or ""),
+        int(excel_row),
+        {
+            "status": "成功",
+            "formal_code": after_code,
+            "candidate_code": after_code,
+        },
+        confirmation_note=(
+            f"人工已核对：{after_code}"
+            + (f"；依据：{basis}" if str(basis or "").strip() else "")
+        ),
+    )
+    _refresh_confirmation_audit_sheet(job_id, str(job["stored_result_path"] or ""))
+    _refresh_confirmation_job_status(job_id, newly_formal=0)
+    return {
+        "job_id": job_id,
+        "excel_row": int(excel_row),
+        "verified_code": after_code,
+        "action": action,
+        "status": get_job(job_id)["status"],
+    }
+
+
+def verify_all_transcode_agent_rows(
+    job_id: int,
+    employee_id: str,
+    *,
+    basis: str = "",
+) -> dict[str, Any]:
+    job = get_job(job_id)
+    if not job or job["employee_id"] != employee_id or job["feature"] != FEATURE_KEY:
+        raise LookupError("未找到营销转码Agent任务")
+    records = _load_transcode_agent_trace_records(str(job["stored_result_path"] or ""))
+    item_statuses_by_row: dict[int, set[str]] = {}
+    for item in list_transcode_agent_confirmation_items(job_id, employee_id):
+        item_statuses_by_row.setdefault(int(item["excel_row"]), set()).add(
+            str(item["status"] or "")
+        )
+    verified_rows = {
+        int(row["excel_row"])
+        for row in db_list_transcode_agent_row_verifications(job_id)
+    }
+    targets = [
+        (
+            int(record["excel_row"]),
+            str(record.get("formal_code") or "").strip(),
+        )
+        for record in records
+        if _trace_record_state(
+            record,
+            item_statuses_by_row.get(int(record.get("excel_row") or 0), set()),
+            verified_rows,
+        )
+        == "automatic"
+        and str(record.get("formal_code") or "").strip()
+    ]
+    if not targets:
+        raise ValueError("没有待核对的已出码记录")
+    _update_verified_workbook_rows(
+        str(job["stored_result_path"] or ""),
+        targets,
+        basis=str(basis or "").strip() or "业务批量核对无误",
+    )
+    for excel_row, code in targets:
+        db_upsert_transcode_agent_row_verification(
+            job_id=job_id,
+            excel_row=excel_row,
+            employee_id=employee_id,
+            action="verified",
+            before_code=code,
+            after_code=code,
+            basis=str(basis or "").strip() or "业务批量核对无误",
+        )
+    _refresh_confirmation_audit_sheet(job_id, str(job["stored_result_path"] or ""))
+    _refresh_confirmation_job_status(job_id, newly_formal=0)
+    return {
+        "job_id": job_id,
+        "verified_count": len(targets),
+        "status": get_job(job_id)["status"],
+    }
+
+
+def _update_verified_workbook_rows(
+    output_path: str,
+    rows: list[tuple[int, str]],
+    *,
+    basis: str,
+) -> None:
+    if not output_path or not Path(output_path).exists():
+        raise FileNotFoundError("任务结果文件不存在")
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb["转码需求表"] if "转码需求表" in wb.sheetnames else wb[wb.sheetnames[0]]
+    headers = _result_header_columns(ws)
+    result_col = headers.get(FORMAL_RESULT_HEADER)
+    pending_col = headers.get(PENDING_RESULT_HEADER)
+    difference_col = headers.get(CODE_DIFFERENCE_HEADER)
+    comparison_col = headers.get(OUTPUT_STATUS_HEADER)
+    status_col = headers.get(RESULT_STATUS_HEADER) or headers.get(TRANSCODE_STATUS_HEADER)
+    confirmation_col = (
+        headers.get(RESULT_EXPLANATION_HEADER)
+        or headers.get(CONFIRMATION_HEADER)
+        or headers.get(SYSTEM_ANALYSIS_HEADER)
+    )
+    system_analysis_col = headers.get(SYSTEM_ANALYSIS_HEADER) or headers.get(
+        RESULT_EXPLANATION_HEADER
+    )
+    green_fill = PatternFill(start_color="C8E6C9", end_color="C8E6C9", fill_type="solid")
+    for excel_row, code in rows:
+        ws.cell(row=excel_row, column=result_col, value=code).fill = green_fill
+        if pending_col:
+            pending_cell = ws.cell(row=excel_row, column=pending_col)
+            pending_cell.value = None
+            pending_cell.fill = PatternFill(fill_type=None)
+        if difference_col:
+            ws.cell(row=excel_row, column=difference_col, value="人工已核对").fill = green_fill
+        if comparison_col:
+            ws.cell(row=excel_row, column=comparison_col, value="人工已核对").fill = green_fill
+        ws.cell(row=excel_row, column=status_col, value="人工已核对").fill = green_fill
+        if confirmation_col:
+            ws.cell(
+                row=excel_row,
+                column=confirmation_col,
+                value=f"人工已核对：{code}；依据：{basis}",
+            ).fill = green_fill
+        if system_analysis_col:
+            ws.cell(
+                row=excel_row,
+                column=system_analysis_col,
+                value="业务批量核对无误",
+            ).fill = green_fill
+    try:
+        _atomic_save_workbook(wb, output_path)
+    finally:
+        wb.close()
+
+
 def refresh_transcode_agent_audit_sheet(job_id: int) -> None:
     """Rebuild the confirmation audit sheet outside interactive confirmation."""
     job = get_job(job_id)
@@ -3552,16 +3869,22 @@ def _build_long_term_confirmation_rule(
 ) -> dict[str, Any]:
     field_key = str(item["field_key"] or "")
     if field_key not in LONG_TERM_RULE_FIELDS:
-        raise CustomerRuleMaintenanceError("整行码值不能保存为长期规则，请按具体字段确认")
+        raise CustomerRuleMaintenanceError("整行码值不能保存为待生效规则，请按具体字段确认")
     if not bool(payload.get("second_confirmed")):
-        raise CustomerRuleMaintenanceError("保存长期规则需要二次确认")
+        raise CustomerRuleMaintenanceError("保存待生效规则需要二次确认")
     if not str(basis or "").strip():
-        raise CustomerRuleMaintenanceError("保存长期规则必须填写业务确认依据")
-    condition_field = str(payload.get("condition_field") or "").strip()
-    condition_operator = str(payload.get("condition_operator") or "").strip()
-    condition_value = str(payload.get("condition_value") or "").strip()
+        raise CustomerRuleMaintenanceError("保存待生效规则必须填写业务确认依据")
+    condition_field = str(
+        payload.get("trigger_source") or payload.get("condition_field") or ""
+    ).strip()
+    condition_operator = str(
+        payload.get("condition_operator") or "contains_any"
+    ).strip()
+    condition_value = str(
+        payload.get("trigger_value") or payload.get("condition_value") or ""
+    ).strip()
     if not condition_field or not condition_operator:
-        raise CustomerRuleMaintenanceError("保存长期规则必须填写适用条件")
+        raise CustomerRuleMaintenanceError("保存待生效规则必须填写适用条件")
     business_field, target_field = LONG_TERM_RULE_FIELDS[field_key]
     target_value = _long_term_target_value(field_key, confirmed_code)
     customer_code = str(item["customer_code"] or "").strip()
@@ -3593,10 +3916,344 @@ def _build_long_term_confirmation_rule(
     rule["source_column"] = "确认中心"
     rule["model"] = "确认中心人工规则"
     rule["note"] = (
-        f"确认中心长期规则；来源任务{item['job_id']}；Excel第{item['excel_row']}行；"
-        "业务明确勾选并二次确认"
+        f"确认中心待生效规则，经维护人确认；来源任务{item['job_id']}；"
+        f"Excel第{item['excel_row']}行；业务明确勾选并二次确认"
     )
     return rule
+
+
+def _pending_rule_condition_summary(rule: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for condition in rule.get("conditions") or []:
+        field = str(condition.get("field") or "").strip()
+        operator = str(condition.get("operator") or "").strip()
+        operator_label = CONDITION_OPERATOR_LABELS.get(operator, operator)
+        value = condition.get("value")
+        if isinstance(value, list):
+            value_text = " / ".join(str(item) for item in value if str(item).strip())
+        else:
+            value_text = str(value or "").strip()
+        parts.append(
+            " ".join(
+                part
+                for part in (
+                    field,
+                    operator_label,
+                    value_text,
+                )
+                if part
+            )
+        )
+    return "；".join(parts)
+
+
+def _normalized_rule_text(value: Any) -> str:
+    return "".join(str(value or "").upper().split())
+
+
+def _pending_rule_signature(rule: Mapping[str, Any]) -> tuple[Any, ...]:
+    conditions = []
+    for condition in rule.get("conditions") or []:
+        value = condition.get("value")
+        if isinstance(value, (list, tuple)):
+            value_key = tuple(
+                sorted(
+                    _normalized_rule_text(item)
+                    for item in value
+                    if str(item or "").strip()
+                )
+            )
+        else:
+            value_key = (
+                (_normalized_rule_text(value),)
+                if str(value or "").strip()
+                else ()
+            )
+        conditions.append(
+            (
+                _normalized_rule_text(condition.get("field")),
+                str(condition.get("operator") or "").strip(),
+                value_key,
+            )
+        )
+    return (
+        str(rule.get("customer_code") or "").strip(),
+        _normalized_rule_text(rule.get("customer_name")),
+        _normalized_rule_text(rule.get("business_field")),
+        _normalized_rule_text(
+            str((rule.get("target_fields") or [""])[0] or "")
+        ),
+        _normalized_rule_text(
+            str((rule.get("normalized_values") or [""])[0] or "")
+        ),
+        tuple(sorted(conditions)),
+    )
+
+
+def _active_workspace_rule(rule: Mapping[str, Any]) -> bool:
+    if rule.get("enabled") is False:
+        return False
+    state = str(rule.get("review_state") or rule.get("status") or "active").strip()
+    return state not in {"pending", "technical", "reference", "history"}
+
+
+def _active_customer_workspace_rules() -> list[dict[str, Any]]:
+    semantic_version = get_active_transcode_semantic_rule_version()
+    semantic_rules = (
+        load_transcode_semantic_rules(semantic_version)
+        if semantic_version
+        else []
+    )
+    agent_rules = load_transcode_agent_rules()
+    mapping_tables = load_transcode_agent_mapping_tables()
+    return [
+        rule
+        for rule in project_customer_rule_assets_for_workspace(
+            semantic_rules,
+            agent_rules,
+            mapping_tables,
+        )
+        if _active_workspace_rule(rule)
+    ]
+
+
+def transcode_agent_pending_rule_view(
+    row: Any,
+    employee_id: str,
+    *,
+    include_all: bool = False,
+) -> dict[str, Any] | None:
+    if not include_all and str(row["employee_id"] or "") != str(employee_id or ""):
+        return None
+    rule = _json_loads(row["rule_json"], {})
+    conditions = rule.get("conditions") or []
+    target_values = rule.get("normalized_values") or []
+    target_fields = rule.get("target_fields") or []
+    return {
+        "id": int(row["id"]),
+        "rule_id": str(row["rule_id"] or ""),
+        "employee_id": str(row["employee_id"] or ""),
+        "customer_code": str(row["customer_code"] or rule.get("customer_code") or ""),
+        "customer_name": str(row["customer_name"] or rule.get("customer_name") or ""),
+        "business_field": str(rule.get("business_field") or row["business_field"] or ""),
+        "target_value": str(
+            row["target_value"] or (target_values[0] if target_values else "")
+        ),
+        "target_field": str(target_fields[0] if target_fields else ""),
+        "condition_summary": str(
+            row["condition_summary"]
+            or _pending_rule_condition_summary(rule)
+        ),
+        "business_explanation": str(
+            (rule.get("approval") or {}).get("basis") or ""
+        ),
+        "source_text": str(rule.get("source_text") or ""),
+        "priority": int(rule.get("priority") or 100),
+        "enabled": bool(rule.get("enabled", True)),
+        "conditions": conditions,
+        "source_task_id": row["source_task_id"],
+        "source_excel_row": row["source_excel_row"],
+        "status": str(row["status"] or ""),
+        "created_at": str(row["created_at"] or ""),
+        "updated_at": str(row["updated_at"] or ""),
+        "updated_by": str(row["updated_by"] or ""),
+        "processed_by": str(row["processed_by"] or ""),
+        "processed_at": str(row["processed_at"] or ""),
+        "rule_json": rule,
+        "can_manage": bool(
+            is_admin_user(employee_id)
+            or str(row["employee_id"] or "") == str(employee_id or "")
+        ),
+    }
+
+
+def list_transcode_agent_pending_rules(
+    employee_id: str,
+    *,
+    status: str = "pending",
+    include_all: bool = False,
+) -> list[dict[str, Any]]:
+    owner_filter = "" if include_all else employee_id
+    rows = db_list_transcode_agent_pending_rules(
+        status,
+        employee_id=owner_filter,
+    )
+    return [
+        view
+        for row in rows
+        if (view := transcode_agent_pending_rule_view(
+            row,
+            employee_id,
+            include_all=include_all,
+        ))
+    ]
+
+
+def get_transcode_agent_pending_rule(
+    pending_rule_id: int,
+    employee_id: str,
+    *,
+    include_all: bool = False,
+) -> dict[str, Any] | None:
+    row = db_get_transcode_agent_pending_rule(pending_rule_id)
+    if not row:
+        return None
+    return transcode_agent_pending_rule_view(
+        row,
+        employee_id,
+        include_all=include_all,
+    )
+
+
+def update_transcode_agent_pending_rule(
+    pending_rule_id: int,
+    employee_id: str,
+    form: Mapping[str, Any],
+) -> dict[str, Any]:
+    row = db_get_transcode_agent_pending_rule(pending_rule_id)
+    if not row or row["status"] != "pending":
+        raise LookupError("待生效规则不存在或已处理")
+    if not is_admin_user(employee_id) and str(row["employee_id"]) != str(employee_id):
+        raise CustomerRuleMaintenanceError("只有提交人或维护人可以编辑该待生效规则")
+
+    existing_rule = _json_loads(row["rule_json"], {})
+    business_field = str(
+        form.get("business_field")
+        or existing_rule.get("business_field")
+        or ""
+    ).strip()
+    if business_field not in BUSINESS_FIELD_TARGETS:
+        raise CustomerRuleMaintenanceError(f"不支持的维护参数：{business_field}")
+    existing_target_fields = existing_rule.get("target_fields") or []
+    target_field = str(form.get("target_field") or "").strip() or (
+        str(existing_target_fields[0])
+        if existing_target_fields
+        else BUSINESS_FIELD_TARGETS[business_field][0]
+    )
+    form_data = dict(form)
+    form_data["rule_id"] = str(row["rule_id"] or "")
+    form_data["business_field"] = business_field
+    form_data["target_field"] = target_field
+    if not form_data.get("source_text"):
+        form_data["source_text"] = existing_rule.get("source_text") or ""
+    if not form_data.get("condition_field"):
+        existing_conditions = existing_rule.get("conditions") or []
+        if existing_conditions:
+            form_data["condition_field"] = existing_conditions[0].get("field") or ""
+            form_data["condition_operator"] = existing_conditions[0].get("operator") or ""
+            form_data["condition_value"] = existing_conditions[0].get("value") or ""
+    if not form_data.get("approval_basis"):
+        form_data["approval_basis"] = (
+            str((existing_rule.get("approval") or {}).get("basis") or "")
+        )
+    if not str(form_data.get("priority") or "").strip():
+        form_data["priority"] = str(existing_rule.get("priority") or 100)
+    if "enabled" not in form_data:
+        form_data["enabled"] = "1" if existing_rule.get("enabled", True) else "0"
+    if not form_data.get("semantic_enabled"):
+        semantic_enabled = bool(existing_rule.get("semantic_enabled"))
+        condition_fields = form_data.get("condition_field")
+        if isinstance(condition_fields, list):
+            condition_fields = " ".join(str(item) for item in condition_fields)
+        if str(condition_fields or "").strip() == "订单备注":
+            semantic_enabled = True
+        form_data["semantic_enabled"] = "1" if semantic_enabled else "0"
+
+    rule = build_rule_from_form(form_data, existing_rule=existing_rule)
+    validate_customer_maintained_rule(rule)
+    rule["source_column"] = "确认中心"
+    rule["note"] = (
+        f"已提交待生效规则；来源任务{row['source_task_id'] or ''}；"
+        f"Excel第{row['source_excel_row'] or ''}行；"
+        f"提交人{row['employee_id']}；最近编辑{employee_id}"
+    )
+    db_update_transcode_agent_pending_rule(
+        pending_rule_id,
+        rule_json=json.dumps(rule, ensure_ascii=False, default=str),
+        customer_code=str(rule.get("customer_code") or ""),
+        customer_name=str(rule.get("customer_name") or ""),
+        business_field=str(rule.get("business_field") or ""),
+        target_value=str((rule.get("normalized_values") or [""])[0] or ""),
+        condition_summary=_pending_rule_condition_summary(rule),
+        updated_by=employee_id,
+    )
+    return get_transcode_agent_pending_rule(
+        pending_rule_id,
+        employee_id,
+        include_all=is_admin_user(employee_id),
+    ) or {}
+
+
+def activate_transcode_agent_pending_rule(
+    pending_rule_id: int,
+    employee_id: str,
+) -> dict[str, Any]:
+    if not is_admin_user(employee_id):
+        raise CustomerRuleMaintenanceError("只有维护人可以确认待生效规则")
+    row = db_get_transcode_agent_pending_rule(pending_rule_id)
+    if not row or row["status"] != "pending":
+        raise LookupError("待生效规则不存在或已处理")
+    rule = _json_loads(row["rule_json"], {})
+    if not rule:
+        raise CustomerRuleMaintenanceError("待生效规则内容无效")
+    validate_customer_maintained_rule(rule)
+
+    signature = _pending_rule_signature(rule)
+    for active_rule in _active_customer_workspace_rules():
+        if str(active_rule.get("rule_id") or "") == str(rule.get("rule_id") or ""):
+            continue
+        if _pending_rule_signature(active_rule) == signature:
+            raise CustomerRuleMaintenanceError(
+                "已存在相同的生效规则，请先在规则配置中删除或停用后再确认："
+                f"{active_rule.get('rule_id')}"
+            )
+    for pending_row in db_list_transcode_agent_pending_rules(
+        "pending",
+        employee_id="",
+    ):
+        if int(pending_row["id"]) == pending_rule_id:
+            continue
+        pending_rule = _json_loads(pending_row["rule_json"], {})
+        if pending_rule and _pending_rule_signature(pending_rule) == signature:
+            raise CustomerRuleMaintenanceError(
+                "已存在相同内容的待生效规则，请先处理该记录："
+                f"{pending_row['rule_id']}"
+            )
+
+    rule["note"] = (
+        f"{rule.get('note') or ''}；{employee_id}确认生效"
+    ).strip()
+    save_rule_override(
+        rule,
+        updated_by=employee_id,
+        previous_rule=None,
+    )
+    db_set_transcode_agent_pending_rule_status(
+        pending_rule_id,
+        "active",
+        processed_by=employee_id,
+    )
+    return get_transcode_agent_pending_rule(
+        pending_rule_id,
+        employee_id,
+        include_all=True,
+    ) or {}
+
+
+def delete_transcode_agent_pending_rule(
+    pending_rule_id: int,
+    employee_id: str,
+) -> None:
+    row = db_get_transcode_agent_pending_rule(pending_rule_id)
+    if not row or row["status"] != "pending":
+        raise LookupError("待生效规则不存在或已处理")
+    if not is_admin_user(employee_id) and str(row["employee_id"]) != str(employee_id):
+        raise CustomerRuleMaintenanceError("只有提交人或维护人可以删除该待生效规则")
+    db_set_transcode_agent_pending_rule_status(
+        pending_rule_id,
+        "deleted",
+        processed_by=employee_id,
+    )
 
 
 def _long_term_target_value(field_key: str, code: str) -> str:
@@ -3702,20 +4359,20 @@ def _update_confirmation_workbook_row(
         raise FileNotFoundError("任务结果文件不存在")
     wb = openpyxl.load_workbook(output_path)
     ws = wb["转码需求表"] if "转码需求表" in wb.sheetnames else wb[wb.sheetnames[0]]
-    headers = {
-        str(cell.value or "").strip(): int(cell.column)
-        for cell in ws[1]
-        if str(cell.value or "").strip()
-    }
+    headers = _result_header_columns(ws)
     result_col = headers.get(FORMAL_RESULT_HEADER)
     pending_col = headers.get(PENDING_RESULT_HEADER)
     difference_col = headers.get(CODE_DIFFERENCE_HEADER)
     comparison_col = headers.get(OUTPUT_STATUS_HEADER)
-    status_col = headers.get(TRANSCODE_STATUS_HEADER)
-    confirmation_col = headers.get(CONFIRMATION_HEADER)
-    system_analysis_col = headers.get(SYSTEM_ANALYSIS_HEADER)
-    if not all((result_col, pending_col, status_col, confirmation_col)):
-        raise ValueError("结果文件缺少人工确认所需列")
+    status_col = headers.get(RESULT_STATUS_HEADER) or headers.get(TRANSCODE_STATUS_HEADER)
+    confirmation_col = (
+        headers.get(RESULT_EXPLANATION_HEADER)
+        or headers.get(CONFIRMATION_HEADER)
+        or headers.get(SYSTEM_ANALYSIS_HEADER)
+    )
+    system_analysis_col = headers.get(SYSTEM_ANALYSIS_HEADER) or headers.get(
+        RESULT_EXPLANATION_HEADER
+    )
     green_fill = PatternFill(start_color="C8E6C9", end_color="C8E6C9", fill_type="solid")
     red_fill = PatternFill(start_color="FFCDD2", end_color="FFCDD2", fill_type="solid")
     formal_cell = ws.cell(row=excel_row, column=result_col)
@@ -3723,14 +4380,15 @@ def _update_confirmation_workbook_row(
     if analysis.get("status") == "成功":
         formal_cell.value = analysis.get("formal_code") or analysis.get("candidate_code") or None
         formal_cell.fill = green_fill
-        pending_cell = ws.cell(row=excel_row, column=pending_col)
-        pending_cell.value = None
-        pending_cell.fill = PatternFill(fill_type=None)
+        if pending_col:
+            pending_cell = ws.cell(row=excel_row, column=pending_col)
+            pending_cell.value = None
+            pending_cell.fill = PatternFill(fill_type=None)
         if difference_col:
-            ws.cell(row=excel_row, column=difference_col, value="人工已确认").fill = green_fill
+            ws.cell(row=excel_row, column=difference_col, value="人工已核对").fill = green_fill
         if comparison_col:
-            ws.cell(row=excel_row, column=comparison_col, value="人工已确认").fill = green_fill
-        ws.cell(row=excel_row, column=status_col, value="人工已确认").fill = green_fill
+            ws.cell(row=excel_row, column=comparison_col, value="人工已核对").fill = green_fill
+        ws.cell(row=excel_row, column=status_col, value="人工已核对").fill = green_fill
         if system_analysis_col:
             ws.cell(
                 row=excel_row,
@@ -3740,11 +4398,12 @@ def _update_confirmation_workbook_row(
     else:
         formal_cell.value = None
         formal_cell.fill = red_fill
-        ws.cell(
-            row=excel_row,
-            column=pending_col,
-            value=analysis.get("candidate_code") or None,
-        ).fill = red_fill
+        if pending_col:
+            ws.cell(
+                row=excel_row,
+                column=pending_col,
+                value=analysis.get("candidate_code") or None,
+            ).fill = red_fill
         if difference_col:
             ws.cell(row=excel_row, column=difference_col, value="待人工确认").fill = red_fill
         if comparison_col:
@@ -3756,11 +4415,12 @@ def _update_confirmation_workbook_row(
                 column=system_analysis_col,
                 value=confirmation_note,
             ).fill = red_fill
-    ws.cell(
-        row=excel_row,
-        column=confirmation_col,
-        value=confirmation_note,
-    ).fill = red_fill if analysis.get("status") != "成功" else green_fill
+    if confirmation_col:
+        ws.cell(
+            row=excel_row,
+            column=confirmation_col,
+            value=confirmation_note,
+        ).fill = red_fill if analysis.get("status") != "成功" else green_fill
     try:
         _atomic_save_workbook(wb, output_path)
     finally:
@@ -3787,21 +4447,22 @@ def _update_automatic_reevaluation_workbook_rows(
         raise FileNotFoundError("任务结果文件不存在")
     wb = openpyxl.load_workbook(output_path)
     ws = wb["转码需求表"] if "转码需求表" in wb.sheetnames else wb[wb.sheetnames[0]]
-    headers = {
-        str(cell.value or "").strip(): int(cell.column)
-        for cell in ws[1]
-        if str(cell.value or "").strip()
-    }
+    headers = _result_header_columns(ws)
     result_col = headers.get(FORMAL_RESULT_HEADER)
     pending_col = headers.get(PENDING_RESULT_HEADER)
     difference_col = headers.get(CODE_DIFFERENCE_HEADER)
     comparison_col = headers.get(OUTPUT_STATUS_HEADER)
-    status_col = headers.get(TRANSCODE_STATUS_HEADER)
-    confirmation_col = headers.get(CONFIRMATION_HEADER)
-    system_analysis_col = headers.get(SYSTEM_ANALYSIS_HEADER)
-    if not all((result_col, pending_col, status_col, confirmation_col)):
-        raise ValueError("结果文件缺少规则重评所需列")
+    status_col = headers.get(RESULT_STATUS_HEADER) or headers.get(TRANSCODE_STATUS_HEADER)
+    confirmation_col = (
+        headers.get(RESULT_EXPLANATION_HEADER)
+        or headers.get(CONFIRMATION_HEADER)
+        or headers.get(SYSTEM_ANALYSIS_HEADER)
+    )
+    system_analysis_col = headers.get(SYSTEM_ANALYSIS_HEADER) or headers.get(
+        RESULT_EXPLANATION_HEADER
+    )
     green_fill = PatternFill(start_color="C8E6C9", end_color="C8E6C9", fill_type="solid")
+    yellow_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
     red_fill = PatternFill(start_color="FFCDD2", end_color="FFCDD2", fill_type="solid")
     product_name_col = _find_product_name_column(ws)
     for excel_row, analysis in rows:
@@ -3814,11 +4475,12 @@ def _update_automatic_reevaluation_workbook_rows(
         comparison = _export_result_comparison(analysis, product_name)
         comparison_failed = comparison is False
         fill = red_fill if comparison_failed else green_fill
-        note = "系统按当前活动规则重新评估达到100分"
+        note = "系统按当前活动规则重新评估达到100分，待人工核对"
         ws.cell(row=excel_row, column=result_col, value=formal_code or None).fill = fill
-        pending_cell = ws.cell(row=excel_row, column=pending_col)
-        pending_cell.value = None
-        pending_cell.fill = PatternFill(fill_type=None)
+        if pending_col:
+            pending_cell = ws.cell(row=excel_row, column=pending_col)
+            pending_cell.value = None
+            pending_cell.fill = PatternFill(fill_type=None)
         if difference_col:
             ws.cell(
                 row=excel_row,
@@ -3830,13 +4492,14 @@ def _update_automatic_reevaluation_workbook_rows(
         ws.cell(
             row=excel_row,
             column=status_col,
-            value="可直接采用",
-        ).fill = green_fill
-        ws.cell(
-            row=excel_row,
-            column=confirmation_col,
-            value="无需人工确认：当前活动规则重评为100分",
-        ).fill = green_fill
+            value="已出码需核对",
+        ).fill = yellow_fill
+        if confirmation_col:
+            ws.cell(
+                row=excel_row,
+                column=confirmation_col,
+                value="系统100分出码，待人工核对",
+            ).fill = yellow_fill
         if system_analysis_col:
             ws.cell(row=excel_row, column=system_analysis_col, value=note).fill = green_fill
     try:
@@ -3851,24 +4514,56 @@ def _refresh_confirmation_job_status(job_id: int, *, newly_formal: int | bool) -
         return
     rows = list_transcode_agent_confirmation_items(job_id, job["employee_id"])
     pending_rows = {int(row["excel_row"]) for row in rows if row["status"] == "pending"}
+    item_statuses_by_row: dict[int, set[str]] = {}
+    for row in rows:
+        item_statuses_by_row.setdefault(int(row["excel_row"]), set()).add(
+            str(row["status"] or "")
+        )
+    verified_rows = {
+        int(row["excel_row"])
+        for row in db_list_transcode_agent_row_verifications(job_id)
+    }
+    records = _load_transcode_agent_trace_records(str(job["stored_result_path"] or ""))
+    verify_count = 0
+    for record in records:
+        state = _trace_record_state(
+            record,
+            item_statuses_by_row.get(int(record.get("excel_row") or 0), set()),
+            verified_rows,
+        )
+        if state == "automatic" and str(record.get("formal_code") or "").strip():
+            verify_count += 1
     newly_formal_count = int(newly_formal or 0)
     success_count = int(job["success_count"] or 0) + newly_formal_count
     fail_count = max(0, int(job["fail_count"] or 0) - newly_formal_count)
-    status = "awaiting_confirmation" if pending_rows else "completed"
+    if pending_rows:
+        status = "awaiting_confirmation"
+    elif verify_count:
+        status = "awaiting_verification"
+    else:
+        status = "completed"
     update_job_status(
         job_id,
         status=status,
         success_count=success_count,
         fail_count=fail_count,
         confirm_count=len(pending_rows),
-        completed=not pending_rows,
+        verify_count=verify_count,
+        completed=not pending_rows and not verify_count,
     )
     append_job_log(
         job_id,
-        f"人工确认后剩余 {len(pending_rows)} 行待处理",
+        (
+            f"人工确认后剩余 {len(pending_rows)} 行待处理"
+            if pending_rows
+            else f"还有 {verify_count} 行已出码需人工核对"
+            if verify_count
+            else "所有行已完成人工核对"
+        ),
         success_count=success_count,
         fail_count=fail_count,
         confirm_count=len(pending_rows),
+        verify_count=verify_count,
     )
 
 
@@ -3876,7 +4571,8 @@ def _refresh_confirmation_audit_sheet(job_id: int, output_path: str) -> None:
     if not output_path or not Path(output_path).exists():
         return
     events = list_transcode_agent_confirmation_events(job_id)
-    if not events:
+    verifications = db_list_transcode_agent_row_verifications(job_id)
+    if not events and not verifications:
         return
     workbook = openpyxl.load_workbook(output_path)
     sheet_name = "人工确认审计"
@@ -3894,8 +4590,9 @@ def _refresh_confirmation_audit_sheet(job_id: int, output_path: str) -> None:
         "确认后代码",
         "操作",
         "确认依据",
-        "是否长期规则",
-        "长期规则ID",
+        "是否待生效规则",
+        "待生效规则ID",
+        "待生效记录ID",
         "操作人",
         "操作时间",
     ]
@@ -3916,17 +4613,18 @@ def _refresh_confirmation_audit_sheet(job_id: int, output_path: str) -> None:
                 item.get("field_label", ""),
                 before.get("current_code", ""),
                 after.get("confirmed_code", "") or after.get("current_code", ""),
-                "确认" if action == "confirmed" else "规则重评通过" if action == "auto_resolved" else "暂不处理",
+                "人工核对" if action == "confirmed" else "规则重评通过" if action == "auto_resolved" else "暂不处理",
                 after.get("confirmation_basis", ""),
                 "是" if rule_id else "否",
                 rule_id,
+                after.get("pending_rule_id", ""),
                 event["employee_id"],
                 event["created_at"],
             ]
         )
     sheet.freeze_panes = "A2"
     sheet.auto_filter.ref = sheet.dimensions
-    widths = [8, 10, 10, 14, 20, 16, 16, 16, 12, 38, 14, 32, 14, 24]
+    widths = [8, 10, 10, 14, 20, 16, 16, 16, 12, 38, 14, 32, 14, 14, 24]
     for column, width in enumerate(widths, start=1):
         sheet.column_dimensions[get_column_letter(column)].width = width
     for cell in sheet[1]:
@@ -3935,6 +4633,46 @@ def _refresh_confirmation_audit_sheet(job_id: int, output_path: str) -> None:
     for row in sheet.iter_rows(min_row=2):
         for cell in row:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
+    if verifications:
+        verify_sheet_name = "人工核对审计"
+        if verify_sheet_name in workbook.sheetnames:
+            del workbook[verify_sheet_name]
+        verify_sheet = workbook.create_sheet(verify_sheet_name)
+        verify_sheet.append(
+            [
+                "序号",
+                "任务ID",
+                "Excel行",
+                "核对前代码",
+                "核对后代码",
+                "动作",
+                "核对说明",
+                "核对人",
+                "核对时间",
+            ]
+        )
+        for sequence, verification in enumerate(verifications, start=1):
+            verify_sheet.append(
+                [
+                    sequence,
+                    job_id,
+                    verification["excel_row"],
+                    verification["before_code"],
+                    verification["after_code"],
+                    "核对无误" if verification["action"] == "verified" else "修正后核对",
+                    verification["basis"],
+                    verification["employee_id"],
+                    verification["created_at"],
+                ]
+            )
+        verify_sheet.freeze_panes = "A2"
+        verify_sheet.auto_filter.ref = verify_sheet.dimensions
+        verify_widths = [8, 10, 10, 26, 26, 14, 40, 14, 24]
+        for column, width in enumerate(verify_widths, start=1):
+            verify_sheet.column_dimensions[get_column_letter(column)].width = width
+        for cell in verify_sheet[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
     try:
         _atomic_save_workbook(workbook, output_path)
     finally:
@@ -4183,28 +4921,40 @@ def _save_agent_result(
     green_fill = PatternFill(start_color="C8E6C9", end_color="C8E6C9", fill_type="solid")
     yellow_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
     red_fill = PatternFill(start_color="FFCDD2", end_color="FFCDD2", fill_type="solid")
+    detail_mode = str(os.environ.get("TRANSCODE_AGENT_DETAIL_SHEETS") or "").lower() in {
+        "1",
+        "on",
+        "true",
+    }
 
     result_excel_col = result_col + 1
-    if ws.cell(row=1, column=result_excel_col).value == FORMAL_RESULT_HEADER and (
-        ws.cell(row=1, column=result_excel_col + 1).value != PENDING_RESULT_HEADER
-    ):
-        ws.insert_cols(result_excel_col + 1, amount=1)
-
-    pending_col = result_excel_col + 1
-    difference_col = result_excel_col + 2
-    comparison_col = result_excel_col + 3
-    status_col = result_excel_col + 4
-    confirmation_col = result_excel_col + 5
     ws.cell(row=1, column=result_excel_col, value=FORMAL_RESULT_HEADER)
-    ws.cell(row=1, column=pending_col, value=PENDING_RESULT_HEADER)
-    ws.cell(row=1, column=difference_col, value=CODE_DIFFERENCE_HEADER)
-    ws.cell(row=1, column=comparison_col, value=OUTPUT_STATUS_HEADER)
-    ws.cell(row=1, column=status_col, value=TRANSCODE_STATUS_HEADER)
-    ws.cell(row=1, column=confirmation_col, value=CONFIRMATION_HEADER)
-    ws.column_dimensions[get_column_letter(pending_col)].width = 30
-    ws.column_dimensions[get_column_letter(difference_col)].width = 42
-    system_analysis_col = _find_or_append_header_column(ws, SYSTEM_ANALYSIS_HEADER)
-    ws.column_dimensions[get_column_letter(system_analysis_col)].width = 90
+    if detail_mode:
+        if ws.cell(row=1, column=result_excel_col).value == FORMAL_RESULT_HEADER and (
+            ws.cell(row=1, column=result_excel_col + 1).value != PENDING_RESULT_HEADER
+        ):
+            ws.insert_cols(result_excel_col + 1, amount=1)
+        pending_col = result_excel_col + 1
+        difference_col = result_excel_col + 2
+        comparison_col = result_excel_col + 3
+        status_col = result_excel_col + 4
+        confirmation_col = result_excel_col + 5
+        ws.cell(row=1, column=pending_col, value=PENDING_RESULT_HEADER)
+        ws.cell(row=1, column=difference_col, value=CODE_DIFFERENCE_HEADER)
+        ws.cell(row=1, column=comparison_col, value=OUTPUT_STATUS_HEADER)
+        ws.cell(row=1, column=status_col, value=TRANSCODE_STATUS_HEADER)
+        ws.cell(row=1, column=confirmation_col, value=CONFIRMATION_HEADER)
+        ws.column_dimensions[get_column_letter(pending_col)].width = 30
+        ws.column_dimensions[get_column_letter(difference_col)].width = 42
+        system_analysis_col = _find_or_append_header_column(ws, SYSTEM_ANALYSIS_HEADER)
+        ws.column_dimensions[get_column_letter(system_analysis_col)].width = 90
+    else:
+        status_col = result_excel_col + 1
+        explanation_col = result_excel_col + 2
+        ws.cell(row=1, column=status_col, value=RESULT_STATUS_HEADER)
+        ws.cell(row=1, column=explanation_col, value=RESULT_EXPLANATION_HEADER)
+        ws.column_dimensions[get_column_letter(status_col)].width = 18
+        ws.column_dimensions[get_column_letter(explanation_col)].width = 80
     product_name_col = _find_product_name_column(ws)
     analyses_by_row = {
         int(analysis["row"]): analysis
@@ -4216,67 +4966,97 @@ def _save_agent_result(
         value = df_req.iloc[i, result_col]
         analysis = analyses_by_row.get(i + 1, {})
         product_name = ws.cell(row=i + 1, column=product_name_col).value if product_name_col else ""
-        comparison = _export_result_comparison(
-            analysis,
-            product_name,
-        )
-        policy_difference_reason = _approved_policy_difference_reason(analysis, product_name)
-        comparison_failed = comparison is False
-        system_reason = _export_system_analysis_reason(
-            analysis,
-            product_name,
-            comparison,
-            agent_rules,
-            agent_mapping_tables,
-            coverage_cache,
-        )
-        reason_cell = ws.cell(row=i + 1, column=system_analysis_col, value=system_reason or None)
-        if system_reason:
-            reason_cell.alignment = Alignment(wrap_text=True, vertical="top")
-        ws.cell(
-            row=i + 1,
-            column=comparison_col,
-            value=comparison,
-        )
-        ws.cell(
-            row=i + 1,
-            column=status_col,
-            value=_export_transcode_status(analysis, value),
-        )
-        if analysis.get("status") == "待确认":
+        formal_value = "" if pd.isna(value) or str(value).strip().lower() == "nan" else str(value).strip()
+        if detail_mode:
+            comparison = _export_result_comparison(
+                analysis,
+                product_name,
+            )
+            policy_difference_reason = _approved_policy_difference_reason(analysis, product_name)
+            comparison_failed = comparison is False
+            system_reason = _export_system_analysis_reason(
+                analysis,
+                product_name,
+                comparison,
+                agent_rules,
+                agent_mapping_tables,
+                coverage_cache,
+            )
+            reason_cell = ws.cell(row=i + 1, column=system_analysis_col, value=system_reason or None)
+            if system_reason:
+                reason_cell.alignment = Alignment(wrap_text=True, vertical="top")
             ws.cell(
                 row=i + 1,
-                column=confirmation_col,
-                value=f"待确认：{analysis.get('reason', '')}",
-            ).fill = red_fill
-        formal_value = "" if pd.isna(value) or str(value).strip().lower() == "nan" else str(value).strip()
-        pending_value = (
-            str(analysis.get("candidate_code") or "").strip()
-            if analysis.get("status") == "待确认"
-            else ""
-        )
-        cell = ws.cell(row=i + 1, column=result_excel_col, value=formal_value or None)
-        pending_cell = ws.cell(row=i + 1, column=pending_col, value=pending_value or None)
-        if comparison_failed or policy_difference_reason or analysis.get("status") == "待确认":
-            result_fill = red_fill
-        elif formal_value.startswith("未识别"):
-            result_fill = red_fill
-        elif formal_value.startswith("跳过"):
-            result_fill = yellow_fill
+                column=comparison_col,
+                value=comparison,
+            )
+            ws.cell(
+                row=i + 1,
+                column=status_col,
+                value=_export_transcode_status(analysis, value),
+            )
+            if analysis.get("status") == "待确认":
+                ws.cell(
+                    row=i + 1,
+                    column=confirmation_col,
+                    value=f"待确认：{analysis.get('reason', '')}",
+                ).fill = red_fill
+            elif analysis.get("status") == "成功":
+                ws.cell(
+                    row=i + 1,
+                    column=confirmation_col,
+                    value="系统100分出码，待人工核对",
+                ).fill = yellow_fill
+            pending_value = (
+                str(analysis.get("candidate_code") or "").strip()
+                if analysis.get("status") == "待确认"
+                else ""
+            )
+            cell = ws.cell(row=i + 1, column=result_excel_col, value=formal_value or None)
+            pending_cell = ws.cell(row=i + 1, column=pending_col, value=pending_value or None)
+            if comparison_failed or policy_difference_reason or analysis.get("status") == "待确认":
+                result_fill = red_fill
+            elif formal_value.startswith("未识别"):
+                result_fill = red_fill
+            elif formal_value.startswith("跳过"):
+                result_fill = yellow_fill
+            else:
+                result_fill = green_fill
+            if formal_value:
+                cell.fill = result_fill
+            if pending_value:
+                pending_cell.fill = red_fill
+            difference_cell = ws.cell(
+                row=i + 1,
+                column=difference_col,
+                value=_comparison_code_display(formal_value or pending_value, product_name, comparison),
+            )
+            difference_cell.fill = result_fill
         else:
-            result_fill = green_fill
-        if formal_value:
-            cell.fill = result_fill
-        if pending_value:
-            pending_cell.fill = red_fill
-        difference_cell = ws.cell(
-            row=i + 1,
-            column=difference_col,
-            value=_comparison_code_display(formal_value or pending_value, product_name, comparison),
-        )
-        difference_cell.fill = result_fill
+            status_value = _export_transcode_status(analysis, value)
+            if analysis.get("status") == "待确认":
+                explanation = f"待确认：{analysis.get('reason', '')}"
+            elif analysis.get("status") == "成功":
+                explanation = "系统100分出码，待人工核对"
+            elif analysis.get("status") == "跳过":
+                explanation = f"跳过：{analysis.get('reason', '')}"
+            else:
+                explanation = str(analysis.get("reason") or "未出码")
+            ws.cell(row=i + 1, column=status_col, value=status_value)
+            explanation_cell = ws.cell(row=i + 1, column=explanation_col, value=explanation or None)
+            explanation_cell.alignment = Alignment(wrap_text=True, vertical="top")
+            cell = ws.cell(row=i + 1, column=result_excel_col, value=formal_value or None)
+            if analysis.get("status") == "待确认" or formal_value.startswith("未识别"):
+                result_fill = red_fill
+            elif analysis.get("status") == "跳过":
+                result_fill = yellow_fill
+            else:
+                result_fill = green_fill
+            if formal_value:
+                cell.fill = result_fill
+            explanation_cell.fill = result_fill
 
-    if not any(
+    if detail_mode and not any(
         str(ws.cell(row=row, column=pending_col).value or "").strip()
         for row in range(2, ws.max_row + 1)
     ):
@@ -4299,12 +5079,17 @@ def _save_agent_result(
             del wb[sheet_name]
     _append_evidence_sheet(wb, analyses)
     _append_confirm_sheet(wb, analyses)
-    _append_summary_sheet(wb, analyses, agent_rules, agent_mapping_tables, confirm_count)
-    _append_issue_analysis_sheets(wb, ws, analyses, agent_rules, agent_mapping_tables)
-    _append_technical_pending_sheet(wb, agent_mapping_tables)
-    _append_semantic_shadow_sheet(wb, analyses)
-    _append_order_semantic_model_sheet(wb, analyses)
-    _append_evidence_score_shadow_sheet(wb, analyses)
+    if str(os.environ.get("TRANSCODE_AGENT_DETAIL_SHEETS") or "").lower() in {
+        "1",
+        "on",
+        "true",
+    }:
+        _append_summary_sheet(wb, analyses, agent_rules, agent_mapping_tables, confirm_count)
+        _append_issue_analysis_sheets(wb, ws, analyses, agent_rules, agent_mapping_tables)
+        _append_technical_pending_sheet(wb, agent_mapping_tables)
+        _append_semantic_shadow_sheet(wb, analyses)
+        _append_order_semantic_model_sheet(wb, analyses)
+        _append_evidence_score_shadow_sheet(wb, analyses)
     _remove_empty_sheets(wb, protected_sheet=ws.title)
     _atomic_save_workbook(wb, output_path)
 
@@ -4331,6 +5116,53 @@ def _atomic_save_workbook(workbook, output_path: str | Path) -> None:
             safe_unlink(temp_path)
 
 
+def _ensure_result_header_columns(
+    ws,
+    required_headers: list[str],
+) -> dict[str, int]:
+    headers = {
+        str(cell.value or "").strip(): int(cell.column)
+        for cell in ws[1]
+        if str(cell.value or "").strip()
+    }
+    next_column = ws.max_column + 1
+    for header in required_headers:
+        if header in headers:
+            continue
+        ws.cell(row=1, column=next_column, value=header)
+        headers[header] = next_column
+        next_column += 1
+    return headers
+
+
+def _result_header_columns(ws) -> dict[str, int]:
+    headers = {
+        str(cell.value or "").strip(): int(cell.column)
+        for cell in ws[1]
+        if str(cell.value or "").strip()
+    }
+    next_column = ws.max_column + 1
+
+    def add(header: str) -> None:
+        nonlocal next_column
+        if header in headers:
+            return
+        ws.cell(row=1, column=next_column, value=header)
+        headers[header] = next_column
+        next_column += 1
+
+    add(FORMAL_RESULT_HEADER)
+    if RESULT_STATUS_HEADER not in headers and TRANSCODE_STATUS_HEADER not in headers:
+        add(RESULT_STATUS_HEADER)
+    if (
+        RESULT_EXPLANATION_HEADER not in headers
+        and CONFIRMATION_HEADER not in headers
+        and SYSTEM_ANALYSIS_HEADER not in headers
+    ):
+        add(RESULT_EXPLANATION_HEADER)
+    return headers
+
+
 def _export_transcode_status(
     analysis: dict[str, Any],
     value: Any,
@@ -4338,7 +5170,7 @@ def _export_transcode_status(
     status = str(analysis.get("status") or "").strip()
     result_text = str(value or "").strip()
     if status == "成功":
-        return "可直接采用"
+        return "已出码需核对"
     if status == "待确认":
         return "待人工确认"
     if status == "跳过" or result_text.startswith("跳过"):
@@ -4382,6 +5214,8 @@ def _format_agent_result_sheet(ws) -> None:
         OUTPUT_STATUS_HEADER: 14,
         TRANSCODE_STATUS_HEADER: 16,
         CONFIRMATION_HEADER: 48,
+        RESULT_STATUS_HEADER: 16,
+        RESULT_EXPLANATION_HEADER: 60,
     }
     for header, width in fixed_widths.items():
         column = headers.get(header)
@@ -4405,6 +5239,8 @@ def _format_agent_result_sheet(ws) -> None:
             CODE_DIFFERENCE_HEADER,
             CONFIRMATION_HEADER,
             SYSTEM_ANALYSIS_HEADER,
+            RESULT_STATUS_HEADER,
+            RESULT_EXPLANATION_HEADER,
         )
         if header in headers
     ]
@@ -4782,8 +5618,8 @@ def _append_evidence_sheet(wb, analyses: list[dict]) -> None:
                 item.get("code", ""),
                 item.get("score", ""),
                 item.get("hit_type", ""),
-                item.get("source", ""),
-                item.get("evidence", ""),
+                _business_rule_source_label(item.get("source", "")),
+                _business_field_evidence(analysis, item),
                 item.get("rule_id", ""),
                 item.get("rule_type", ""),
                 item.get("source_row", ""),

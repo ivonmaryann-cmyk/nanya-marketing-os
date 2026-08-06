@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -10,6 +11,7 @@ from werkzeug.datastructures import FileStorage
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+os.environ["TRANSCODE_AGENT_DETAIL_SHEETS"] = "1"
 
 from fangzheng_web_app import db
 from fangzheng_web_app import transcode_agent_rules as agent_rules
@@ -96,7 +98,7 @@ def main() -> None:
                 for row in range(2, main_ws.max_row + 1)
             )
             assert all(
-                main_ws.cell(row=row, column=transcode_status_index).value in {"可直接采用", "待人工确认", "未出码", "跳过"}
+                main_ws.cell(row=row, column=transcode_status_index).value in {"已出码需核对", "待人工确认", "未出码", "跳过"}
                 for row in range(2, main_ws.max_row + 1)
             )
             assert all(

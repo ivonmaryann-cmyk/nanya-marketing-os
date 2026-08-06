@@ -12,6 +12,7 @@ from fangzheng_web_app.transcode_agent_rules import FEATURE_KEY
 
 
 def test_single_input_creates_one_row_batch_job(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRANSCODE_AGENT_DETAIL_SHEETS", "1")
     monkeypatch.setattr(db, "DATABASE_PATH", tmp_path / "app.db")
     monkeypatch.setattr(service, "JOBS_DIR", tmp_path / "jobs")
     db.init_db()

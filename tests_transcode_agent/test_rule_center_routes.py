@@ -152,10 +152,11 @@ def test_confirmation_center_buttons_and_auto_basis_are_business_friendly():
         / "transcode_agent_confirmation.html"
     ).read_text(encoding="utf-8")
 
-    assert "确认这行并写正式码" in template
+    assert "确认并标记已人工核对" in template
     assert "这行先不处理，保留待确认" in template
     assert "业务确认：" in template
     assert "refreshAutoBasis" in template
+    assert "核对无误" in template
 
 
 def test_legacy_agent_rule_doc_redirects_to_rule_center(monkeypatch, tmp_path):

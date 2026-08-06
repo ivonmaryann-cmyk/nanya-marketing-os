@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -12,6 +13,7 @@ from werkzeug.datastructures import FileStorage
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+os.environ["TRANSCODE_AGENT_DETAIL_SHEETS"] = "1"
 
 from fangzheng_web_app import db
 from fangzheng_web_app import transcode_agent_rules as agent_rules
@@ -104,12 +106,13 @@ def main() -> None:
 
             job = get_job(job_id)
             assert job is not None
-            assert job["status"] == "completed", dict(job)
+            assert job["status"] == "awaiting_verification", dict(job)
             assert job["total_rows"] == 499, dict(job)
             assert job["skip_count"] == 145, dict(job)
             assert job["success_count"] == 354, dict(job)
             assert job["fail_count"] == 0, dict(job)
             assert job["confirm_count"] == 0, dict(job)
+            assert job["verify_count"] == job["success_count"], dict(job)
             assert str(job["rule_version"]) == f"base:{base_version};agent:{agent_version}", dict(job)
 
             result_path = Path(job["stored_result_path"])
@@ -139,6 +142,7 @@ def main() -> None:
                 if str(header or "").replace(" ", "") == "品名"
             )
             confirmation_count = 0
+            pending_confirmation_count = 0
             comparison_counts = {True: 0, False: 0, "跳过": 0}
             for excel_row, row in enumerate(main_ws.iter_rows(min_row=2, values_only=True), start=2):
                 result = str(row[result_index - 1] or "")
@@ -172,22 +176,26 @@ def main() -> None:
                 confirmation = str(row[confirmation_index - 1] or "")
                 if confirmation:
                     confirmation_count += 1
-                    assert confirmation.startswith("待确认："), row
-                    assert expected is True, row
-                    assert row[transcode_status_index - 1] == "待人工确认", row
-                    fill_color = main_ws.cell(row=excel_row, column=result_index).fill.fgColor.rgb or ""
-                    assert fill_color.endswith("FFCDD2"), (excel_row, fill_color, row)
+                    if confirmation.startswith("待确认："):
+                        pending_confirmation_count += 1
+                        assert expected is True, row
+                        assert row[transcode_status_index - 1] == "待人工确认", row
+                        fill_color = main_ws.cell(row=excel_row, column=result_index).fill.fgColor.rgb or ""
+                        assert fill_color.endswith("FFCDD2"), (excel_row, fill_color, row)
+                    else:
+                        assert confirmation == "系统100分出码，待人工核对", row
+                        assert row[transcode_status_index - 1] == "已出码需核对", row
                 else:
-                    expected_status = "跳过" if result.startswith("跳过") else "可直接采用"
+                    expected_status = "跳过" if result.startswith("跳过") else "已出码需核对"
                     assert row[transcode_status_index - 1] == expected_status, row
                 if expected_comparison is False:
-                    assert row[transcode_status_index - 1] == "可直接采用", row
-                    assert not confirmation, row
+                    assert row[transcode_status_index - 1] == "已出码需核对", row
+                    assert not confirmation.startswith("待确认："), row
                     differences = _comparison_code_differences(result, row[product_name_index - 1])
                     assert differences, row
                     fill_color = main_ws.cell(row=excel_row, column=result_index).fill.fgColor.rgb or ""
                     assert fill_color.endswith("FFCDD2"), (excel_row, fill_color, row)
-            assert confirmation_count == 0, confirmation_count
+            assert pending_confirmation_count == 0, pending_confirmation_count
             assert comparison_counts == {True: 316, False: 38, "跳过": 145}, comparison_counts
 
             issue_detail_ws = workbook["问题分类明细"]

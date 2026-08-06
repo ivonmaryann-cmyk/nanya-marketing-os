@@ -404,7 +404,7 @@ def test_confirmation_rule_origin_and_disabled_state_are_visible(monkeypatch, tm
         business_field="基板级别",
         rule_id=rule["rule_id"],
     )
-    assert workspace["selected_rule"]["origin"] == "确认中心长期规则"
+    assert workspace["selected_rule"]["origin"] == "确认中心待生效规则"
     assert workspace["selected_rule"]["enabled"] is True
 
     disabled_form = MultiDict(

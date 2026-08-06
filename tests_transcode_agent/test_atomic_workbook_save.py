@@ -53,6 +53,29 @@ def test_atomic_save_failure_preserves_existing_result(tmp_path):
     assert not list(tmp_path.glob("*.tmp.xlsx"))
 
 
+def test_verified_workbook_auto_adds_missing_result_columns(tmp_path):
+    target = tmp_path / "old_result.xlsx"
+    workbook = openpyxl.Workbook()
+    worksheet = workbook.active
+    worksheet.append(["客户简称"])
+    worksheet.append(["测试客户"])
+    workbook.save(target)
+
+    service._update_verified_workbook_rows(
+        str(target),
+        [(2, "CODE-2")],
+        basis="测试核对",
+    )
+
+    updated = openpyxl.load_workbook(target)
+    result_sheet = updated.active
+    headers = {str(cell.value or "").strip(): cell.column for cell in result_sheet[1]}
+    assert service.FORMAL_RESULT_HEADER in headers
+    assert service.RESULT_STATUS_HEADER in headers
+    assert result_sheet.cell(2, headers[service.FORMAL_RESULT_HEADER]).value == "CODE-2"
+    assert result_sheet.cell(2, headers[service.RESULT_STATUS_HEADER]).value == "人工已核对"
+
+
 def test_corrupt_legacy_result_does_not_crash_confirmation_page(tmp_path):
     target = tmp_path / "corrupt.xlsx"
     target.write_bytes(b"partial xlsx")
@@ -105,5 +128,5 @@ def test_batch_reevaluation_updates_all_rows_with_one_save(tmp_path, monkeypatch
     assert result.cell(3, 2).value == "CODE-3"
     assert result.cell(2, 3).value is None
     assert result.cell(3, 3).value is None
-    assert result.cell(2, 6).value == "可直接采用"
-    assert result.cell(3, 6).value == "可直接采用"
+    assert result.cell(2, 6).value == "已出码需核对"
+    assert result.cell(3, 6).value == "已出码需核对"

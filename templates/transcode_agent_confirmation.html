@@ -13,8 +13,9 @@
   </div>
   <div class="confirmation-summary" aria-label="确认进度">
     <div><span>待确认行</span><strong id="confirm-pending-rows">{{ confirmation_data.confirm_count }}</strong></div>
+    <div><span>已出码需核对</span><strong id="confirm-verify-count">{{ confirmation_data.verify_count }}</strong></div>
     <div><span>正式出码</span><strong id="confirm-success-count">{{ job.success_count }}</strong></div>
-    <div><span>任务状态</span><strong id="confirm-job-status">{{ '待人工确认' if job.status == 'awaiting_confirmation' else '已完成' if job.status == 'completed' else job.status }}</strong></div>
+    <div><span>任务状态</span><strong id="confirm-job-status">{{ '待人工确认' if job.status == 'awaiting_confirmation' else '待核对' if job.status == 'awaiting_verification' else '已完成' if job.status == 'completed' else job.status }}</strong></div>
   </div>
 </section>
 
@@ -26,10 +27,10 @@
     </div>
     <div class="confirmation-scope-tabs" aria-label="转码记录筛选">
       <a href="{{ url_for('main.transcode_agent_confirmation_center', job_id=job.id, scope='all') }}" data-record-scope="all">全部</a>
-      <a href="{{ url_for('main.transcode_agent_confirmation_center', job_id=job.id, scope='pending') }}" data-record-scope="pending">待确认</a>
-      <a href="{{ url_for('main.transcode_agent_confirmation_center', job_id=job.id, scope='confirmed') }}" data-record-scope="confirmed">已人工确认</a>
-      <a href="{{ url_for('main.transcode_agent_confirmation_center', job_id=job.id, scope='automatic') }}" data-record-scope="automatic">无需人工确认</a>
-      <a href="{{ url_for('main.transcode_agent_confirmation_center', job_id=job.id, scope='exceptions') }}" data-record-scope="exceptions">异常/跳过</a>
+      <a href="{{ url_for('main.transcode_agent_confirmation_center', job_id=job.id, scope='pending') }}" data-record-scope="pending">待人工确认</a>
+      <a href="{{ url_for('main.transcode_agent_confirmation_center', job_id=job.id, scope='confirmed') }}" data-record-scope="confirmed">已人工核对</a>
+      <a href="{{ url_for('main.transcode_agent_confirmation_center', job_id=job.id, scope='automatic') }}" data-record-scope="automatic">已出码需核对</a>
+      <a href="{{ url_for('main.transcode_agent_confirmation_center', job_id=job.id, scope='exceptions') }}" data-record-scope="exceptions">异常/暂不处理</a>
     </div>
     <p id="confirmation-filter-message" class="confirmation-filter-message" aria-live="polite"></p>
     <div id="confirmation-row-list" class="confirmation-row-list"></div>
@@ -69,8 +70,8 @@
       <div class="confirmation-fields-head">
         <h3 id="confirmation-fields-title">字段证据与处理记录</h3>
         <label id="confirmation-basis-wrap">
-          <span>本次确认依据</span>
-          <input id="confirmation-basis" type="text" placeholder="填写业务判断依据">
+          <span>业务确认说明</span>
+          <input id="confirmation-basis" type="text" placeholder="填写为什么这样确认，便于沉淀规则">
         </label>
       </div>
       <div id="confirmation-fields" class="confirmation-fields"></div>
@@ -80,8 +81,10 @@
           <button type="button" class="icon-command" id="confirm-prev" title="上一行" aria-label="上一行">←</button>
           <button type="button" class="icon-command" id="confirm-next" title="下一行" aria-label="下一行">→</button>
         </div>
+        <button type="button" class="secondary-button hidden" id="confirm-verify-row">核对无误</button>
+        <button type="button" class="secondary-button hidden" id="confirm-correct-row">修正码值</button>
         <button type="button" class="secondary-button" id="confirm-skip-row">这行先不处理，保留待确认</button>
-        <button type="button" id="confirm-save-row">确认这行并写正式码</button>
+        <button type="button" id="confirm-save-row">确认并标记已人工核对</button>
       </div>
       <p id="confirmation-message" class="confirmation-message" aria-live="polite"></p>
     </div>
@@ -91,6 +94,7 @@
 <div class="confirmation-footer">
   <span>任务 #{{ job.id }}</span>
   <div>
+    <button type="button" class="secondary-button hidden" id="confirm-verify-all">批量核对已出码</button>
     <button type="button" class="secondary-button" id="confirm-reevaluate">按当前规则重新评估</button>
     <a class="secondary-link" href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载当前结果</a>
     <button type="button" class="secondary-button" id="confirm-finalize">暂不处理剩余项并生成结果</button>
@@ -100,23 +104,7 @@
 <script>
   const confirmationJobId = {{ job.id }};
   const confirmationApi = `/api/transcode-agent/jobs/${confirmationJobId}/confirmations`;
-  const longTermConditionFields = {{ condition_fields | tojson }};
-  const longTermConditionOperators = {{ condition_operators | tojson }};
-  const longTermOperatorLabels = {
-    contains_any: "包含任一",
-    contains_all: "同时包含",
-    not_contains: "不包含",
-    equals: "等于",
-    not_equals: "不等于",
-    in: "属于",
-    not_in: "不属于",
-    lt: "小于",
-    lte: "小于等于",
-    gt: "大于",
-    gte: "大于等于",
-    missing: "为空",
-    present: "有值"
-  };
+  const longTermSimpleSources = ["订单备注", "客户规格"];
   let confirmationData = {{ confirmation_data | tojson }};
   let confirmationRows = [];
   let confirmationIndex = 0;
@@ -138,10 +126,10 @@
   const filterMessageEl = document.getElementById("confirmation-filter-message");
 
   const recordStateLabels = {
-    pending: "待确认",
-    confirmed: "已人工确认",
+    pending: "待人工确认",
+    confirmed: "已人工核对",
     deferred: "暂不处理",
-    automatic: "无需人工确认",
+    automatic: "已出码需核对",
     failed: "未出码",
     skipped: "跳过"
   };
@@ -231,9 +219,9 @@
 
     const reason = document.createElement("p");
     if (item.status === "confirmed") {
-      reason.textContent = `人工已确认：${item.confirmation_basis || "未填写依据"}；操作人：${item.confirmed_by || "-"}；时间：${item.confirmed_at || "-"}`;
+      reason.textContent = `人工已核对：${item.confirmation_basis || "未填写依据"}；操作人：${item.confirmed_by || "-"}；时间：${item.confirmed_at || "-"}`;
     } else if (item.status === "auto_resolved") {
-      reason.textContent = `系统重评通过：${item.confirmation_basis || "当前规则达到100分"}；时间：${item.confirmed_at || "-"}`;
+      reason.textContent = `系统重评达到100分，待人工核对：${item.confirmation_basis || ""}；时间：${item.confirmed_at || "-"}`;
     } else if (item.status === "skipped") {
       reason.textContent = `暂不处理：${item.confirmation_basis || item.reason || "保留待人工确认码值"}`;
     } else if (item.status === "pending" && item.decision_reason) {
@@ -255,41 +243,31 @@
       toggle.type = "checkbox";
       toggle.dataset.longTermToggle = "true";
       const toggleText = document.createElement("span");
-      toggleText.textContent = "同时保存为长期规则";
+      toggleText.textContent = "同时沉淀为规则建议（维护人确认后生效）";
       toggleLabel.append(toggle, toggleText);
 
       const config = document.createElement("div");
       config.className = "confirmation-long-term-config hidden";
       const fieldSelect = document.createElement("select");
       fieldSelect.dataset.longTermConditionField = "true";
-      longTermConditionFields.forEach(value => {
+      longTermSimpleSources.forEach(value => {
         const option = document.createElement("option");
         option.value = value;
         option.textContent = value;
         fieldSelect.appendChild(option);
       });
-      const operatorSelect = document.createElement("select");
-      operatorSelect.dataset.longTermConditionOperator = "true";
-      longTermConditionOperators.forEach(value => {
-        const option = document.createElement("option");
-        option.value = value;
-        option.textContent = longTermOperatorLabels[value] || value;
-        operatorSelect.appendChild(option);
-      });
-      operatorSelect.value = "contains_any";
       const conditionValue = document.createElement("input");
       conditionValue.type = "text";
-      conditionValue.placeholder = "长期规则触发值";
+      conditionValue.placeholder = "多值用；分隔，例如汽车板；汽车；qiche";
       conditionValue.dataset.longTermConditionValue = "true";
-      config.append(fieldSelect, operatorSelect, conditionValue);
+      config.append(fieldSelect, conditionValue);
       const buildAutoBasis = () => {
         const condition = [
           fieldSelect.value,
-          longTermOperatorLabels[operatorSelect.value] || operatorSelect.value,
           conditionValue.value.trim()
         ].filter(Boolean).join(" ");
         const code = input.value.trim() || item.current_code || "";
-        return `业务确认：${item.field_label}按${code}；条件：${condition}`;
+        return `业务确认：${item.field_label}按${code}；触发来源：${condition}`;
       };
       let lastAutoBasis = "";
       const refreshAutoBasis = () => {
@@ -309,7 +287,7 @@
           lastAutoBasis = "";
         }
       });
-      [fieldSelect, operatorSelect, conditionValue, input].forEach(element => {
+      [fieldSelect, conditionValue, input].forEach(element => {
         ["change", "input"].forEach(eventName => {
           element.addEventListener(eventName, refreshAutoBasis);
         });
@@ -341,18 +319,27 @@
     document.getElementById("confirm-spec").textContent = row.spec || "-";
     document.getElementById("confirm-context").textContent = row.context_text || "-";
     fieldsEl.innerHTML = "";
+    let summaryReason = row.confirmation_note || row.system_reason || row.transcode_status || "已记录";
+    if (row.verification) {
+      const verification = row.verification;
+      summaryReason = `人工已核对：${verification.after_code || row.display_code}；操作人：${verification.employee_id || "-"}；时间：${verification.created_at || "-"}`;
+      if (verification.action === "corrected") summaryReason += `；修正前：${verification.before_code || "-"}`;
+    }
     const detailItems = row.items.length ? row.items : [{
       id: `summary-${row.excel_row}`,
       status: "record",
       field_label: "转码结果",
       current_code: row.display_code || "-",
       score: row.score || 0,
-      reason: row.confirmation_note || row.system_reason || row.transcode_status || "已记录"
+      reason: summaryReason
     }];
     detailItems.forEach(item => fieldsEl.appendChild(renderField(item)));
     const pending = row.items.some(item => item.status === "pending");
+    const canVerify = rowState(row) === "automatic" && Boolean(row.formal_code);
     document.getElementById("confirmation-fields-title").textContent = pending ? "待确认字段与首次解析证据" : "字段证据与处理记录";
     basisWrapEl.classList.toggle("hidden", !pending);
+    document.getElementById("confirm-verify-row").classList.toggle("hidden", !canVerify);
+    document.getElementById("confirm-correct-row").classList.toggle("hidden", !canVerify);
     document.getElementById("confirm-save-row").classList.toggle("hidden", !pending);
     document.getElementById("confirm-skip-row").classList.toggle("hidden", !pending);
     document.getElementById("confirm-prev").disabled = confirmationIndex === 0;
@@ -361,14 +348,20 @@
 
   function render() {
     pendingRowsEl.textContent = confirmationData.confirm_count || 0;
+    document.getElementById("confirm-verify-count").textContent = confirmationData.verify_count || 0;
     successCountEl.textContent = confirmationData.success_count || 0;
     jobStatusEl.textContent = {
       awaiting_confirmation: "待人工确认",
-      completed: "已完成",
+      awaiting_verification: "待核对",
+      completed: "已完成（全部核对）",
       failed: "失败"
     }[confirmationData.status] || confirmationData.status || "-";
     document.getElementById("confirm-finalize").disabled = !(confirmationData.confirm_count > 0);
     document.getElementById("confirm-reevaluate").disabled = !(confirmationData.confirm_count > 0);
+    document.getElementById("confirm-verify-all").classList.toggle(
+      "hidden",
+      !(confirmationData.verify_count > 0)
+    );
     document.querySelectorAll("[data-record-scope]").forEach(button => {
       button.classList.toggle("active", button.dataset.recordScope === recordScope);
     });
@@ -413,28 +406,27 @@
       return {
         item: pendingItems[index],
         code: element.querySelector("[data-confirmation-code]").value,
-        condition_field: element.querySelector("[data-long-term-condition-field]").value,
-        condition_operator: element.querySelector("[data-long-term-condition-operator]").value,
-        condition_value: element.querySelector("[data-long-term-condition-value]").value.trim()
+        trigger_source: element.querySelector("[data-long-term-condition-field]").value,
+        trigger_value: element.querySelector("[data-long-term-condition-value]").value.trim()
       };
     });
     const selectedLongTerm = longTermRequests.filter(Boolean);
     if (selectedLongTerm.length && !basisEl.value.trim()) {
-      messageEl.textContent = "保存长期规则必须填写本次确认依据。";
+      messageEl.textContent = "保存待生效规则必须填写业务确认说明。";
       return;
     }
     for (const requestItem of selectedLongTerm) {
-      if (!["missing", "present"].includes(requestItem.condition_operator) && !requestItem.condition_value) {
-        messageEl.textContent = `保存${requestItem.item.field_label}长期规则必须填写触发值。`;
+      if (!requestItem.trigger_value) {
+        messageEl.textContent = `保存${requestItem.item.field_label}待生效规则必须填写触发值。`;
         return;
       }
     }
     if (selectedLongTerm.length) {
       const details = selectedLongTerm.map(item =>
-        `${item.item.field_label}=${item.code}；${item.condition_field} ${longTermOperatorLabels[item.condition_operator] || item.condition_operator} ${item.condition_value}`
+        `${item.item.field_label}=${item.code}；${item.trigger_source} 出现「${item.trigger_value}」`
       ).join("\n");
-      if (!window.confirm(`以下规则将对该客户后续订单立即生效：\n${details}\n\n确认保存为长期规则？`)) {
-        messageEl.textContent = "已取消长期规则保存。";
+      if (!window.confirm(`以下规则建议将提交给维护人，整理确认后才对该客户后续订单生效：\n${details}\n\n确认提交为规则建议？`)) {
+        messageEl.textContent = "已取消规则建议提交。";
         return;
       }
     }
@@ -450,9 +442,8 @@
             basis: basisEl.value,
             save_long_term: Boolean(longTermRequests[index]),
             long_term_rule: longTermRequests[index] ? {
-              condition_field: longTermRequests[index].condition_field,
-              condition_operator: longTermRequests[index].condition_operator,
-              condition_value: longTermRequests[index].condition_value,
+              trigger_source: longTermRequests[index].trigger_source,
+              trigger_value: longTermRequests[index].trigger_value,
               second_confirmed: true
             } : null
           })
@@ -460,12 +451,57 @@
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || "确认失败");
       }
-      messageEl.textContent = "当前行已确认。";
+      messageEl.textContent = "当前行已人工核对。";
       basisEl.value = "";
       await refreshData(row.excel_row, true);
     } catch (error) {
       messageEl.textContent = error.message;
     }
+  });
+
+  document.getElementById("confirm-verify-row").addEventListener("click", async () => {
+    const row = confirmationRows[confirmationIndex];
+    if (!row || rowState(row) !== "automatic" || !row.formal_code) return;
+    if (!window.confirm(`确认 Excel 第 ${row.excel_row} 行的码值 ${row.formal_code} 无误？`)) return;
+    messageEl.textContent = "正在核对...";
+    const response = await fetch(
+      `/api/transcode-agent/rows/${confirmationJobId}/${row.excel_row}/verify`,
+      {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({code: row.formal_code, basis: "业务核对无误"})
+      }
+    );
+    const result = await response.json();
+    if (!response.ok) {
+      messageEl.textContent = result.error || "核对失败";
+      return;
+    }
+    messageEl.textContent = "已标记为人工核对，结果文件已更新，请重新下载。";
+    await refreshData(row.excel_row);
+  });
+
+  document.getElementById("confirm-correct-row").addEventListener("click", async () => {
+    const row = confirmationRows[confirmationIndex];
+    if (!row || rowState(row) !== "automatic" || !row.formal_code) return;
+    const correctedCode = window.prompt(`请输入 Excel 第 ${row.excel_row} 行核对后的正确码值：`, row.formal_code);
+    if (!correctedCode || !correctedCode.trim()) return;
+    messageEl.textContent = "正在保存修正码值...";
+    const response = await fetch(
+      `/api/transcode-agent/rows/${confirmationJobId}/${row.excel_row}/verify`,
+      {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({code: correctedCode.trim(), basis: "业务核对后修正码值"})
+      }
+    );
+    const result = await response.json();
+    if (!response.ok) {
+      messageEl.textContent = result.error || "修正失败";
+      return;
+    }
+    messageEl.textContent = "修正码值已标记为人工核对，结果文件已更新，请重新下载。";
+    await refreshData(row.excel_row);
   });
 
   document.getElementById("confirm-skip-row").addEventListener("click", async () => {
@@ -493,8 +529,31 @@
     await refreshData();
   });
 
+  document.getElementById("confirm-verify-all").addEventListener("click", async () => {
+    if (!window.confirm(`确认批量核对全部 ${confirmationData.verify_count || 0} 行已出码结果？核对后标记为“已人工核对”。`)) return;
+    messageEl.textContent = "正在批量核对...";
+    const response = await fetch(
+      `/api/transcode-agent/jobs/${confirmationJobId}/verify-all`,
+      {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({basis: "业务批量核对无误"})
+      }
+    );
+    const result = await response.json();
+    if (!response.ok) {
+      messageEl.textContent = result.error || "批量核对失败";
+      return;
+    }
+    messageEl.textContent = `已完成 ${result.verified_count} 行批量核对，结果文件已更新，请重新下载。`;
+    recordScope = "all";
+    recordPage = 1;
+    confirmationIndex = 0;
+    await refreshData();
+  });
+
   document.getElementById("confirm-reevaluate").addEventListener("click", async () => {
-    if (!window.confirm("按当前活动规则重新评估所有待确认行？达到100分的行将自动写入正式码，并保留重评审计记录。")) return;
+    if (!window.confirm("按当前活动规则重新评估所有待确认行？达到100分的行会进入“已出码需核对”，仍需人工核对。")) return;
     messageEl.textContent = "正在按当前规则重新评估...";
     const response = await fetch(`/api/transcode-agent/jobs/${confirmationJobId}/reevaluate-pending`, {method: "POST"});
     const result = await response.json();

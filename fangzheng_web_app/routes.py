@@ -129,16 +129,23 @@ from .transcode_agent_rules import (
     save_new_transcode_agent_rule_version,
 )
 from .transcode_agent_service import (
+    activate_transcode_agent_pending_rule,
     calculate_transcode_agent_quote,
     confirm_transcode_agent_item,
+    delete_transcode_agent_pending_rule,
     finalize_transcode_agent_confirmations,
+    get_transcode_agent_pending_rule,
     list_transcode_agent_confirmations,
+    list_transcode_agent_pending_rules,
     load_transcode_module,
     queue_transcode_agent_job,
     queue_transcode_agent_single_job,
     reevaluate_transcode_agent_confirmations,
     refresh_transcode_agent_audit_sheet,
     skip_transcode_agent_confirmation_row,
+    update_transcode_agent_pending_rule,
+    verify_all_transcode_agent_rows,
+    verify_transcode_agent_row,
 )
 from .transcode_customer_rule_admin import (
     AGENT_ASSET_TYPE,
@@ -1049,6 +1056,19 @@ def transcode_agent():
     )
 
 
+@bp.get("/admin/transcode-agent-pending-rules")
+def admin_transcode_agent_pending_rules():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    return redirect(
+        url_for(
+            "main.admin_transcode_rule_center",
+            section="submitted",
+        )
+    )
+
+
 @bp.route("/admin/transcode-rule-center", methods=["GET", "POST"])
 def admin_transcode_rule_center():
     redirect_resp = require_login()
@@ -1157,6 +1177,47 @@ def admin_transcode_rule_center():
                 )
                 flash("人工确认触发条件已停用。", "success")
                 return redirect(url_for("main.admin_transcode_rule_center", section="scoring"))
+            if action == "save_pending_rule":
+                pending_rule_id = int(request.form.get("pending_rule_id") or 0)
+                update_transcode_agent_pending_rule(
+                    pending_rule_id,
+                    employee_id,
+                    request.form,
+                )
+                flash("已提交待生效规则已更新。", "success")
+                return redirect(
+                    url_for(
+                        "main.admin_transcode_rule_center",
+                        section="submitted",
+                        pending_rule_id=pending_rule_id,
+                    )
+                )
+            if action == "activate_pending_rule":
+                pending_rule_id = int(request.form.get("pending_rule_id") or 0)
+                activate_transcode_agent_pending_rule(
+                    pending_rule_id,
+                    employee_id,
+                )
+                flash("待生效规则已确认并写入客户特殊规则。", "success")
+                return redirect(
+                    url_for(
+                        "main.admin_transcode_rule_center",
+                        section="submitted",
+                    )
+                )
+            if action == "delete_pending_rule":
+                pending_rule_id = int(request.form.get("pending_rule_id") or 0)
+                delete_transcode_agent_pending_rule(
+                    pending_rule_id,
+                    employee_id,
+                )
+                flash("待生效规则已删除并保留留痕。", "success")
+                return redirect(
+                    url_for(
+                        "main.admin_transcode_rule_center",
+                        section="submitted",
+                    )
+                )
             if action == "backup":
                 path = create_rule_center_backup(reason="页面手动备份")
                 flash(f"规则已备份：{path.name}", "success")
@@ -1169,7 +1230,14 @@ def admin_transcode_rule_center():
                 flash("备份已恢复，规则立即生效。", "success")
                 return redirect(url_for("main.admin_transcode_rule_center", section="backups"))
             raise RuleCenterError("未知的规则维护操作。")
-        except (RuleCenterError, ValueError, OSError, json.JSONDecodeError) as exc:
+        except (
+            CustomerRuleMaintenanceError,
+            LookupError,
+            RuleCenterError,
+            ValueError,
+            OSError,
+            json.JSONDecodeError,
+        ) as exc:
             flash(f"规则配置失败：{exc}", "error")
 
     ensure_rule_center_daily_backup()
@@ -1250,6 +1318,19 @@ def admin_transcode_rule_center():
         {"category": "历史资料", "source": "历史样本和外部资料；仅在备份与修改记录中追溯", "count": customer_rule_summary["display_scope_counts"].get("reference", 0), "status": "历史追溯"},
         {"category": "出码与人工确认", "source": "统一维护100分出码及人工确认标准", "count": len(confirmation_policies), "status": "统一维护"},
     ]
+    is_rule_admin = is_admin_user(employee_id)
+    pending_rules = list_transcode_agent_pending_rules(
+        employee_id,
+        include_all=is_rule_admin,
+    )
+    selected_pending_rule = None
+    selected_pending_id = request.args.get("pending_rule_id", type=int)
+    if selected_pending_id:
+        selected_pending_rule = get_transcode_agent_pending_rule(
+            selected_pending_id,
+            employee_id,
+            include_all=is_rule_admin,
+        )
     lookup_rows = list_lookup_rows(lookup_tables, group_key=lookup_group)
     business_rule_rows = list_business_rule_rows(
         lookup_tables,
@@ -1280,6 +1361,13 @@ def admin_transcode_rule_center():
         asset_rows=asset_rows,
         selected_asset=selected_asset,
         coverage_rows=coverage_rows,
+        pending_rules=pending_rules,
+        selected_pending_rule=selected_pending_rule,
+        is_rule_admin=is_rule_admin,
+        pending_rule_condition_fields=CUSTOMER_RULE_CONDITION_FIELDS,
+        pending_rule_condition_operators=CUSTOMER_RULE_CONDITION_OPERATORS,
+        pending_rule_condition_operator_labels=CUSTOMER_RULE_CONDITION_OPERATOR_LABELS,
+        pending_rule_field_targets=CUSTOMER_RULE_FIELD_TARGETS,
         active_base_version=get_active_transcode_rule_version(),
         active_agent_version=get_active_transcode_agent_rule_version(),
     )
@@ -2858,6 +2946,48 @@ def api_skip_transcode_agent_confirmation_row(item_id: int):
         return jsonify({"error": str(exc)}), 404
 
 
+@bp.post("/api/transcode-agent/rows/<int:job_id>/<int:excel_row>/verify")
+def api_verify_transcode_agent_row(job_id: int, excel_row: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return jsonify({"error": "unauthorized"}), 401
+    payload = request.get_json(silent=True) or {}
+    try:
+        return jsonify(
+            verify_transcode_agent_row(
+                job_id,
+                excel_row,
+                current_employee() or "",
+                code=str(payload.get("code") or ""),
+                basis=str(payload.get("basis") or "").strip(),
+            )
+        )
+    except LookupError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 409
+
+
+@bp.post("/api/transcode-agent/jobs/<int:job_id>/verify-all")
+def api_verify_all_transcode_agent_rows(job_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return jsonify({"error": "unauthorized"}), 401
+    payload = request.get_json(silent=True) or {}
+    try:
+        return jsonify(
+            verify_all_transcode_agent_rows(
+                job_id,
+                current_employee() or "",
+                basis=str(payload.get("basis") or "").strip(),
+            )
+        )
+    except LookupError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 409
+
+
 @bp.post("/api/transcode-agent/jobs/<int:job_id>/finalize-pending")
 def api_finalize_transcode_agent_confirmations(job_id: int):
     redirect_resp = require_login()
@@ -2872,6 +3002,71 @@ def api_finalize_transcode_agent_confirmations(job_id: int):
         )
     except LookupError as exc:
         return jsonify({"error": str(exc)}), 404
+
+
+@bp.get("/api/transcode-agent/pending-rules")
+def api_transcode_agent_pending_rules():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return jsonify({"error": "unauthorized"}), 401
+    employee_id = current_employee() or ""
+    return jsonify(
+        {
+            "rules": list_transcode_agent_pending_rules(
+                employee_id,
+                include_all=is_admin_user(employee_id),
+            )
+        }
+    )
+
+
+@bp.post("/api/transcode-agent/pending-rules/<int:pending_rule_id>/update")
+def api_update_transcode_agent_pending_rule(pending_rule_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return jsonify({"error": "unauthorized"}), 401
+    payload = request.get_json(silent=True) or {}
+    try:
+        return jsonify(
+            update_transcode_agent_pending_rule(
+                pending_rule_id,
+                current_employee() or "",
+                payload,
+            )
+        )
+    except (LookupError, CustomerRuleMaintenanceError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 409
+
+
+@bp.post("/api/transcode-agent/pending-rules/<int:pending_rule_id>/activate")
+def api_activate_transcode_agent_pending_rule(pending_rule_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        return jsonify(
+            activate_transcode_agent_pending_rule(
+                pending_rule_id,
+                current_employee() or "",
+            )
+        )
+    except (LookupError, CustomerRuleMaintenanceError) as exc:
+        return jsonify({"error": str(exc)}), 409
+
+
+@bp.post("/api/transcode-agent/pending-rules/<int:pending_rule_id>/delete")
+def api_delete_transcode_agent_pending_rule(pending_rule_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        delete_transcode_agent_pending_rule(
+            pending_rule_id,
+            current_employee() or "",
+        )
+        return jsonify({"ok": True})
+    except (LookupError, CustomerRuleMaintenanceError) as exc:
+        return jsonify({"error": str(exc)}), 409
 
 
 @bp.post("/api/transcode-agent/jobs/<int:job_id>/reevaluate-pending")

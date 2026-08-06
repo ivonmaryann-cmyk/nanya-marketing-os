@@ -51,6 +51,7 @@ def init_db() -> None:
                 fail_count INTEGER NOT NULL DEFAULT 0,
                 skip_count INTEGER NOT NULL DEFAULT 0,
                 confirm_count INTEGER NOT NULL DEFAULT 0,
+                verify_count INTEGER NOT NULL DEFAULT 0,
                 current_row INTEGER NOT NULL DEFAULT 0,
                 total_rows INTEGER NOT NULL DEFAULT 0,
                 worker_pid INTEGER,
@@ -134,6 +135,7 @@ def init_db() -> None:
                 confirmed_by TEXT,
                 confirmed_at TEXT,
                 long_term_rule_id TEXT,
+                pending_rule_id TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 UNIQUE(job_id, excel_row, field_key),
@@ -153,11 +155,48 @@ def init_db() -> None:
                 FOREIGN KEY(job_id) REFERENCES jobs(id)
             );
 
+            CREATE TABLE IF NOT EXISTS transcode_agent_pending_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rule_id TEXT NOT NULL,
+                rule_json TEXT NOT NULL,
+                employee_id TEXT NOT NULL,
+                customer_code TEXT NOT NULL DEFAULT '',
+                customer_name TEXT NOT NULL DEFAULT '',
+                business_field TEXT NOT NULL DEFAULT '',
+                target_value TEXT NOT NULL DEFAULT '',
+                condition_summary TEXT NOT NULL DEFAULT '',
+                source_task_id INTEGER,
+                source_excel_row INTEGER,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                updated_by TEXT NOT NULL DEFAULT '',
+                processed_by TEXT NOT NULL DEFAULT '',
+                processed_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS transcode_agent_row_verifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id INTEGER NOT NULL,
+                excel_row INTEGER NOT NULL,
+                employee_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                before_code TEXT NOT NULL DEFAULT '',
+                after_code TEXT NOT NULL DEFAULT '',
+                basis TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                UNIQUE(job_id, excel_row),
+                FOREIGN KEY(job_id) REFERENCES jobs(id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_transcode_agent_confirm_job_status
             ON transcode_agent_confirmation_items(job_id, status, excel_row);
 
             CREATE INDEX IF NOT EXISTS idx_transcode_agent_confirm_owner
             ON transcode_agent_confirmation_items(employee_id, job_id);
+
+            CREATE INDEX IF NOT EXISTS idx_transcode_agent_pending_rules_status
+            ON transcode_agent_pending_rules(status, employee_id);
 
             CREATE TABLE IF NOT EXISTS feedback (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -217,6 +256,7 @@ def init_db() -> None:
             "worker_pid": "ALTER TABLE jobs ADD COLUMN worker_pid INTEGER",
             "worker_started_at": "ALTER TABLE jobs ADD COLUMN worker_started_at TEXT",
             "confirm_count": "ALTER TABLE jobs ADD COLUMN confirm_count INTEGER NOT NULL DEFAULT 0",
+            "verify_count": "ALTER TABLE jobs ADD COLUMN verify_count INTEGER NOT NULL DEFAULT 0",
         }
         for column, sql in migrations.items():
             if column not in existing_cols:
@@ -231,6 +271,10 @@ def init_db() -> None:
         if "long_term_rule_id" not in confirmation_cols:
             conn.execute(
                 "ALTER TABLE transcode_agent_confirmation_items ADD COLUMN long_term_rule_id TEXT"
+            )
+        if "pending_rule_id" not in confirmation_cols:
+            conn.execute(
+                "ALTER TABLE transcode_agent_confirmation_items ADD COLUMN pending_rule_id TEXT"
             )
 
         user_cols = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
@@ -500,6 +544,7 @@ def update_job_status(
     fail_count: int | None = None,
     skip_count: int | None = None,
     confirm_count: int | None = None,
+    verify_count: int | None = None,
     current_row: int | None = None,
     total_rows: int | None = None,
     log_text: str | None = None,
@@ -524,6 +569,9 @@ def update_job_status(
     if confirm_count is not None:
         fields.append("confirm_count = ?")
         params.append(confirm_count)
+    if verify_count is not None:
+        fields.append("verify_count = ?")
+        params.append(verify_count)
     if current_row is not None:
         fields.append("current_row = ?")
         params.append(current_row)
@@ -565,6 +613,7 @@ def append_job_log(
     fail_count: int | None = None,
     skip_count: int | None = None,
     confirm_count: int | None = None,
+    verify_count: int | None = None,
     current_row: int | None = None,
     total_rows: int | None = None,
 ) -> None:
@@ -587,6 +636,9 @@ def append_job_log(
         if confirm_count is not None:
             fields.append("confirm_count = ?")
             params.append(confirm_count)
+        if verify_count is not None:
+            fields.append("verify_count = ?")
+            params.append(verify_count)
         if current_row is not None:
             fields.append("current_row = ?")
             params.append(current_row)
@@ -729,6 +781,7 @@ def update_transcode_agent_confirmation_item(
     confirmed_by: str,
     analysis: dict | None = None,
     long_term_rule_id: str | None = None,
+    pending_rule_id: str | None = None,
 ) -> sqlite3.Row | None:
     now = utcnow()
     with db_cursor() as conn:
@@ -763,6 +816,9 @@ def update_transcode_agent_confirmation_item(
         if long_term_rule_id is not None:
             fields.append("long_term_rule_id = ?")
             params.append(long_term_rule_id)
+        if pending_rule_id is not None:
+            fields.append("pending_rule_id = ?")
+            params.append(pending_rule_id)
         params.append(item_id)
         conn.execute(
             f"UPDATE transcode_agent_confirmation_items SET {', '.join(fields)} WHERE id = ?",
@@ -876,6 +932,196 @@ def list_transcode_agent_confirmation_events(job_id: int) -> list[sqlite3.Row]:
         ).fetchall()
 
 
+def create_transcode_agent_pending_rule(
+    *,
+    rule_id: str,
+    rule_json: str,
+    employee_id: str,
+    customer_code: str,
+    customer_name: str,
+    business_field: str,
+    target_value: str,
+    condition_summary: str,
+    source_task_id: int | None,
+    source_excel_row: int | None,
+) -> int:
+    now = utcnow()
+    with db_cursor() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO transcode_agent_pending_rules (
+                rule_id, rule_json, employee_id, customer_code, customer_name,
+                business_field, target_value, condition_summary,
+                source_task_id, source_excel_row, status,
+                created_at, updated_at, updated_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+            """,
+            (
+                rule_id,
+                rule_json,
+                employee_id,
+                customer_code,
+                customer_name,
+                business_field,
+                target_value,
+                condition_summary,
+                source_task_id,
+                source_excel_row,
+                now,
+                now,
+                employee_id,
+            ),
+        )
+        return int(cursor.lastrowid)
+
+
+def list_transcode_agent_pending_rules(
+    status: str = "pending",
+    *,
+    employee_id: str = "",
+) -> list[sqlite3.Row]:
+    sql = "SELECT * FROM transcode_agent_pending_rules"
+    conditions: list[str] = []
+    params: list[object] = []
+    if status:
+        conditions.append("status = ?")
+        params.append(status)
+    if employee_id:
+        conditions.append("employee_id = ?")
+        params.append(employee_id)
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
+    sql += " ORDER BY created_at DESC, id DESC"
+    with db_cursor() as conn:
+        return conn.execute(sql, params).fetchall()
+
+
+def get_transcode_agent_pending_rule(rule_id: int) -> sqlite3.Row | None:
+    with db_cursor() as conn:
+        return conn.execute(
+            "SELECT * FROM transcode_agent_pending_rules WHERE id = ?",
+            (rule_id,),
+        ).fetchone()
+
+
+def update_transcode_agent_pending_rule(
+    rule_id: int,
+    *,
+    rule_json: str,
+    customer_code: str,
+    customer_name: str,
+    business_field: str,
+    target_value: str,
+    condition_summary: str,
+    updated_by: str,
+) -> None:
+    with db_cursor() as conn:
+        conn.execute(
+            """
+            UPDATE transcode_agent_pending_rules
+            SET rule_json = ?, customer_code = ?, customer_name = ?,
+                business_field = ?, target_value = ?, condition_summary = ?,
+                updated_at = ?, updated_by = ?
+            WHERE id = ?
+            """,
+            (
+                rule_json,
+                customer_code,
+                customer_name,
+                business_field,
+                target_value,
+                condition_summary,
+                utcnow(),
+                updated_by,
+                rule_id,
+            ),
+        )
+
+
+def set_transcode_agent_pending_rule_status(
+    rule_id: int,
+    status: str,
+    *,
+    processed_by: str = "",
+) -> None:
+    with db_cursor() as conn:
+        conn.execute(
+            """
+            UPDATE transcode_agent_pending_rules
+            SET status = ?, processed_by = ?, processed_at = ?,
+                updated_at = ?, updated_by = ?
+            WHERE id = ?
+            """,
+            (status, processed_by, utcnow(), utcnow(), processed_by, rule_id),
+        )
+
+
+def upsert_transcode_agent_row_verification(
+    *,
+    job_id: int,
+    excel_row: int,
+    employee_id: str,
+    action: str,
+    before_code: str,
+    after_code: str,
+    basis: str = "",
+) -> None:
+    with db_cursor() as conn:
+        conn.execute(
+            """
+            INSERT INTO transcode_agent_row_verifications (
+                job_id, excel_row, employee_id, action,
+                before_code, after_code, basis, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(job_id, excel_row) DO UPDATE SET
+                employee_id = excluded.employee_id,
+                action = excluded.action,
+                before_code = excluded.before_code,
+                after_code = excluded.after_code,
+                basis = excluded.basis,
+                created_at = excluded.created_at
+            """,
+            (
+                job_id,
+                excel_row,
+                employee_id,
+                action,
+                before_code,
+                after_code,
+                basis,
+                utcnow(),
+            ),
+        )
+
+
+def get_transcode_agent_row_verification(
+    job_id: int,
+    excel_row: int,
+) -> sqlite3.Row | None:
+    with db_cursor() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM transcode_agent_row_verifications
+            WHERE job_id = ? AND excel_row = ?
+            """,
+            (job_id, excel_row),
+        ).fetchone()
+
+
+def list_transcode_agent_row_verifications(
+    job_id: int,
+) -> list[sqlite3.Row]:
+    with db_cursor() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM transcode_agent_row_verifications
+            WHERE job_id = ?
+            ORDER BY excel_row, id
+            """,
+            (job_id,),
+        ).fetchall()
+
+
 def prune_jobs_for_employee(employee_id: str, keep_limit: int = 500) -> list[sqlite3.Row]:
     with db_cursor() as conn:
         rows = conn.execute(
@@ -890,6 +1136,10 @@ def prune_jobs_for_employee(employee_id: str, keep_limit: int = 500) -> list[sql
         if rows:
             stale_ids = [row["id"] for row in rows]
             placeholders = ",".join("?" for _ in stale_ids)
+            conn.execute(
+                f"DELETE FROM transcode_agent_row_verifications WHERE job_id IN ({placeholders})",
+                stale_ids,
+            )
             conn.execute(
                 f"DELETE FROM transcode_agent_confirmation_events WHERE job_id IN ({placeholders})",
                 stale_ids,
@@ -906,6 +1156,10 @@ def delete_job(job_id: int) -> sqlite3.Row | None:
     with db_cursor() as conn:
         row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         if row:
+            conn.execute(
+                "DELETE FROM transcode_agent_row_verifications WHERE job_id = ?",
+                (job_id,),
+            )
             conn.execute(
                 "DELETE FROM transcode_agent_confirmation_events WHERE job_id = ?",
                 (job_id,),

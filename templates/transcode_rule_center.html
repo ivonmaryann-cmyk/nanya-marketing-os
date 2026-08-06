@@ -128,6 +128,7 @@
 
 {% set nav = [
   ('active', '生效规则'),
+  ('submitted', '已提交待生效规则'),
   ('pending', '待完善'),
   ('backups', '备份与修改记录')
 ] %}
@@ -135,7 +136,7 @@
   <header class="rc-head">
     <div>
       <h1>营销转码 Agent 规则配置</h1>
-      <p>所有页面维护内容保存后立即生效。系统每天自动备份一次，保留最近30天。</p>
+      <p>规则配置保存后立即生效；确认中心提交的规则先进入待生效列表，维护人确认后才写入客户特殊规则。系统每天自动备份一次，保留最近30天。</p>
     </div>
     <div class="rc-head-actions">
       {% if section == 'active' %}
@@ -185,6 +186,106 @@
     </table>
     <div class="rc-note" style="border-width:1px 0 0">待业务确认和待技术支持已从默认生效列表移出；历史样本和外部资料仅在“备份与修改记录”中追溯，不参与转码。</div>
   </section>
+
+  {% elif section == 'submitted' %}
+  <section class="rc-band">
+    <div class="rc-section-head">
+      <div><h2>已提交待生效规则</h2><p>来自确认中心的业务规则建议。业务只需要说明“为什么这样定”，维护人在这里整理成正式规则，确认后才写入客户特殊规则。</p></div>
+    </div>
+    <section class="rc-summary" style="border:0;box-shadow:none">
+      <div class="rc-metric"><span>待确认数量</span><strong>{{ pending_rules|length }}</strong></div>
+      <div class="rc-metric"><span>我的可见范围</span><strong style="font-size:16px">{{ '全部提交' if is_rule_admin else '仅我提交' }}</strong></div>
+      <div class="rc-metric"><span>确认方式</span><strong style="font-size:16px">维护人确认</strong></div>
+      <div class="rc-metric"><span>确认后</span><strong style="font-size:16px">写入客户规则</strong></div>
+    </section>
+    <div class="rc-note">待生效规则不会参与转码。维护人确认生效后进入“客户特殊规则”，之后统一在规则配置中维护；删除的记录只做留痕，不参与转码。</div>
+    <div class="rc-split">
+      <div class="rc-list">
+        <table class="rc-table" data-rule-list data-search-placeholder="搜索客户、参数、条件或提交人">
+          <thead><tr><th style="width:16%">客户</th><th style="width:12%">业务参数</th><th style="width:14%">目标值</th><th>触发条件</th><th style="width:11%">提交人</th><th style="width:13%">提交时间</th><th style="width:10%">操作</th></tr></thead>
+          <tbody>
+            {% for pending in pending_rules %}
+            <tr class="js-rule-row {% if selected_pending_rule and selected_pending_rule.id == pending.id %}active{% endif %}" data-source="{{ pending.business_field }}" data-status="待确认">
+              <td><strong>{{ pending.customer_name or pending.customer_code or '未识别客户' }}</strong><br><span class="rc-muted">{{ pending.customer_code }}</span></td>
+              <td>{{ pending.business_field }}</td>
+              <td class="rc-code">{{ pending.target_value }}</td>
+              <td>{{ pending.condition_summary }}{% if pending.source_text %}<br><span class="rc-muted">{{ pending.source_text }}</span>{% endif %}{% if pending.business_explanation %}<br><span class="rc-muted">业务说明：{{ pending.business_explanation }}</span>{% endif %}</td>
+              <td>{{ pending.employee_id }}</td>
+              <td>{{ pending.created_at }}</td>
+              <td class="rc-action-cell">
+                {% if pending.can_manage %}<a class="rc-edit-action" href="{{ url_for('main.admin_transcode_rule_center', section='submitted', pending_rule_id=pending.id) }}">编辑</a>{% else %}<span class="rc-muted">只读</span>{% endif %}
+              </td>
+            </tr>
+            {% else %}<tr><td colspan="7" class="rc-empty">暂无待生效规则。在确认中心勾选“同时保存为待生效规则”后，会出现在这里。</td></tr>{% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <aside class="rc-editor">
+        {% if selected_pending_rule %}
+        {% set pending_conditions = selected_pending_rule.conditions %}
+        {% set pending_condition = pending_conditions[0] if pending_conditions else {} %}
+        <div class="rc-note" style="margin:14px">
+          <strong>业务建议</strong><br>
+          触发来源：{{ pending_condition.field or '订单备注' }}；触发词：{{ pending_condition.value or '—' }}<br>
+          业务说明：{{ selected_pending_rule.business_explanation or '—' }}
+        </div>
+        <form method="post" class="rc-form">
+          <input type="hidden" name="action" value="save_pending_rule">
+          <input type="hidden" name="pending_rule_id" value="{{ selected_pending_rule.id }}">
+          <input type="hidden" name="target_field" id="pending-target-field" value="{{ selected_pending_rule.target_field or pending_rule_field_targets[selected_pending_rule.business_field][0] }}">
+          <h3>整理正式规则</h3>
+          <div class="rc-two">
+            <label class="rc-field"><span>客户代码</span><input name="customer_code" value="{{ selected_pending_rule.customer_code }}"></label>
+            <label class="rc-field"><span>客户简称</span><input name="customer_name" value="{{ selected_pending_rule.customer_name }}"></label>
+          </div>
+          <label class="rc-field"><span>业务参数</span><select name="business_field" id="pending-business-field">{% for field in business_fields %}<option value="{{ field }}" {% if selected_pending_rule.business_field == field %}selected{% endif %}>{{ field }}</option>{% endfor %}</select></label>
+          <label class="rc-field"><span>目标值</span><input name="target_value" value="{{ selected_pending_rule.target_value }}" required></label>
+          <div class="rc-two">
+            <label class="rc-field"><span>触发字段</span><select name="condition_field">{% for field in pending_rule_condition_fields %}<option value="{{ field }}" {% if pending_condition.field == field %}selected{% endif %}>{{ field }}</option>{% endfor %}</select></label>
+            <label class="rc-field"><span>触发方式</span><select name="condition_operator">{% for operator in pending_rule_condition_operators %}<option value="{{ operator }}" {% if pending_condition.operator == operator %}selected{% endif %}>{{ pending_rule_condition_operator_labels[operator] or operator }}</option>{% endfor %}</select></label>
+          </div>
+          <label class="rc-field"><span>触发值</span><input name="condition_value" value="{{ pending_condition.value or '' }}" placeholder="多值用；分隔，例如汽车板；汽车；qiche"></label>
+          <label class="rc-field"><span>业务触发条件</span><textarea name="source_text">{{ selected_pending_rule.source_text }}</textarea></label>
+          <div class="rc-two">
+            <label class="rc-field"><span>优先级</span><input type="number" name="priority" value="{{ selected_pending_rule.priority }}" min="1" max="999"></label>
+            <label class="rc-check"><input type="checkbox" name="enabled" value="1" {% if selected_pending_rule.enabled %}checked{% endif %}>确认后默认启用</label>
+          </div>
+          <div class="rc-form-actions">
+            {% if selected_pending_rule.can_manage %}<button class="rc-primary" type="submit">保存正式规则</button>{% endif %}
+            <a class="rc-link" href="{{ url_for('main.admin_transcode_rule_center', section='submitted') }}">取消</a>
+          </div>
+        </form>
+        {% if is_rule_admin %}
+        <form method="post" class="rc-form" onsubmit="return confirm('确认将这条待生效规则写入客户特殊规则并立即参与转码？');">
+          <input type="hidden" name="action" value="activate_pending_rule"><input type="hidden" name="pending_rule_id" value="{{ selected_pending_rule.id }}">
+          <button class="rc-primary" type="submit">确认生效并写入规则</button>
+        </form>
+        {% endif %}
+        {% if selected_pending_rule.can_manage %}
+        <form method="post" class="rc-form" onsubmit="return confirm('确认删除这条待生效规则？删除后保留留痕，不会参与转码。');">
+          <input type="hidden" name="action" value="delete_pending_rule"><input type="hidden" name="pending_rule_id" value="{{ selected_pending_rule.id }}">
+          <button class="rc-danger" type="submit">删除这条规则</button>
+        </form>
+        {% endif %}
+        {% else %}
+        <div class="rc-empty">从左侧点击“编辑”查看待生效规则详情。</div>
+        {% endif %}
+      </aside>
+    </div>
+  </section>
+  <script>
+    (() => {
+      const fieldSelect = document.getElementById("pending-business-field");
+      const targetField = document.getElementById("pending-target-field");
+      const fieldTargets = {{ pending_rule_field_targets | tojson }};
+      if (fieldSelect && targetField) {
+        fieldSelect.addEventListener("change", () => {
+          const targets = fieldTargets[fieldSelect.value] || [];
+          if (targets.length) targetField.value = targets[0];
+        });
+      }
+    })();
+  </script>
 
   {% elif section == 'pending' %}
   <section class="rc-band">

@@ -1922,7 +1922,7 @@ def _rule_view(rule: dict[str, Any], *, overridden: bool) -> dict[str, Any]:
     elif asset_type == AGENT_ASSET_TYPE:
         origin = "页面维护Agent长期规则" if overridden else "Agent确定性长期规则"
     elif source_column == "确认中心" or model == "确认中心人工规则":
-        origin = "确认中心长期规则"
+        origin = "确认中心待生效规则"
     elif overridden:
         origin = "页面维护"
     else:

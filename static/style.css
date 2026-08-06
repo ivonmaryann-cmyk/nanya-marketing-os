@@ -725,6 +725,7 @@ button,
 
 .status.completed { background: #dff1e7; }
 .status.awaiting_confirmation { background: #ffe4b8; color: #8a4d00; }
+.status.awaiting_verification { background: #fff1cc; color: #7a5a00; }
 
 .confirmation-header {
   display: flex;
