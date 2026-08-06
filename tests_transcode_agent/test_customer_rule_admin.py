@@ -17,6 +17,7 @@ from fangzheng_web_app.transcode_customer_rule_admin import (
     CUSTOMER_ORDER_ASSET_TYPE,
     LEGACY_CCL_ASSET_TYPE,
     CustomerRuleMaintenanceError,
+    _technical_pending_assets,
     build_agent_rule_from_form,
     build_rule_from_form,
     customer_rule_workspace,
@@ -68,6 +69,60 @@ def _base_rule() -> dict:
         "approval": {"status": "confirmed", "basis": "测试"},
         "note": "",
     }
+
+
+def test_technical_pending_with_cleanup_marker_is_hidden():
+    rows = [
+        {
+            "映射ID": "TAM-PEND-00013",
+            "客户代码": "123032",
+            "客户简称": "信丰汇和",
+            "技术类型": "尺寸映射",
+            "原始规则": "37*49=37.3*49.3",
+            "备注": "已清理：已有对应可执行规则",
+            "建议处理": "已清理：已有对应可执行规则",
+        }
+    ]
+    assert _technical_pending_assets(rows) == []
+
+
+def test_customer_workspace_merges_same_customer_across_code_and_name_forms():
+    rules = [
+        {
+            "rule_id": "R1",
+            "customer_code": "103901/104686",
+            "customer_name": "广东依顿/广州伊顿",
+            "business_field": "基板级别",
+            "target_fields": ["grade_intent"],
+            "normalized_values": ["AC"],
+            "review_state": "active",
+            "enabled": True,
+        },
+        {
+            "rule_id": "R2",
+            "customer_code": "104686",
+            "customer_name": "广东依顿",
+            "business_field": "基板级别",
+            "target_fields": ["grade_intent"],
+            "normalized_values": ["A1"],
+            "review_state": "migration",
+            "enabled": True,
+        },
+        {
+            "rule_id": "R3",
+            "customer_code": "",
+            "customer_name": "广东依顿",
+            "business_field": "基板级别",
+            "target_fields": ["grade_intent"],
+            "normalized_values": ["A1"],
+            "review_state": "migration",
+            "enabled": True,
+        },
+    ]
+    workspace = customer_rule_workspace(rules)
+    assert len(workspace["customers"]) == 1
+    assert workspace["customers"][0]["rule_count"] == 3
+    assert len(workspace["rules"]) == 3
 
 
 def test_global_conditional_assets_are_grouped_under_all_customers():
@@ -977,7 +1032,7 @@ def test_active_assets_project_all_required_read_only_categories():
         rules = mapping_assets_for_customer_workspace(load_transcode_agent_mapping_tables())
 
     assert sum(rule.get("review_state") == "history" for rule in rules) >= 244
-    assert sum(rule.get("review_state") == "technical" for rule in rules) >= 15
+    assert sum(rule.get("review_state") == "technical" for rule in rules) >= 1
     assert sum(rule.get("review_state") == "pending" and rule.get("model") == "订单备注语义待确认" for rule in rules) >= 9
     assert sum(rule.get("review_state") == "reference" for rule in rules) >= 1
     assert sum(bool(rule.get("customer_metadata")) for rule in rules) >= 4

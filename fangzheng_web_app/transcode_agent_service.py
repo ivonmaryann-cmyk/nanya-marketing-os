@@ -2488,6 +2488,14 @@ def _score_field(key: str, code_value: str, steps: dict, errors: list[str], by_f
             "最新版胶系名称精确命中",
             "Agent胶系兼容别名",
         )
+        if (
+            key == "grade"
+            and code_value == "A1"
+            and any(marker in text for marker in ("默认A1", "沿用默认A1"))
+        ):
+            return 99, "默认A1待业务确认", rule_id, (
+                f"{text}；默认A1不能单独作为100分正式依据，需业务确认"
+            )
         if rule_id and (rule_type in formal_rule_types or source.startswith(formal_source_prefixes)):
             return 100, "业务正式规则", rule_id, text
         return 99, "规则来源待确认", rule_id, (
@@ -3090,6 +3098,8 @@ def _business_field_evidence(
                 item
                 for item in analysis.get("applied_rules") or []
                 if str(item.get("field") or "") == "grade_code"
+                and str(item.get("new") or "").strip().upper()
+                == str(code or "").strip().upper()
             ),
             None,
         )
@@ -3210,6 +3220,17 @@ def _cached_transcode_agent_trace_records(
     customer_code_col = _trace_column(headers, ("客户编号", "客户代码"))
     customer_name_col = _trace_column(headers, ("客户简称", "客户名称", "客户"))
     spec_col = _trace_column(headers, ("客户规格", "规格", "单条客户规格"))
+    if spec_col is None:
+        try:
+            trace_rows = list(worksheet.iter_rows(values_only=True))
+            if trace_rows:
+                trace_df = pd.DataFrame(
+                    trace_rows[1:],
+                    columns=[str(value or "").strip() for value in trace_rows[0]],
+                )
+                spec_col = int(load_transcode_module().detect_spec_column(trace_df)) + 1
+        except Exception:
+            spec_col = None
     formal_col = headers.get(_normalize_semantic_header(FORMAL_RESULT_HEADER))
     pending_col = headers.get(_normalize_semantic_header(PENDING_RESULT_HEADER))
     comparison_col = headers.get(_normalize_semantic_header(OUTPUT_STATUS_HEADER))

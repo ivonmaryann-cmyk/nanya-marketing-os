@@ -297,6 +297,13 @@
         {% if selected.scope_key == 'migration' %}
         <a class="cr-button" href="{{ url_for('main.admin_transcode_agent_customer_rules', customer_key=workspace.selected_customer_key, business_field=workspace.selected_field, scope='active', migrate_rule_id=selected.rule_id) }}">核对并迁移为正式规则</a>
         {% endif %}
+        {% if selected.scope_key == 'technical' %}
+        <form method="post" onsubmit="return confirm('确认标记为已清理？该记录将从待完善页面移除，可在修改记录中追溯。');">
+          <input type="hidden" name="action" value="mark_technical_resolved">
+          <input type="hidden" name="rule_id" value="{{ selected.rule_id }}">
+          <button class="cr-button" type="submit">标记已清理</button>
+        </form>
+        {% endif %}
         <a class="cr-button-secondary" href="{{ url_for('main.admin_transcode_agent_customer_rules', customer_key=workspace.selected_customer_key, business_field=workspace.selected_field, scope=workspace.rule_scope) }}">返回列表</a>
       </div>
       {% else %}

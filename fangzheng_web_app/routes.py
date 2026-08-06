@@ -1453,6 +1453,39 @@ def admin_transcode_agent_customer_rules():
     if request.method == "POST":
         action = str(request.form.get("action") or "save").strip()
         try:
+            if action == "mark_technical_resolved":
+                rule = find_rule(rules, request.form.get("rule_id") or "")
+                if rule is None or str(rule.get("review_state") or "") != "technical":
+                    raise CustomerRuleMaintenanceError("待技术支持规则不存在或已处理")
+                mapping_row = dict(rule.get("mapping_row") or {})
+                mapping_row["映射ID"] = str(mapping_row.get("映射ID") or "")
+                if not mapping_row["映射ID"]:
+                    raise CustomerRuleMaintenanceError("待技术支持记录缺少映射ID")
+                existing_remark = str(mapping_row.get("备注") or "").strip()
+                mapping_row["备注"] = (
+                    "已清理：已有对应可执行规则，页面不再展示。"
+                    + (f"原备注：{existing_remark}" if existing_remark else "")
+                )
+                mapping_row["建议处理"] = "已清理：已有对应可执行规则"
+                save_asset_override(
+                    "待接入规则",
+                    mapping_row,
+                    updated_by=employee_id,
+                    record_change=False,
+                )
+                flash("待技术支持记录已标记为已清理。", "success")
+                return redirect(
+                    url_for(
+                        "main.admin_transcode_agent_customer_rules",
+                        customer_key=make_customer_key(
+                            mapping_row.get("客户代码"),
+                            mapping_row.get("客户简称"),
+                        ),
+                        business_field=rule.get("business_field") or "基板尺寸",
+                        scope="pending",
+                        show_history="1",
+                    )
+                )
             if action == "save":
                 existing = find_rule(rules, request.form.get("rule_id") or "")
                 asset_type = str(request.form.get("asset_type") or "semantic").strip()

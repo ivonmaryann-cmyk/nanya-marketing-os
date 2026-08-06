@@ -183,32 +183,32 @@ ASSET_GROUPS = {
     "客户尺寸映射": {
         "label": "客户完整尺寸",
         "description": "按客户把一组客户尺寸转换为厂内标准尺寸。",
-        "fields": ("启用", "客户代码", "客户简称", "客户尺寸W", "客户尺寸H", "厂内尺寸W", "厂内尺寸H", "目标size_code", "规则文本", "备注"),
+        "fields": ("客户代码", "客户简称", "客户尺寸W", "客户尺寸H", "厂内尺寸W", "厂内尺寸H", "规则文本", "备注"),
     },
     "客户单边尺寸映射": {
         "label": "客户单边尺寸",
         "description": "按客户替换单边尺寸，再组合生成厂内尺寸。",
-        "fields": ("启用", "客户代码", "客户简称", "客户单边尺寸", "厂内单边尺寸", "适用字段", "规则文本", "备注"),
+        "fields": ("客户代码", "客户简称", "客户单边尺寸", "厂内单边尺寸", "适用字段", "规则文本", "备注"),
     },
     "客户尺寸算法": {
         "label": "客户尺寸算法",
         "description": "维护客户尺寸加大等已确认算法。",
-        "fields": ("启用", "客户代码", "客户简称", "算法类型", "加大W", "加大H", "适用条件", "规则文本", "备注"),
+        "fields": ("客户代码", "客户简称", "算法类型", "加大W", "加大H", "适用条件", "规则文本", "备注"),
     },
     "客户厚度映射": {
         "label": "客户厚度写法",
         "description": "把客户专用厚度写法转换为标准厚度和总芯厚口径。",
-        "fields": ("启用", "客户代码", "客户简称", "客户厚度写法", "厚度mm", "厚度mil", "总芯厚口径", "规则文本", "备注"),
+        "fields": ("客户代码", "客户简称", "客户厚度写法", "厚度mm", "厚度mil", "总芯厚口径", "规则文本", "备注"),
     },
     "客户物料编码口径": {
         "label": "客户物料编码口径",
         "description": "通过客户物料编码判断总厚或芯厚。",
-        "fields": ("启用", "客户代码", "客户简称", "物料编码模式", "命中值", "总芯厚口径", "规则文本", "备注"),
+        "fields": ("客户代码", "客户简称", "物料编码模式", "命中值", "总芯厚口径", "规则文本", "备注"),
     },
     "外部尺寸表引用": {
         "label": "外部尺寸表引用",
         "description": "记录仍依赖外部客户尺寸表的规则来源。",
-        "fields": ("启用", "客户代码", "客户简称", "引用文件", "引用Sheet", "规则文本", "备注"),
+        "fields": ("客户代码", "客户简称", "引用文件", "引用Sheet", "规则文本", "备注"),
     },
     "待接入规则": {
         "label": "待技术接入",
@@ -1119,6 +1119,13 @@ def summarize_asset_rows(
             "总芯厚口径",
             "算法类型",
         ) or "-"
+        if (
+            asset_group == "客户尺寸映射"
+            and result_value == "-"
+            and first(row, "厂内尺寸W")
+            and first(row, "厂内尺寸H")
+        ):
+            result_value = f"{first(row, '厂内尺寸W')}*{first(row, '厂内尺寸H')}"
         key = f"{label}\x1f{sublabel}"
         item = grouped.setdefault(
             key,
@@ -1212,6 +1219,8 @@ def build_asset_row_from_form(
     row_id = _clean(form.get("asset_row_id")) or datetime.now().strftime("ASSET-PAGE-%Y%m%d-%H%M%S-%f")
     payload = dict(prior)
     payload["映射ID"] = row_id
+    if "启用" not in payload:
+        payload["启用"] = "是"
     for field in ASSET_GROUPS[group]["fields"]:
         if field == "启用":
             payload[field] = "是" if _form_bool(form.get("asset__启用"), default=False) else "否"
@@ -1238,7 +1247,13 @@ def build_asset_row_from_form(
     return group, payload
 
 
-def save_asset_override(group: str, row: dict[str, Any], *, updated_by: str) -> None:
+def save_asset_override(
+    group: str,
+    row: dict[str, Any],
+    *,
+    updated_by: str,
+    record_change: bool = True,
+) -> None:
     ensure_rule_center_tables()
     row_id = _clean(row.get("映射ID"))
     before = _asset_override(group, row_id)
@@ -1255,7 +1270,15 @@ def save_asset_override(group: str, row: dict[str, Any], *, updated_by: str) -> 
             """,
             (group, row_id, _dump(row), updated_by, now),
         )
-    _record_change("规则资产", f"{group}:{row_id}", "新增" if before is None else "修改", updated_by, before, row)
+    if record_change:
+        _record_change(
+            "规则资产",
+            f"{group}:{row_id}",
+            "新增" if before is None else "修改",
+            updated_by,
+            before,
+            row,
+        )
     ensure_daily_backup()
 
 
@@ -1540,7 +1563,9 @@ def list_rule_center_changes(limit: int = 50) -> list[dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT id, category, object_id, action, employee_id, before_json, after_json, created_at
-            FROM transcode_rule_center_changes ORDER BY id DESC LIMIT ?
+            FROM transcode_rule_center_changes
+            WHERE employee_id IS NULL OR employee_id <> 'system-cleanup'
+            ORDER BY id DESC LIMIT ?
             """,
             (max(1, min(int(limit), 200)),),
         ).fetchall()

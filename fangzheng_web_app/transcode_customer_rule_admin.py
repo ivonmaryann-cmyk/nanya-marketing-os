@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -9,7 +10,11 @@ from typing import Any, Iterable, Mapping
 import openpyxl
 
 from .db import db_cursor
-from .transcode_customer_identity import CUSTOMER_ALIAS_GROUPS, normalize_customer_name
+from .transcode_customer_identity import (
+    CUSTOMER_ALIAS_GROUPS,
+    customer_names_match,
+    normalize_customer_name,
+)
 from .transcode_agent_standard import OFFICIAL_GRADE_CODES
 from .transcode_semantic_rule_finalizer import validate_atomic_conditions
 from .transcode_semantic_service import TARGET_FIELDS
@@ -849,6 +854,12 @@ def _technical_pending_assets(rows: Iterable[Mapping[str, Any]]) -> list[dict[st
         row_id = _clean(row.get("映射ID"))
         if not row_id:
             continue
+        cleanup_marker = " ".join(
+            _clean(row.get(key))
+            for key in ("备注", "建议处理", "规则来源说明")
+        )
+        if any(marker in cleanup_marker for marker in ("已清理", "已解决", "已完成")):
+            continue
         technical_type = _clean(row.get("技术类型"))
         business_field = "基板厚度" if "厚度" in technical_type else "基板尺寸"
         target_field = "thickness" if business_field == "基板厚度" else "size"
@@ -1042,9 +1053,13 @@ def customer_rule_workspace(
             if _workspace_status_key(rule) == selected_status
         ]
     override_ids = _override_ids()
+    canonical_key_map = _canonical_customer_key_map(scoped_rules)
     customers_by_key: dict[str, dict[str, Any]] = {}
     for rule in scoped_rules:
-        key = make_customer_key(rule.get("customer_code"), rule.get("customer_name"))
+        key = canonical_key_map.get(
+            make_customer_key(rule.get("customer_code"), rule.get("customer_name")),
+            make_customer_key(rule.get("customer_code"), rule.get("customer_name")),
+        )
         customer = customers_by_key.setdefault(
             key,
             {
@@ -1072,12 +1087,18 @@ def customer_rule_workspace(
         if group_id:
             groups_by_id.setdefault(group_id, []).append(item)
     metadata_by_customer_key = {
-        make_customer_key(item.get("customer_code"), item.get("customer_name")): item
+        canonical_key_map.get(
+            make_customer_key(item.get("customer_code"), item.get("customer_name")),
+            make_customer_key(item.get("customer_code"), item.get("customer_name")),
+        ): item
         for item in customer_metadata
     }
     if selected_scope == "all":
         for item in customer_metadata:
-            key = make_customer_key(item.get("customer_code"), item.get("customer_name"))
+            key = canonical_key_map.get(
+                make_customer_key(item.get("customer_code"), item.get("customer_name")),
+                make_customer_key(item.get("customer_code"), item.get("customer_name")),
+            )
             customers_by_key.setdefault(
                 key,
                 {
@@ -1107,12 +1128,19 @@ def customer_rule_workspace(
         customer["aliases"] = [
             _customer_display(member.get("customer_code"), member.get("customer_name"))
             for member in members
-            if make_customer_key(member.get("customer_code"), member.get("customer_name")) != key
+            if canonical_key_map.get(
+                make_customer_key(member.get("customer_code"), member.get("customer_name")),
+                make_customer_key(member.get("customer_code"), member.get("customer_name")),
+            )
+            != key
         ]
 
     query = _normalize(search)
     matching_customer_keys = {
-        make_customer_key(rule.get("customer_code"), rule.get("customer_name"))
+        canonical_key_map.get(
+            make_customer_key(rule.get("customer_code"), rule.get("customer_name")),
+            make_customer_key(rule.get("customer_code"), rule.get("customer_name")),
+        )
         for rule in scoped_rules
         if query and _rule_matches_search(rule, query)
     }
@@ -1130,7 +1158,10 @@ def customer_rule_workspace(
         key=lambda item: (-int(item["rule_count"]), item["name"]),
     )
     visible_customer_keys = {customer["key"] for customer in customers}
-    selected_key = customer_key if customer_key in visible_customer_keys else ""
+    normalized_selected_key = (
+        canonical_key_map.get(customer_key, customer_key) if customer_key else ""
+    )
+    selected_key = normalized_selected_key if normalized_selected_key in visible_customer_keys else ""
     if not selected_key and customers:
         selected_key = customers[0]["key"]
     selected_customer = customers_by_key.get(selected_key)
@@ -1150,7 +1181,11 @@ def customer_rule_workspace(
         selected_rules = [
             _rule_view(rule, overridden=_clean(rule.get("rule_id")) in override_ids)
             for rule in scoped_rules
-            if make_customer_key(rule.get("customer_code"), rule.get("customer_name")) == selected_key
+            if canonical_key_map.get(
+                make_customer_key(rule.get("customer_code"), rule.get("customer_name")),
+                make_customer_key(rule.get("customer_code"), rule.get("customer_name")),
+            )
+            == selected_key
             and _clean(rule.get("business_field")) == selected_field
         ]
         selected_rules.sort(key=lambda item: (-int(item["priority"]), item["rule_id"]))
@@ -1684,6 +1719,53 @@ def make_customer_key(code: Any, name: Any) -> str:
     if customer_code:
         return f"code:{customer_code}"
     return f"name:{_clean(name)}"
+
+
+def _customer_code_tokens(value: Any) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"\d+", str(value or ""))
+        if token
+    }
+
+
+def _canonical_customer_key_map(
+    rules: Iterable[Mapping[str, Any]],
+) -> dict[str, str]:
+    """Merge customer groups that share a code or an exact/alias name."""
+    entries = [
+        {
+            "key": make_customer_key(rule.get("customer_code"), rule.get("customer_name")),
+            "codes": _customer_code_tokens(rule.get("customer_code")),
+            "name": _clean(rule.get("customer_name")),
+        }
+        for rule in rules
+        if rule.get("customer_code") or rule.get("customer_name")
+    ]
+    parent = {entry["key"]: entry["key"] for entry in entries}
+
+    def find(key: str) -> str:
+        while parent[key] != key:
+            parent[key] = parent[parent[key]]
+            key = parent[key]
+        return key
+
+    def union(left: str, right: str) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    for left_index, left in enumerate(entries):
+        for right in entries[left_index + 1 :]:
+            shares_code = bool(left["codes"] & right["codes"])
+            shares_name = bool(
+                left["name"]
+                and right["name"]
+                and customer_names_match(left["name"], right["name"])
+            )
+            if shares_code or shares_name:
+                union(left["key"], right["key"])
+    return {entry["key"]: find(entry["key"]) for entry in entries}
 
 
 def _customer_names_by_code(rules: Iterable[Mapping[str, Any]]) -> dict[str, str]:
