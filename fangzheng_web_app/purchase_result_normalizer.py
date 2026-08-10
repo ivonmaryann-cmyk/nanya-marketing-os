@@ -490,6 +490,65 @@ def _repair_shifted_unit_quantity_columns(
     return normalized, [warning] if changed else []
 
 
+def _split_concatenated_quantity_price(value: Any, amount: Decimal) -> tuple[str, str] | None:
+    compact = re.sub(r"[\s,]", "", clean_text(value))
+    match = re.fullmatch(r"(\d{2,})(\.\d+)?", compact)
+    if not match or amount <= 0:
+        return None
+
+    integer_part = match.group(1)
+    decimal_part = match.group(2) or ""
+    candidates: dict[tuple[Decimal, Decimal], tuple[str, str]] = {}
+    for split_at in range(1, len(integer_part)):
+        quantity_text = integer_part[:split_at]
+        if len(quantity_text) > 1 and quantity_text.startswith("0"):
+            continue
+        price_text = f"{integer_part[split_at:]}{decimal_part}"
+        quantity = Decimal(quantity_text)
+        price = Decimal(price_text)
+        if not (Decimal("1") <= quantity <= Decimal("100000")) or price <= 0:
+            continue
+        if abs(quantity * price - amount) > Decimal("0.05"):
+            continue
+        candidates[(quantity, price)] = (normalize_number(quantity_text), normalize_number(price_text))
+
+    if len(candidates) != 1:
+        return None
+    return next(iter(candidates.values()))
+
+
+def _repair_concatenated_quantity_price_columns(
+    rows: list[list[str]],
+    header_index: int,
+    mapping: dict[int, str],
+) -> tuple[list[list[str]], list[str]]:
+    qty_col = _row_field(mapping, QTY)
+    price_col = _row_field(mapping, PRICE)
+    amount_col = _row_field(mapping, AMOUNT)
+    if qty_col is None or price_col is None or amount_col is None:
+        return rows, []
+
+    normalized = [list(row) for row in rows]
+    changed = False
+    required_width = max(qty_col, price_col, amount_col) + 1
+    for row in normalized[header_index + 1 :]:
+        if len(row) < required_width:
+            row.extend([""] * (required_width - len(row)))
+        if clean_text(row[qty_col]):
+            continue
+        amount = _money(row[amount_col])
+        if amount is None:
+            continue
+        split = _split_concatenated_quantity_price(row[price_col], amount)
+        if split is None:
+            continue
+        row[qty_col], row[price_col] = split
+        changed = True
+
+    warning = "已按数量×单价=金额的唯一解拆分粘连的数量和单价。"
+    return normalized, [warning] if changed else []
+
+
 def _append_code_text(existing: str, addition: str) -> str:
     return re.sub(r"\s+", "", f"{clean_text(existing)}{clean_text(addition)}")
 
@@ -670,6 +729,7 @@ def _normalize_table_rows(rows: list[list[str]]) -> tuple[list[list[str]], dict[
     rows, multiline_warnings = _merge_multiline_detail_rows(rows, header_index, mapping)
     rows, duplicate_warnings = _repair_duplicated_code_spec_columns(rows, header_index, mapping)
     rows, shifted_warnings = _repair_shifted_unit_quantity_columns(rows, header_index, mapping)
+    rows, concatenated_warnings = _repair_concatenated_quantity_price_columns(rows, header_index, mapping)
     rows, code_warnings = _compact_material_code_column(rows, header_index, mapping)
     rows, spec_warnings = _normalize_spec_columns(rows, header_index)
     normalized = rows[: header_index + 1]
@@ -686,6 +746,7 @@ def _normalize_table_rows(rows: list[list[str]]) -> tuple[list[list[str]], dict[
         + multiline_warnings
         + duplicate_warnings
         + shifted_warnings
+        + concatenated_warnings
         + code_warnings
         + spec_warnings,
     )
