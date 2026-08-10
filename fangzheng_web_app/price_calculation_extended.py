@@ -86,6 +86,8 @@ def load_extended_rules(customer_key: str, rule_path: str | Path) -> ExtRules:
         rules = _load_guanghe_rules(rule_path)
     elif customer_key == "shengyi":
         rules = _load_shengyi_rules(rule_path)
+    elif customer_key == "guigu":
+        rules = _load_guigu_rules(rule_path)
     elif customer_key == "techuang":
         rules = _load_techuang_rules(rule_path)
     elif customer_key == "zhongfu":
@@ -121,6 +123,8 @@ def calculate_extended_spec(customer_key: str, spec: str, rules: ExtRules, quant
         return _calculate_guanghe_spec(desc, rules, quantity=quantity)
     if customer_key == "shengyi":
         return _calculate_shengyi_spec(desc, rules, quantity=quantity)
+    if customer_key == "guigu":
+        return _calculate_guigu_spec(desc, rules, quantity=quantity)
     if customer_key == "techuang":
         return _calculate_techuang_spec(desc, rules, quantity=quantity)
     if customer_key == "zhongfu":
@@ -1619,6 +1623,358 @@ def _techuang_cut_size_price(base_price: float, radial: float, latitudinal: floa
         return {"ok": False}
     best = sorted(valid, key=lambda item: (item["fit_error"], item["area"], -item["opens"]))[0]
     return {"ok": True, "price": best["price"], "label": best["label"], "formula": best["formula"]}
+
+
+def _load_guigu_rules(rule_path: str | Path) -> ExtRules:
+    wb = load_workbook_compat(rule_path, data_only=True)
+    pp_rows: list[ExtPpRule] = []
+    ccl_rows: list[ExtCclRule] = []
+    for ws in wb.worksheets:
+        max_col = min(ws.max_column, 24)
+        for row_idx in range(1, ws.max_row + 1):
+            values = [_text(ws.cell(row_idx, col).value).replace("\n", "").strip() for col in range(1, max_col + 1)]
+            if _guigu_is_ccl_header(values):
+                _load_guigu_ccl_rows(ws, row_idx, values, ccl_rows)
+            elif _guigu_is_pp_header(values):
+                _load_guigu_pp_rows(ws, row_idx, values, pp_rows)
+    return ExtRules("guigu", pp_rows, ccl_rows)
+
+
+def _guigu_is_ccl_header(values: list[str]) -> bool:
+    compact = [re.sub(r"\s+", "", value) for value in values]
+    return (
+        any("产品类别" in value for value in compact)
+        and any("厚度" in value for value in compact)
+        and any("叠构" in value for value in compact)
+        and any(re.search(r"36\D*48", value) for value in compact)
+    )
+
+
+def _guigu_is_pp_header(values: list[str]) -> bool:
+    compact = [re.sub(r"\s+", "", value) for value in values]
+    return (
+        any("产品类别" in value for value in compact)
+        and any("玻布" in value for value in compact)
+        and any("树脂含量" in value for value in compact)
+        and any("含税单价" in value and "米" in value for value in compact)
+    )
+
+
+def _guigu_price_columns(headers: list[str]) -> dict[int, str]:
+    price_cols: dict[int, str] = {}
+    for col_idx, header in enumerate(headers, start=1):
+        normalized = _text(header).upper().replace('"', "").replace("英寸", "").replace(" ", "")
+        if "SF" in normalized and ("单价" in normalized or "含税" in normalized):
+            price_cols[col_idx] = "SF"
+            continue
+        match = re.search(r"(\d+(?:\.\d+)?)\s*[*X×]\s*(\d+(?:\.\d+)?)", normalized, re.I)
+        if match:
+            price_cols[col_idx] = f"{float(match.group(1)):g}*{float(match.group(2)):g}"
+    return price_cols
+
+
+def _load_guigu_ccl_rows(ws, header_row: int, headers: list[str], ccl_rows: list[ExtCclRule]) -> None:
+    product_col = _find_header_contains(headers, {"产品类别"}) or 1
+    thickness_col = _find_header_contains(headers, {"厚度"}) or 2
+    thickness_scope_col = _find_header_contains(headers, {"是否含铜"}) or 3
+    stack_col = _find_header_contains(headers, {"叠构"}) or 6
+    price_cols = _guigu_price_columns(headers)
+    started = False
+    blank_streak = 0
+    for data_row in range(header_row + 1, ws.max_row + 1):
+        row_values = [_text(ws.cell(data_row, col).value) for col in range(1, min(ws.max_column, 24) + 1)]
+        if _guigu_is_pp_header(row_values) or any("说明" in value for value in row_values):
+            break
+        if not any(row_values):
+            if started:
+                blank_streak += 1
+                if blank_streak >= 2:
+                    break
+            continue
+        blank_streak = 0
+        product = _norm_product(_row_value(row_values, product_col))
+        thickness_mm = _to_float(_row_value(row_values, thickness_col))
+        thickness_scope = _guigu_thickness_scope(_row_value(row_values, thickness_scope_col))
+        copper, foil = _shengyi_ccl_material_values(row_values, 4, 5)
+        stack = _guigu_norm_stack(_row_value(row_values, stack_col))
+        prices = {key: value for key, value in _row_prices(ws, data_row, price_cols).items() if value is not None}
+        if not product or thickness_mm is None or not copper or not prices:
+            continue
+        started = True
+        ccl_rows.append(
+            ExtCclRule(
+                data_row,
+                ws.title,
+                product,
+                thickness_mm,
+                thickness_mm / 0.0254,
+                copper,
+                foil,
+                stack,
+                prices,
+                kind=thickness_scope,
+            )
+        )
+
+
+def _load_guigu_pp_rows(ws, header_row: int, headers: list[str], pp_rows: list[ExtPpRule]) -> None:
+    product_col = _find_header_contains(headers, {"产品类别"}) or 1
+    glass_col = _find_header_contains(headers, {"玻布"}) or 2
+    rc_col = _find_header_contains(headers, {"树脂含量"}) or 3
+    length_col = _find_header_contains(headers, {"卷长"}) or 4
+    meter_price_col = next(
+        (
+            col_idx
+            for col_idx, header in enumerate(headers, start=1)
+            if "含税单价" in re.sub(r"\s+", "", header) and "米" in re.sub(r"\s+", "", header)
+        ),
+        None,
+    )
+    roll_price_col = next(
+        (
+            col_idx
+            for col_idx, header in enumerate(headers, start=1)
+            if "含税单价" in re.sub(r"\s+", "", header) and "卷" in re.sub(r"\s+", "", header)
+        ),
+        None,
+    )
+    started = False
+    blank_streak = 0
+    for data_row in range(header_row + 1, ws.max_row + 1):
+        row_values = [_text(ws.cell(data_row, col).value) for col in range(1, min(ws.max_column, 24) + 1)]
+        if any("说明" in value for value in row_values):
+            break
+        if not any(row_values):
+            if started:
+                blank_streak += 1
+                if blank_streak >= 2:
+                    break
+            continue
+        blank_streak = 0
+        product = _norm_product(_row_value(row_values, product_col))
+        if product.endswith("P"):
+            product = product[:-1]
+        glasses = _norm_glasses(_row_value(row_values, glass_col))
+        rc_min, rc_max = _parse_rc_range(_row_value(row_values, rc_col))
+        length = _length_int(_row_value(row_values, length_col))
+        price = _to_float(ws.cell(data_row, meter_price_col).value) if meter_price_col else None
+        roll_price = _to_float(ws.cell(data_row, roll_price_col).value) if roll_price_col else None
+        if not product or not glasses or rc_min is None or rc_max is None or price is None:
+            continue
+        started = True
+        for glass in glasses:
+            pp_rows.append(
+                ExtPpRule(
+                    data_row,
+                    ws.title,
+                    product,
+                    glass,
+                    rc_min,
+                    rc_max,
+                    length,
+                    None,
+                    price,
+                    roll_price=roll_price,
+                )
+            )
+
+
+def _guigu_product_from_text(value: Any) -> str:
+    match = re.search(r"NY\s*-?\s*(?:P\d|[A-Z]?\d{3,4}[A-Z0-9]*)", _text(value), re.I)
+    if match:
+        return _norm_product(match.group(0))
+    upper = _text(value).upper()
+    if "HTG" in upper:
+        return "NY2170"
+    if "MTG" in upper:
+        return "NY2150"
+    return ""
+
+
+def _guigu_norm_stack(value: Any) -> str:
+    normalized = _norm_stack(value)
+    if normalized:
+        return normalized
+    text = _text(value).upper()
+    pieces: list[tuple[str, str]] = []
+    glass_pattern = r"1027|1037|1035|1067|1078|1080|1086|1506|2113|2116|2313|3313|7628|106"
+    for glass, count in re.findall(rf"(?<!\d)({glass_pattern})\s*[*X×]\s*(N|\d+)(?!\d)", text):
+        pieces.append((glass, count))
+    for count, glass in re.findall(rf"(?<!\d)(N|\d+)\s*[*X×]\s*({glass_pattern})(?!\d)", text):
+        pieces.append((glass, count))
+    return "+".join(f"{count}*{glass}" for glass, count in sorted(pieces))
+
+
+def _guigu_thickness_scope(value: Any) -> str:
+    text = re.sub(r"\s+", "", _text(value)).upper()
+    if "D/S" in text or "总厚" in text:
+        return "D/S"
+    if "T/C" in text or "芯厚" in text:
+        return "T/C"
+    return ""
+
+
+def _guigu_stack_matches(requested: str, quoted: str) -> bool:
+    if not requested or not quoted or requested == quoted:
+        return True
+    variable_glasses = re.findall(r"N\*(\d{3,4})", requested)
+    return bool(variable_glasses) and all(re.search(rf"(?:^|\+)\d+\*{glass}(?:\+|$)", quoted) for glass in variable_glasses)
+
+
+def _guigu_pp_products(value: Any) -> set[str]:
+    product = _guigu_product_from_text(value)
+    if not product:
+        return set()
+    products = {product}
+    if product.endswith("P"):
+        products.add(product[:-1])
+    else:
+        products.add(f"{product}P")
+    return products
+
+
+def _guigu_looks_like_pp(desc: str) -> bool:
+    upper = desc.upper()
+    product = _guigu_product_from_text(desc)
+    explicit_pp_product = bool(product and product.endswith("P"))
+    percentage_pp = bool(_extract_glass(desc) and re.search(r"\d+(?:\.\d+)?\s*%", desc) and not _extract_copper(desc))
+    roll_width_pp = bool(_extract_glass(desc) and "49.5" in desc and not _extract_copper(desc))
+    return "半固化片" in desc or explicit_pp_product or percentage_pp or roll_width_pp or bool(re.search(r"\bPP\b|RC\s*[:：=]?\s*\d", upper, re.I))
+
+
+def _guigu_extract_rc(desc: str) -> float | None:
+    rc = _extract_rc(desc)
+    if rc is not None:
+        return rc
+    percentages = re.findall(r"(\d+(?:\.\d+)?)\s*%", desc)
+    return float(percentages[-1]) if percentages else None
+
+
+def _guigu_copper_aliases(copper: str) -> set[str]:
+    aliases = {copper, _reverse_copper(copper)}
+    h_to_half = copper.replace("H", "0.5")
+    half_to_h = copper.replace("0.5", "H")
+    aliases.update({h_to_half, _reverse_copper(h_to_half), half_to_h, _reverse_copper(half_to_h)})
+    return aliases
+
+
+def _guigu_norm_foil(value: Any) -> str:
+    text = re.sub(r"(RTF|HVLP|HS)\s*-\s*(\d)", r"\1\2", _text(value), flags=re.I)
+    return _shengyi_norm_foil(text)
+
+
+def _calculate_guigu_spec(desc: str, rules: ExtRules, quantity: Any = None) -> ExtCalcResult:
+    if _guigu_looks_like_pp(desc):
+        return _calculate_guigu_pp(desc, rules)
+    return _calculate_guigu_ccl(desc, rules, quantity=quantity)
+
+
+def _calculate_guigu_pp(desc: str, rules: ExtRules) -> ExtCalcResult:
+    products = _guigu_pp_products(desc)
+    glass = _extract_glass(desc)
+    rc = _guigu_extract_rc(desc)
+    length = _extract_length(desc)
+    width = _extract_width(desc)
+    piece_length, piece_width = _extract_size(desc) if length is None else (None, None)
+    if not products or not glass or rc is None:
+        return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width), _fmt_length(length), "硅谷PP规格缺少型号、玻布或RC")
+    matches = [
+        row
+        for row in rules.pp_rows
+        if row.product in products
+        and row.glass == glass
+        and row.rc_min is not None
+        and row.rc_max is not None
+        and row.rc_min - 0.001 <= rc <= row.rc_max + 0.001
+        and row.price is not None
+    ]
+    if not matches:
+        return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width), _fmt_length(length), "未命中硅谷PP报价：型号、玻布或RC不匹配")
+    best = sorted(
+        matches,
+        key=lambda row: (
+            0 if length is not None and row.length == length else 1,
+            abs(((row.rc_min or rc) + (row.rc_max or rc)) / 2 - rc),
+            row.excel_row,
+        ),
+    )[0]
+    if piece_length is not None and piece_width is not None:
+        price = _round_money(piece_length * piece_width / 144 * float(best.price) / 13.12)
+        note = (
+            f"命中硅谷PP报价 Sheet {best.sheet} 第 {best.excel_row} 行，型号={best.product}，玻布={glass}，RC={rc:g}，"
+            f"小片公式={piece_length:g}*{piece_width:g}/144*{best.price:g}/13.12"
+        )
+        return ExtCalcResult("成功", "PP", price, "", _fmt_width(piece_width), "", note, best.excel_row, best.sheet)
+    price = _round_money(best.price)
+    note = (
+        f"命中硅谷PP报价 Sheet {best.sheet} 第 {best.excel_row} 行，型号={best.product}，玻布={glass}，RC={rc:g}，"
+        f"每米价={price:.2f}"
+    )
+    if length is not None and best.length is not None and length != best.length:
+        note += f"，规格卷长{length}m按报价单卷长{best.length}m行的每米价计算"
+    return ExtCalcResult("成功", "PP", price, "", _fmt_width(width), _fmt_length(length or best.length), note, best.excel_row, best.sheet)
+
+
+def _guigu_size_key(length_in: float, width_in: float, prices: dict[str, float | None]) -> tuple[str, str]:
+    aliases = [
+        (37, 49, "36*48"),
+        (37, 43, "36*48"),
+        (41, 49, "40*48"),
+        (41, 43, "40*48"),
+        (43, 49, "42*48"),
+        (27.25, 21.25, "27.25*24.25"),
+        (27.2, 21.3, "27.25*24.25"),
+        (27, 21, "27.25*24.25"),
+        (28.25, 21.25, "28.25*24.25"),
+        (28.2, 21.3, "28.25*24.25"),
+    ]
+    for expected_length, expected_width, key in aliases:
+        if _same_size(length_in, width_in, expected_length, expected_width) and prices.get(key) is not None:
+            return key, key
+    for key, price in prices.items():
+        if price is None or key == "SF":
+            continue
+        match = re.fullmatch(r"(\d+(?:\.\d+)?)\*(\d+(?:\.\d+)?)", key)
+        if match and _same_size(length_in, width_in, float(match.group(1)), float(match.group(2))):
+            return key, key
+    return "", ""
+
+
+def _calculate_guigu_ccl(desc: str, rules: ExtRules, quantity: Any = None) -> ExtCalcResult:
+    product = _guigu_product_from_text(desc)
+    thickness_mm = _shengyi_extract_thickness_mm(desc)
+    thickness_scope = _guigu_thickness_scope(desc)
+    copper = _extract_copper(desc)
+    foil = _guigu_norm_foil(desc)
+    stack = _guigu_norm_stack(desc)
+    length_in, width_in = _shengyi_extract_size(desc)
+    if not product or thickness_mm is None or not copper or not stack or length_in is None or width_in is None:
+        return ExtCalcResult("失败", "CCL", "待确认", "", "", "", "硅谷CCL规格缺少型号、厚度、铜厚、叠构或尺寸")
+    candidates = [
+        row
+        for row in rules.ccl_rows
+        if row.product == product
+        and _thickness_matches(row, None, thickness_mm)
+        and (not thickness_scope or not row.kind or row.kind == thickness_scope)
+        and row.copper in _guigu_copper_aliases(copper)
+        and _guigu_stack_matches(stack, row.stack)
+        and (not foil or not row.foil or row.foil == foil)
+    ]
+    if not candidates:
+        return ExtCalcResult("失败", "CCL", "待确认", "", "", "", "未命中硅谷CCL报价：型号、厚度、铜厚、铜箔或叠构不匹配")
+    candidates.sort(key=lambda row: (_thickness_distance(row, None, thickness_mm), 0 if foil and row.foil == foil else 1, row.excel_row))
+    for row in candidates:
+        price_key, label = _guigu_size_key(length_in, width_in, row.prices)
+        if not price_key:
+            continue
+        price = _round_money(row.prices[price_key])
+        total = _calc_total(quantity, price)
+        note = (
+            f"命中硅谷CCL报价 Sheet {row.sheet} 第 {row.excel_row} 行，客户尺寸={length_in:g}*{width_in:g}，"
+            f"厚度口径={row.kind or thickness_scope or '未标注'}，报价列={label}"
+        )
+        return ExtCalcResult("成功", "CCL", price, total, "", "", note, row.excel_row, label)
+    return ExtCalcResult("失败", "CCL", "待确认", "", "", "", "命中硅谷CCL规格，但没有对应报价尺寸列或指定换算关系")
 
 
 def _load_shengyi_rules(rule_path: str | Path) -> ExtRules:

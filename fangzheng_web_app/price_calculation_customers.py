@@ -80,6 +80,13 @@ PRICE_CALCULATION_CUSTOMERS = [
         "test_label": "生益测试数据",
     },
     {
+        "key": "guigu",
+        "label": "硅谷",
+        "enabled": True,
+        "rule_label": "硅谷报价表",
+        "test_label": "硅谷测试数据",
+    },
+    {
         "key": "techuang",
         "label": "特创",
         "enabled": True,

@@ -215,6 +215,7 @@ def ensure_default_price_rule_version(customer_key: str, quote_variant: str | No
         "lejian": (packaged_dir / "lejian" / PRICE_RULE_FILENAME, packaged_dir / "lejian" / TEST_DATA_FILENAME),
         "guanghe": (packaged_dir / "guanghe" / PRICE_RULE_FILENAME, packaged_dir / "guanghe" / TEST_DATA_FILENAME),
         "shengyi": (packaged_dir / "shengyi" / PRICE_RULE_FILENAME, packaged_dir / "shengyi" / TEST_DATA_FILENAME),
+        "guigu": (packaged_dir / "guigu" / PRICE_RULE_FILENAME, packaged_dir / "guigu" / TEST_DATA_FILENAME),
         "techuang": (packaged_dir / "techuang" / PRICE_RULE_FILENAME, packaged_dir / "techuang" / TEST_DATA_FILENAME),
         "zhongfu": (packaged_dir / "zhongfu" / PRICE_RULE_FILENAME, packaged_dir / "zhongfu" / TEST_DATA_FILENAME),
         "huaxingyu": (packaged_dir / "huaxingyu" / PRICE_RULE_FILENAME, packaged_dir / "huaxingyu" / TEST_DATA_FILENAME),
@@ -466,7 +467,7 @@ def validate_price_rule_files(customer_key: str, rule_path: str | Path, test_dat
         load_workbook_compat(rule_path, data_only=True)
         _validate_plin_rule_file(rule_path)
         return
-    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "guanghe", "shengyi", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing"}:
+    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing"}:
         load_workbook_compat(rule_path, data_only=True)
         return
     if customer_key == "lejian":
@@ -524,6 +525,7 @@ def _copy_existing_test_data(customer_key: str, target: Path, quote_variant: str
         "lejian": packaged_dir / "lejian" / TEST_DATA_FILENAME,
         "guanghe": packaged_dir / "guanghe" / TEST_DATA_FILENAME,
         "shengyi": packaged_dir / "shengyi" / TEST_DATA_FILENAME,
+        "guigu": packaged_dir / "guigu" / TEST_DATA_FILENAME,
         "techuang": packaged_dir / "techuang" / TEST_DATA_FILENAME,
         "zhongfu": packaged_dir / "zhongfu" / TEST_DATA_FILENAME,
         "huaxingyu": packaged_dir / "huaxingyu" / TEST_DATA_FILENAME,
