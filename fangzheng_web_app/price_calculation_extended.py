@@ -1965,6 +1965,16 @@ def _calculate_guigu_ccl(desc: str, rules: ExtRules, quantity: Any = None) -> Ex
     candidates.sort(key=lambda row: (_thickness_distance(row, None, thickness_mm), 0 if foil and row.foil == foil else 1, row.excel_row))
     for row in candidates:
         price_key, label = _guigu_size_key(length_in, width_in, row.prices)
+        if not price_key and _same_size(length_in, width_in, 27, 24) and row.prices.get("SF") is not None:
+            sf_price = float(row.prices["SF"])
+            price = _round_money(length_in * width_in / 144 * sf_price)
+            total = _calc_total(quantity, price)
+            note = (
+                f"命中硅谷CCL报价 Sheet {row.sheet} 第 {row.excel_row} 行，客户尺寸={length_in:g}*{width_in:g}，"
+                f"厚度口径={row.kind or thickness_scope or '未标注'}，按SF单价计算，"
+                f"公式={length_in:g}*{width_in:g}/144*{sf_price:g}"
+            )
+            return ExtCalcResult("成功", "CCL", price, total, "", "", note, row.excel_row, "SF")
         if not price_key:
             continue
         price = _round_money(row.prices[price_key])
