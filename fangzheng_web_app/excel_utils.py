@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
+import re
 import zipfile
 
 import openpyxl
@@ -45,10 +46,53 @@ def load_workbook_compat(path: str | Path, *, data_only: bool = False, keep_form
         with file_path.open("rb") as file:
             return openpyxl.load_workbook(file, data_only=data_only)
     except Exception as exc:
+        repaired = _load_missing_shared_strings_workbook(file_path, data_only=data_only)
+        if repaired is not None:
+            return repaired
         repaired = _load_truncated_zip_workbook(file_path, data_only=data_only)
         if repaired is not None:
             return repaired
         raise ValueError(f"Excel 文件读取失败：{exc}；该文件可能是损坏的 xlsx，请重新下载或另存为标准 .xlsx 后再上传") from exc
+
+
+def _load_missing_shared_strings_workbook(path: Path, *, data_only: bool = False):
+    """Repair malformed xlsx packages whose shared-string part is misnamed or only falsely declared."""
+    try:
+        source = BytesIO(path.read_bytes())
+        with zipfile.ZipFile(source) as archive:
+            names = archive.namelist()
+            if "xl/sharedStrings.xml" in names:
+                return None
+
+            alias = next(
+                (name for name in names if name.lstrip("/").casefold() == "xl/sharedstrings.xml"),
+                None,
+            )
+            if alias:
+                shared_strings = archive.read(alias)
+            else:
+                worksheet_names = [
+                    name
+                    for name in names
+                    if name.lstrip("/").casefold().startswith("xl/worksheets/") and name.casefold().endswith(".xml")
+                ]
+                shared_string_cell = re.compile(rb"<c\b[^>]*\bt=[\"']s[\"']")
+                if any(shared_string_cell.search(archive.read(name)) for name in worksheet_names):
+                    return None
+                shared_strings = (
+                    b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                    b'<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="0" uniqueCount="0"/>'
+                )
+
+            repaired_bytes = BytesIO()
+            with zipfile.ZipFile(repaired_bytes, "w", zipfile.ZIP_DEFLATED) as repaired_archive:
+                for item in archive.infolist():
+                    repaired_archive.writestr(item, archive.read(item.filename))
+                repaired_archive.writestr("xl/sharedStrings.xml", shared_strings)
+        repaired_bytes.seek(0)
+        return openpyxl.load_workbook(repaired_bytes, data_only=data_only)
+    except (OSError, KeyError, zipfile.BadZipFile, ValueError, IndexError):
+        return None
 
 
 def _load_truncated_zip_workbook(path: Path, *, data_only: bool = False):

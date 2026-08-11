@@ -144,6 +144,7 @@ def load_bomin_rules(rule_path: str | Path) -> RuleBook:
     pp_ws = workbook["PP"]
 
     ccl_header_row, ccl_columns = _find_ccl_columns(ccl_ws)
+    pp_header_row, pp_columns = _find_pp_columns(pp_ws)
 
     ccl_rows: list[PriceRow] = []
     first_data_row = ccl_header_row + 1
@@ -177,17 +178,18 @@ def load_bomin_rules(rule_path: str | Path) -> RuleBook:
         ccl_rows.append(PriceRow(excel_row, values))
 
     pp_rows: list[PriceRow] = []
-    for excel_row, row in enumerate(pp_ws.iter_rows(min_row=3, values_only=True), start=3):
-        if not row or not row[0]:
+    first_pp_data_row = pp_header_row + 1
+    for excel_row, row in enumerate(pp_ws.iter_rows(min_row=first_pp_data_row, values_only=True), start=first_pp_data_row):
+        if not row or not _row_value(row, pp_columns["product"]):
             continue
         values = {
-            "product": _norm_product(row[0]),
-            "glass": _norm_glass(row[1]),
-            "rc": _to_rc(row[3] if row[3] is not None else row[2]),
-            "length_m": _to_float(row[4]),
-            "per_sf": _to_float(row[5]),
-            "per_m": _to_float(row[6]),
-            "per_roll": _to_float(row[7]),
+            "product": _norm_product(_row_value(row, pp_columns["product"])),
+            "glass": _norm_glass(_row_value(row, pp_columns["glass"])),
+            "rc": _to_rc(_row_value(row, pp_columns["rc"])),
+            "length_m": _to_float(_row_value(row, pp_columns["length_m"])),
+            "per_sf": _to_float(_row_value(row, pp_columns["per_sf"])),
+            "per_m": _to_float(_row_value(row, pp_columns["per_m"])),
+            "per_roll": _to_float(_row_value(row, pp_columns["per_roll"])),
         }
         if not (
             values["product"]
@@ -238,6 +240,40 @@ def _find_ccl_columns(worksheet) -> tuple[int, dict[str, int]]:
         "foil": 4,
         "stack": 5,
         "price_start": 6,
+    }
+
+
+def _find_pp_columns(worksheet) -> tuple[int, dict[str, int]]:
+    for row_number, row in enumerate(
+        worksheet.iter_rows(min_row=1, max_row=min(worksheet.max_row, 50), values_only=True),
+        start=1,
+    ):
+        headers = [_norm_token(value) for value in row]
+        required = {"PRODUCTS", "GLASSTYPE", "LENGTH(M)", "PERSF", "PERM", "PERROLL"}
+        if not required.issubset(headers):
+            continue
+
+        resin_columns = [index for index, header in enumerate(headers) if header == "RESINCONTENT"]
+        if not resin_columns:
+            continue
+        return row_number, {
+            "product": headers.index("PRODUCTS"),
+            "glass": headers.index("GLASSTYPE"),
+            "rc": resin_columns[-1],
+            "length_m": headers.index("LENGTH(M)"),
+            "per_sf": headers.index("PERSF"),
+            "per_m": headers.index("PERM"),
+            "per_roll": headers.index("PERROLL"),
+        }
+
+    return 2, {
+        "product": 0,
+        "glass": 1,
+        "rc": 3,
+        "length_m": 4,
+        "per_sf": 5,
+        "per_m": 6,
+        "per_roll": 7,
     }
 
 
