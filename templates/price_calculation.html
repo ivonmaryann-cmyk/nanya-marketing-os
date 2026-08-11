@@ -439,7 +439,8 @@
       const data = await response.json();
       if (response.ok && data.price !== null && data.price !== undefined && data.price !== "") {
         const numeric = Number(data.price);
-        const title = Number.isFinite(numeric) ? numeric.toFixed(2) : String(data.price);
+        const priceDigits = selectedCustomer === "shengyi" && data.material_type === "PP" ? 6 : 2;
+        const title = Number.isFinite(numeric) ? numeric.toFixed(priceDigits) : String(data.price);
         const extra = [data.customer_label, data.material_type, data.width, data.roll_length].filter(Boolean).join(" · ");
         setSingleState("is-success", title, extra || data.rule_version || "当前规则", data.note || "计算成功");
       } else {

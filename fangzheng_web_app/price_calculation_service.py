@@ -381,7 +381,9 @@ def process_price_workbook(workbook, customer_key: str, rules: JingwangRules | P
                 )
             elif simple_price_only:
                 value_writer = _taixing_excel_value if customer_key in {"taixing", "aoshikang", "hanyu"} else _excel_value
-                ws.cell(row=row_idx, column=output_cols["新价格"], value=value_writer(result.price))
+                price_cell = ws.cell(row=row_idx, column=output_cols["新价格"], value=value_writer(result.price))
+                if customer_key == "shengyi" and result.material_type == "PP" and isinstance(result.price, (int, float)):
+                    price_cell.number_format = "0.000000"
                 if customer_key == "taixing":
                     roll_price, roll_note = _taixing_roll_price(result)
                     ws.cell(row=row_idx, column=output_cols["整卷价格"], value=_taixing_excel_value(roll_price))

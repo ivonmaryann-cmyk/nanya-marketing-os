@@ -2204,16 +2204,16 @@ def _calculate_shengyi_pp(desc: str, rules: ExtRules) -> ExtCalcResult:
         )
         if not piece_price["ok"]:
             return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width or best.width), _shengyi_fmt_roll_length(length or best.length), piece_price["reason"])
-        price = _round_money(piece_price["price"])
+        price = _shengyi_pp_price(piece_price["price"])
         note = (
             f"命中生益PP报价 Sheet {best.sheet} 第{best.excel_row}行，"
             f"型号={best.product}，玻布={glass}，RC={rc:g}，小片公式={piece_price['formula']}"
         )
         return ExtCalcResult("成功", "PP", price, "", _fmt_width(width or best.width), _shengyi_fmt_roll_length(length or best.length), note, best.excel_row, best.sheet)
-    price = _round_money(best.price)
+    price = _shengyi_pp_price(best.price)
     note = (
         f"命中生益PP报价 Sheet {best.sheet} 第{best.excel_row}行，"
-        f"型号={best.product}，玻布={glass}，RC={rc:g}，每米价={price:.2f}"
+        f"型号={best.product}，玻布={glass}，RC={rc:g}，每米价={price:.6f}"
     )
     return ExtCalcResult("成功", "PP", price, "", _fmt_width(width or best.width), _shengyi_fmt_roll_length(length or best.length), note, best.excel_row, best.sheet)
 
@@ -2458,8 +2458,8 @@ def _shengyi_piece_formula_price(radial: float, latitudinal: float, mother_width
     opens = math.floor(mother_width / latitudinal)
     if opens < 1:
         return {"ok": False, "reason": "Shengyi small-piece split count is less than 1"}
-    price = _round_money(float(sf_price) * radial * 48 / opens / 144)
-    formula = f"round({float(sf_price):.6g}*{radial:g}*48/{opens}/144,2)"
+    price = _shengyi_pp_price(float(sf_price) * radial * 48 / opens / 144)
+    formula = f"round({float(sf_price):.6g}*{radial:g}*48/{opens}/144,6)"
     return {"ok": True, "price": price, "label": f"{radial:g}*{latitudinal:g}", "formula": formula, "opens": opens}
 
 
@@ -4956,6 +4956,10 @@ def _to_float(value: Any) -> float | None:
 
 def _round_money(value: Any) -> float:
     return round(float(value) + 1e-9, 2)
+
+
+def _shengyi_pp_price(value: Any) -> float:
+    return round(float(value) + 1e-12, 6)
 
 
 def _round_half_up(value: Any, digits: int = 0) -> float:
