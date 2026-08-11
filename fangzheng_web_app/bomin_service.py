@@ -143,23 +143,26 @@ def load_bomin_rules(rule_path: str | Path) -> RuleBook:
     ccl_ws = workbook["CCL"]
     pp_ws = workbook["PP"]
 
+    ccl_header_row, ccl_columns = _find_ccl_columns(ccl_ws)
+
     ccl_rows: list[PriceRow] = []
-    for excel_row, row in enumerate(ccl_ws.iter_rows(min_row=3, values_only=True), start=3):
-        if not row or not row[0]:
+    first_data_row = ccl_header_row + 1
+    for excel_row, row in enumerate(ccl_ws.iter_rows(min_row=first_data_row, values_only=True), start=first_data_row):
+        if not row or not _row_value(row, ccl_columns["product"]):
             continue
         values = {
-            "product": _norm_product(row[0]),
-            "thickness": _to_float(row[1]),
-            "copper": _norm_copper(row[2]),
-            "copper_state": _norm_text(row[3]),
-            "foil": _norm_token(row[4]),
-            "stack": _canonical_stack(row[5]),
-            "SQ.FT": _to_float(row[6]),
-            '37"X49"': _to_float(row[7]),
-            '41"X49"': _to_float(row[8]),
-            '43"X49"': _to_float(row[9]),
-            "37*43": _to_float(row[10]),
-            "41*43": _to_float(row[11]),
+            "product": _norm_product(_row_value(row, ccl_columns["product"])),
+            "thickness": _to_float(_row_value(row, ccl_columns["thickness"])),
+            "copper": _norm_copper(_row_value(row, ccl_columns["copper"])),
+            "copper_state": _norm_text(_row_value(row, ccl_columns["copper_state"])),
+            "foil": _norm_token(_row_value(row, ccl_columns["foil"])),
+            "stack": _canonical_stack(_row_value(row, ccl_columns["stack"])),
+            "SQ.FT": _to_float(_row_value(row, ccl_columns["price_start"])),
+            '37"X49"': _to_float(_row_value(row, ccl_columns["price_start"] + 1)),
+            '41"X49"': _to_float(_row_value(row, ccl_columns["price_start"] + 2)),
+            '43"X49"': _to_float(_row_value(row, ccl_columns["price_start"] + 3)),
+            "37*43": _to_float(_row_value(row, ccl_columns["price_start"] + 4)),
+            "41*43": _to_float(_row_value(row, ccl_columns["price_start"] + 5)),
         }
         if not (
             values["product"]
@@ -197,6 +200,49 @@ def load_bomin_rules(rule_path: str | Path) -> RuleBook:
         pp_rows.append(PriceRow(excel_row, values))
 
     return RuleBook(ccl_rows=ccl_rows, pp_rows=pp_rows)
+
+
+def _find_ccl_columns(worksheet) -> tuple[int, dict[str, int]]:
+    for row_number, row in enumerate(
+        worksheet.iter_rows(min_row=1, max_row=min(worksheet.max_row, 50), values_only=True),
+        start=1,
+    ):
+        headers = [_norm_token(value) for value in row]
+        if "PRODUCT" not in headers or "STACKING" not in headers or "SQ.FT" not in headers:
+            continue
+
+        product = headers.index("PRODUCT")
+        stack = headers.index("STACKING")
+        price_start = headers.index("SQ.FT")
+        thickness = next((index for index in range(product + 1, stack) if headers[index] == "MM"), None)
+        copper_columns = [index for index in range(product + 1, stack) if headers[index] == "CU"]
+        if thickness is None or len(copper_columns) < 2:
+            continue
+
+        copper, foil = copper_columns[:2]
+        return row_number, {
+            "product": product,
+            "thickness": thickness,
+            "copper": copper,
+            "copper_state": copper + 1,
+            "foil": foil,
+            "stack": stack,
+            "price_start": price_start,
+        }
+
+    return 2, {
+        "product": 0,
+        "thickness": 1,
+        "copper": 2,
+        "copper_state": 3,
+        "foil": 4,
+        "stack": 5,
+        "price_start": 6,
+    }
+
+
+def _row_value(row: tuple[Any, ...], index: int) -> Any:
+    return row[index] if index < len(row) else None
 
 
 def calculate_bomin_quote(spec: str) -> dict[str, Any]:
