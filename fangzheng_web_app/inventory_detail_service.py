@@ -1270,11 +1270,12 @@ def _write_dashboard(
     sheet["A3"] = "按胶系进入独立库存明细；分类页按铜厚实际厚度、板厚mm、芯厚/总厚顺序排列。"
     sheet["A3"].font = Font(name="等线", size=10, color=MUTED)
 
+    folded_large_total = sum(row.folded_large_quantity for row in rows)
     kpis = [
         ("库存明细", len(rows)),
         ("胶系数量", len(glue_items)),
         ("光板行数", light_count),
-        ("待确认", exception_count),
+        ("折合大板数量", folded_large_total),
     ]
     blocks = [(1, 3), (4, 6), (7, 9), (10, 13)]
     for (label, value), (start_col, end_col) in zip(kpis, blocks):
@@ -1287,7 +1288,7 @@ def _write_dashboard(
         value_cell = sheet.cell(6, start_col, _excel_number(value))
         value_cell.font = Font(name="等线", size=18 if profile == "b" else 20, bold=True, color=primary)
         value_cell.alignment = Alignment(horizontal="center", vertical="center")
-        value_cell.number_format = "#,##0"
+        value_cell.number_format = "#,##0.##"
 
     default_glue = glue_items[0][0] if glue_items else ""
     sheet.merge_cells("A9:B10")
@@ -1304,11 +1305,6 @@ def _write_dashboard(
     sheet["G9"].fill = PatternFill("solid", fgColor=LINK_BLUE)
     sheet["G9"].font = Font(name="等线", size=11, bold=True, color=WHITE)
     sheet["G9"].alignment = Alignment(horizontal="center", vertical="center")
-    sheet.merge_cells("J9:M10")
-    sheet["J9"] = "普通 .xlsx\n无需启用宏"
-    sheet["J9"].fill = PatternFill("solid", fgColor=LIGHT_TEAL)
-    sheet["J9"].font = Font(name="等线", size=10, color=TEAL)
-    sheet["J9"].alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
     for index, (glue, _) in enumerate(glue_items, start=2):
         sheet.cell(index, 16, glue)
