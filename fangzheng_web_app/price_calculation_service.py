@@ -380,10 +380,10 @@ def process_price_workbook(workbook, customer_key: str, rules: JingwangRules | P
                     result.size_column,
                 )
             elif simple_price_only:
-                value_writer = _taixing_excel_value if customer_key in {"taixing", "aoshikang", "hanyu"} else _excel_value
+                value_writer = _taixing_excel_value if customer_key in {"taixing", "aoshikang", "hanyu", "shengyi"} else _excel_value
                 price_cell = ws.cell(row=row_idx, column=output_cols["新价格"], value=value_writer(result.price))
-                if customer_key == "shengyi" and result.material_type == "PP" and isinstance(result.price, (int, float)):
-                    price_cell.number_format = "0.000000"
+                if customer_key == "shengyi" and isinstance(result.price, (int, float)):
+                    price_cell.number_format = "0.000000" if result.material_type == "PP" else "0.00"
                 if customer_key == "taixing":
                     roll_price, roll_note = _taixing_roll_price(result)
                     ws.cell(row=row_idx, column=output_cols["整卷价格"], value=_taixing_excel_value(roll_price))
@@ -471,7 +471,7 @@ def process_price_workbook(workbook, customer_key: str, rules: JingwangRules | P
                     current_row=len(all_results),
                     total_rows=len(all_results),
                 )
-    write_note_sheet(workbook, all_results)
+    write_note_sheet(workbook, all_results, customer_key=customer_key)
     return all_results
 
 
@@ -1297,7 +1297,7 @@ def ensure_output_columns(
     return output_cols
 
 
-def write_note_sheet(workbook, rows: list[dict]) -> None:
+def write_note_sheet(workbook, rows: list[dict], *, customer_key: str = "") -> None:
     if NOTE_SHEET_NAME in workbook.sheetnames:
         del workbook[NOTE_SHEET_NAME]
     ws = workbook.create_sheet(NOTE_SHEET_NAME)
@@ -1305,6 +1305,7 @@ def write_note_sheet(workbook, rows: list[dict]) -> None:
     ws.append(headers)
     for cell in ws[1]:
         cell.font = Font(bold=True)
+    value_writer = _taixing_excel_value if customer_key == "shengyi" else _excel_value
     for row in rows:
         ws.append(
             [
@@ -1313,13 +1314,15 @@ def write_note_sheet(workbook, rows: list[dict]) -> None:
                 row["spec"],
                 row["material_type"],
                 row["status"],
-                _excel_value(row["price"]),
+                value_writer(row["price"]),
                 _excel_value(row["total"]),
                 row["rule_row"] or "",
                 row["size_column"],
                 row["note"],
             ]
         )
+        if customer_key == "shengyi" and isinstance(row["price"], (int, float)):
+            ws.cell(row=ws.max_row, column=6).number_format = "0.000000" if row["material_type"] == "PP" else "0.00"
 
 
 def _size_column(match) -> tuple[str, str]:

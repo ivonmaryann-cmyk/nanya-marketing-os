@@ -30,6 +30,7 @@ class ExtPpRule:
     price: float | None
     roll_price: float | None = None
     sf_price: float | None = None
+    volume_area: float | None = None
 
 
 @dataclass
@@ -2099,6 +2100,7 @@ def _load_shengyi_pp_rows(ws, header_row: int, headers: list[str], pp_rows: list
     width_col = _find_header_contains(headers, {"Width"}) or 5
     price_col = _shengyi_pp_price_col(headers)
     sf_col = _find_header_contains(headers, {"SF/RMB"})
+    volume_area_col = _find_header_contains(headers, {"Volumearea"})
     product = _shengyi_product_from_text(ws.title)
     started = False
     blank_streak = 0
@@ -2122,6 +2124,7 @@ def _load_shengyi_pp_rows(ws, header_row: int, headers: list[str], pp_rows: list
         width = _to_float(_row_value(row_values, width_col))
         price = _to_float(ws.cell(data_row, price_col).value) if price_col else None
         sf_price = _to_float(ws.cell(data_row, sf_col).value) if sf_col else None
+        volume_area = _to_float(ws.cell(data_row, volume_area_col).value) if volume_area_col else None
         if price is None and sf_price is not None:
             price = _round_money(sf_price * 13.124) if sf_price is not None else None
         if not product or not glasses or rc_min is None or rc_max is None or price is None:
@@ -2140,6 +2143,7 @@ def _load_shengyi_pp_rows(ws, header_row: int, headers: list[str], pp_rows: list
                     width,
                     price,
                     sf_price=sf_price,
+                    volume_area=volume_area,
                 )
             )
 
@@ -2168,8 +2172,6 @@ def _calculate_shengyi_pp(desc: str, rules: ExtRules) -> ExtCalcResult:
         and row.rc_min is not None
         and row.rc_max is not None
         and row.rc_min - 0.001 <= rc <= row.rc_max + 0.001
-        and (length is None or row.length is None or row.length == length)
-        and (width is None or row.width is None or abs(row.width - width) <= 0.8)
     ]
     matches = exact_matches
     if not matches:
@@ -2181,8 +2183,6 @@ def _calculate_shengyi_pp(desc: str, rules: ExtRules) -> ExtCalcResult:
             and row.rc_min is not None
             and row.rc_max is not None
             and abs(((row.rc_min + row.rc_max) / 2) - rc) <= 2.0
-            and (length is None or row.length is None or row.length == length)
-            and (width is None or row.width is None or abs(row.width - width) <= 0.8)
         ]
     if not matches:
         return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width), _shengyi_fmt_roll_length(length), "未命中生益PP报价：型号、玻布、RC、卷长或宽度不匹配")
@@ -2192,6 +2192,7 @@ def _calculate_shengyi_pp(desc: str, rules: ExtRules) -> ExtCalcResult:
             0 if row.product == product else 1,
             abs(((row.rc_min or rc) + (row.rc_max or rc)) / 2 - rc),
             0 if row.length == length else 1,
+            0 if width is None or row.width is None or abs(row.width - width) <= 0.8 else 1,
             row.excel_row,
         ),
     )[0]
@@ -2204,16 +2205,41 @@ def _calculate_shengyi_pp(desc: str, rules: ExtRules) -> ExtCalcResult:
         )
         if not piece_price["ok"]:
             return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width or best.width), _shengyi_fmt_roll_length(length or best.length), piece_price["reason"])
-        price = _shengyi_pp_price(piece_price["price"])
+        price = _shengyi_price(piece_price["price"])
         note = (
             f"命中生益PP报价 Sheet {best.sheet} 第{best.excel_row}行，"
             f"型号={best.product}，玻布={glass}，RC={rc:g}，小片公式={piece_price['formula']}"
         )
         return ExtCalcResult("成功", "PP", price, "", _fmt_width(width or best.width), _shengyi_fmt_roll_length(length or best.length), note, best.excel_row, best.sheet)
-    price = _shengyi_pp_price(best.price)
+    if best.sf_price is None or best.volume_area is None or not best.length:
+        return ExtCalcResult(
+            "失败",
+            "PP",
+            "待确认",
+            "",
+            _fmt_width(width or best.width),
+            _shengyi_fmt_roll_length(length or best.length),
+            "生益PP报价行缺少SF单价、卷面积或报价卷长，无法计算每米价",
+        )
+    if width is not None and abs(width - 43.5) <= 0.8:
+        roll_total = _round_money(float(best.sf_price) * best.volume_area * 1.07 * 42 / 48)
+        price = _shengyi_price(roll_total / best.length)
+        price_note = (
+            f"窄幅每米价=round(round({float(best.sf_price):.6g}*{best.volume_area:g}*1.07*42/48,2)"
+            f"/{best.length},6)={price:.6f}"
+        )
+    elif width is None or abs(width - 49.5) <= 0.8:
+        roll_total = _round_money(float(best.sf_price) * best.volume_area)
+        price = _shengyi_price(roll_total / best.length)
+        price_note = (
+            f"每米价=round(round({float(best.sf_price):.6g}*{best.volume_area:g},2)"
+            f"/{best.length},6)={price:.6f}"
+        )
+    else:
+        return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width), _shengyi_fmt_roll_length(length), f"生益PP宽度{width:g}英寸缺少明确换算规则")
     note = (
         f"命中生益PP报价 Sheet {best.sheet} 第{best.excel_row}行，"
-        f"型号={best.product}，玻布={glass}，RC={rc:g}，每米价={price:.6f}"
+        f"型号={best.product}，玻布={glass}，RC={rc:g}，{price_note}；卷长不作为每米价匹配条件"
     )
     return ExtCalcResult("成功", "PP", price, "", _fmt_width(width or best.width), _shengyi_fmt_roll_length(length or best.length), note, best.excel_row, best.sheet)
 
@@ -2221,6 +2247,7 @@ def _calculate_shengyi_pp(desc: str, rules: ExtRules) -> ExtCalcResult:
 def _calculate_shengyi_ccl(desc: str, rules: ExtRules, quantity: Any = None) -> ExtCalcResult:
     product = _shengyi_product_from_text(desc)
     thickness_mm = _shengyi_extract_thickness_mm(desc)
+    thickness_tolerance_mm = _shengyi_extract_thickness_tolerance_mm(desc)
     thickness_mil = thickness_mm / 0.0254 if thickness_mm is not None else _extract_thickness_mil(desc, product)
     copper = _extract_copper(desc)
     foil = _shengyi_norm_foil(desc)
@@ -2236,17 +2263,29 @@ def _calculate_shengyi_ccl(desc: str, rules: ExtRules, quantity: Any = None) -> 
         and row.stack == stack
         and row.copper in _shengyi_copper_aliases(copper)
     ]
-    exact_rows = [row for row in base_rows if _shengyi_thickness_exact(row, thickness_mil, thickness_mm)]
-    product_rows = exact_rows or [
+    tolerance_mm = (
+        thickness_tolerance_mm + SHENGYI_CCL_THICKNESS_FALLBACK_MM
+        if thickness_tolerance_mm
+        else SHENGYI_CCL_THICKNESS_FALLBACK_MM
+    )
+    product_rows = [
         row
         for row in base_rows
-        if _shengyi_thickness_matches(row, thickness_mil, thickness_mm, SHENGYI_CCL_THICKNESS_FALLBACK_MM)
+        if _shengyi_thickness_matches(row, thickness_mil, thickness_mm, tolerance_mm)
     ]
-    thickness_fallback = not exact_rows and bool(product_rows)
     if not product_rows:
         return ExtCalcResult("失败", "CCL", "待确认", "", "", "", "未命中生益CCL报价：型号、厚度、铜厚或叠构不匹配")
     last_reason = ""
-    for row in sorted(product_rows, key=lambda item: (0 if item.product == product else 1, _shengyi_thickness_distance(item, thickness_mil, thickness_mm), 0 if item.foil == foil else 1, item.excel_row)):
+    for row in sorted(
+        product_rows,
+        key=lambda item: (
+            0 if item.product == product else 1,
+            0 if _shengyi_foil_compatible(foil, item.foil) else 1,
+            0 if _shengyi_thickness_exact(item, thickness_mil, thickness_mm) else 1,
+            _shengyi_thickness_distance(item, thickness_mil, thickness_mm),
+            item.excel_row,
+        ),
+    ):
         adjusted = _shengyi_adjusted_sf(row, foil, copper)
         if not adjusted["ok"]:
             last_reason = adjusted["reason"]
@@ -2260,8 +2299,9 @@ def _calculate_shengyi_ccl(desc: str, rules: ExtRules, quantity: Any = None) -> 
                 f"型号={row.product}，厚度={row.thickness_mm:g}mm，铜厚={row.copper}，铜箔={foil or row.foil or '默认'}，"
                 f"叠构={row.stack}，尺寸列={price_result['label']}，公式={price_result['formula']}{adjusted['note']}"
             )
-            if thickness_fallback and thickness_mm is not None and row.thickness_mm is not None:
-                note += f"，厚度{thickness_mm:g}mm未找到精确报价，按±{SHENGYI_CCL_THICKNESS_FALLBACK_MM:g}mm匹配到{row.thickness_mm:g}mm"
+            if not _shengyi_thickness_exact(row, thickness_mil, thickness_mm) and thickness_mm is not None and row.thickness_mm is not None:
+                tolerance_source = "客户规格公差及报价厚度换算余量" if thickness_tolerance_mm else "默认容差"
+                note += f"，厚度{thickness_mm:g}mm未找到精确报价，按{tolerance_source}±{tolerance_mm:g}mm匹配到{row.thickness_mm:g}mm"
             return ExtCalcResult("成功", "CCL", price, total, "", "", note, row.excel_row, price_result["label"])
         last_reason = price_result["reason"]
     return ExtCalcResult("失败", "CCL", "待确认", "", "", "", last_reason or "生益CCL报价行找到，但尺寸或铜箔规则未匹配")
@@ -2319,10 +2359,13 @@ def _shengyi_pp_price_col(headers: list[str]) -> int | None:
 
 def _shengyi_product_from_text(value: Any) -> str:
     text = _text(value)
-    if re.search(r"NY\s*-?\s*6300\s*\(\s*C\s*\)", text, re.I):
-        return "NY6300C"
-    match = re.search(r"NY\s*-?\s*(?:A[12]P?|P\dC?|[A-Z]?\d{3,4}[A-Z0-9]*P?C?)", text, re.I)
-    return _norm_product(match.group(0)) if match else ""
+    is_c_variant = bool(re.search(r"\(\s*C\s*\)", text, re.I))
+    searchable = re.sub(r"\(\s*C\s*\)", "", text, flags=re.I)
+    match = re.search(r"NY\s*-?\s*(?:A[12][A-Z0-9]*|P\d[A-Z0-9]*|[A-Z]?\d{3,4}[A-Z0-9]*)", searchable, re.I)
+    if not match:
+        return ""
+    product = _norm_product(match.group(0))
+    return f"{product}C" if is_c_variant else product
 
 
 def _shengyi_product_aliases(product: str, *, for_pp: bool) -> set[str]:
@@ -2332,12 +2375,12 @@ def _shengyi_product_aliases(product: str, *, for_pp: bool) -> set[str]:
         aliases.add("NY6180P" if for_pp else "NY6180")
     if norm in {"NYA1P", "NYA2P"}:
         aliases.add(norm[:-1])
-    if norm in {"NYP1C", "NYP2C", "NYP3C"}:
-        aliases.add(norm[:-1])
-    if norm in {"NYP1", "NYP2", "NYP3"}:
-        aliases.add(f"{norm}C")
     if for_pp:
-        if norm.endswith("P"):
+        if norm.endswith("PC"):
+            pass
+        elif norm.endswith("C"):
+            aliases.add(f"{norm[:-1]}PC")
+        elif norm.endswith("P"):
             aliases.add(norm[:-1])
         else:
             aliases.add(f"{norm}P")
@@ -2354,6 +2397,11 @@ def _shengyi_extract_thickness_mm(desc: str) -> float | None:
     if preferred:
         return float(preferred.group(1))
     return _extract_thickness_mm(desc)
+
+
+def _shengyi_extract_thickness_tolerance_mm(desc: str) -> float | None:
+    match = re.search(r"\d+(?:\.\d+)?\s*(?:±|\+/-)\s*(\d+(?:\.\d+)?)\s*M{1,2}(?![A-Z])", desc, re.I)
+    return float(match.group(1)) if match else None
 
 
 def _shengyi_extract_rc(desc: str) -> float | None:
@@ -2458,7 +2506,7 @@ def _shengyi_piece_formula_price(radial: float, latitudinal: float, mother_width
     opens = math.floor(mother_width / latitudinal)
     if opens < 1:
         return {"ok": False, "reason": "Shengyi small-piece split count is less than 1"}
-    price = _shengyi_pp_price(float(sf_price) * radial * 48 / opens / 144)
+    price = _shengyi_price(float(sf_price) * radial * 48 / opens / 144)
     formula = f"round({float(sf_price):.6g}*{radial:g}*48/{opens}/144,6)"
     return {"ok": True, "price": price, "label": f"{radial:g}*{latitudinal:g}", "formula": formula, "opens": opens}
 
@@ -4958,7 +5006,7 @@ def _round_money(value: Any) -> float:
     return round(float(value) + 1e-9, 2)
 
 
-def _shengyi_pp_price(value: Any) -> float:
+def _shengyi_price(value: Any) -> float:
     return round(float(value) + 1e-12, 6)
 
 
