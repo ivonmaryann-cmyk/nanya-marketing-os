@@ -794,7 +794,7 @@ def _load_mingyang_rules(rule_path: str | Path) -> ExtRules:
     pp_rows: list[ExtPpRule] = []
     ccl_rows: list[ExtCclRule] = []
     for ws in wb.worksheets:
-        title = ws.title.strip()
+        title = _mingyang_base_sheet_title(ws.title)
         for row_idx in range(1, ws.max_row + 1):
             values = [_text(ws.cell(row_idx, col).value) for col in range(1, min(ws.max_column, 20) + 1)]
             if title in {"通用PP", "高速PP"} and _mingyang_is_pp_header(values):
@@ -804,6 +804,10 @@ def _load_mingyang_rules(rule_path: str | Path) -> ExtRules:
                 _load_mingyang_ccl_rows(ws, row_idx, values, ccl_rows)
                 break
     return ExtRules("mingyang", pp_rows, ccl_rows)
+
+
+def _mingyang_base_sheet_title(title: str) -> str:
+    return re.sub(r"\s*[（(][^）)]*更新[^）)]*[）)]\s*$", "", title.strip()).strip()
 
 
 def _mingyang_is_pp_header(values: list[str]) -> bool:
@@ -894,7 +898,13 @@ def _mingyang_price_columns(headers: list[str]) -> dict[int, str]:
 
 def _mingyang_norm_copper(value: Any) -> str:
     text = _text(value).upper().replace("OZ", "").replace(" ", "")
-    aliases = {"J/J": "J/J", "J/0": "J/J", "0/J": "J/J"}
+    aliases = {
+        "J/J": "J/J",
+        "J/0": "J/J",
+        "0/J": "J/J",
+        "T/T": "T/T",
+        "W/W": "1.5/1.5",
+    }
     if text in aliases:
         return aliases[text]
     return _norm_copper(text)
@@ -902,7 +912,7 @@ def _mingyang_norm_copper(value: Any) -> str:
 
 def _extract_mingyang_copper(desc: str) -> str:
     text = _text(desc).upper().replace("OZ", "")
-    match = re.search(r"(?<![A-Z0-9.])(J|H|[0-9]+(?:\.\d+)?)\s*/\s*(J|H|[0-9]+(?:\.\d+)?)(?![A-Z0-9.])", text, re.I)
+    match = re.search(r"(?<![A-Z0-9.])(J|H|T|W|[0-9]+(?:\.\d+)?)\s*/\s*(J|H|T|W|[0-9]+(?:\.\d+)?)(?![A-Z0-9.])", text, re.I)
     if match:
         return _mingyang_norm_copper(f"{match.group(1)}/{match.group(2)}")
     return _mingyang_norm_copper(_extract_copper(desc))
@@ -3565,8 +3575,6 @@ def _calculate_mingyang_pp(desc: str, rules: ExtRules) -> ExtCalcResult:
     )[0]
     if best.price is None:
         return ExtCalcResult("失败", "PP", "待确认", "", "", _fmt_length(length), "命中PP报价行但单价为空")
-    roll_200_price = _round_money(float(best.price) * 200)
-    length_note = "" if length is None or best.length in {None, length} else f"，报价卷长{best.length}m与规格{length}m不一致，按规格米数计算"
     if small_length_m is not None and small_width_mm is not None:
         split = math.floor(((best.width or 49.5) * 25.4 + 1e-9) / small_width_mm)
         if split <= 0:
@@ -3576,14 +3584,27 @@ def _calculate_mingyang_pp(desc: str, rules: ExtRules) -> ExtCalcResult:
         note = (
             f"命中明阳PP报价 Sheet {best.sheet} 第 {best.excel_row} 行，单价={best.price:.6g}，"
             f"径向={small_length_m * 1000:.0f}mm，纬向={small_width_mm:.0f}mm，"
-            f"纬向一开{split}，公式={small_length_m:.3f}*{best.price:.6g}/{split}={price:.2f}，"
-            f"200M整卷价格={roll_200_price:.2f}{length_note}"
+            f"纬向一开{split}，公式={small_length_m:.3f}*{best.price:.6g}/{split}={price:.2f}，PP小片不计算整卷价格"
         )
-        return ExtCalcResult("成功", "PP", price, roll_200_price, _fmt_width(best.width), "", note, best.excel_row, best.sheet)
-    price = _round_money(float(best.price))
-    roll_note = f"，规格卷长={length}m" if length is not None else ""
-    note = f"命中明阳PP报价 Sheet {best.sheet} 第 {best.excel_row} 行，PP卷料单价={price:.2f}，200M整卷价格={roll_200_price:.2f}{roll_note}{length_note}"
-    return ExtCalcResult("成功", "PP", price, roll_200_price, _fmt_width(best.width), _fmt_length(length), note, best.excel_row, best.sheet)
+        return ExtCalcResult("成功", "PP", price, "", _fmt_width(best.width), "", note, best.excel_row, best.sheet)
+    price = _round_half_up(float(best.price), 1)
+    customer_roll_length = 150 if glass == "7628" else 200
+    roll_price = _round_half_up(price * customer_roll_length, 1)
+    note = (
+        f"命中明阳PP报价 Sheet {best.sheet} 第 {best.excel_row} 行，"
+        f"每米价格={price:.1f}，整卷价格={price:.1f}*{customer_roll_length}={roll_price:.1f}"
+    )
+    return ExtCalcResult(
+        "成功",
+        "PP",
+        price,
+        roll_price,
+        _fmt_width(best.width),
+        _fmt_length(customer_roll_length),
+        note,
+        best.excel_row,
+        best.sheet,
+    )
 
 
 def _calculate_mingyang_ccl(desc: str, rules: ExtRules, quantity: Any = None) -> ExtCalcResult:
@@ -3618,11 +3639,14 @@ def _calculate_mingyang_ccl(desc: str, rules: ExtRules, quantity: Any = None) ->
     for row in sorted(exact_rows, key=lambda item: item.excel_row):
         price_result = _mingyang_ccl_row_size_price(row, length_in, width_in)
         if price_result["ok"]:
-            price = _round_money(price_result["price"])
+            digits = _mingyang_ccl_price_digits(length_in, width_in)
+            price = _round_half_up(price_result["price"], digits)
             total = _calc_total(quantity, price)
             note = (
                 f"命中明阳CCL报价 Sheet {row.sheet} 第 {row.excel_row} 行，"
-                f"铜厚={row.copper}，铜箔={row.foil or '未写'}，尺寸列={price_result['label']}，公式={price_result['formula']}"
+                f"铜厚={row.copper}，铜箔={row.foil or '未写'}，尺寸={price_result['label']}，"
+                f"报价来源={price_result['source_label']}，"
+                f"公式=ROUND({price_result['formula']},{digits})"
             )
             return ExtCalcResult("成功", "CCL", price, total, "", "", note, row.excel_row, price_result["label"])
 
@@ -3679,7 +3703,13 @@ def _mingyang_ccl_row_size_price(row: ExtCclRule, length_in: float, width_in: fl
     direct_key, direct_label = _direct_price_key(length_in, width_in, row.prices)
     if direct_key and row.prices.get(direct_key) is not None:
         price = float(row.prices[direct_key])
-        return {"ok": True, "price": price, "label": direct_label, "formula": f"{price:.6g}"}
+        return {
+            "ok": True,
+            "price": price,
+            "label": direct_label,
+            "source_label": direct_label,
+            "formula": f"{price:.6g}",
+        }
     parent = _select_parent("mingyang", length_in, width_in)
     if not parent:
         return {"ok": False, "reason": f"未找到可用尺寸父级：{length_in:g}*{width_in:g}"}
@@ -3688,7 +3718,8 @@ def _mingyang_ccl_row_size_price(row: ExtCclRule, length_in: float, width_in: fl
         return {"ok": False, "reason": f"尺寸父级{parent['source_label']}无报价"}
     price = float(parent_price) * parent["price_factor"] / parent["opens"]
     formula = f"{parent_price:.6g}*{parent['price_factor']:g}/{parent['opens']}"
-    return {"ok": True, "price": price, "label": parent["label"], "formula": formula}
+    label = f"{_fmt_dim(length_in)}*{_fmt_dim(width_in)}"
+    return {"ok": True, "price": price, "label": label, "source_label": parent["source_label"], "formula": formula}
 
 
 def _mingyang_derived_ccl_price(
@@ -3701,8 +3732,6 @@ def _mingyang_derived_ccl_price(
     base_copper, adjustment = _mingyang_ccl_base_adjustment(copper)
     if base_copper is None or adjustment is None:
         return {"ok": False, "reason": f"明阳CCL说明2未覆盖铜厚：{copper}"}
-    if _mingyang_is_rtf_foil(foil) and _mingyang_rtf_needs_manual(copper):
-        return {"ok": False, "reason": f"{copper}以上RTF铜价另议，未找到完全匹配报价行"}
 
     base_rows = [row for row in stack_rows if row.copper == base_copper and "高速" not in row.sheet]
     if not base_rows:
@@ -3729,12 +3758,9 @@ def _mingyang_derived_ccl_price(
             continue
         adjusted_41 = (float(base_41) + adjustment) * foil_factor
         raw_price = adjusted_41 * size_factor["factor"]
-        if copper == "2/2":
-            price = _round_money(raw_price)
-            formula = f"ROUND(({base_41:.6g}{adjustment:+.6g}){foil_note}*{size_factor['factor']:.6g},2)"
-        else:
-            price = int(math.floor(raw_price + 0.5 + 1e-9))
-            formula = f"ROUND(({base_41:.6g}{adjustment:+.6g}){foil_note}*{size_factor['factor']:.6g},0)"
+        digits = _mingyang_ccl_price_digits(length_in, width_in)
+        price = _round_half_up(raw_price, digits)
+        formula = f"ROUND(({base_41:.6g}{adjustment:+.6g}){foil_note}*{size_factor['factor']:.6g},{digits})"
         return {
             "ok": True,
             "price": price,
@@ -3753,11 +3779,11 @@ def _mingyang_ccl_base_adjustment(copper: str) -> tuple[str | None, float | None
     if normalized == "J/J":
         return "H/H", -2.0
     if normalized == "2/2":
-        return "H/H", 160.0
+        return "H/H", 180.0
     if normalized in {"1/2", "2/1"}:
-        return "H/H", 120.0
+        return "H/H", 140.0
     if normalized == "1.5/1.5":
-        return "H/H", 110.0
+        return "H/H", 130.0
     if normalized in {"1/H", "H/1"}:
         return "1/1", -10.0
     if normalized == "3/3":
@@ -3766,7 +3792,12 @@ def _mingyang_ccl_base_adjustment(copper: str) -> tuple[str | None, float | None
 
 
 def _mingyang_ccl_size_factor(length_in: float, width_in: float) -> dict[str, Any] | None:
-    dim = max(length_in, width_in)
+    if abs(length_in - 49) <= 0.8:
+        dim = width_in
+    elif abs(width_in - 49) <= 0.8:
+        dim = length_in
+    else:
+        dim = max(length_in, width_in)
     for target, factor in [(37, 0.9), (41, 1.0), (43, 1.05), (74, 1.8), (82, 2.0), (86, 2.1)]:
         if abs(dim - target) <= 0.8 and min(length_in, width_in) <= 49.8:
             return {"label": f"{target}*49", "factor": factor}
@@ -3777,17 +3808,23 @@ def _mingyang_ccl_size_factor(length_in: float, width_in: float) -> dict[str, An
     if source_factor is None:
         return None
     factor = source_factor * parent["price_factor"] / parent["opens"]
-    return {"label": parent["label"], "factor": factor}
+    return {"label": f"{_fmt_dim(length_in)}*{_fmt_dim(width_in)}", "factor": factor}
+
+
+def _mingyang_ccl_price_digits(length_in: float, width_in: float) -> int:
+    if abs(length_in - 49) <= 0.8:
+        dim = width_in
+    elif abs(width_in - 49) <= 0.8:
+        dim = length_in
+    else:
+        return 2
+    if any(abs(dim - target) <= 0.8 for target in (41, 82)):
+        return 0
+    return 2
 
 
 def _mingyang_is_rtf_foil(foil: str) -> bool:
     return foil.upper().startswith("RTF")
-
-
-def _mingyang_rtf_needs_manual(copper: str) -> bool:
-    parts = [_to_float(part) for part in copper.replace("H", "0.5").split("/")]
-    nums = [part for part in parts if part is not None]
-    return bool(nums) and max(nums) >= 2
 
 
 def _calculate_aoshikang_spec(desc: str, rules: ExtRules, quantity: Any = None) -> ExtCalcResult:

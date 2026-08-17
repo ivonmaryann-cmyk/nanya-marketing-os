@@ -439,7 +439,13 @@
       const data = await response.json();
       if (response.ok && data.price !== null && data.price !== undefined && data.price !== "") {
         const numeric = Number(data.price);
-        const priceDigits = selectedCustomer === "shengyi" && data.material_type === "PP" ? 6 : 2;
+        let priceDigits = selectedCustomer === "shengyi" && data.material_type === "PP" ? 6 : 2;
+        if (selectedCustomer === "mingyang" && data.material_type === "PP") {
+          const hasRollPrice = data.total !== null && data.total !== undefined && data.total !== "" && Number.isFinite(Number(data.total));
+          priceDigits = hasRollPrice ? 1 : 2;
+        } else if (selectedCustomer === "mingyang" && data.material_type === "CCL") {
+          priceDigits = /^(?:(41|82)(?:\.0+)?\*49|49(?:\.0+)?\*(41|82))/.test(data.size_column || "") ? 0 : 2;
+        }
         const title = Number.isFinite(numeric) ? numeric.toFixed(priceDigits) : String(data.price);
         const extra = [data.customer_label, data.material_type, data.width, data.roll_length].filter(Boolean).join(" · ");
         setSingleState("is-success", title, extra || data.rule_version || "当前规则", data.note || "计算成功");

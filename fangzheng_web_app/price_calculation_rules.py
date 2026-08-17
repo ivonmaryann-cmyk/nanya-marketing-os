@@ -469,6 +469,13 @@ def validate_price_rule_files(customer_key: str, rule_path: str | Path, test_dat
         return
     if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing"}:
         load_workbook_compat(rule_path, data_only=True)
+        if customer_key == "mingyang":
+            from .price_calculation_extended import load_extended_rules
+
+            try:
+                load_extended_rules(customer_key, rule_path)
+            except ValueError as exc:
+                raise ValueError(f"明阳报价单未识别到有效规则，请确认工作表名称和表头：{exc}") from exc
         return
     if customer_key == "lejian":
         # 乐健历史报价单存在非标准样式 XML，计算逻辑会按单元格 XML 值兜底读取。

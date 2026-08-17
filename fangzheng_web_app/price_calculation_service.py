@@ -285,6 +285,7 @@ def calculate_price_quote(customer_key: str, spec: str, quantity: Any = None, qu
         "width": result.width,
         "roll_length": result.roll_length,
         "note": result.note,
+        "size_column": result.size_column,
     }
 
 
@@ -306,10 +307,18 @@ def process_price_workbook(workbook, customer_key: str, rules: JingwangRules | P
         has_quantity = bool(qty_col)
         is_plin = customer_key == "plin"
         simple_price_only = customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing"}
+        if customer_key == "mingyang" and "200M整卷价格" in headers:
+            old_roll_col = headers.pop("200M整卷价格")
+            if "整卷价格" in headers and headers["整卷价格"] != old_roll_col:
+                for row_idx in range(header_row, ws.max_row + 1):
+                    ws.cell(row=row_idx, column=old_roll_col).value = None
+            else:
+                headers["整卷价格"] = old_roll_col
+                ws.cell(row=header_row, column=old_roll_col, value="整卷价格")
         if customer_key == "taixing":
             simple_headers = ["新价格", "整卷价格"]
         elif customer_key == "mingyang":
-            simple_headers = ["新价格", "200M整卷价格"]
+            simple_headers = ["新价格", "整卷价格"]
         else:
             simple_headers = ["新价格"]
         net_price_col = _find_net_price_col(headers) if customer_key == "aoshikang" else None
@@ -384,6 +393,8 @@ def process_price_workbook(workbook, customer_key: str, rules: JingwangRules | P
                 price_cell = ws.cell(row=row_idx, column=output_cols["新价格"], value=value_writer(result.price))
                 if customer_key == "shengyi" and isinstance(result.price, (int, float)):
                     price_cell.number_format = "0.000000" if result.material_type == "PP" else "0.00"
+                if customer_key == "mingyang" and isinstance(result.price, (int, float)):
+                    price_cell.number_format = _mingyang_number_format(result.material_type, result.total, result.size_column)
                 if customer_key == "taixing":
                     roll_price, roll_note = _taixing_roll_price(result)
                     ws.cell(row=row_idx, column=output_cols["整卷价格"], value=_taixing_excel_value(roll_price))
@@ -399,9 +410,11 @@ def process_price_workbook(workbook, customer_key: str, rules: JingwangRules | P
                             result.rule_row,
                             result.size_column,
                         )
-                if customer_key == "mingyang" and "200M整卷价格" in output_cols:
-                    roll_200_price = result.total if result.material_type == "PP" and isinstance(result.total, (int, float)) else ""
-                    ws.cell(row=row_idx, column=output_cols["200M整卷价格"], value=_excel_value(roll_200_price))
+                if customer_key == "mingyang" and "整卷价格" in output_cols:
+                    roll_price = result.total if result.material_type == "PP" and isinstance(result.total, (int, float)) else ""
+                    roll_cell = ws.cell(row=row_idx, column=output_cols["整卷价格"], value=_excel_value(roll_price))
+                    if isinstance(roll_price, (int, float)):
+                        roll_cell.number_format = "0.0"
                 if customer_key == "aoshikang" and net_price_col and "净价结果" in output_cols:
                     net_price, net_note = _aoshikang_net_price_result(ws.cell(row=row_idx, column=net_price_col).value)
                     ws.cell(row=row_idx, column=output_cols["净价结果"], value=_taixing_excel_value(net_price))
@@ -1301,7 +1314,8 @@ def write_note_sheet(workbook, rows: list[dict], *, customer_key: str = "") -> N
     if NOTE_SHEET_NAME in workbook.sheetnames:
         del workbook[NOTE_SHEET_NAME]
     ws = workbook.create_sheet(NOTE_SHEET_NAME)
-    headers = ["来源Sheet", "行号", "规格", "材料类型", "状态", "新单价", "新总金额", "规则行", "尺寸列", "说明"]
+    total_header = "整卷价格" if customer_key == "mingyang" else "新总金额"
+    headers = ["来源Sheet", "行号", "规格", "材料类型", "状态", "新单价", total_header, "规则行", "尺寸列", "说明"]
     ws.append(headers)
     for cell in ws[1]:
         cell.font = Font(bold=True)
@@ -1323,6 +1337,18 @@ def write_note_sheet(workbook, rows: list[dict], *, customer_key: str = "") -> N
         )
         if customer_key == "shengyi" and isinstance(row["price"], (int, float)):
             ws.cell(row=ws.max_row, column=6).number_format = "0.000000" if row["material_type"] == "PP" else "0.00"
+        if customer_key == "mingyang" and isinstance(row["price"], (int, float)):
+            ws.cell(row=ws.max_row, column=6).number_format = _mingyang_number_format(
+                row["material_type"], row["total"], row["size_column"]
+            )
+            if row["material_type"] == "PP" and isinstance(row["total"], (int, float)):
+                ws.cell(row=ws.max_row, column=7).number_format = "0.0"
+
+
+def _mingyang_number_format(material_type: str, total: Any, size_column: str) -> str:
+    if material_type == "PP":
+        return "0.0" if isinstance(total, (int, float)) else "0.00"
+    return "0" if re.match(r"^(?:(?:41|82)(?:\.0+)?\*49|49(?:\.0+)?\*(?:41|82))", _text(size_column)) else "0.00"
 
 
 def _size_column(match) -> tuple[str, str]:
