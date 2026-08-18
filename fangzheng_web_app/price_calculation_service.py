@@ -306,7 +306,7 @@ def process_price_workbook(workbook, customer_key: str, rules: JingwangRules | P
         qty_col = headers.get("订单数量") or headers.get("数量")
         has_quantity = bool(qty_col)
         is_plin = customer_key == "plin"
-        simple_price_only = customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing"}
+        simple_price_only = customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing", "kexiang"}
         if customer_key == "mingyang" and "200M整卷价格" in headers:
             old_roll_col = headers.pop("200M整卷价格")
             if "整卷价格" in headers and headers["整卷价格"] != old_roll_col:
@@ -318,6 +318,8 @@ def process_price_workbook(workbook, customer_key: str, rules: JingwangRules | P
         if customer_key == "taixing":
             simple_headers = ["新价格", "整卷价格"]
         elif customer_key == "mingyang":
+            simple_headers = ["新价格", "整卷价格"]
+        elif customer_key == "kexiang":
             simple_headers = ["新价格", "整卷价格"]
         else:
             simple_headers = ["新价格"]
@@ -395,6 +397,8 @@ def process_price_workbook(workbook, customer_key: str, rules: JingwangRules | P
                     price_cell.number_format = "0.000000" if result.material_type == "PP" else "0.00"
                 if customer_key == "mingyang" and isinstance(result.price, (int, float)):
                     price_cell.number_format = _mingyang_number_format(result.material_type, result.total, result.size_column)
+                if customer_key == "kexiang" and isinstance(result.price, (int, float)):
+                    price_cell.number_format = "0.##"
                 if customer_key == "taixing":
                     roll_price, roll_note = _taixing_roll_price(result)
                     ws.cell(row=row_idx, column=output_cols["整卷价格"], value=_taixing_excel_value(roll_price))
@@ -415,6 +419,11 @@ def process_price_workbook(workbook, customer_key: str, rules: JingwangRules | P
                     roll_cell = ws.cell(row=row_idx, column=output_cols["整卷价格"], value=_excel_value(roll_price))
                     if isinstance(roll_price, (int, float)):
                         roll_cell.number_format = "0.0"
+                if customer_key == "kexiang" and "整卷价格" in output_cols:
+                    roll_price = result.total if result.material_type == "PP" and isinstance(result.total, (int, float)) else ""
+                    roll_cell = ws.cell(row=row_idx, column=output_cols["整卷价格"], value=_excel_value(roll_price))
+                    if isinstance(roll_price, (int, float)):
+                        roll_cell.number_format = "0.##"
                 if customer_key == "aoshikang" and net_price_col and "净价结果" in output_cols:
                     net_price, net_note = _aoshikang_net_price_result(ws.cell(row=row_idx, column=net_price_col).value)
                     ws.cell(row=row_idx, column=output_cols["净价结果"], value=_taixing_excel_value(net_price))
@@ -434,7 +443,7 @@ def process_price_workbook(workbook, customer_key: str, rules: JingwangRules | P
                     result.status,
                     result.material_type,
                     result.price,
-                    result.total if customer_key == "mingyang" else "",
+                    result.total if customer_key in {"mingyang", "kexiang"} else "",
                     result.width,
                     result.roll_length,
                     result.note,
@@ -491,7 +500,7 @@ def process_price_workbook(workbook, customer_key: str, rules: JingwangRules | P
 def run_jingwang_regression(customer_key: str, version: str | None = None, quote_variant: str | None = None) -> dict:
     if customer_key == "plin":
         return run_plin_regression(customer_key, version)
-    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing"}:
+    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing", "kexiang"}:
         rule_version = version or get_active_price_rule_version(customer_key)
         rules = load_extended_rules(customer_key, get_price_rule_file_path(customer_key, rule_version))
         return run_extended_regression(customer_key, rules, get_price_test_data_file_path(customer_key, rule_version))
@@ -623,7 +632,7 @@ def run_plin_regression(customer_key: str, version: str | None = None) -> dict:
 def load_price_rules(customer_key: str, rule_path: str | Path) -> JingwangRules | PlinRules | ExtRules:
     if customer_key == "plin":
         return load_plin_rules(rule_path)
-    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing"}:
+    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing", "kexiang"}:
         return load_extended_rules(customer_key, rule_path)
     return load_jingwang_rules(rule_path)
 
@@ -631,7 +640,7 @@ def load_price_rules(customer_key: str, rule_path: str | Path) -> JingwangRules 
 def calculate_customer_spec(customer_key: str, spec: str, rules: JingwangRules | PlinRules | ExtRules, quantity: Any = None) -> CalcResult:
     if customer_key == "plin":
         return calculate_plin_spec(spec, rules)  # type: ignore[arg-type]
-    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing"}:
+    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing", "kexiang"}:
         result = calculate_extended_spec(customer_key, spec, rules, quantity=quantity)  # type: ignore[arg-type]
         return CalcResult(
             result.status,
@@ -1314,7 +1323,7 @@ def write_note_sheet(workbook, rows: list[dict], *, customer_key: str = "") -> N
     if NOTE_SHEET_NAME in workbook.sheetnames:
         del workbook[NOTE_SHEET_NAME]
     ws = workbook.create_sheet(NOTE_SHEET_NAME)
-    total_header = "整卷价格" if customer_key == "mingyang" else "新总金额"
+    total_header = "整卷价格" if customer_key in {"mingyang", "kexiang"} else "新总金额"
     headers = ["来源Sheet", "行号", "规格", "材料类型", "状态", "新单价", total_header, "规则行", "尺寸列", "说明"]
     ws.append(headers)
     for cell in ws[1]:
@@ -1343,6 +1352,10 @@ def write_note_sheet(workbook, rows: list[dict], *, customer_key: str = "") -> N
             )
             if row["material_type"] == "PP" and isinstance(row["total"], (int, float)):
                 ws.cell(row=ws.max_row, column=7).number_format = "0.0"
+        if customer_key == "kexiang" and isinstance(row["price"], (int, float)):
+            ws.cell(row=ws.max_row, column=6).number_format = "0.##"
+            if row["material_type"] == "PP" and isinstance(row["total"], (int, float)):
+                ws.cell(row=ws.max_row, column=7).number_format = "0.##"
 
 
 def _mingyang_number_format(material_type: str, total: Any, size_column: str) -> str:

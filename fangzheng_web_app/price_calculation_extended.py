@@ -31,6 +31,7 @@ class ExtPpRule:
     roll_price: float | None = None
     sf_price: float | None = None
     volume_area: float | None = None
+    quote_note: str = ""
 
 
 @dataclass
@@ -45,6 +46,7 @@ class ExtCclRule:
     stack: str
     prices: dict[str, float | None]
     kind: str = ""
+    quote_note: str = ""
 
 
 @dataclass
@@ -101,6 +103,8 @@ def load_extended_rules(customer_key: str, rule_path: str | Path) -> ExtRules:
         rules = _load_yingchuangli_rules(rule_path)
     elif customer_key == "zhongjing":
         rules = _load_zhongjing_rules(rule_path)
+    elif customer_key == "kexiang":
+        rules = _load_kexiang_rules(rule_path)
     else:
         raise ValueError(f"不支持的扩展价格计算客户：{customer_key}")
     if not rules.pp_rows and not rules.ccl_rows:
@@ -138,6 +142,8 @@ def calculate_extended_spec(customer_key: str, spec: str, rules: ExtRules, quant
         return _calculate_yingchuangli_spec(desc, rules, quantity=quantity)
     if customer_key == "zhongjing":
         return _calculate_zhongjing_spec(desc, rules, quantity=quantity)
+    if customer_key == "kexiang":
+        return _calculate_kexiang_spec(desc, rules, quantity=quantity)
     if _looks_like_pp(desc):
         return _calculate_pp(customer_key, desc, rules)
     return _calculate_ccl(customer_key, desc, rules, quantity=quantity)
@@ -176,6 +182,8 @@ def run_extended_regression(customer_key: str, rules: ExtRules, test_data_path: 
                 ok = result.status == "成功" or result.note == "英创力 PP 小片需待确认"
             elif customer_key == "zhongjing":
                 ok = result.status == "成功" or result.note == "中京 PP 小片需待确认"
+            elif customer_key == "kexiang":
+                ok = result.status == "成功" or result.note in {"科翔PP小片不报价", "科翔基板小片不报价"}
             elif expected_col:
                 tolerance = 0.0002 if customer_key in {"taixing", "aoshikang"} else 0.02
                 ok = _result_equal(result.price, expected, tolerance=tolerance)
@@ -678,6 +686,130 @@ def _load_zhongjing_pp_rows(ws, header_row: int, pp_rows: list[ExtPpRule]) -> No
         if not glass or rc_min is None or price is None:
             continue
         pp_rows.append(ExtPpRule(data_row, ws.title, product, glass, rc_min, rc_max, length, width, price, roll_price))
+
+
+def _load_kexiang_rules(rule_path: str | Path) -> ExtRules:
+    wb = load_workbook_compat(rule_path, data_only=True)
+    pp_rows: list[ExtPpRule] = []
+    ccl_rows: list[ExtCclRule] = []
+    for ws in wb.worksheets:
+        for row_idx in range(1, min(ws.max_row, 30) + 1):
+            values = [_text(ws.cell(row_idx, col).value) for col in range(1, min(ws.max_column, 20) + 1)]
+            compact = [re.sub(r"\s+", "", value) for value in values]
+            if {"产品型号", "客户型号", "铜箔", "铜箔特性", "配料结构"}.issubset(set(compact)):
+                _load_kexiang_ccl_rows(ws, row_idx, values, ccl_rows)
+                break
+            if {"产品胶系", "布种", "胶含量"}.issubset(set(compact)) and any("每米单价" in value for value in compact):
+                _load_kexiang_pp_rows(ws, row_idx, values, pp_rows)
+                break
+    return ExtRules("kexiang", pp_rows, ccl_rows)
+
+
+def _load_kexiang_ccl_rows(ws, header_row: int, headers: list[str], ccl_rows: list[ExtCclRule]) -> None:
+    product_col = _find_header_contains(headers, {"产品型号"}) or 3
+    customer_col = _find_header_contains(headers, {"客户型号"}) or 4
+    copper_col = _find_header_contains(headers, {"铜箔"}) or 5
+    foil_col = _find_header_contains(headers, {"铜箔特性"}) or 6
+    stack_col = _find_header_contains(headers, {"配料结构"}) or 7
+    note_cols = [idx for idx, value in enumerate(headers, start=1) if "备注" in re.sub(r"\s+", "", value)]
+    price_cols = _kexiang_ccl_price_columns(headers)
+    for data_row in _kexiang_data_rows(ws, header_row, (product_col, customer_col)):
+        product = _norm_product(ws.cell(data_row, product_col).value)
+        customer_model = _text(ws.cell(data_row, customer_col).value)
+        thickness = _to_float(customer_model)
+        state = "不含铜" if "不含铜" in customer_model else "含铜" if "含铜" in customer_model else ""
+        copper = _norm_copper(ws.cell(data_row, copper_col).value)
+        foil = _kexiang_norm_foil_pair(ws.cell(data_row, foil_col).value)
+        stack = _kexiang_norm_stack(ws.cell(data_row, stack_col).value)
+        prices = _row_prices(ws, data_row, price_cols)
+        quote_note = _kexiang_quote_note(ws, data_row, note_cols)
+        if not product or thickness is None or not state or not copper or not stack or not any(value is not None for value in prices.values()):
+            continue
+        ccl_rows.append(
+            ExtCclRule(
+                data_row,
+                ws.title,
+                product,
+                thickness,
+                None,
+                copper,
+                foil or "HTE/HTE",
+                stack,
+                prices,
+                f"kexiang:{state}",
+                quote_note,
+            )
+        )
+
+
+def _load_kexiang_pp_rows(ws, header_row: int, headers: list[str], pp_rows: list[ExtPpRule]) -> None:
+    product_col = _find_header_contains(headers, {"产品胶系"}) or 3
+    glass_col = _find_header_contains(headers, {"布种"}) or 4
+    rc_col = _find_header_contains(headers, {"胶含量"}) or 5
+    length_col = _find_header_contains(headers, {"标准卷装长度"}) or 6
+    width_col = _find_header_contains(headers, {"标准卷装宽度"}) or 7
+    price_col = _find_header_contains(headers, {"每米单价"}) or 8
+    roll_col = _find_header_contains(headers, {"每卷单价"}) or 9
+    sf_col = _find_header_contains(headers, {"SF价格"}) or 10
+    note_cols = [idx for idx, value in enumerate(headers, start=1) if "备注" in re.sub(r"\s+", "", value)]
+    for data_row in _kexiang_data_rows(ws, header_row, (product_col, glass_col)):
+        product = _norm_product(ws.cell(data_row, product_col).value)
+        glass = _norm_glass(ws.cell(data_row, glass_col).value)
+        rc_min, rc_max = _parse_rc_range(ws.cell(data_row, rc_col).value)
+        length = _length_int(ws.cell(data_row, length_col).value)
+        width = _to_float(ws.cell(data_row, width_col).value)
+        price = _to_float(ws.cell(data_row, price_col).value)
+        roll_price = _to_float(ws.cell(data_row, roll_col).value)
+        sf_price = _to_float(ws.cell(data_row, sf_col).value)
+        quote_note = _kexiang_quote_note(ws, data_row, note_cols)
+        if not product or not glass or rc_min is None or price is None:
+            continue
+        pp_rows.append(
+            ExtPpRule(
+                data_row,
+                ws.title,
+                product,
+                glass,
+                rc_min,
+                rc_max,
+                length,
+                width,
+                price,
+                roll_price,
+                sf_price,
+                None,
+                quote_note,
+            )
+        )
+
+
+def _kexiang_data_rows(ws, header_row: int, key_cols: tuple[int, ...]):
+    empty_streak = 0
+    found_data = False
+    for data_row in range(header_row + 1, ws.max_row + 1):
+        if all(not _text(ws.cell(data_row, col).value) for col in key_cols):
+            empty_streak += 1
+            if found_data and empty_streak >= 20:
+                break
+            continue
+        found_data = True
+        empty_streak = 0
+        yield data_row
+
+
+def _kexiang_ccl_price_columns(headers: list[str]) -> dict[int, str]:
+    columns: dict[int, str] = {}
+    for idx, header in enumerate(headers, start=1):
+        compact = re.sub(r"\s+", "", header).replace('"', "")
+        match = re.search(r"(37|41|43|74|82|86)\s*[*xX×]\s*49", compact)
+        if match:
+            columns[idx] = match.group(1)
+    return columns
+
+
+def _kexiang_quote_note(ws, row_idx: int, note_cols: list[int]) -> str:
+    notes = [_text(ws.cell(row_idx, col).value) for col in note_cols]
+    return "；".join(dict.fromkeys(note for note in notes if note))
 
 
 def _load_taixing_rules(rule_path: str | Path) -> ExtRules:
@@ -4775,6 +4907,186 @@ def _zhongjing_small_piece_parents(length_in: float, width_in: float) -> list[di
         if best_opens > 0:
             options.append({"source_key": source_key, "label": f"{parent_w}*{parent_h}", "opens": best_opens})
     return options
+
+
+def _calculate_kexiang_spec(desc: str, rules: ExtRules, quantity: Any = None) -> ExtCalcResult:
+    if _kexiang_is_pp(desc):
+        return _calculate_kexiang_pp(desc, rules)
+    return _calculate_kexiang_ccl(desc, rules, quantity=quantity)
+
+
+def _kexiang_is_pp(desc: str) -> bool:
+    if "半固化片" in desc:
+        return True
+    if "%" in desc and re.search(r"\d+(?:\.\d+)?\s*M\s*/\s*卷", desc, re.I):
+        return True
+    product = _kexiang_product(desc)
+    return bool(product.endswith("P") and _extract_glass(desc) and _extract_current_quote_rc(desc) is not None)
+
+
+def _kexiang_product(desc: str) -> str:
+    matches = re.findall(
+        r"NY\s*-?\s*(?:[A-Z]\d{1,4}|\d{3,4})[A-Z0-9-]*(?:\s*\(\s*C\s*\))?",
+        desc,
+        re.I,
+    )
+    return _norm_product(matches[-1]) if matches else ""
+
+
+def _kexiang_pp_product_aliases(desc: str) -> set[str]:
+    product = _kexiang_product(desc)
+    if not product:
+        return set()
+    aliases = {product}
+    if product.endswith("P"):
+        aliases.add(product[:-1])
+    else:
+        aliases.add(f"{product}P")
+    if product.endswith("HF"):
+        aliases.add(f"{product}P")
+    elif "无卤" in desc and not product.endswith("P"):
+        aliases.add(f"{product}HFP")
+    return aliases
+
+
+def _kexiang_extract_thickness_mm(desc: str) -> float | None:
+    # Some source descriptions omit the space after "FR-4" (for example
+    # "FR-40.064mm"). Remove the grade marker before reading the thickness.
+    normalized = re.sub(r"FR\s*-\s*4(?=\d)", "", desc, flags=re.I)
+    return _extract_thickness_mm(normalized)
+
+
+def _calculate_kexiang_pp(desc: str, rules: ExtRules) -> ExtCalcResult:
+    width = _extract_width(desc)
+    length = _extract_length(desc)
+    if "小片" in desc or _is_current_quote_pp_small_piece(desc):
+        return ExtCalcResult("失败", "PP", "", "", _fmt_width(width), _fmt_length(length), "科翔PP小片不报价")
+    products = _kexiang_pp_product_aliases(desc)
+    glass = _extract_glass(desc)
+    rc = _extract_current_quote_rc(desc)
+    if not products or not glass or rc is None:
+        return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width), _fmt_length(length), "科翔PP规格缺少型号、布种或RC")
+    candidates: list[tuple[tuple[int, float, int], ExtPpRule]] = []
+    for row in rules.pp_rows:
+        if row.product not in products or row.glass != glass:
+            continue
+        if row.rc_min is None or row.rc_max is None or not (row.rc_min - 0.001 <= rc <= row.rc_max + 0.001):
+            continue
+        if length is not None and row.length is not None and row.length != length:
+            continue
+        if width is not None and row.width is not None and abs(row.width - width) > 0.8:
+            continue
+        product_rank = 0 if row.product == _kexiang_product(desc) else 1
+        width_rank = abs((row.width or width or 49.5) - (width or row.width or 49.5))
+        candidates.append(((product_rank, width_rank, row.excel_row), row))
+    if not candidates:
+        return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width), _fmt_length(length), "未命中科翔PP报价：型号、布种、RC、卷长或宽度不匹配")
+    best = sorted(candidates, key=lambda item: item[0])[0][1]
+    if best.price is None or best.roll_price is None:
+        return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width or best.width), _fmt_length(length or best.length), "命中科翔PP规格，但每米价或每卷价为空")
+    price = float(best.price)
+    roll_price = float(best.roll_price)
+    note = (
+        f"命中科翔PP报价 Sheet {best.sheet} 第 {best.excel_row} 行，"
+        f"型号={best.product}，布种={glass}，RC={rc:g}%，每米价={price:g}，每卷价={roll_price:g}"
+    )
+    if best.quote_note:
+        note += f"，报价备注={best.quote_note}"
+    return ExtCalcResult(
+        "成功",
+        "PP",
+        price,
+        roll_price,
+        _fmt_width(width or best.width),
+        _fmt_length(length or best.length),
+        note,
+        best.excel_row,
+        "每米单价",
+    )
+
+
+def _calculate_kexiang_ccl(desc: str, rules: ExtRules, quantity: Any = None) -> ExtCalcResult:
+    product = _kexiang_product(desc)
+    thickness = _kexiang_extract_thickness_mm(desc)
+    state = "不含铜" if "不含铜" in desc else "含铜" if "含铜" in desc else ""
+    copper = _extract_copper(desc)
+    foil = _kexiang_norm_foil_pair(desc) or "HTE/HTE"
+    stack = _extract_stack(desc)
+    length_in, width_in = _kexiang_extract_size(desc)
+    if length_in is not None and width_in is not None:
+        size_key = _kexiang_standard_size_key(length_in, width_in)
+        if not size_key:
+            return ExtCalcResult("失败", "CCL", "", "", "", "", "科翔基板小片不报价")
+    else:
+        size_key = ""
+    if not product or thickness is None or not state or not copper or not stack or not size_key:
+        return ExtCalcResult("失败", "CCL", "待确认", "", "", "", "科翔CCL规格缺少型号、厚度、含铜状态、铜厚、叠构或标准尺寸")
+    products = {product}
+    if product == "NY3150" and "无卤" in desc:
+        products.add("NY3150HF")
+    candidates = [
+        row
+        for row in rules.ccl_rows
+        if row.product in products
+        and row.kind == f"kexiang:{state}"
+        and row.thickness_mm is not None
+        and abs(row.thickness_mm - thickness) <= 0.006 + 1e-9
+        and row.copper == copper
+        and row.foil == foil
+        and row.stack == stack
+        and row.prices.get(size_key) is not None
+    ]
+    if not candidates:
+        return ExtCalcResult("失败", "CCL", "待确认", "", "", "", "未命中科翔CCL报价：型号、厚度、含铜状态、铜厚、铜箔、叠构或尺寸不匹配")
+    best = sorted(candidates, key=lambda row: (0 if row.product == product else 1, abs((row.thickness_mm or 0) - thickness), row.excel_row))[0]
+    price = float(best.prices[size_key])
+    total = _calc_total(quantity, price)
+    note = (
+        f"命中科翔CCL报价 Sheet {best.sheet} 第 {best.excel_row} 行，"
+        f"型号={best.product}，厚度={best.thickness_mm:g}mm，含铜状态={state}，"
+        f"铜厚={best.copper}，铜箔={best.foil}，叠构={best.stack}，尺寸列={size_key}*49，价格={price:g}"
+    )
+    if best.quote_note:
+        note += f"，报价备注={best.quote_note}"
+    return ExtCalcResult("成功", "CCL", price, total, "", "", note, best.excel_row, f"{size_key}*49")
+
+
+def _kexiang_norm_foil_pair(value: Any) -> str:
+    tokens = [token.upper() for token in re.findall(FOIL_TOKEN_PATTERN, _text(value), re.I)]
+    if not tokens:
+        return ""
+    if len(tokens) == 1:
+        return f"{tokens[0]}/{tokens[0]}"
+    return f"{tokens[0]}/{tokens[1]}"
+
+
+def _kexiang_norm_stack(value: Any) -> str:
+    text = re.sub(r"\((\d+)\)\s*([*xX×])", r"\1\2", _text(value))
+    return _norm_stack(text)
+
+
+def _kexiang_extract_size(desc: str) -> tuple[float | None, float | None]:
+    matches = list(
+        re.finditer(
+            r"(\d+(?:\.\d+)?)\s*(?:\"|IN|INCH|英寸)?\s*[*xX×]\s*(\d+(?:\.\d+)?)\s*(?:\"|IN|INCH|英寸)?",
+            desc,
+            re.I,
+        )
+    )
+    for match in reversed(matches):
+        first, second = float(match.group(1)), float(match.group(2))
+        if first <= 120 and second <= 120 and not _looks_like_glass_pair(match.group(1), match.group(2)):
+            return first, second
+    return None, None
+
+
+def _kexiang_standard_size_key(length_in: float, width_in: float) -> str:
+    for target in (37, 41, 43, 74, 82, 86):
+        if (abs(length_in - target) <= 0.8 and abs(width_in - 49) <= 0.8) or (
+            abs(width_in - target) <= 0.8 and abs(length_in - 49) <= 0.8
+        ):
+            return str(target)
+    return ""
 
 
 def _calculate_pp(customer_key: str, desc: str, rules: ExtRules) -> ExtCalcResult:

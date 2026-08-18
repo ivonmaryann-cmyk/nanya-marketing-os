@@ -135,6 +135,13 @@ PRICE_CALCULATION_CUSTOMERS = [
         "rule_label": "中京报价表",
         "test_label": "中京测试数据",
     },
+    {
+        "key": "kexiang",
+        "label": "科翔",
+        "enabled": True,
+        "rule_label": "科翔报价表",
+        "test_label": "科翔测试数据",
+    },
     {"key": "shenghong", "label": "胜宏", "enabled": False, "rule_label": "胜宏报价表", "test_label": "胜宏测试数据"},
     {"key": "bomin", "label": "博敏", "enabled": False, "rule_label": "博敏报价表", "test_label": "博敏测试数据"},
 ]
