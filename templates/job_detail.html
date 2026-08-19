@@ -48,6 +48,20 @@
   const completedEl = document.getElementById("job-completed");
   const errorEl = document.getElementById("job-error");
   const downloadBox = document.getElementById("download-box");
+  const jobFeature = "{{ job.feature }}";
+  const jobId = {{ job.id }};
+
+  function renderInventoryDownloads(results) {
+    if (jobFeature !== "inventory_detail" || !Array.isArray(results) || !results.length) return;
+    downloadBox.innerHTML = "";
+    results.forEach(result => {
+      const link = document.createElement("a");
+      link.className = "primary-link";
+      link.href = `/inventory-detail/jobs/${jobId}/download/${encodeURIComponent(result.key)}`;
+      link.textContent = result.label;
+      downloadBox.appendChild(link);
+    });
+  }
 
   function refreshJob() {
     fetch("{{ url_for('main.api_job_detail', job_id=job.id) }}")
@@ -58,6 +72,7 @@
         countsEl.textContent = `${data.success_count}/${data.fail_count}/${data.skip_count}`;
         completedEl.textContent = data.completed_at || "-";
         if (data.status === "completed") {
+          renderInventoryDownloads(data.inventory_results);
           downloadBox.classList.remove("hidden");
         }
         if (data.error_message) {
