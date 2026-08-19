@@ -1709,6 +1709,282 @@ button,
   letter-spacing: -0.04em;
 }
 
+/* 邮件自动化转码Agent */
+.mail-page {
+  max-width: 1180px;
+  margin: 0 auto;
+}
+
+.mail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 24px;
+  padding: 26px 0 22px;
+}
+
+.mail-header h1 {
+  margin: 0;
+  font-size: 30px;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+.mail-header p {
+  max-width: 720px;
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+.mail-header-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.mail-header-actions .feature-action {
+  white-space: nowrap;
+}
+
+.mail-stat-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 22px;
+}
+
+.mail-stat {
+  background: var(--panel-strong);
+  border: 1px solid rgba(24, 92, 67, 0.10);
+  border-radius: 14px;
+  padding: 16px 18px;
+  display: grid;
+  gap: 6px;
+  box-shadow: 0 10px 24px rgba(46, 38, 22, 0.06);
+}
+
+.mail-stat span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.mail-stat strong {
+  font-size: 26px;
+  letter-spacing: 0;
+}
+
+.mail-section {
+  background: var(--panel-strong);
+  border: 1px solid rgba(24, 92, 67, 0.08);
+  border-radius: 14px;
+  padding: 20px 22px;
+  margin-bottom: 20px;
+  box-shadow: 0 12px 28px rgba(46, 38, 22, 0.06);
+}
+
+.mail-section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.mail-section-head h2 {
+  margin: 0;
+  font-size: 18px;
+  letter-spacing: 0;
+}
+
+.mail-section-head a {
+  font-size: 13px;
+}
+
+.mail-section-desc {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 4px 0 14px;
+}
+
+.mail-table-wrap {
+  overflow-x: auto;
+}
+
+.mail-table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+}
+
+.mail-table th,
+.mail-table td {
+  padding: 12px 14px;
+  border-top: 1px solid var(--line);
+  text-align: left;
+  font-size: 14px;
+  vertical-align: middle;
+  word-break: break-word;
+}
+
+.mail-table th {
+  color: var(--muted);
+  font-weight: 600;
+  background: rgba(15, 106, 73, 0.04);
+  white-space: nowrap;
+}
+
+.mail-table tbody tr:hover {
+  background: rgba(15, 106, 73, 0.035);
+}
+
+.mail-table .cell-main {
+  max-width: 360px;
+}
+
+.mail-table .cell-wide {
+  max-width: 480px;
+}
+
+.mail-pills {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
+.mail-pill {
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--muted);
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.mail-pill.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.mail-pill:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.mail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  align-items: start;
+}
+
+.mail-stack {
+  display: grid;
+  gap: 20px;
+}
+
+.mail-field {
+  display: grid;
+  gap: 7px;
+}
+
+.mail-field > span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.mail-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.mail-empty {
+  color: var(--muted);
+  text-align: center;
+  padding: 28px 12px;
+}
+
+.mail-kv {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 12px 18px;
+  margin: 0;
+}
+
+.mail-kv dt {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 8px 0;
+}
+
+.mail-kv dd {
+  margin: 0;
+  padding: 8px 0;
+  font-size: 14px;
+  line-height: 1.6;
+  word-break: break-word;
+  border-top: 1px solid var(--line);
+}
+
+.mail-kv dt {
+  border-top: 1px solid var(--line);
+}
+
+.mail-kv dt:first-child,
+.mail-kv dd:first-child {
+  border-top: 0;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.table-scroll .table {
+  min-width: 960px;
+  table-layout: fixed;
+}
+
+.table-scroll .table td {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+}
+
+.mail-group-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.mail-group-head strong {
+  font-size: 15px;
+}
+
+.mail-group-head span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.mail-group {
+  padding-bottom: 6px;
+}
+
+.mail-group + .mail-group {
+  margin-top: 16px;
+  border-top: 1px solid rgba(24, 92, 67, 0.08);
+  padding-top: 6px;
+}
+
 .rule-chip {
   display: inline-flex;
   align-items: center;
@@ -4350,6 +4626,85 @@ textarea:focus {
   font-weight: 700;
 }
 
+.settings-hero {
+  display: block;
+}
+
+.settings-entry-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 720px);
+}
+
+.settings-entry {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  min-height: 136px;
+  padding: 24px 28px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #fff;
+  color: inherit;
+  box-shadow: 0 14px 34px rgba(53, 84, 121, .08);
+  transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+}
+
+.settings-entry:hover {
+  border-color: rgba(59, 125, 246, .5);
+  box-shadow: 0 18px 38px rgba(53, 84, 121, .13);
+  transform: translateY(-2px);
+}
+
+.settings-entry-icon {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border-radius: 12px;
+  background: #eaf2ff;
+  color: var(--accent);
+  font-size: 24px;
+  font-weight: 800;
+}
+
+.settings-entry h2 {
+  margin: 0 0 6px;
+  font-size: 20px;
+}
+
+.settings-entry p,
+.settings-future-note,
+.settings-empty-state {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.settings-entry-action {
+  color: var(--accent);
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.settings-future-note {
+  margin-top: 16px;
+  font-size: 14px;
+}
+
+.settings-empty-state {
+  padding: 24px;
+  border: 1px dashed var(--line);
+  border-radius: 16px;
+}
+
+@media (max-width: 760px) {
+  .settings-entry-grid { grid-template-columns: 1fr; }
+  .settings-entry { grid-template-columns: 42px minmax(0, 1fr); padding: 20px; }
+  .settings-entry-icon { width: 42px; height: 42px; }
+  .settings-entry-action { grid-column: 2; }
+}
+
 .back-link {
   display: inline-flex;
   align-items: center;
@@ -5803,3 +6158,74 @@ table[data-rule-list] thead th {
   .rule-list-filter { flex: 1 1 110px; }
   .rule-list-count { padding: 10px 0 0; }
 }
+
+/* 邮件自动化转码 Agent：首页工作台 */
+.mail-status.success { color: #147b59; background: #e4f6ee; }
+.mail-workspace { max-width: 1320px; margin: 0 auto; color: #1b2c55; }
+.mail-workspace .page-backbar { margin-bottom: 24px; }
+.mail-workspace-header { display: flex; justify-content: space-between; align-items: flex-end; gap: 28px; margin-bottom: 24px; }
+.mail-workspace-header h1 { margin: 8px 0; color: #1a2b59; font-size: 36px; line-height: 1.18; letter-spacing: 0; }
+.mail-workspace-header p { max-width: 760px; margin: 0; color: #687895; font-size: 16px; line-height: 1.6; }
+.mail-workspace .panel-tag { color: #3478f6; font-weight: 700; }
+.mail-header-actions { align-items: center; }.mail-header-actions form { margin: 0; }
+.mail-primary-action,.mail-outline-action { display: inline-flex; min-height: 42px; align-items: center; justify-content: center; padding: 0 18px; border: 1px solid #3478f6; border-radius: 7px; font: 700 15px "Microsoft YaHei UI", "PingFang SC", sans-serif; cursor: pointer; text-decoration: none; }
+.mail-primary-action { color: #fff; background: #3478f6; }.mail-primary-action:hover { background: #2367dc; }.mail-outline-action { color: #2865cf; background: #fff; }.mail-outline-action:hover { background: #f2f6ff; }
+.mail-stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); overflow: hidden; margin-bottom: 20px; border: 1px solid #dce5f3; border-radius: 8px; background: #fff; }
+.mail-stat-grid article { min-height: 115px; padding: 20px 24px; border-right: 1px solid #e2e9f4; }.mail-stat-grid article:last-child { border-right: 0; }.mail-stat-grid span,.mail-stat-grid em { display: block; color: #71809a; font-size: 13px; font-style: normal; }.mail-stat-grid strong { display: block; margin: 7px 0 4px; color: #172959; font-size: 31px; line-height: 1; }.mail-stat-grid .attention strong { color: #b86d00; }.mail-stat-grid .complete strong { color: #14865e; }
+.mail-flow { display: grid; grid-template-columns: 1fr 70px 1fr 70px 1fr; align-items: center; margin-bottom: 20px; padding: 18px 24px; border: 1px solid #dce5f3; border-radius: 8px; background: #fff; }.mail-flow i { height: 1px; background: #cfdaeb; }.mail-flow-step { display: flex; align-items: center; gap: 12px; }.mail-flow-step b { display: grid; width: 30px; height: 30px; place-items: center; border-radius: 50%; color: #71809a; background: #ebf0f8; font-size: 14px; }.mail-flow-step.done b,.mail-flow-step.active b { color: #fff; background: #3478f6; }.mail-flow-step strong,.mail-flow-step span { display: block; }.mail-flow-step strong { color: #203462; font-size: 15px; }.mail-flow-step span { margin-top: 3px; color: #7b899f; font-size: 12px; }
+.mail-dashboard-grid { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 20px; align-items: start; }.mail-side-stack { display: grid; gap: 20px; }.mail-work-card { overflow: hidden; border: 1px solid #dce5f3; border-radius: 8px; background: #fff; }.mail-pending-card { min-height: 495px; }.mail-card-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; padding: 20px 22px 14px; }.mail-card-heading h2,.mail-principle-card h2 { margin: 0; color: #172959; font-size: 20px; letter-spacing: 0; }.mail-card-heading p { margin: 7px 0 0; color: #74829a; font-size: 13px; line-height: 1.45; }.mail-card-heading a { flex: 0 0 auto; color: #2f73ed; font-size: 14px; font-weight: 700; }.mail-filter-bar { display: flex; justify-content: space-between; gap: 12px; padding: 12px 22px; color: #6e7f9b; border-top: 1px solid #e5ebf5; border-bottom: 1px solid #e5ebf5; background: #f8faff; font-size: 12px; }.mail-dashboard-table { min-width: 860px; }.mail-dashboard-table th { background: #f4f7fc; color: #61718c; }.mail-dashboard-table td { color: #273b64; }.mail-status { display: inline-block; padding: 4px 8px; border-radius: 12px; color: #8b5908; background: #fff3db; font-size: 12px; white-space: nowrap; }.mail-status.warning { color: #9d5f00; background: #fff0d1; }.mail-status.danger { color: #a43a3a; background: #fee6e6; }.mail-text-action { color: #2c70e9; font-size: 14px; font-weight: 700; white-space: nowrap; }.mail-mini-list,.mail-fetch-summary { padding-bottom: 6px; }.mail-mini-list a,.mail-fetch-summary > a { display: grid; gap: 5px; padding: 13px 22px; border-top: 1px solid #e8edf5; color: #21345e; }.mail-mini-list strong,.mail-fetch-summary strong { font-size: 14px; }.mail-mini-list span,.mail-fetch-summary span { color: #77859b; font-size: 12px; }.mail-principle-card { padding: 22px; background: #fbfdff; }.mail-principle-card > p { color: #63738e; font-size: 14px; line-height: 1.7; }.mail-principle-card > div { display: grid; gap: 5px; padding: 13px; border: 1px solid #d5e3fb; border-radius: 6px; background: #f4f8ff; }.mail-principle-card strong { color: #245ebd; font-size: 14px; }.mail-principle-card span { color: #71809a; font-size: 12px; }.mail-workspace .mail-empty { color: #7b899f; }
+@media (max-width: 1080px) { .mail-dashboard-grid { grid-template-columns: 1fr; }.mail-side-stack { grid-template-columns: repeat(2, minmax(0, 1fr)); }.mail-principle-card { grid-column: span 2; } }
+@media (max-width: 760px) { .mail-workspace-header { display: grid; align-items: start; }.mail-workspace-header h1 { font-size: 28px; }.mail-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.mail-stat-grid article:nth-child(2) { border-right: 0; }.mail-stat-grid article { border-bottom: 1px solid #e2e9f4; }.mail-flow { grid-template-columns: 1fr; gap: 12px; }.mail-flow i { display: none; }.mail-side-stack { grid-template-columns: 1fr; }.mail-principle-card { grid-column: auto; }.mail-filter-bar { display: grid; } }
+
+/* PP 转码 Agent：首页仅生成待人工确认码值。 */
+.pp-hero { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.pp-hero h1 { margin-bottom: 8px; }
+.pp-hero p { max-width: 760px; }
+.pp-layout { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(340px, .95fr); gap: 20px; align-items: stretch; margin: 22px 0; }
+.pp-form-card, .pp-result-card, .pp-evidence-card { padding: 24px; }
+.pp-form-card h2, .pp-result-card h2 { margin: 8px 0 18px; color: #1d315f; font-size: 22px; letter-spacing: 0; }
+.pp-form-card form { gap: 14px; }
+.pp-form-card textarea { resize: vertical; }
+.pp-form-card button { min-height: 42px; border: 0; border-radius: 7px; color: #fff; background: #3478ee; font-weight: 800; cursor: pointer; }
+.pp-form-card button:hover { background: #2368dc; }
+.pp-form-card button:disabled { cursor: wait; opacity: .68; }
+.pp-result-card { display: flex; flex-direction: column; }
+.pp-code-box { min-height: 72px; display: flex; align-items: center; margin: 8px 0 15px; padding: 15px; border: 1px solid #ceddf2; border-radius: 7px; color: #1f5fb8; background: #f6f9ff; font-family: "SFMono-Regular", Consolas, monospace; font-size: 18px; font-weight: 800; overflow-wrap: anywhere; }
+.pp-result-status { display: flex; justify-content: space-between; gap: 16px; padding: 11px 0; border-top: 1px solid #e6edf6; border-bottom: 1px solid #e6edf6; color: #6d7d95; font-size: 13px; }
+.pp-result-status strong { color: #a26405; }
+.pp-result-note { margin: 14px 0 0; color: #62738e; line-height: 1.6; }
+.pp-summary-list { margin-top: auto; padding-top: 14px; color: #9a5b00; font-size: 13px; font-weight: 700; }
+.pp-evidence-card { margin-bottom: 24px; }
+.pp-evidence-card[hidden] { display: none; }
+.pp-evidence-card .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.pp-evidence-card .section-head h2 { margin: 0; color: #1d315f; font-size: 20px; letter-spacing: 0; }
+.pp-evidence-card .section-head span { color: #70809a; font-size: 13px; }
+@media (max-width: 880px) { .pp-hero, .pp-layout { display: grid; }.pp-hero .feature-action { width: fit-content; }.pp-layout { grid-template-columns: 1fr; } }
+
+/* PP 批量任务与本次人工确认。确认只记录本次处理，不产生正式码。 */
+.pp-batch-card, .pp-task-card { margin-top: 22px; padding: 24px; }
+.pp-batch-card .section-head, .pp-task-card .section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; }
+.pp-batch-card .section-head h2, .pp-task-card .section-head h2 { margin: 8px 0 0; color: #1d315f; font-size: 21px; }
+.pp-batch-card .section-head p, .pp-task-card .section-head span { margin: 0; color: #70809a; font-size: 13px; }
+.pp-batch-form { display: flex; align-items: center; gap: 14px; margin-top: 18px; }
+.pp-batch-form input[type="file"] { flex: 1; min-width: 0; padding: 12px; border: 1px solid #d5dfef; border-radius: 6px; background: #fff; }
+.pp-batch-form button, .pp-confirm-actions button { min-height: 42px; border: 0; border-radius: 7px; padding: 0 16px; color: #fff; background: #3478ee; font-weight: 800; cursor: pointer; }
+.pp-task-card { margin-bottom: 28px; }
+.pp-task-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.pp-task-actions a { color: #276eea; font-weight: 700; text-decoration: none; }
+.pp-counts { display: flex; gap: 20px; flex-wrap: wrap; color: #67748e; }
+.pp-counts strong { display: block; color: #1d2c5a; font-size: 28px; }
+.pp-confirm-list { display: grid; gap: 18px; margin-top: 22px; }
+.pp-confirm-item { padding: 24px; }
+.pp-confirm-item.confirmed { border-left: 4px solid #24a26a; }
+.pp-confirm-item.skipped { border-left: 4px solid #a8b1c3; }
+.pp-confirm-state { color: #aa6400; font-weight: 700; }
+.pp-confirmed .pp-confirm-state { color: #168153; }
+.pp-confirm-context { display: grid; grid-template-columns: 2fr 1fr; gap: 18px; margin: 18px 0; }
+.pp-confirm-context span { color: #72809a; font-size: 13px; font-weight: 700; }
+.pp-confirm-context p { margin: 7px 0 0; white-space: pre-wrap; }
+.pp-confirm-actions { display: flex; gap: 12px; margin-top: 18px; align-items: center; }
+.pp-confirm-actions input { flex: 1; min-width: 180px; }
+.pp-confirm-actions .secondary { color: #365a9b; border: 1px solid #b8c7e5; background: #fff; }
+.pp-confirmed-note { margin: 18px 0 0; color: #287752; }
+@media (max-width: 760px) { .pp-batch-form, .pp-confirm-actions { align-items: stretch; flex-direction: column; }.pp-confirm-context { grid-template-columns: 1fr; }.pp-batch-card .section-head, .pp-task-card .section-head { align-items: flex-start; flex-direction: column; } }

@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}抓取邮件列表 | 邮件自动化转码Agent{% endblock %}
+{% block content %}
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('mail_transcode.orders_page') }}">返回抓取任务</a>
+  <span>抓取任务 #{{ fetch_task.id }}</span>
+</div>
+
+<section class="feature-hero">
+  <div class="hero-watermark feature-mark">MAIL</div>
+  <div class="feature-hero-copy">
+    <div class="panel-tag">本次抓取</div>
+    <h1>抓取任务 #{{ fetch_task.id }}</h1>
+    <p>{{ fetch_task.started_at }} · {{ fetch_task.created_by or '-' }} · {{ fetch_task.message }}</p>
+  </div>
+  <div class="feature-metrics">
+    <div>
+      <span>邮件数</span>
+      <strong>{{ fetch_task.email_count }}</strong>
+    </div>
+    <div>
+      <span>订单数</span>
+      <strong>{{ fetch_task.order_count }}</strong>
+    </div>
+    <div>
+      <span>状态</span>
+      <strong>{{ fetch_task.status }}</strong>
+    </div>
+  </div>
+</section>
+
+<section class="card task-card">
+  <div class="step-tag">邮件列表</div>
+  <div class="section-head">
+    <h2>本次抓取的订单邮件</h2>
+  </div>
+  <div class="table-scroll">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>邮件主题</th>
+          <th>发件人</th>
+          <th>订单数</th>
+          <th>可直接转码</th>
+          <th>待人工核实</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td>{{ row.message.subject }}</td>
+          <td>{{ row.message.sender }}</td>
+          <td>{{ row.order_count }}</td>
+          <td><span class="status">{{ row.ready_count }} 就绪</span></td>
+          <td><span class="status">{{ row.pending_count }} 待补</span></td>
+          <td><a href="{{ url_for('mail_transcode.task_detail', mail_id=row.message.id) }}">查看订单</a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6">本次抓取暂无订单邮件</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

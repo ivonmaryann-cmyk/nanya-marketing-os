@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+{% block title %}邮箱配置 | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('main.my_settings') }}">返回我的配置</a>
+  <span>我的配置 / 邮箱配置</span>
+</div>
+
+<section class="feature-hero">
+  <div class="hero-watermark feature-mark">IMAP</div>
+  <div class="feature-hero-copy">
+    <div class="panel-tag">我的配置</div>
+    <h1>邮箱配置</h1>
+    <p>仅当前登录用户可见和使用。后续邮件自动化会复用本配置；手动抓取昨天和今天邮件，不会修改邮箱的已读或未读状态。</p>
+  </div>
+</section>
+
+<section class="split-layout">
+  <div class="work-column">
+    <article class="card task-card">
+      <div class="step-tag">{{ '编辑' if edit_account else '新增' }}</div>
+      <h2>{{ '编辑我的邮箱' if edit_account else '配置我的邮箱' }}</h2>
+      <form method="post" action="{{ url_for('mail_transcode.save_account') }}" class="form-grid">
+        <input type="hidden" name="account_id" value="{{ edit_account.id if edit_account else '' }}">
+        <label>
+          <span>邮箱地址</span>
+          <input type="email" name="email" required placeholder="name@example.com" value="{{ edit_account.email if edit_account else '' }}">
+        </label>
+        <div class="result-actions">
+          <label class="mail-field" style="flex:1;">
+            <span>IMAP 服务器</span>
+            <input id="imap-host" type="text" name="imap_host" value="{{ edit_account.imap_host if edit_account else 'imaphz.qiye.163.com' }}">
+          </label>
+          <label class="mail-field" style="flex:0 0 140px;">
+            <span>端口</span>
+            <input type="number" name="imap_port" value="{{ edit_account.imap_port if edit_account else 993 }}">
+          </label>
+        </div>
+        <div class="result-actions" style="margin-top:-8px;">
+          <button id="use-enterprise-imap" type="button" class="mail-outline-action">使用网易企业邮箱推荐配置</button>
+          <span class="muted-text">企业邮箱推荐：imaphz.qiye.163.com:993（SSL/TLS）</span>
+        </div>
+        <label>
+          <span>客户端授权码</span>
+          <div class="result-actions">
+            <input id="auth-code" type="password" name="auth_code" placeholder="{{ '已配置，留空表示不修改' if edit_account else '请输入客户端授权码' }}" style="flex:1;">
+            {% if edit_account %}
+            <button id="reveal-auth-code" type="button" class="mail-outline-action" data-url="{{ url_for('mail_transcode.reveal_auth_code', account_id=edit_account.id) }}">显示</button>
+            <button id="copy-auth-code" type="button" class="mail-outline-action" hidden>复制</button>
+            {% endif %}
+          </div>
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; color:var(--muted); font-size:14px;">
+          <input type="checkbox" name="enabled" {% if not edit_account or edit_account.enabled %}checked{% endif %} style="width:auto;">
+          <span>启用该账号</span>
+        </label>
+        <div class="result-actions">
+          <button type="submit">{{ '保存更新' if edit_account else '保存配置' }}</button>
+          {% if edit_account %}<a class="mail-outline-action" href="{{ url_for('mail_transcode.accounts_page') }}">取消编辑</a>{% endif %}
+        </div>
+      </form>
+      {% if edit_account %}
+      <div class="result-actions" style="margin-top:14px;">
+        <button id="test-mail-connection" type="button" class="mail-outline-action" data-url="{{ url_for('mail_transcode.test_account_connection', account_id=edit_account.id) }}">测试只读连接</button>
+        <span id="mail-connection-result" class="muted-text" aria-live="polite">不抓取、不保存邮件，仅验证登录和收件箱只读访问。</span>
+      </div>
+      {% endif %}
+    </article>
+  </div>
+
+  <div class="work-column">
+    <article class="card task-card">
+      <div class="step-tag">我的账号</div>
+      <h2>已配置邮箱</h2>
+      <div class="table-scroll">
+        <table class="table">
+          <thead><tr><th>邮箱</th><th>服务器</th><th>状态</th><th>上次抓取</th><th>操作</th></tr></thead>
+          <tbody>
+            {% for account in accounts %}
+            <tr>
+              <td>{{ account.email }}</td>
+              <td>{{ account.imap_host }}:{{ account.imap_port }}</td>
+              <td><span class="status">{{ '启用' if account.enabled else '停用' }}</span></td>
+              <td>{{ account.last_fetch_at or '从未抓取' }}</td>
+              <td><a href="{{ url_for('mail_transcode.accounts_page', edit=account.id) }}">编辑</a></td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5">暂无邮箱配置</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </article>
+
+    <article class="card task-card">
+      <div class="step-tag">我的日志</div>
+      <h2>最近抓取记录</h2>
+      <div class="table-scroll">
+        <table class="table">
+          <thead><tr><th>时间</th><th>状态</th><th>说明</th></tr></thead>
+          <tbody>
+            {% for log in logs %}
+            <tr><td>{{ log.started_at }}</td><td><span class="status">{{ log.status }}</span></td><td>{{ log.message }}</td></tr>
+            {% else %}
+            <tr><td colspan="3">暂无抓取记录</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </article>
+  </div>
+</section>
+
+{% if edit_account %}
+<script>
+  (function () {
+    const button = document.getElementById('reveal-auth-code');
+    const input = document.getElementById('auth-code');
+    const copyButton = document.getElementById('copy-auth-code');
+    const testButton = document.getElementById('test-mail-connection');
+    const testResult = document.getElementById('mail-connection-result');
+    const imapHost = document.getElementById('imap-host');
+    const imapPort = document.querySelector('input[name="imap_port"]');
+    const enterpriseButton = document.getElementById('use-enterprise-imap');
+    enterpriseButton.addEventListener('click', function () {
+      imapHost.value = 'imaphz.qiye.163.com';
+      imapPort.value = '993';
+    });
+    if (!button || !input) return;
+    let loaded = false;
+    button.addEventListener('click', async function () {
+      if (loaded) {
+        input.type = input.type === 'password' ? 'text' : 'password';
+        button.textContent = input.type === 'password' ? '显示' : '隐藏';
+        return;
+      }
+      button.disabled = true;
+      try {
+        const response = await fetch(button.dataset.url, {method: 'POST', credentials: 'same-origin'});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '授权码读取失败');
+        input.value = data.auth_code || '';
+        input.type = 'text';
+        input.placeholder = '';
+        button.textContent = '隐藏';
+        copyButton.hidden = false;
+        loaded = true;
+      } catch (error) {
+        window.alert(error.message || '授权码读取失败');
+      } finally {
+        button.disabled = false;
+      }
+    });
+    copyButton.addEventListener('click', async function () {
+      if (!input.value) return;
+      try {
+        await navigator.clipboard.writeText(input.value);
+        copyButton.textContent = '已复制';
+        window.setTimeout(() => { copyButton.textContent = '复制'; }, 1500);
+      } catch (error) {
+        window.alert('复制失败，请手动复制。');
+      }
+    });
+    testButton.addEventListener('click', async function () {
+      testButton.disabled = true;
+      testResult.textContent = '正在验证只读连接…';
+      try {
+        const response = await fetch(testButton.dataset.url, {method: 'POST', credentials: 'same-origin'});
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.error || '连接失败');
+        testResult.textContent = data.message;
+      } catch (error) {
+        testResult.textContent = error.message || '连接失败';
+      } finally {
+        testButton.disabled = false;
+      }
+    });
+  }());
+</script>
+{% endif %}
+{% endblock %}

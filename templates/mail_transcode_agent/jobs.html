@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}转码任务 | 邮件自动化转码Agent{% endblock %}
+{% block content %}
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('mail_transcode.index') }}">返回邮件自动化转码Agent</a>
+  <span>转码任务</span>
+</div>
+
+<section class="feature-hero">
+  <div class="hero-watermark feature-mark">JOB</div>
+  <div class="feature-hero-copy">
+    <div class="panel-tag">转码任务</div>
+    <h1>邮件自动化转码任务</h1>
+    <p>查看转码执行记录和结果核实入口。</p>
+  </div>
+</section>
+
+<section class="card task-card">
+  <div class="step-tag">记录</div>
+  <div class="section-head">
+    <h2>转码任务</h2>
+  </div>
+  <div class="table-scroll">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>状态</th>
+          <th>成功/失败</th>
+          <th>创建人</th>
+          <th>时间</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for job in jobs %}
+        <tr>
+          <td>#{{ job.id }}</td>
+          <td><span class="status">{{ job.status }}</span></td>
+          <td>{{ job.success_count }} / {{ job.fail_count }}</td>
+          <td>{{ job.created_by }}</td>
+          <td>{{ job.created_at }}</td>
+          <td><a href="{{ url_for('mail_transcode.job_detail', job_id=job.id) }}">查看结果</a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6">暂无转码任务</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if total_pages > 1 %}
+  <div class="result-actions" style="margin-top:14px;">
+    {% if page > 1 %}
+    <a class="feature-action" href="{{ url_for('mail_transcode.jobs_page', page=page-1) }}">上一页</a>
+    {% endif %}
+    <span style="align-self:center;">第 {{ page }} / {{ total_pages }} 页</span>
+    {% if page < total_pages %}
+    <a class="feature-action" href="{{ url_for('mail_transcode.jobs_page', page=page+1) }}">下一页</a>
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

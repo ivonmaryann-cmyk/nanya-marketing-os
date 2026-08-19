@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+{% block title %}PP规则维护 | {{ platform_name }}{% endblock %}
+{% block content %}
+<style>
+  .pp-rules { display: grid; gap: 18px; color: #1d2d54; }
+  .pp-rules-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+  .pp-rules-head h1 { margin: 0 0 6px; font-size: 30px; letter-spacing: 0; }
+  .pp-rules-head p { margin: 0; color: #6b7a94; line-height: 1.6; }
+  .pp-tabbar { display: flex; gap: 4px; overflow-x: auto; border-bottom: 1px solid #d9e2f0; background: #fff; }
+  .pp-tabbar a { padding: 13px 17px; color: #5d6d87; text-decoration: none; white-space: nowrap; border-bottom: 3px solid transparent; }
+  .pp-tabbar a.active { color: #2166d6; border-bottom-color: #3478ee; font-weight: 800; }
+  .pp-rule-note { padding: 14px 16px; color: #47617f; border: 1px solid #d9e6f7; border-radius: 7px; background: #f6f9ff; line-height: 1.55; }
+  .pp-rule-layout { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(330px, .75fr); border: 1px solid #d8e2f0; border-radius: 8px; overflow: hidden; background: #fff; }
+  .pp-rule-list { min-width: 0; border-right: 1px solid #d8e2f0; }
+  .pp-rule-editor { min-width: 0; background: #fbfcff; }
+  .pp-rule-heading { display: flex; align-items: center; gap: 12px; padding: 17px 18px; border-bottom: 1px solid #dfe6f1; }
+  .pp-rule-heading h2 { margin: 0; font-size: 19px; }
+  .pp-rule-heading p { margin: 3px 0 0; color: #74819a; font-size: 13px; }
+  .pp-rule-heading .feature-action { margin-left: auto; }
+  .pp-field-tabs { display: flex; flex-wrap: wrap; gap: 7px; padding: 14px 18px; border-bottom: 1px solid #e5ebf4; background: #f8faff; }
+  .pp-field-tabs a { padding: 7px 10px; color: #53647e; border: 1px solid #d7e1ef; border-radius: 5px; background: #fff; text-decoration: none; font-size: 13px; }
+  .pp-field-tabs a.active { color: #fff; border-color: #3478ee; background: #3478ee; font-weight: 700; }
+  .pp-filter-row { display: flex; flex-wrap: wrap; gap: 9px; padding: 13px 18px; border-bottom: 1px solid #e5ebf4; }
+  .pp-filter-row input, .pp-filter-row select { min-height: 36px; border: 1px solid #d6dfec; border-radius: 6px; padding: 7px 9px; background: #fff; color: #283958; }
+  .pp-filter-row input { flex: 1 1 190px; }
+  .pp-filter-row select { flex: 0 0 110px; }
+  .pp-filter-row button { min-height: 36px; padding: 0 13px; border: 1px solid #d6dfec; border-radius: 6px; color: #2a61bc; background: #fff; font-weight: 700; cursor: pointer; }
+  .pp-pagination { display: flex; align-items: center; justify-content: flex-end; gap: 9px; padding: 13px 18px; color: #66758d; border-top: 1px solid #e5ebf4; }
+  .pp-pagination a, .pp-pagination span { min-width: 34px; padding: 6px 9px; border: 1px solid #d7e1ef; border-radius: 5px; text-align: center; }
+  .pp-pagination a { color: #2867cf; text-decoration: none; font-weight: 750; background: #fff; }
+  .pp-pagination span { color: #9aa6b7; background: #f7f9fc; }
+  .pp-rule-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  .pp-rule-table th { padding: 11px 13px; color: #6b7990; background: #f5f8fc; border-bottom: 1px solid #dbe4ef; font-size: 12px; text-align: left; }
+  .pp-rule-table td { padding: 12px 13px; vertical-align: top; border-bottom: 1px solid #e7edf5; color: #26395f; line-height: 1.5; overflow-wrap: anywhere; }
+  .pp-rule-table tr.active { background: #edf5ff; box-shadow: inset 3px 0 #3478ee; }
+  .pp-rule-code { color: #215fbe; font-weight: 850; }
+  .pp-rule-status { color: #16835a; font-weight: 750; }
+  .pp-rule-disabled { color: #9c6a12; font-weight: 750; }
+  .pp-text-action { padding: 0; border: 0; color: #2867cf; background: transparent; font: inherit; font-weight: 750; cursor: pointer; text-decoration: none; }
+  .pp-text-action:hover { text-decoration: underline; }
+  .pp-empty { padding: 40px 20px; color: #76849a; text-align: center; }
+  .pp-editor-form { padding: 18px; }
+  .pp-editor-form h3 { margin: 0 0 13px; font-size: 18px; }
+  .pp-editor-form .hint { margin: -5px 0 14px; color: #74819a; font-size: 12px; line-height: 1.5; }
+  .pp-input { display: grid; gap: 5px; margin-bottom: 12px; color: #5b6a82; font-size: 12px; }
+  .pp-input input, .pp-input select, .pp-input textarea { width: 100%; border: 1px solid #d5dfed; border-radius: 6px; padding: 9px 10px; color: #1e3154; background: #fff; }
+  .pp-input textarea { min-height: 78px; resize: vertical; line-height: 1.5; }
+  .pp-two { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+  .pp-enabled { display: flex; align-items: center; gap: 8px; margin: 4px 0 14px; color: #34465f; font-weight: 700; }
+  .pp-enabled input { width: 18px; height: 18px; }
+  .pp-save { width: 100%; min-height: 40px; border: 0; border-radius: 6px; color: #fff; background: #3478ee; font-weight: 800; cursor: pointer; }
+  .pp-save:hover { background: #2469da; }
+  .pp-condition { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 11px; margin-bottom: 9px; border: 1px solid #e0e7f1; border-radius: 6px; background: #fff; }
+  .pp-condition .pp-input { margin: 0; }
+  .pp-condition .condition-value { grid-column: span 2; }
+  .pp-condition-tools { display: flex; justify-content: flex-end; margin: 4px 0 13px; }
+  .pp-condition-tools button { padding: 5px 8px; border: 1px dashed #9bb8e3; border-radius: 5px; color: #2867cf; background: #fff; font-weight: 700; cursor: pointer; }
+  .pp-history { padding: 0; }
+  .pp-history-item { display: grid; grid-template-columns: 130px 1fr 150px; gap: 12px; padding: 13px 16px; border-bottom: 1px solid #e7edf5; }
+  .pp-history-item small { color: #75839a; }
+  @media (max-width: 1050px) { .pp-rule-layout { grid-template-columns: 1fr; }.pp-rule-list { border-right: 0; }.pp-rule-editor { border-top: 1px solid #d8e2f0; } }
+  @media (max-width: 720px) { .pp-rules-head { display: grid; }.pp-rule-table { min-width: 680px; }.pp-rule-list { overflow-x: auto; }.pp-two, .pp-condition { grid-template-columns: 1fr; }.pp-condition .condition-value { grid-column: auto; }.pp-history-item { grid-template-columns: 1fr; gap: 4px; } }
+</style>
+
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('main.pp_transcode_agent') }}">返回PP转码Agent</a>
+  <span>PP转码Agent / 规则维护</span>
+</div>
+
+<main class="pp-rules">
+  <header class="pp-rules-head">
+    <div>
+      <h1>PP转码Agent规则维护</h1>
+      <p>基础规则维护明确的一对一编码；客户特殊规则维护客户或全客户范围的条件覆盖。保存后立即参与待人工确认码值生成。</p>
+    </div>
+  </header>
+
+  <nav class="pp-tabbar" aria-label="PP规则分类">
+    <a class="{% if section == 'base' %}active{% endif %}" href="{{ url_for('main.admin_pp_transcode_rules', section='base') }}">基础一对一映射</a>
+    <a class="{% if section == 'customer' %}active{% endif %}" href="{{ url_for('main.admin_pp_transcode_rules', section='customer') }}">客户特殊规则</a>
+    <a class="{% if section == 'history' %}active{% endif %}" href="{{ url_for('main.admin_pp_transcode_rules', section='history') }}">修改记录</a>
+  </nav>
+
+  {% if section == 'base' %}
+  <section class="pp-rule-note">基础一对一映射仅用于客户规格中出现同一写法即可稳定对应同一编码的情况。胶系与营销转码Agent共用当前活动胶系主表和别名映射，在 PP 页面只读查看；其余基础参数由 PP 业务在本页维护。</section>
+  <section class="pp-rule-layout">
+    <div class="pp-rule-list">
+      <div class="pp-rule-heading"><div><h2>基础一对一映射</h2><p>{% if selected_field in shared_base_fields %}胶系由营销转码Agent统一维护，PP仅使用当前生效映射。{% else %}按 PP 编码位置顺序维护。{% endif %}</p></div>{% if selected_field not in shared_base_fields %}<a class="feature-action" href="{{ url_for('main.admin_pp_transcode_rules', section='base', field_key=selected_field) }}">新增规则</a>{% endif %}</div>
+      <nav class="pp-field-tabs">
+        {% for field in base_fields %}<a class="{% if field.key == selected_field %}active{% endif %}" href="{{ url_for('main.admin_pp_transcode_rules', section='base', field_key=field.key) }}">{{ field.label }}</a>{% endfor %}
+      </nav>
+      <form class="pp-filter-row" method="get">
+        <input type="hidden" name="section" value="base"><input type="hidden" name="field_key" value="{{ selected_field }}">
+        <input name="keyword" value="{{ request.args.get('keyword', '') }}" placeholder="搜索规格写法、编码或业务依据">
+        <select name="enabled"><option value="all">全部状态</option><option value="enabled" {% if request.args.get('enabled') == 'enabled' %}selected{% endif %}>启用</option><option value="disabled" {% if request.args.get('enabled') == 'disabled' %}selected{% endif %}>停用</option></select>
+        <select name="base_page_size"><option value="20" {% if base_page_size == 20 %}selected{% endif %}>20条/页</option><option value="50" {% if base_page_size == 50 %}selected{% endif %}>50条/页</option><option value="100" {% if base_page_size == 100 %}selected{% endif %}>100条/页</option></select>
+        <button type="submit">搜索</button>
+      </form>
+      <table class="pp-rule-table"><thead><tr><th style="width:26%">规格写法</th><th style="width:18%">编码结果</th><th>业务依据</th><th style="width:12%">状态</th>{% if selected_field not in shared_base_fields %}<th style="width:10%">操作</th>{% endif %}</tr></thead><tbody>
+        {% for rule in base_rules %}<tr class="{% if selected_base_rule and selected_base_rule.id == rule.id %}active{% endif %}"><td><strong>{{ rule.input_value }}</strong></td><td class="pp-rule-code">{{ rule.output_value }}</td><td>{{ rule.business_note or '—' }}</td><td class="{% if rule.enabled %}pp-rule-status{% else %}pp-rule-disabled{% endif %}">{{ '生效中' if rule.enabled else '停用' }}</td>{% if selected_field not in shared_base_fields %}<td><a class="pp-text-action" href="{{ url_for('main.admin_pp_transcode_rules', section='base', field_key=selected_field, base_rule_id=rule.id) }}">编辑</a></td>{% endif %}</tr>{% else %}<tr><td colspan="{{ 4 if selected_field in shared_base_fields else 5 }}" class="pp-empty">{% if selected_field in shared_base_fields %}营销转码Agent当前没有可共享的胶系映射。{% else %}暂无{{ field_meta[selected_field].label }}基础映射，可通过右侧新增。{% endif %}</td></tr>{% endfor %}
+      </tbody></table>
+      {% set base_pages = (base_total + base_page_size - 1) // base_page_size %}
+      {% if base_pages > 1 %}<nav class="pp-pagination" aria-label="基础规则分页">
+        {% if base_page > 1 %}<a href="{{ url_for('main.admin_pp_transcode_rules', section='base', field_key=selected_field, keyword=request.args.get('keyword', ''), enabled=request.args.get('enabled', 'all'), base_page_size=base_page_size, base_page=base_page - 1) }}">上一页</a>{% else %}<span>上一页</span>{% endif %}
+        <strong>{{ base_page }} / {{ base_pages }}</strong>
+        {% if base_page < base_pages %}<a href="{{ url_for('main.admin_pp_transcode_rules', section='base', field_key=selected_field, keyword=request.args.get('keyword', ''), enabled=request.args.get('enabled', 'all'), base_page_size=base_page_size, base_page=base_page + 1) }}">下一页</a>{% else %}<span>下一页</span>{% endif %}
+      </nav>{% endif %}
+    </div>
+    <aside class="pp-rule-editor">
+      {% if selected_field in shared_base_fields %}
+      <div class="pp-editor-form"><h3>胶系统一维护</h3><p class="hint">PP 不保存胶系副本。此处展示营销转码Agent当前活动版本中的胶系主表和兼容别名，PP 出码时实时使用同一映射。</p><a class="pp-text-action" href="{{ url_for('main.admin_transcode_rule_center', section='base') }}">前往营销转码Agent维护胶系</a></div>
+      {% else %}
+      <form method="post" class="pp-editor-form"><input type="hidden" name="action" value="save_base"><input type="hidden" name="rule_id" value="{{ selected_base_rule.id if selected_base_rule else '' }}">
+        <h3>{{ '编辑基础规则' if selected_base_rule else '新增基础规则' }}</h3><p class="hint">维护后将用于所有 PP 客户规格的直接识别。</p>
+        <label class="pp-input"><span>维护参数</span><select name="field_key">{% for field in base_fields %}<option value="{{ field.key }}" {% if (selected_base_rule and selected_base_rule.field_key == field.key) or (not selected_base_rule and field.key == selected_field) %}selected{% endif %}>{{ field.label }}（{{ field.width }}码）</option>{% endfor %}</select></label>
+        <label class="pp-input"><span>客户规格中的写法</span><input name="input_value" required value="{{ selected_base_rule.input_value if selected_base_rule else '' }}" placeholder="例如：106 或 350M"></label>
+        <label class="pp-input"><span>编码结果</span><input name="output_value" required value="{{ selected_base_rule.output_value if selected_base_rule else '' }}" placeholder="按对应码位填写，例如：0106"></label>
+        <label class="pp-input"><span>业务依据</span><textarea name="business_note" placeholder="说明该一对一映射的来源或适用口径">{{ selected_base_rule.business_note if selected_base_rule else '' }}</textarea></label>
+        <label class="pp-enabled"><input type="checkbox" name="enabled" value="1" {% if not selected_base_rule or selected_base_rule.enabled %}checked{% endif %}>启用此规则</label>
+        <button class="pp-save" type="submit">保存并立即生效</button>
+      </form>
+      {% endif %}
+    </aside>
+  </section>
+
+  {% elif section == 'customer' %}
+  <section class="pp-rule-note">客户特殊规则用于客户专属或“全部客户”适用的条件覆盖，例如客户、规格、订单备注满足条件时，确定 PP级别或 GT长短秒。没有客户特殊规则时，相关码位按规范使用星号占位。</section>
+  <section class="pp-rule-layout">
+    <div class="pp-rule-list">
+      <div class="pp-rule-heading"><div><h2>客户特殊规则</h2><p>规则按客户维度保存；客户代码和简称都留空表示“全部客户”。</p></div><a class="feature-action" href="{{ url_for('main.admin_pp_transcode_rules', section='customer') }}">新增规则</a></div>
+      <form class="pp-filter-row" method="get"><input type="hidden" name="section" value="customer"><input name="customer_code" value="{{ request.args.get('customer_code', '') }}" placeholder="客户代码"><input name="customer" value="{{ request.args.get('customer', '') }}" placeholder="客户简称"><select name="customer_field"><option value="">全部参数</option>{% for field in customer_fields %}<option value="{{ field.key }}" {% if request.args.get('customer_field') == field.key %}selected{% endif %}>{{ field.label }}</option>{% endfor %}</select><select name="customer_enabled"><option value="all">全部状态</option><option value="enabled" {% if request.args.get('customer_enabled') == 'enabled' %}selected{% endif %}>启用</option><option value="disabled" {% if request.args.get('customer_enabled') == 'disabled' %}selected{% endif %}>停用</option></select><select name="customer_page_size"><option value="20" {% if customer_page_size == 20 %}selected{% endif %}>20条/页</option><option value="50" {% if customer_page_size == 50 %}selected{% endif %}>50条/页</option><option value="100" {% if customer_page_size == 100 %}selected{% endif %}>100条/页</option></select><button type="submit">搜索</button></form>
+      <table class="pp-rule-table"><thead><tr><th style="width:18%">客户</th><th style="width:15%">维护参数</th><th>触发条件</th><th style="width:13%">编码结果</th><th style="width:10%">状态</th><th style="width:10%">操作</th></tr></thead><tbody>
+        {% for rule in customer_rules %}<tr class="{% if selected_customer_rule and selected_customer_rule.id == rule.id %}active{% endif %}"><td><strong>{{ rule.customer_name or '全部客户' }}</strong><br><span class="pp-muted">{{ rule.customer_code }}</span></td><td>{{ rule.target_label }}</td><td>{% for condition in rule.conditions %}<div>{{ condition.field }}{% if condition.operator == 'equals' %}等于{% elif condition.operator == 'not_contains' %}不包含{% else %}包含{% endif %}“{{ condition.value }}”</div>{% endfor %}</td><td class="pp-rule-code">{{ rule.output_value }}</td><td class="{% if rule.enabled %}pp-rule-status{% else %}pp-rule-disabled{% endif %}">{{ '启用' if rule.enabled else '停用' }}</td><td><a class="pp-text-action" href="{{ url_for('main.admin_pp_transcode_rules', section='customer', customer_rule_id=rule.id) }}">编辑</a></td></tr>{% else %}<tr><td colspan="6" class="pp-empty">暂无 PP 客户特殊规则。明天补充规则后可在右侧直接维护。</td></tr>{% endfor %}
+      </tbody></table>
+      {% set customer_pages = (customer_total + customer_page_size - 1) // customer_page_size %}
+      {% if customer_pages > 1 %}<nav class="pp-pagination" aria-label="客户特殊规则分页">
+        {% if customer_page > 1 %}<a href="{{ url_for('main.admin_pp_transcode_rules', section='customer', customer_code=request.args.get('customer_code', ''), customer=request.args.get('customer', ''), customer_field=request.args.get('customer_field', ''), customer_enabled=request.args.get('customer_enabled', 'all'), customer_page_size=customer_page_size, customer_page=customer_page - 1) }}">上一页</a>{% else %}<span>上一页</span>{% endif %}
+        <strong>{{ customer_page }} / {{ customer_pages }}</strong>
+        {% if customer_page < customer_pages %}<a href="{{ url_for('main.admin_pp_transcode_rules', section='customer', customer_code=request.args.get('customer_code', ''), customer=request.args.get('customer', ''), customer_field=request.args.get('customer_field', ''), customer_enabled=request.args.get('customer_enabled', 'all'), customer_page_size=customer_page_size, customer_page=customer_page + 1) }}">下一页</a>{% else %}<span>下一页</span>{% endif %}
+      </nav>{% endif %}
+    </div>
+    <aside class="pp-rule-editor">
+      {% set current_conditions = selected_customer_rule.conditions if selected_customer_rule and selected_customer_rule.conditions else [{'field':'订单备注','operator':'contains','value':''}] %}
+      <form method="post" class="pp-editor-form" id="pp-customer-rule-form"><input type="hidden" name="action" value="save_customer"><input type="hidden" name="rule_id" value="{{ selected_customer_rule.id if selected_customer_rule else '' }}">
+        <h3>{{ '编辑客户特殊规则' if selected_customer_rule else '新增客户特殊规则' }}</h3><p class="hint">客户信息留空时表示该规则适用于全部客户。每个条件都满足时才覆盖对应码位。</p>
+        <div class="pp-two"><label class="pp-input"><span>客户代码</span><input name="customer_code" value="{{ selected_customer_rule.customer_code if selected_customer_rule else '' }}"></label><label class="pp-input"><span>客户简称</span><input name="customer_name" value="{{ selected_customer_rule.customer_name if selected_customer_rule else '' }}"></label></div>
+        <label class="pp-input"><span>要覆盖的编码参数</span><select name="target_field">{% for field in customer_fields %}<option value="{{ field.key }}" {% if selected_customer_rule and selected_customer_rule.target_field == field.key %}selected{% endif %}>{{ field.label }}（{{ field.width }}码）</option>{% endfor %}</select></label>
+        <div id="pp-condition-list">{% for condition in current_conditions %}<div class="pp-condition"><label class="pp-input"><span>条件字段</span><select name="condition_field">{% for item in ['胶系','玻布规格','PP长度','树脂含量','客户规格','订单备注'] %}<option value="{{ item }}" {% if condition.field == item %}selected{% endif %}>{{ item }}</option>{% endfor %}</select></label><label class="pp-input"><span>判断方式</span><select name="condition_operator"><option value="contains" {% if condition.operator == 'contains' %}selected{% endif %}>包含</option><option value="equals" {% if condition.operator == 'equals' %}selected{% endif %}>等于</option><option value="not_contains" {% if condition.operator == 'not_contains' %}selected{% endif %}>不包含</option></select></label><label class="pp-input condition-value"><span>条件值</span><input name="condition_value" value="{{ condition.value }}" placeholder="例如：GT 或 汽车专用"></label></div>{% endfor %}</div>
+        <div class="pp-condition-tools"><button type="button" id="pp-add-condition">+ 增加触发条件</button></div>
+        <label class="pp-input"><span>编码结果</span><input name="output_value" required value="{{ selected_customer_rule.output_value if selected_customer_rule else '' }}" placeholder="按码位填写，例如：A"></label>
+        <label class="pp-input"><span>业务依据</span><textarea name="business_note" placeholder="说明客户规则来源、适用范围或确认人">{{ selected_customer_rule.business_note if selected_customer_rule else '' }}</textarea></label>
+        <label class="pp-enabled"><input type="checkbox" name="enabled" value="1" {% if not selected_customer_rule or selected_customer_rule.enabled %}checked{% endif %}>启用此规则</label>
+        <button class="pp-save" type="submit">保存并立即生效</button>
+      </form>
+      {% if selected_customer_rule %}<form method="post" class="pp-editor-form" style="padding-top:0"><input type="hidden" name="action" value="{{ 'disable_customer' if selected_customer_rule.enabled else 'enable_customer' }}"><input type="hidden" name="rule_id" value="{{ selected_customer_rule.id }}"><button class="pp-text-action" type="submit">{{ '停用该规则' if selected_customer_rule.enabled else '重新启用该规则' }}</button></form>{% endif %}
+    </aside>
+  </section>
+
+  {% else %}
+  <section class="pp-rule-note">系统每天自动备份 PP 页面规则并保留 30 天。下面记录页面新增、修改、启用与停用操作，便于追溯。</section>
+  <section class="pp-rule-layout"><div class="pp-history"><div class="pp-rule-heading"><div><h2>PP规则修改记录</h2><p>只记录页面规则库的变更。</p></div></div>
+    {% for item in rule_changes %}<article class="pp-history-item"><div><strong>{{ item.action }}</strong><br><small>{{ item.rule_scope }} #{{ item.rule_id or '-' }}</small></div><div><small>变更前</small><br>{{ item.before_json }}<br><small>变更后</small><br>{{ item.after_json }}</div><div><small>{{ item.changed_by or '系统' }}</small><br><small>{{ item.changed_at }}</small></div></article>{% else %}<div class="pp-empty">暂无页面规则修改记录。</div>{% endfor %}
+  </div><aside class="pp-rule-editor"><div class="pp-editor-form"><h3>备份说明</h3><p class="hint">每日自动生成一份规则快照，保留最近 30 天。备份不参与实时转码，仅用于问题追溯和恢复。</p></div></aside></section>
+  {% endif %}
+</main>
+
+<template id="pp-condition-template"><div class="pp-condition"><label class="pp-input"><span>条件字段</span><select name="condition_field"><option value="胶系">胶系</option><option value="玻布规格">玻布规格</option><option value="PP长度">PP长度</option><option value="树脂含量">树脂含量</option><option value="客户规格">客户规格</option><option value="订单备注" selected>订单备注</option></select></label><label class="pp-input"><span>判断方式</span><select name="condition_operator"><option value="contains">包含</option><option value="equals">等于</option><option value="not_contains">不包含</option></select></label><label class="pp-input condition-value"><span>条件值</span><input name="condition_value" placeholder="例如：GT 或 汽车专用"></label></div></template>
+<script>
+  const addCondition = document.getElementById('pp-add-condition');
+  const conditionList = document.getElementById('pp-condition-list');
+  const conditionTemplate = document.getElementById('pp-condition-template');
+  if (addCondition && conditionList && conditionTemplate) addCondition.addEventListener('click', () => conditionList.append(conditionTemplate.content.cloneNode(true)));
+</script>
+{% endblock %}

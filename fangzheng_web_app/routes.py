@@ -3,12 +3,13 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import re
 import secrets
 import sqlite3
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
-from flask import Blueprint, abort, flash, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask import Blueprint, abort, current_app, flash, jsonify, redirect, render_template, request, send_file, session, url_for
 from openpyxl import load_workbook
 
 PDF_EXCEL_FEATURE = "pdf_excel"
@@ -84,6 +85,42 @@ from .inventory_bid_service import (
 from .job_control import cancel_job_process, reconcile_interrupted_jobs
 from .order_reprice_service import MODE_LABELS as ORDER_REPRICE_MODE_LABELS
 from .order_reprice_service import queue_order_reprice_job
+from .order_intake_service import ACTION_LABELS as ORDER_ACTION_LABELS
+from .order_intake_service import DOCUMENT_STATUS_LABELS as ORDER_DOCUMENT_STATUS_LABELS
+from .order_intake_service import ERP_PREPARE_STATUS_LABELS as ORDER_ERP_PREPARE_STATUS_LABELS
+from .order_intake_service import MATCH_STATUS_LABELS as ORDER_MATCH_STATUS_LABELS
+from .order_intake_service import MAPPING_STATUS_LABELS as ORDER_MAPPING_STATUS_LABELS
+from .order_intake_service import STATUS_LABELS as ORDER_INTAKE_STATUS_LABELS
+from .order_intake_service import WORKFLOW_STAGE_LABELS as ORDER_WORKFLOW_STAGE_LABELS
+from .order_intake_service import (
+    business_today as order_intake_business_today,
+    case_summary,
+    get_attachment as get_order_intake_attachment,
+    get_case as get_order_intake_case,
+    list_cases as list_order_intake_cases,
+    list_date_counts as list_order_intake_date_counts,
+    work_summary as order_intake_work_summary,
+    list_change_tags as list_order_change_tags,
+    list_universal_rules as list_order_universal_rules,
+    save_change_tag as save_order_change_tag,
+    save_universal_rule as save_order_universal_rule,
+    save_universal_rule_scope as save_order_universal_rule_scope,
+    SCOPE_LABELS as ORDER_SCOPE_LABELS,
+    update_case as update_order_intake_case,
+    update_routing as update_order_intake_routing,
+)
+from .order_entry_service import (
+    HEADER_FIELDS as ORDER_ENTRY_HEADER_FIELDS,
+    HEADER_LABELS as ORDER_ENTRY_HEADER_LABELS,
+    LINE_FIELDS as ORDER_ENTRY_LINE_FIELDS,
+    LINE_LABELS as ORDER_ENTRY_LINE_LABELS,
+    build_domestic_export as build_order_entry_domestic_export,
+    get_or_create_template as get_order_entry_template,
+    save_template as save_order_entry_template,
+    template_progress as order_entry_template_progress,
+    validation_issues as order_entry_validation_issues,
+)
+from .paths import STORAGE_DIR
 from .price_calculation_customers import (
     PRICE_CALCULATION_CUSTOMERS,
     default_price_customer_key,
@@ -242,8 +279,32 @@ from .transcode_special_rules import (
     set_structured_special_rules_enabled,
     save_structured_special_rules,
 )
-
-
+from .pp_transcode_rules import (
+    BASE_FIELDS as PP_BASE_FIELDS,
+    CUSTOMER_FIELDS as PP_CUSTOMER_FIELDS,
+    FIELD_META as PP_FIELD_META,
+    PP_FIELDS as PP_RULE_FIELDS,
+    SHARED_FIELDS as PP_SHARED_FIELDS,
+    get_base_rule as get_pp_base_rule,
+    get_customer_rule as get_pp_customer_rule,
+    list_pp_confirmation_items,
+    list_base_rules as list_pp_base_rules,
+    list_customer_rules as list_pp_customer_rules,
+    count_base_rules as count_pp_base_rules,
+    count_customer_rules as count_pp_customer_rules,
+    list_rule_changes as list_pp_rule_changes,
+    pp_confirmation_counts,
+    save_base_rule as save_pp_base_rule,
+    save_customer_rule as save_pp_customer_rule,
+    set_customer_rule_enabled as set_pp_customer_rule_enabled,
+    update_pp_confirmation_item,
+)
+from .pp_transcode_service import (
+    calculate_pp_transcode_quote,
+    queue_pp_transcode_job,
+    queue_pp_transcode_single_job,
+    refresh_pp_result_file,
+)
 bp = Blueprint("main", __name__)
 PLATFORM_NAME = "南亚营销自动化平台"
 PLATFORM_VERSION = "v1.10.0"
@@ -257,10 +318,10 @@ STAGE_META = {
 
 FUNCTION_CARDS = [
     {
-        "key": "transcode",
-        "title": "营销自动化转码",
-        "desc": "上传转码需求 Excel，按当前规则自动生成内部编码并输出结果文件。",
-        "route": "main.transcode",
+        "key": "order_automation",
+        "title": "订单自动化",
+        "desc": "从业务邮箱接入订单，按日期、客户和订单事件完成分流、人工确认与后续 ERP 处理。",
+        "route": "main.order_automation",
         "stage": "test",
     },
     {
@@ -268,6 +329,13 @@ FUNCTION_CARDS = [
         "title": "营销转码Agent",
         "desc": "按字段证据链和置信度评分进行可信转码，低置信结果自动拦截待确认。",
         "route": "main.transcode_agent",
+        "stage": "test",
+    },
+    {
+        "key": "pp_transcode_agent",
+        "title": "PP转码Agent",
+        "desc": "按 PP 27 位编码规范生成待人工确认码值；基础规则和客户特殊规则均由页面维护。",
+        "route": "main.pp_transcode_agent",
         "stage": "test",
     },
     {
@@ -329,10 +397,13 @@ FUNCTION_CARDS = [
 ]
 
 FEATURE_LABELS = {
+    "order_automation": "订单自动化",
     "pdf_excel": "PDF/图片转Excel",
     "fangzheng": "方正价格计算",
     "transcode": "营销自动化转码",
     "transcode_agent": "营销转码Agent",
+    "pp_transcode_agent": "PP转码Agent",
+    "mail_transcode_agent": "邮件自动化转码Agent",
     "shennan": "深南价格计算",
     "bomin": "博敏价格计算",
     "hushi": "沪士价格计算",
@@ -670,6 +741,9 @@ def inject_platform_meta():
         "platform_version": PLATFORM_VERSION,
         "stage_meta": STAGE_META,
         "feature_labels": FEATURE_LABELS,
+        # Some focused route tests register only the main blueprint. Keep optional
+        # navigation links from requiring feature blueprints in those app instances.
+        "mail_config_available": "mail_transcode.accounts_page" in current_app.view_functions,
     }
 
 
@@ -741,6 +815,296 @@ def dashboard():
     if redirect_resp:
         return redirect_resp
     return render_template("dashboard.html", cards=FUNCTION_CARDS)
+
+
+@bp.get("/order-automation")
+def order_automation():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    selected_action = request.args.get("category", "all")
+    selected_date = request.args.get("date", order_intake_business_today().isoformat())
+    try:
+        selected_date_value = date.fromisoformat(selected_date)
+    except ValueError:
+        selected_date_value = order_intake_business_today()
+        selected_date = selected_date_value.isoformat()
+    from .mail_transcode_agent import mail_store
+
+    accounts = [
+        item for item in mail_store.list_accounts(owner_employee_id=employee_id)
+        if item["enabled"] and ("qiye.163.com" in item["imap_host"] or "@nouyatec.com" in item["email"])
+    ]
+    selected_account = accounts[0] if accounts else None
+    selected_account_id = int(selected_account["id"]) if selected_account else None
+    fetch_tasks = mail_store.list_fetch_tasks(
+        limit=10, owner_employee_id=employee_id, account_id=selected_account_id
+    ) if selected_account_id else []
+    requested_batch_id = request.args.get("batch", type=int)
+    selected_batch = next((item for item in fetch_tasks if item["id"] == requested_batch_id), None)
+    selected_batch_id = int(selected_batch["id"]) if selected_batch else None
+    if selected_action not in {*ORDER_ACTION_LABELS, "needs_business_routing"} and selected_action != "all":
+        selected_action = "all"
+    visible_date = None if selected_batch_id else selected_date
+    overview_cases = list_order_intake_cases(
+        employee_id, visible_date, "all", selected_account_id, selected_batch_id
+    )
+    cases = overview_cases if selected_action == "all" else list_order_intake_cases(
+        employee_id, visible_date, selected_action, selected_account_id, selected_batch_id, prepare=False
+    )
+    date_counts = list_order_intake_date_counts(employee_id, selected_account_id, prepare=False) if selected_account_id else []
+    return render_template(
+        "order_automation.html",
+        cases=cases,
+        overview_cases=overview_cases,
+        counts=case_summary(overview_cases),
+        work_summary=order_intake_work_summary(employee_id, selected_account_id),
+        action_labels=ORDER_ACTION_LABELS,
+        scope_labels=ORDER_SCOPE_LABELS,
+        selected_action=selected_action,
+        selected_date=selected_date,
+        previous_date=(selected_date_value - timedelta(days=1)).isoformat(),
+        next_date=(selected_date_value + timedelta(days=1)).isoformat(),
+        date_counts=date_counts,
+        mail_accounts=accounts,
+        selected_account=selected_account,
+        fetch_tasks=fetch_tasks,
+        selected_batch=selected_batch,
+    )
+
+
+@bp.post("/order-automation/sync")
+def order_automation_sync():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    account_id = request.form.get("account_id", type=int)
+    result: dict = {}
+    try:
+        from .mail_transcode_agent import mail_store
+        from .mail_transcode_agent.mail_fetch_service import fetch_latest_order_mails
+
+        accounts = [
+            item for item in mail_store.list_accounts(owner_employee_id=employee_id)
+            if item["enabled"] and ("qiye.163.com" in item["imap_host"] or "@nouyatec.com" in item["email"])
+        ]
+        if not accounts:
+            raise ValueError("请先在“我的配置”中启用业务邮箱")
+        account = next((item for item in accounts if item["id"] == account_id), None)
+        if not account:
+            raise ValueError("请选择要同步的业务邮箱")
+        result = fetch_latest_order_mails(account["id"], created_by=employee_id, owner_employee_id=employee_id)
+        flash(result["message"], "success")
+    except Exception as exc:
+        flash("邮件同步失败，请检查业务邮箱连接、客户端授权码和网络后重试。", "error")
+    return redirect(url_for("main.order_automation", date=order_intake_business_today().isoformat(), batch=result.get("fetch_task_id")))
+
+
+@bp.post("/order-automation/history-sync")
+def order_automation_history_sync():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    result: dict = {}
+    try:
+        account = _order_business_account(employee_id)
+        if not account:
+            raise ValueError("请先在“我的配置”中启用业务邮箱")
+        from .mail_transcode_agent.mail_fetch_service import fetch_latest_order_mails
+        result = fetch_latest_order_mails(
+            int(account["id"]), created_by=employee_id, owner_employee_id=employee_id, lookback_days=7
+        )
+        flash(result["message"], "success")
+    except Exception as exc:
+        flash("历史邮件同步失败，请检查业务邮箱连接、客户端授权码和网络后重试。", "error")
+    return redirect(url_for("main.order_automation", date=order_intake_business_today().isoformat(), batch=result.get("fetch_task_id")))
+
+
+def _order_business_account(employee_id: str):
+    from .mail_transcode_agent import mail_store
+    accounts = [
+        item for item in mail_store.list_accounts(owner_employee_id=employee_id)
+        if item["enabled"] and ("qiye.163.com" in item["imap_host"] or "@nouyatec.com" in item["email"])
+    ]
+    return accounts[0] if accounts else None
+
+
+@bp.route("/order-automation/rules", methods=["GET", "POST"])
+def order_automation_rules():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    if request.method == "POST":
+        try:
+            rule_id = request.form.get("rule_id", type=int)
+            scope = request.form.get("scope", "subject")
+            if not rule_id:
+                raise ValueError("请先选择要维护的业务分类")
+            save_order_universal_rule_scope(employee_id, rule_id, scope, request.form.getlist("keyword"))
+            flash("通用规则已保存，并已重新计算邮件分流结果。", "success")
+            return redirect(url_for("main.order_automation_rules", edit=rule_id, scope=scope))
+        except (ValueError, TypeError) as exc:
+            flash(str(exc), "error")
+    edit_id = request.args.get("edit", type=int)
+    rules = list_order_universal_rules(employee_id)
+    editing_rule = next((rule for rule in rules if rule["id"] == edit_id), rules[0] if rules else None)
+    selected_scope = request.args.get("scope", "subject")
+    if selected_scope not in ORDER_SCOPE_LABELS:
+        selected_scope = "subject"
+    selected_tab = request.args.get("tab", "keywords")
+    if selected_tab == "change_tags" and (not editing_rule or editing_rule["action_type"] != "order_change"):
+        selected_tab = "keywords"
+    return render_template(
+        "order_automation_rules.html",
+        rules=rules,
+        editing_rule=editing_rule,
+        change_tags=list_order_change_tags(employee_id),
+        action_labels=ORDER_ACTION_LABELS,
+        scope_labels=ORDER_SCOPE_LABELS,
+        selected_scope=selected_scope,
+        selected_tab=selected_tab,
+    )
+
+
+@bp.post("/order-automation/change-tags")
+def order_automation_change_tags():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    try:
+        keywords = [{"scope": scope, "keyword": word} for scope, word in zip(request.form.getlist("scope"), request.form.getlist("keyword"))]
+        save_order_change_tag(current_employee() or "", request.form.get("name", ""), keywords)
+        flash("修改订单标签已新增，并已重新计算邮件标签。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    edit_id = request.form.get("edit", type=int)
+    return redirect(url_for("main.order_automation_rules", edit=edit_id, tab="change_tags") if edit_id else url_for("main.order_automation_rules"))
+
+
+
+
+@bp.post("/order-automation/cases/<int:case_id>/routing")
+def order_automation_case_routing(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    try:
+        update_order_intake_routing(case_id, employee_id, request.form.get("action_type", ""))
+        flash("邮件分流已调整。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return_to = request.form.get("return_to", "")
+    if not return_to.startswith("/order-automation"):
+        return_to = url_for("main.order_automation")
+    return redirect(return_to)
+
+
+@bp.route("/order-automation/cases/<int:case_id>", methods=["GET", "POST"])
+def order_automation_case(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    if request.method == "POST":
+        try:
+            update_order_intake_case(case_id, employee_id, request.form)
+            flash("邮件分流与业务信息已保存。", "success")
+        except ValueError as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("main.order_automation_case", case_id=case_id))
+    case = get_order_intake_case(case_id, employee_id)
+    if not case:
+        abort(404)
+    return render_template(
+        "order_automation_case.html",
+        case=case,
+        entry_progress=order_entry_template_progress(case_id, employee_id) if case["action_type"] == "new_order" else None,
+        status_labels=ORDER_INTAKE_STATUS_LABELS,
+        action_labels=ORDER_ACTION_LABELS,
+        workflow_stage_labels=ORDER_WORKFLOW_STAGE_LABELS,
+        match_status_labels=ORDER_MATCH_STATUS_LABELS,
+        document_status_labels=ORDER_DOCUMENT_STATUS_LABELS,
+        mapping_status_labels=ORDER_MAPPING_STATUS_LABELS,
+        erp_prepare_status_labels=ORDER_ERP_PREPARE_STATUS_LABELS,
+    )
+
+
+@bp.route("/order-automation/cases/<int:case_id>/entry-template", methods=["GET", "POST"])
+def order_automation_entry_template(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    if request.method == "POST":
+        try:
+            payload = json.loads(request.form.get("template_payload") or "{}")
+            save_order_entry_template(case_id, employee_id, payload)
+            flash("内销录单模板已保存。", "success")
+        except (ValueError, json.JSONDecodeError) as exc:
+            flash(str(exc) if isinstance(exc, ValueError) else "模板数据格式错误。", "error")
+        return redirect(url_for("main.order_automation_entry_template", case_id=case_id))
+    try:
+        case, template = get_order_entry_template(case_id, employee_id)
+    except ValueError:
+        abort(404)
+    return render_template(
+        "order_automation_entry_template.html",
+        case=case,
+        template=template,
+        header_fields=ORDER_ENTRY_HEADER_FIELDS,
+        header_labels=ORDER_ENTRY_HEADER_LABELS,
+        line_fields=ORDER_ENTRY_LINE_FIELDS,
+        line_labels=ORDER_ENTRY_LINE_LABELS,
+        validation_issues=order_entry_validation_issues(template),
+    )
+
+
+@bp.get("/order-automation/cases/<int:case_id>/entry-template/download")
+def order_automation_entry_template_download(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    try:
+        output, filename = build_order_entry_domestic_export(case_id, current_employee() or "")
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("main.order_automation_entry_template", case_id=case_id))
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@bp.get("/order-automation/attachments/<int:attachment_id>")
+def order_automation_attachment(attachment_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    attachment = get_order_intake_attachment(attachment_id, current_employee() or "")
+    if not attachment:
+        abort(404)
+    file_path = Path(attachment["stored_path"]).resolve()
+    if STORAGE_DIR.resolve() not in file_path.parents or not file_path.is_file():
+        abort(404)
+    return send_file(file_path, as_attachment=True, download_name=attachment["filename"])
+
+
+@bp.get("/my-settings")
+def my_settings():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    return render_template(
+        "my_settings.html",
+        mail_config_available="mail_transcode.accounts_page" in current_app.view_functions,
+    )
 
 
 def _active_job_for(feature: str, jobs):
@@ -1031,13 +1395,7 @@ def transcode():
     redirect_resp = require_login()
     if redirect_resp:
         return redirect_resp
-    jobs = list_jobs(current_employee(), limit=20, feature="transcode")
-    return render_template(
-        "transcode.html",
-        jobs=jobs,
-        active_rule_version=get_active_transcode_rule_version(),
-        active_job=_active_job_for("transcode", jobs),
-    )
+    return redirect(url_for("main.dashboard"))
 
 
 @bp.get("/features/transcode-agent")
@@ -1053,6 +1411,344 @@ def transcode_agent():
         model_config=model_config,
         active_job=_active_job_for(TRANSCODE_AGENT_FEATURE, jobs),
         auto_confirm=request.args.get("auto_confirm") == "1",
+    )
+
+
+@bp.get("/features/pp-transcode-agent")
+def pp_transcode_agent():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    jobs = list_jobs(current_employee(), limit=20, feature="pp_transcode_agent")
+    return render_template(
+        "pp_transcode_agent.html",
+        jobs=jobs,
+        active_job=_active_job_for("pp_transcode_agent", jobs),
+        auto_confirm=request.args.get("auto_confirm") == "1",
+    )
+
+
+@bp.post("/features/pp-transcode-agent/jobs")
+def queue_pp_transcode_agent_job():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    upload = request.files.get("pp_file")
+    if not upload or not upload.filename:
+        flash("请选择包含 PP 客户规格列的 Excel 文件。", "error")
+        return redirect(url_for("main.pp_transcode_agent"))
+    try:
+        job_id = queue_pp_transcode_job(current_employee() or "", upload, upload.filename)
+        flash(f"PP 批量转码任务 #{job_id} 已创建，首期结果均进入人工确认。", "success")
+        return redirect(url_for("main.pp_transcode_agent", job_id=job_id))
+    except (OSError, ValueError) as exc:
+        flash(f"PP 批量任务创建失败：{exc}", "error")
+        return redirect(url_for("main.pp_transcode_agent"))
+
+
+@bp.route("/features/pp-transcode-agent/confirmations/<int:job_id>", methods=["GET", "POST"])
+def pp_transcode_agent_confirmations(job_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    job = get_job(job_id)
+    if not job or job["employee_id"] != employee_id or job["feature"] != "pp_transcode_agent":
+        flash("未找到该 PP 转码任务。", "error")
+        return redirect(url_for("main.pp_transcode_agent"))
+    if request.method == "POST":
+        item_id = request.form.get("item_id", type=int)
+        action = request.form.get("action", "").strip()
+        try:
+            status = "confirmed" if action == "confirm" else "skipped" if action == "skip" else ""
+            if not item_id or not status:
+                raise ValueError("未识别确认操作。")
+            items_by_id = {item["id"]: item for item in list_pp_confirmation_items(job_id, employee_id)}
+            source_item = items_by_id.get(item_id)
+            if not source_item:
+                raise ValueError("未找到该确认记录。")
+
+            basis = ""
+            confirmed_pending_code = ""
+            if status == "confirmed":
+                confirmed_pending_code = re.sub(
+                    r"\s+", "", request.form.get("confirmed_pending_code", "")
+                ).upper()
+                if not re.fullmatch(r"[A-Z0-9*]{27}", confirmed_pending_code):
+                    raise ValueError("本次确认码值必须为 27 位，仅可包含字母、数字和 *。")
+            if request.form.get("save_as_rule") == "1":
+                if status != "confirmed":
+                    raise ValueError("请先确认本次码值，才可保存为长期客户规则。")
+                if not (source_item.get("customer_code") or source_item.get("customer_name")):
+                    raise ValueError("该行缺少客户代码和客户简称，不能保存为客户长期规则。")
+                target_field = request.form.get("rule_target_field", "").strip()
+                output_value = request.form.get("rule_output_value", "").strip()
+                condition_field = request.form.get("rule_condition_field", "").strip()
+                condition_operator = request.form.get("rule_condition_operator", "contains").strip()
+                condition_value = request.form.get("rule_condition_value", "").strip()
+                if target_field not in PP_CUSTOMER_FIELDS:
+                    raise ValueError("请选择需要长期维护的 PP 客户字段。")
+                if not output_value or set(output_value) == {"*"}:
+                    raise ValueError("请填写有效的长期规则结果，不能只保存占位符。")
+                if not condition_field or not condition_value:
+                    raise ValueError("请填写长期规则的触发条件。")
+                basis = f"PP任务 #{job_id} Excel第{source_item.get('excel_row', '-')}行业务确认"
+                rule_id = save_pp_customer_rule(
+                    {
+                        "customer_code": source_item.get("customer_code", ""),
+                        "customer_name": source_item.get("customer_name", ""),
+                        "target_field": target_field,
+                        "conditions": [{"field": condition_field, "operator": condition_operator, "value": condition_value}],
+                        "output_value": output_value,
+                        "business_note": basis,
+                        "enabled": True,
+                    },
+                    employee_id,
+                )
+                basis = f"{basis}（已保存为客户长期规则 #{rule_id}）"
+            item = update_pp_confirmation_item(
+                item_id,
+                employee_id,
+                status=status,
+                basis=basis,
+                confirmed_pending_code=confirmed_pending_code,
+            )
+            if not item:
+                raise ValueError("未找到该确认记录。")
+            counts = pp_confirmation_counts(job_id, employee_id)
+            from .db import update_job_status
+
+            update_job_status(
+                job_id,
+                status="completed" if counts["pending"] == 0 else "awaiting_confirmation",
+                confirm_count=counts["pending"],
+                success_count=0,
+                skip_count=counts["skipped"],
+                completed=counts["pending"] == 0,
+            )
+            refresh_pp_result_file(job_id, employee_id)
+            flash("PP 本次确认状态已保存；不会因此生成正式码。", "success")
+        except (ValueError, OSError) as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("main.pp_transcode_agent_confirmations", job_id=job_id))
+    items = list_pp_confirmation_items(job_id, employee_id)
+    return render_template(
+        "pp_transcode_confirmations.html",
+        job=job,
+        items=items,
+        counts=pp_confirmation_counts(job_id, employee_id),
+        customer_fields=[
+            {"key": key, **PP_FIELD_META[key]}
+            for key, _, _ in PP_RULE_FIELDS
+            if key in PP_CUSTOMER_FIELDS
+        ],
+    )
+
+
+@bp.post("/api/pp-transcode-agent/quote")
+def api_pp_transcode_agent_quote():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return jsonify({"error": "unauthorized"}), 401
+    payload = request.get_json(silent=True) or {}
+    spec = str(payload.get("spec") or request.form.get("spec") or "").strip()
+    if not spec:
+        return jsonify({"status": "失败", "error": "请输入 PP 客户规格"}), 400
+    try:
+        return jsonify(
+            calculate_pp_transcode_quote(
+                spec,
+                customer=payload.get("customer") or request.form.get("customer") or "",
+                customer_code=payload.get("customer_code") or request.form.get("customer_code") or "",
+                order_remark=payload.get("order_remark") or request.form.get("order_remark") or "",
+            )
+        )
+    except Exception as exc:
+        return jsonify({"status": "失败", "error": str(exc)}), 500
+
+
+@bp.post("/api/pp-transcode-agent/single-jobs")
+def api_create_pp_transcode_agent_single_job():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return jsonify({"error": "unauthorized"}), 401
+    payload = request.get_json(silent=True) or {}
+    spec = str(payload.get("spec") or "").strip()
+    if not spec:
+        return jsonify({"status": "失败", "error": "请输入 PP 客户规格"}), 400
+    employee_id = current_employee() or ""
+    active_job = get_active_job(employee_id, "pp_transcode_agent")
+    if active_job:
+        return jsonify(
+            {
+                "status": "失败",
+                "error": "当前已有 PP 转码任务正在处理，请先等待完成或停止。",
+                "job_id": active_job["id"],
+            }
+        ), 409
+    try:
+        job_id = queue_pp_transcode_single_job(
+            employee_id,
+            spec=spec,
+            customer=payload.get("customer") or "",
+            customer_code=payload.get("customer_code") or "",
+            order_remark=payload.get("order_remark") or "",
+        )
+        return jsonify(
+            {
+                "status": "已创建",
+                "job_id": job_id,
+                "task_url": url_for("main.pp_transcode_agent", job_id=job_id, auto_confirm=1),
+            }
+        ), 202
+    except Exception as exc:
+        return jsonify({"status": "失败", "error": str(exc)}), 500
+
+
+@bp.get("/api/pp-transcode-agent/jobs/<int:job_id>/confirmations")
+def api_pp_transcode_agent_confirmations(job_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return jsonify({"error": "unauthorized"}), 401
+    employee_id = current_employee() or ""
+    job = get_job(job_id)
+    if not job or job["employee_id"] != employee_id or job["feature"] != "pp_transcode_agent":
+        return jsonify({"error": "未找到该 PP 转码任务"}), 404
+    items = list_pp_confirmation_items(job_id, employee_id)
+    return jsonify(
+        {
+            "job_id": job_id,
+            "job_status": job["status"],
+            "counts": pp_confirmation_counts(job_id, employee_id),
+            "records": [
+                {
+                    "id": item["id"],
+                    "excel_row": item["excel_row"],
+                    "customer_code": item.get("customer_code") or "",
+                    "customer_name": item.get("customer_name") or "",
+                    "spec": item.get("spec") or "",
+                    "order_remark": item.get("order_remark") or "",
+                    "pending_code": item.get("pending_code") or "",
+                    "confirmed_pending_code": item.get("confirmed_pending_code") or "",
+                    "confidence": item.get("confidence") or 0,
+                    "summary": item.get("summary") or "",
+                    "field_evidence": item.get("field_evidence") or [],
+                    "confirmation_status": item.get("confirmation_status") or "pending",
+                }
+                for item in items
+            ],
+        }
+    )
+
+
+@bp.route("/admin/pp-transcode-rules", methods=["GET", "POST"])
+def admin_pp_transcode_rules():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    section = request.values.get("section", "base").strip()
+    if section not in {"base", "customer", "history"}:
+        section = "base"
+    if request.method == "POST":
+        action = request.form.get("action", "").strip()
+        try:
+            if action == "save_base":
+                save_pp_base_rule(
+                    {
+                        "id": request.form.get("rule_id"),
+                        "field_key": request.form.get("field_key"),
+                        "input_value": request.form.get("input_value"),
+                        "output_value": request.form.get("output_value"),
+                        "business_note": request.form.get("business_note"),
+                        "enabled": request.form.get("enabled") == "1",
+                    },
+                    current_employee() or "",
+                )
+                flash("PP 基础规则已保存并立即生效。", "success")
+                section = "base"
+            elif action == "save_customer":
+                conditions = []
+                for field, operator, value in zip(
+                    request.form.getlist("condition_field"),
+                    request.form.getlist("condition_operator"),
+                    request.form.getlist("condition_value"),
+                ):
+                    conditions.append({"field": field, "operator": operator, "value": value})
+                save_pp_customer_rule(
+                    {
+                        "id": request.form.get("rule_id"),
+                        "customer_code": request.form.get("customer_code"),
+                        "customer_name": request.form.get("customer_name"),
+                        "target_field": request.form.get("target_field"),
+                        "conditions": conditions,
+                        "output_value": request.form.get("output_value"),
+                        "business_note": request.form.get("business_note"),
+                        "enabled": request.form.get("enabled") == "1",
+                    },
+                    current_employee() or "",
+                )
+                flash("PP 客户特殊规则已保存并立即生效。", "success")
+                section = "customer"
+            elif action in {"enable_customer", "disable_customer"}:
+                set_pp_customer_rule_enabled(
+                    int(request.form.get("rule_id") or 0), action == "enable_customer", current_employee() or ""
+                )
+                flash("PP 客户特殊规则状态已更新。", "success")
+                section = "customer"
+            else:
+                flash("未识别的 PP 规则维护操作。", "error")
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("main.admin_pp_transcode_rules", section=section))
+
+    base_field = request.args.get("field_key", "glue_code")
+    if base_field not in PP_BASE_FIELDS | PP_SHARED_FIELDS:
+        base_field = "glue_code"
+    base_page = max(1, request.args.get("base_page", 1, type=int) or 1)
+    base_page_size = request.args.get("base_page_size", 20, type=int) or 20
+    base_page_size = min(max(base_page_size, 10), 100)
+    customer_page = max(1, request.args.get("customer_page", 1, type=int) or 1)
+    customer_page_size = request.args.get("customer_page_size", 20, type=int) or 20
+    customer_page_size = min(max(customer_page_size, 10), 100)
+    selected_base_id = request.args.get("base_rule_id", type=int)
+    selected_customer_id = request.args.get("customer_rule_id", type=int)
+    return render_template(
+        "pp_transcode_rules.html",
+        section=section,
+        field_meta=PP_FIELD_META,
+        base_fields=[{"key": key, **PP_FIELD_META[key]} for key, _, _ in PP_RULE_FIELDS if key in PP_BASE_FIELDS | PP_SHARED_FIELDS],
+        shared_base_fields=PP_SHARED_FIELDS,
+        customer_fields=[{"key": key, **PP_FIELD_META[key]} for key, _, _ in PP_RULE_FIELDS if key in PP_CUSTOMER_FIELDS],
+        selected_field=base_field,
+        base_rules=list_pp_base_rules(
+            base_field,
+            request.args.get("keyword", ""),
+            request.args.get("enabled", "all"),
+            page=base_page,
+            page_size=base_page_size,
+        ),
+        base_total=count_pp_base_rules(base_field, request.args.get("keyword", ""), request.args.get("enabled", "all")),
+        base_page=base_page,
+        base_page_size=base_page_size,
+        customer_rules=list_pp_customer_rules(
+            request.args.get("customer_code", ""),
+            request.args.get("customer", ""),
+            request.args.get("customer_field", ""),
+            request.args.get("customer_enabled", "all"),
+            page=customer_page,
+            page_size=customer_page_size,
+        ),
+        customer_total=count_pp_customer_rules(
+            request.args.get("customer_code", ""),
+            request.args.get("customer", ""),
+            request.args.get("customer_field", ""),
+            request.args.get("customer_enabled", "all"),
+        ),
+        customer_page=customer_page,
+        customer_page_size=customer_page_size,
+        selected_base_rule=get_pp_base_rule(selected_base_id) if selected_base_id else None,
+        selected_customer_rule=get_pp_customer_rule(selected_customer_id) if selected_customer_id else None,
+        rule_changes=list_pp_rule_changes(),
     )
 
 
@@ -2022,7 +2718,7 @@ def admin_pdf_excel_ai():
 
 
 def _today_iso() -> str:
-    return date.today().isoformat()
+    return order_intake_business_today().isoformat()
 
 
 def _task_category_id_from_form(employee_id: str) -> int | None:
@@ -2393,18 +3089,18 @@ def create_transcode_job_view():
     uploaded_file = request.files.get("excel_file")
     if not uploaded_file or not uploaded_file.filename:
         flash("请先上传 Excel 文件。", "error")
-        return redirect(url_for("main.transcode"))
+        return redirect(url_for("main.history"))
     original_filename = (uploaded_file.filename or "").strip()
     if not original_filename.lower().endswith((".xlsx", ".xlsm", ".xls")):
         flash("转码功能仅支持 .xlsx / .xlsm / .xls 文件。", "error")
-        return redirect(url_for("main.transcode"))
+        return redirect(url_for("main.history"))
     active_job = get_active_job(current_employee(), "transcode")
     if active_job:
         flash("当前已有转码任务正在处理，请先等待完成或停止后再上传。", "error")
-        return redirect(url_for("main.transcode", job_id=active_job["id"]))
+        return redirect(url_for("main.history"))
     job_id = queue_transcode_job(current_employee(), uploaded_file, original_filename)
     flash("转码任务已创建，系统正在处理。", "success")
-    return redirect(url_for("main.transcode", job_id=job_id))
+    return redirect(url_for("main.history"))
 
 
 @bp.post("/transcode-agent/jobs")
@@ -3169,6 +3865,7 @@ def _job_feature_return_url(job, job_id: int) -> str:
     feature_route = {
         "transcode": "main.transcode",
         "transcode_agent": "main.transcode_agent",
+        "pp_transcode_agent": "main.pp_transcode_agent",
         "in_transit": "main.in_transit",
         "inventory_detail": "main.inventory_detail",
         "inventory_bid": "main.inventory_bid",
@@ -3262,6 +3959,11 @@ def download(job_id: int, kind: str):
     if kind == "result" and job["feature"] == TRANSCODE_AGENT_FEATURE:
         try:
             refresh_transcode_agent_audit_sheet(job_id)
+        except (OSError, ValueError):
+            pass
+    if kind == "result" and job["feature"] == "pp_transcode_agent":
+        try:
+            refresh_pp_result_file(job_id, current_employee() or "")
         except (OSError, ValueError):
             pass
     return send_file(file_path, as_attachment=True)

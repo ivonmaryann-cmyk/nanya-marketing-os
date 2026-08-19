@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}邮件自动化转码Agent | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+<div class="mail-workspace">
+  <div class="page-backbar">
+    <a class="back-link" href="{{ url_for('main.dashboard') }}">返回功能中心</a>
+    <span>功能中心 / 营销转码 Agent / 邮件自动化转码 Agent</span>
+  </div>
+
+  <header class="mail-workspace-header">
+    <div>
+      <div class="panel-tag">邮件订单工作台</div>
+      <h1>邮件自动化转码 Agent</h1>
+      <p>手动抓取昨天和今天的订单邮件；每次抓取形成一条任务，在任务内查看邮件、订单、转码结果并完成业务确认，不改变邮箱已读状态。</p>
+    </div>
+    <div class="mail-header-actions">
+      <form method="post" action="{{ url_for('mail_transcode.fetch_mails') }}">
+        <button class="mail-primary-action" type="submit">抓取订单邮件</button>
+      </form>
+    </div>
+  </header>
+
+  <section class="mail-stat-grid" aria-label="工作概览">
+    <article><span>启用邮箱</span><strong>{{ enabled_account_count }}</strong><em>可抓取订单邮件</em></article>
+    <article><span>今日抓取</span><strong>{{ today_order_count }}</strong><em>条订单记录</em></article>
+    <article class="attention"><span>当前待核实</span><strong>{{ pending_task_count }}</strong><em>条订单待处理</em></article>
+    <article class="complete"><span>已完成转码</span><strong>{{ completed_transcode_count }}</strong><em>已人工通过</em></article>
+  </section>
+
+  <section class="mail-flow" aria-label="业务流程">
+    <div class="mail-flow-step done"><b>1</b><div><strong>创建抓取任务</strong><span>从当前测试邮箱抓取订单邮件</span></div></div>
+    <i></i>
+    <div class="mail-flow-step active"><b>2</b><div><strong>核实订单字段</strong><span>补全客户、规格与订单备注</span></div></div>
+    <i></i>
+    <div class="mail-flow-step"><b>3</b><div><strong>确认转码结果</strong><span>100 分才可作为正式码</span></div></div>
+  </section>
+
+  <section class="mail-dashboard-grid mail-task-dashboard">
+    <article class="mail-work-card mail-pending-card">
+      <div class="mail-card-heading">
+        <div><h2>抓取任务</h2><p>每次抓取对应一条任务。进入任务后查看本次邮件、订单及转码结果。</p></div>
+        <a href="{{ url_for('mail_transcode.orders_page') }}">查看全部任务（{{ task_count }}）</a>
+      </div>
+      <div class="mail-filter-bar">
+        <span>当前显示最近 {{ tasks|length }} 条抓取任务</span>
+        <span>转码结果与人工确认均在任务内的订单明细中处理</span>
+      </div>
+      <div class="mail-table-wrap">
+        <table class="mail-table mail-dashboard-table">
+          <thead><tr><th>任务时间</th><th>测试邮箱</th><th>邮件</th><th>订单</th><th>待核实</th><th>任务状态</th><th>操作</th></tr></thead>
+          <tbody>
+            {% for task in tasks %}
+            <tr>
+              <td class="cell-main">{{ task.started_at }}</td>
+              <td class="cell-main">{{ task.mailbox }}</td>
+              <td>{{ task.message_count }}</td>
+              <td>{{ task.actual_order_count }}</td>
+              <td><span class="mail-status {% if task.pending_count %}warning{% else %}success{% endif %}">{{ task.pending_count }} 条</span></td>
+              <td><span class="mail-status {% if task.status == 'error' %}danger{% elif task.status == 'completed' %}success{% else %}pending{% endif %}">{{ {'completed': '已完成', 'running': '处理中', 'error': '抓取失败'}.get(task.status, task.status or '待处理') }}</span></td>
+              <td><a class="mail-text-action" href="{{ url_for('mail_transcode.fetch_task_detail', fetch_task_id=task.id) }}">进入任务</a></td>
+            </tr>
+            {% else %}
+            <tr><td class="mail-empty" colspan="7">暂无抓取任务。点击“抓取订单邮件”创建第一条任务。</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </article>
+
+    <aside class="mail-side-stack">
+      <article class="mail-work-card mail-principle-card">
+        <h2>任务处理方式</h2>
+        <p>任务是邮件自动化转码的唯一入口。每个任务保留本次抓取来源、订单字段、转码过程和人工确认记录。</p>
+        <div><strong>正式出码门槛：100 分</strong><span>低于 100 分仅显示待人工确认码值</span></div>
+      </article>
+      <article class="mail-work-card mail-fetch-summary"><div class="mail-card-heading"><div><h2>当前测试范围</h2><p>暂时仅使用当前配置邮箱抓取订单邮件。后续接入多个邮箱时，任务内会按邮箱展示处理结果。</p></div></div></article>
+    </aside>
+  </section>
+</div>
+{% endblock %}

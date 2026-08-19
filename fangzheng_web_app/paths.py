@@ -19,6 +19,8 @@ TRANSCODE_AGENT_RULES_DIR = RULES_DIR / "transcode_agent"
 TRANSCODE_AGENT_RULES_VERSIONS_DIR = TRANSCODE_AGENT_RULES_DIR / "versions"
 TRANSCODE_SEMANTIC_RULES_DIR = RULES_DIR / "transcode_semantic"
 TRANSCODE_SEMANTIC_RULES_VERSIONS_DIR = TRANSCODE_SEMANTIC_RULES_DIR / "versions"
+PP_TRANSCODE_RULES_DIR = RULES_DIR / "pp_transcode"
+PP_TRANSCODE_RULES_VERSIONS_DIR = PP_TRANSCODE_RULES_DIR / "versions"
 SHENNAN_RULES_DIR = RULES_DIR / "shennan"
 SHENNAN_RULES_VERSIONS_DIR = SHENNAN_RULES_DIR / "versions"
 HUSHI_RULES_DIR = RULES_DIR / "hushi"
@@ -33,6 +35,8 @@ PDF_EXCEL_LAYOUT_TEMPLATE_DIR = PDF_EXCEL_TEMPLATE_DIR / "layouts"
 # Backward-compatible read path for layout rules saved before they were promoted
 # from disposable cache data to reusable templates.
 PDF_EXCEL_LAYOUT_CACHE_DIR = PDF_EXCEL_CACHE_DIR / "layouts"
+ORDER_ENTRY_TEMPLATE_DIR = STORAGE_DIR / "order_entry_templates"
+ORDER_ENTRY_EXPORT_DIR = STORAGE_DIR / "order_entry_exports"
 DATABASE_PATH = STORAGE_DIR / "app.db"
 
 
@@ -47,6 +51,8 @@ def ensure_storage_dirs() -> None:
         TRANSCODE_AGENT_RULES_VERSIONS_DIR,
         TRANSCODE_SEMANTIC_RULES_DIR,
         TRANSCODE_SEMANTIC_RULES_VERSIONS_DIR,
+        PP_TRANSCODE_RULES_DIR,
+        PP_TRANSCODE_RULES_VERSIONS_DIR,
         SHENNAN_RULES_DIR,
         SHENNAN_RULES_VERSIONS_DIR,
         HUSHI_RULES_DIR,
@@ -59,5 +65,7 @@ def ensure_storage_dirs() -> None:
         PDF_EXCEL_TEMPLATE_DIR,
         PDF_EXCEL_LAYOUT_TEMPLATE_DIR,
         PDF_EXCEL_LAYOUT_CACHE_DIR,
+        ORDER_ENTRY_TEMPLATE_DIR,
+        ORDER_ENTRY_EXPORT_DIR,
     ]:
         path.mkdir(parents=True, exist_ok=True)

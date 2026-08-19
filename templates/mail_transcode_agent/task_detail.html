@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}邮件订单详情 | 邮件自动化转码Agent{% endblock %}
+{% block content %}
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('mail_transcode.fetch_task_detail', fetch_task_id=message.fetch_task_id) }}">返回抓取任务</a>
+  <span>任务内订单详情</span>
+</div>
+
+<section class="feature-hero">
+  <div class="hero-watermark feature-mark">TASK</div>
+  <div class="feature-hero-copy">
+    <div class="panel-tag">任务内邮件</div>
+    <h1>{{ message.subject }}</h1>
+    <p>{{ message.sender or '-' }} · {{ message.sent_at or '-' }}</p>
+  </div>
+  <div class="feature-metrics">
+    <div>
+      <span>订单数</span>
+      <strong>{{ tasks|length }}</strong>
+    </div>
+    <div>
+      <span>待人工核实</span>
+      <strong>{{ tasks|selectattr('review_status', 'equalto', 'pending_review')|list|length }}</strong>
+    </div>
+    <div>
+      <span>转码待核实</span>
+      <strong>{{ tasks|selectattr('transcode_status', 'equalto', '待核实')|list|length }}</strong>
+    </div>
+  </div>
+</section>
+
+<section class="card task-card">
+  <div class="step-tag">订单明细</div>
+  <div class="section-head">
+    <h2>该邮件下的订单</h2>
+  </div>
+  <form method="post" action="{{ url_for('mail_transcode.run_transcode') }}" id="run-transcode-form">
+    <input type="hidden" name="task_ids" id="selected-task-ids">
+    <div class="table-scroll">
+      <table class="table">
+        <thead>
+          <tr>
+            <th style="width:44px;">选择</th>
+            <th>客户</th>
+            <th>订单号</th>
+            <th>客户规格</th>
+            <th>状态</th>
+            <th>转码</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for task in tasks %}
+          <tr>
+            <td>
+              {% if task.review_status == 'reviewed' and task.transcode_status not in ['待核实', '已通过', '已驳回'] %}
+              <input type="checkbox" class="task-check" value="{{ task.id }}">
+              {% endif %}
+            </td>
+            <td>{{ task.customer_name or '-' }}</td>
+            <td>{{ task.order_number or '-' }}</td>
+            <td>{{ task.spec or '-' }}</td>
+            <td>
+              {% if task.field_status == 'complete' %}
+              <span class="status">完整 · 已核实</span>
+              {% else %}
+              <span class="status">缺字段 · 待人工核实</span>
+              {% endif %}
+            </td>
+            <td>{{ task.transcode_status }}</td>
+            <td><a href="{{ url_for('mail_transcode.order_detail', task_id=task.id) }}">查看 / 编辑</a></td>
+          </tr>
+          {% else %}
+          <tr><td colspan="7">暂无订单</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="result-actions" style="margin-top:14px;">
+      <button type="submit">对已勾选订单执行转码</button>
+    </div>
+  </form>
+</section>
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  var checkboxes = document.querySelectorAll(".task-check");
+  var hidden = document.getElementById("selected-task-ids");
+  function refresh() {
+    var ids = [];
+    checkboxes.forEach(function (checkbox) {
+      if (checkbox.checked) ids.push(checkbox.value);
+    });
+    hidden.value = ids.join(",");
+  }
+  checkboxes.forEach(function (checkbox) {
+    checkbox.addEventListener("change", refresh);
+  });
+  refresh();
+});
+</script>
+{% endblock %}

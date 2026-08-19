@@ -247,6 +247,372 @@ def init_db() -> None:
             """
         )
 
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS mail_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT NOT NULL UNIQUE,
+                owner_employee_id TEXT NOT NULL DEFAULT '',
+                imap_host TEXT NOT NULL DEFAULT 'imap.163.com',
+                imap_port INTEGER NOT NULL DEFAULT 993,
+                auth_code_ciphertext TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_fetch_at TEXT,
+                last_fetch_status TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS mail_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL,
+                folder TEXT NOT NULL DEFAULT 'INBOX',
+                uid TEXT NOT NULL DEFAULT '',
+                message_id TEXT NOT NULL DEFAULT '',
+                subject TEXT NOT NULL DEFAULT '',
+                sender TEXT NOT NULL DEFAULT '',
+                sent_at TEXT NOT NULL DEFAULT '',
+                received_at TEXT NOT NULL DEFAULT '',
+                body_html TEXT,
+                body_text TEXT,
+                eml_path TEXT NOT NULL DEFAULT '',
+                is_order INTEGER NOT NULL DEFAULT 0,
+                fetch_task_id INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                UNIQUE(account_id, folder, uid)
+            );
+
+            CREATE TABLE IF NOT EXISTS mail_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mail_id INTEGER NOT NULL,
+                filename TEXT NOT NULL DEFAULT '',
+                content_type TEXT NOT NULL DEFAULT '',
+                size_bytes INTEGER NOT NULL DEFAULT 0,
+                sha256 TEXT NOT NULL DEFAULT '',
+                stored_path TEXT NOT NULL DEFAULT '',
+                is_inline INTEGER NOT NULL DEFAULT 0,
+                parse_status TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS mail_order_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mail_id INTEGER NOT NULL,
+                customer_code TEXT NOT NULL DEFAULT '',
+                customer_name TEXT NOT NULL DEFAULT '',
+                spec TEXT NOT NULL DEFAULT '',
+                remark TEXT NOT NULL DEFAULT '',
+                order_number TEXT NOT NULL DEFAULT '',
+                source_type TEXT NOT NULL DEFAULT '',
+                field_status TEXT NOT NULL DEFAULT 'missing',
+                review_status TEXT NOT NULL DEFAULT 'pending_review',
+                attachment_parse_status TEXT NOT NULL DEFAULT '',
+                transcode_status TEXT NOT NULL DEFAULT 'not_started',
+                transcode_code TEXT NOT NULL DEFAULT '',
+                transcode_note TEXT NOT NULL DEFAULT '',
+                transcode_confidence INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                reviewed_by TEXT NOT NULL DEFAULT '',
+                reviewed_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS mail_transcode_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_ids TEXT NOT NULL DEFAULT '',
+                input_path TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'running',
+                success_count INTEGER NOT NULL DEFAULT 0,
+                fail_count INTEGER NOT NULL DEFAULT 0,
+                created_by TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS mail_fetch_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                status TEXT NOT NULL,
+                message TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS mail_fetch_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL,
+                created_by TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'completed',
+                email_count INTEGER NOT NULL DEFAULT 0,
+                new_count INTEGER NOT NULL DEFAULT 0,
+                duplicate_count INTEGER NOT NULL DEFAULT 0,
+                order_count INTEGER NOT NULL DEFAULT 0,
+                message TEXT NOT NULL DEFAULT '',
+                started_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS mail_fetch_task_messages (
+                fetch_task_id INTEGER NOT NULL,
+                mail_id INTEGER NOT NULL,
+                is_new INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (fetch_task_id, mail_id),
+                FOREIGN KEY(fetch_task_id) REFERENCES mail_fetch_tasks(id),
+                FOREIGN KEY(mail_id) REFERENCES mail_messages(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_mail_messages_account_uid
+            ON mail_messages(account_id, folder, uid);
+
+            CREATE INDEX IF NOT EXISTS idx_mail_attachments_mail
+            ON mail_attachments(mail_id);
+
+            CREATE INDEX IF NOT EXISTS idx_mail_order_tasks_review
+            ON mail_order_tasks(review_status, transcode_status);
+            """
+        )
+
+        mail_message_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(mail_messages)").fetchall()
+        }
+        if "fetch_task_id" not in mail_message_cols:
+            conn.execute("ALTER TABLE mail_messages ADD COLUMN fetch_task_id INTEGER NOT NULL DEFAULT 0")
+
+        mail_fetch_task_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(mail_fetch_tasks)").fetchall()
+        }
+        if "new_count" not in mail_fetch_task_cols:
+            conn.execute("ALTER TABLE mail_fetch_tasks ADD COLUMN new_count INTEGER NOT NULL DEFAULT 0")
+        if "duplicate_count" not in mail_fetch_task_cols:
+            conn.execute("ALTER TABLE mail_fetch_tasks ADD COLUMN duplicate_count INTEGER NOT NULL DEFAULT 0")
+
+        mail_account_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(mail_accounts)").fetchall()
+        }
+        if "owner_employee_id" not in mail_account_cols:
+            conn.execute(
+                "ALTER TABLE mail_accounts ADD COLUMN owner_employee_id TEXT NOT NULL DEFAULT ''"
+            )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_mail_accounts_owner "
+            "ON mail_accounts(owner_employee_id, enabled, id DESC)"
+        )
+        legacy_owner = conn.execute(
+            "SELECT employee_id FROM users WHERE role = 'admin' ORDER BY employee_id LIMIT 1"
+        ).fetchone()
+        if not legacy_owner:
+            legacy_owner = conn.execute(
+                "SELECT employee_id FROM users ORDER BY employee_id LIMIT 1"
+            ).fetchone()
+        if legacy_owner:
+            conn.execute(
+                "UPDATE mail_accounts SET owner_employee_id = ? "
+                "WHERE TRIM(owner_employee_id) = ''",
+                (legacy_owner["employee_id"],),
+            )
+
+        # Order intake keeps the business decision separate from the source email.
+        # A case is one mail-side business event; later ERP order/version tables can
+        # extend it without rewriting the immutable source-mail evidence.
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS order_intake_cases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                employee_id TEXT NOT NULL,
+                mail_id INTEGER NOT NULL,
+                action_type TEXT NOT NULL DEFAULT 'unclassified',
+                status TEXT NOT NULL DEFAULT 'pending_triage',
+                customer_code TEXT NOT NULL DEFAULT '',
+                customer_name TEXT NOT NULL DEFAULT '',
+                order_number TEXT NOT NULL DEFAULT '',
+                order_version TEXT NOT NULL DEFAULT '',
+                parent_order_number TEXT NOT NULL DEFAULT '',
+                workflow_stage TEXT NOT NULL DEFAULT 'mail_triage',
+                customer_match_status TEXT NOT NULL DEFAULT 'unmatched',
+                source_document_status TEXT NOT NULL DEFAULT 'pending',
+                mapping_status TEXT NOT NULL DEFAULT 'not_started',
+                erp_prepare_status TEXT NOT NULL DEFAULT 'not_started',
+                routing_source TEXT NOT NULL DEFAULT 'system',
+                routing_reason TEXT NOT NULL DEFAULT '',
+                routed_by TEXT NOT NULL DEFAULT '',
+                routed_at TEXT,
+                handling_note TEXT NOT NULL DEFAULT '',
+                confirmed_by TEXT NOT NULL DEFAULT '',
+                confirmed_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(employee_id, mail_id),
+                FOREIGN KEY(mail_id) REFERENCES mail_messages(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS order_intake_case_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id INTEGER NOT NULL,
+                employee_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                before_json TEXT NOT NULL DEFAULT '{}',
+                after_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(case_id) REFERENCES order_intake_cases(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_order_intake_cases_employee_status
+                ON order_intake_cases(employee_id, status, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS order_mail_routing_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                employee_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                priority INTEGER NOT NULL DEFAULT 100,
+                sender_contains TEXT NOT NULL DEFAULT '',
+                subject_contains TEXT NOT NULL DEFAULT '',
+                attachment_contains TEXT NOT NULL DEFAULT '',
+                action_type TEXT NOT NULL,
+                customer_code TEXT NOT NULL DEFAULT '',
+                customer_name TEXT NOT NULL DEFAULT '',
+                note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS order_mail_routing_rule_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rule_id INTEGER NOT NULL,
+                employee_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                before_json TEXT NOT NULL DEFAULT '{}',
+                after_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(rule_id) REFERENCES order_mail_routing_rules(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_order_mail_routing_rules_owner
+                ON order_mail_routing_rules(employee_id, enabled, priority, id);
+
+            CREATE TABLE IF NOT EXISTS order_mail_rule_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                employee_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                action_type TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS order_mail_rule_keywords (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER NOT NULL,
+                scope TEXT NOT NULL,
+                keyword TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(group_id) REFERENCES order_mail_rule_groups(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS order_change_tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                employee_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(employee_id, name)
+            );
+
+            CREATE TABLE IF NOT EXISTS order_change_tag_keywords (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tag_id INTEGER NOT NULL,
+                scope TEXT NOT NULL,
+                keyword TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(tag_id) REFERENCES order_change_tags(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS mail_attachment_texts (
+                attachment_id INTEGER PRIMARY KEY,
+                text_content TEXT NOT NULL DEFAULT '',
+                parse_status TEXT NOT NULL DEFAULT 'pending',
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(attachment_id) REFERENCES mail_attachments(id)
+            );
+
+            -- One domestic order-entry workbook belongs to exactly one routed
+            -- mail case. The current editable values live in the header/line
+            -- tables; every save also records an immutable snapshot version.
+            CREATE TABLE IF NOT EXISTS order_entry_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id INTEGER NOT NULL UNIQUE,
+                employee_id TEXT NOT NULL,
+                template_key TEXT NOT NULL DEFAULT '151_domestic_v1',
+                header_json TEXT NOT NULL DEFAULT '{}',
+                current_version INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(case_id) REFERENCES order_intake_cases(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS order_entry_template_lines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                template_id INTEGER NOT NULL,
+                line_no INTEGER NOT NULL,
+                values_json TEXT NOT NULL DEFAULT '{}',
+                sources_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(template_id, line_no),
+                FOREIGN KEY(template_id) REFERENCES order_entry_templates(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS order_entry_template_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                template_id INTEGER NOT NULL,
+                version_number INTEGER NOT NULL,
+                header_json TEXT NOT NULL DEFAULT '{}',
+                lines_json TEXT NOT NULL DEFAULT '[]',
+                saved_by TEXT NOT NULL,
+                saved_at TEXT NOT NULL,
+                UNIQUE(template_id, version_number),
+                FOREIGN KEY(template_id) REFERENCES order_entry_templates(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_order_entry_templates_case
+                ON order_entry_templates(case_id, employee_id);
+            CREATE INDEX IF NOT EXISTS idx_order_entry_lines_template
+                ON order_entry_template_lines(template_id, line_no);
+            """
+        )
+
+        order_intake_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(order_intake_cases)").fetchall()
+        }
+        order_intake_migrations = {
+            "order_version": "TEXT NOT NULL DEFAULT ''",
+            "parent_order_number": "TEXT NOT NULL DEFAULT ''",
+            "workflow_stage": "TEXT NOT NULL DEFAULT 'mail_triage'",
+            "customer_match_status": "TEXT NOT NULL DEFAULT 'unmatched'",
+            "source_document_status": "TEXT NOT NULL DEFAULT 'pending'",
+            "mapping_status": "TEXT NOT NULL DEFAULT 'not_started'",
+            "erp_prepare_status": "TEXT NOT NULL DEFAULT 'not_started'",
+            "routing_source": "TEXT NOT NULL DEFAULT 'system'",
+            "routing_reason": "TEXT NOT NULL DEFAULT ''",
+            "routed_by": "TEXT NOT NULL DEFAULT ''",
+            "routed_at": "TEXT",
+            "routing_rule_id": "INTEGER",
+            "routing_state": "TEXT NOT NULL DEFAULT 'unrouted'",
+            "routing_matches_json": "TEXT NOT NULL DEFAULT '[]'",
+            "change_tags_json": "TEXT NOT NULL DEFAULT '[]'",
+            "completed_at": "TEXT",
+        }
+        for column, definition in order_intake_migrations.items():
+            if column not in order_intake_cols:
+                conn.execute(f"ALTER TABLE order_intake_cases ADD COLUMN {column} {definition}")
+        conn.execute("UPDATE order_intake_cases SET action_type = 'new_order' WHERE action_type = 'new'")
+        conn.execute("UPDATE order_intake_cases SET action_type = 'order_change' WHERE action_type IN ('modify', 'cancel')")
+        conn.execute("UPDATE order_intake_cases SET action_type = 'other' WHERE action_type = 'not_order'")
+        conn.execute("UPDATE order_intake_cases SET action_type = 'order_change' WHERE action_type = 'delivery'")
+        conn.execute("UPDATE order_intake_cases SET action_type = 'unclassified' WHERE action_type = 'other'")
+
         existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
         migrations = {
             "feature": "ALTER TABLE jobs ADD COLUMN feature TEXT NOT NULL DEFAULT 'fangzheng'",

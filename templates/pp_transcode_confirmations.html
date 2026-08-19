@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+{% block title %}PP人工确认 | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('main.pp_transcode_agent') }}">返回PP转码Agent</a>
+  <span>PP转码Agent / 任务 #{{ job.id }} / 人工确认</span>
+</div>
+
+<section class="hero pp-hero pp-confirm-hero">
+  <div>
+    <div class="panel-tag">PP 转码任务</div>
+    <h1>{{ job.source_filename }}</h1>
+    <p>首期仅保存待人工确认码值。确认仅用于本次任务，不会自动产生正式码；明确选择保存长期规则后，规则才会用于后续同类规格。</p>
+  </div>
+  <div class="pp-counts">
+    <span>待确认 <strong>{{ counts.pending }}</strong></span>
+    <span>本次已确认 <strong>{{ counts.confirmed }}</strong></span>
+    <span>暂不处理 <strong>{{ counts.skipped }}</strong></span>
+  </div>
+</section>
+
+<section class="pp-confirm-workspace">
+  <aside class="pp-confirm-sidebar">
+    <div class="pp-confirm-sidebar-head"><h2>转码记录</h2><span id="pp-record-position">0 / 0</span></div>
+    <div class="pp-confirm-filters" aria-label="记录筛选">
+      <button type="button" class="active" data-pp-scope="all">全部</button>
+      <button type="button" data-pp-scope="pending">待确认</button>
+      <button type="button" data-pp-scope="confirmed">已确认</button>
+      <button type="button" data-pp-scope="skipped">暂不处理</button>
+    </div>
+    <div id="pp-record-list" class="pp-record-list"></div>
+  </aside>
+  <main class="pp-confirm-list">
+{% for item in items %}
+  <article class="card pp-confirm-item {{ item.confirmation_status }}" data-record-id="{{ item.id }}" data-record-status="{{ item.confirmation_status }}" data-record-row="{{ item.excel_row }}" data-record-customer="{{ item.customer_name or '未填写客户' }}">
+    <div class="section-head">
+      <div><div class="step-tag">Excel 第 {{ item.excel_row }} 行</div><h2>{{ item.customer_name or '未填写客户' }}</h2></div>
+      <span class="pp-confirm-state">{{ {'pending':'待人工确认','confirmed':'本次已确认','skipped':'暂不处理'}.get(item.confirmation_status, item.confirmation_status) }}</span>
+    </div>
+    <div class="pp-confirm-context">
+      <div><span>客户规格</span><p>{{ item.spec }}</p></div>
+      <div><span>订单备注</span><p>{{ item.order_remark or '-' }}</p></div>
+    </div>
+    <div class="pp-code-box">
+      <span>原待人工确认码值</span>
+      <strong>{{ item.pending_code }}</strong>
+    </div>
+    <p class="pp-result-note">{{ item.summary }}</p>
+    <details>
+      <summary>查看字段识别依据</summary>
+      <div class="table-wrap"><table class="table"><thead><tr><th>字段</th><th>结果</th><th>识别方式</th><th>说明</th></tr></thead><tbody>
+      {% for field in item.field_evidence %}<tr><td>{{ field.field_label }}</td><td>{{ field.value }}</td><td>{{ field.source }}</td><td>{{ field.reason or '-' }}</td></tr>{% endfor %}
+      </tbody></table></div>
+    </details>
+    {% if item.confirmation_status == 'pending' %}
+    <form method="post" class="pp-confirm-actions">
+      <input type="hidden" name="item_id" value="{{ item.id }}">
+      <label class="pp-confirm-code-input">本次确认码值（27位）
+        <input name="confirmed_pending_code" value="{{ item.pending_code }}" minlength="27" maxlength="27" pattern="[A-Za-z0-9*]{27}" required>
+      </label>
+      <details class="pp-promote-rule">
+        <summary>保存为当前客户的长期规则</summary>
+        <label class="pp-promote-check"><input type="checkbox" name="save_as_rule" value="1"> 我确认将以下内容用于后续同类客户规格</label>
+        <div class="pp-promote-grid">
+          <label>维护字段
+            <select name="rule_target_field">
+              {% for field in customer_fields %}<option value="{{ field.key }}">{{ field.label }}</option>{% endfor %}
+            </select>
+          </label>
+          <label>长期规则结果
+            <input name="rule_output_value" placeholder="例如 A、01、ABC">
+          </label>
+          <label>触发字段
+            <select name="rule_condition_field">
+              <option value="客户规格">客户规格</option><option value="订单备注">订单备注</option><option value="胶系">胶系</option><option value="玻布规格">玻布规格</option><option value="PP长度">PP长度</option><option value="树脂含量">树脂含量</option>
+            </select>
+          </label>
+          <label>判断方式
+            <select name="rule_condition_operator"><option value="contains">包含</option><option value="equals">等于</option><option value="not_contains">不包含</option></select>
+          </label>
+          <label class="pp-promote-wide">触发内容
+            <input name="rule_condition_value" placeholder="例如 NY2150、汽车专用、106">
+          </label>
+        </div>
+      </details>
+      <div class="pp-confirm-command-bar">
+        <button type="submit" name="action" value="skip" class="secondary" formnovalidate>暂不处理</button>
+        <button type="submit" name="action" value="confirm">确认本次码值</button>
+      </div>
+    </form>
+    {% else %}
+      {% if item.confirmation_status == 'confirmed' %}
+      <p class="pp-confirmed-code">本次确认码值：<strong>{{ item.confirmed_pending_code or item.pending_code }}</strong></p>
+      {% endif %}
+      <p class="pp-confirmed-note">{{ item.confirmation_basis or '已完成本次处理。' }}</p>
+    {% endif %}
+  </article>
+{% else %}
+  <section class="card empty-state">该任务没有可确认的 PP 规格行。</section>
+{% endfor %}
+    <div class="pp-confirm-nav">
+      <button type="button" class="icon-command" id="pp-record-prev" title="上一条" aria-label="上一条">←</button>
+      <button type="button" class="icon-command" id="pp-record-next" title="下一条" aria-label="下一条">→</button>
+    </div>
+  </main>
+</section>
+<style>
+.pp-confirm-workspace { display: grid; grid-template-columns: minmax(250px, 320px) minmax(0, 1fr); gap: 16px; align-items: start; }
+.pp-confirm-sidebar { position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow: hidden; border: 1px solid #d9e3f3; background: #fff; }
+.pp-confirm-sidebar-head { display: flex; align-items: center; justify-content: space-between; padding: 18px; border-bottom: 1px solid #d9e3f3; }
+.pp-confirm-sidebar-head h2 { margin: 0; font-size: 20px; }
+.pp-confirm-filters { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; padding: 12px; border-bottom: 1px solid #d9e3f3; }
+.pp-confirm-filters button { min-height: 38px; border: 1px solid #cbd9f3; border-radius: 6px; background: #fff; color: #334155; }
+.pp-confirm-filters button.active { border-color: #347cf7; background: #eaf2ff; color: #1459c7; font-weight: 700; }
+.pp-record-list { max-height: calc(100vh - 180px); overflow-y: auto; }
+.pp-record-button { display: grid; gap: 4px; width: 100%; padding: 14px 18px; border: 0; border-bottom: 1px solid #e5ebf5; background: #fff; color: #172554; text-align: left; }
+.pp-record-button:hover, .pp-record-button.active { background: #edf4ff; }
+.pp-record-button.active { box-shadow: inset 3px 0 #347cf7; }
+.pp-record-button span { color: #64748b; }
+.pp-record-button em { font-style: normal; font-size: 13px; color: #b36a00; }
+.pp-confirm-list { min-width: 0; }
+.pp-confirm-item { display: none; }
+.pp-confirm-item.active { display: block; }
+.pp-confirm-nav { display: flex; gap: 8px; margin-top: 12px; }
+.pp-promote-rule { grid-column: 1 / -1; border: 1px solid #cbd9f3; border-radius: 8px; padding: 10px 14px; background: #f8fbff; }
+.pp-promote-rule summary { width: fit-content; cursor: pointer; color: #1d5fbf; font-weight: 700; }
+.pp-promote-check { display: block; margin: 12px 0 8px; color: #334155; }
+.pp-promote-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; }
+.pp-promote-grid label { display: grid; gap: 5px; color: #475569; font-size: 14px; }
+.pp-promote-grid input, .pp-promote-grid select { min-height: 38px; padding: 7px 10px; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; }
+.pp-promote-wide { grid-column: 1 / -1; }
+.pp-code-box { display: grid; gap: 5px; }
+.pp-code-box span { color: #64748b; font-size: 13px; }
+.pp-confirm-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px 18px; align-items: end; }
+.pp-confirm-code-input { display: grid; gap: 5px; color: #334155; font-weight: 700; }
+.pp-confirm-code-input input { min-height: 42px; border: 1px solid #8fb5ef; border-radius: 6px; padding: 8px 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0; }
+.pp-confirm-command-bar { grid-column: 2; grid-row: 1; display: flex; justify-content: flex-end; align-items: center; gap: 10px; }
+.pp-confirm-command-bar button { min-width: 128px; }
+.pp-confirmed-code { color: #166534; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+@media (max-width: 900px) { .pp-confirm-workspace { grid-template-columns: 1fr; } .pp-confirm-sidebar { position: static; max-height: none; } .pp-record-list { max-height: 280px; } }
+@media (max-width: 720px) { .pp-confirm-actions { grid-template-columns: 1fr; } .pp-promote-grid { grid-template-columns: 1fr; } .pp-promote-wide { grid-column: auto; } .pp-confirm-command-bar { grid-column: 1; grid-row: auto; justify-content: stretch; } .pp-confirm-command-bar button { flex: 1; min-width: 0; } }
+</style>
+<script>
+  const ppCards = Array.from(document.querySelectorAll('.pp-confirm-item'));
+  const ppList = document.getElementById('pp-record-list');
+  const ppPosition = document.getElementById('pp-record-position');
+  const ppScopeButtons = Array.from(document.querySelectorAll('[data-pp-scope]'));
+  let ppScope = 'all';
+  let ppVisible = [];
+  let ppIndex = 0;
+  const ppStatusLabels = {pending:'待人工确认', confirmed:'本次已确认', skipped:'暂不处理'};
+
+  function ppRender() {
+    ppVisible = ppCards.filter(card => ppScope === 'all' || card.dataset.recordStatus === ppScope);
+    if (ppIndex >= ppVisible.length) ppIndex = Math.max(0, ppVisible.length - 1);
+    ppCards.forEach(card => card.classList.remove('active'));
+    ppList.innerHTML = '';
+    ppVisible.forEach((card, index) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = `pp-record-button ${index === ppIndex ? 'active' : ''}`;
+      const row = document.createElement('strong');
+      row.textContent = `第 ${card.dataset.recordRow} 行`;
+      const customer = document.createElement('span');
+      customer.textContent = card.dataset.recordCustomer;
+      const status = document.createElement('em');
+      status.textContent = ppStatusLabels[card.dataset.recordStatus] || card.dataset.recordStatus;
+      button.append(row, customer, status);
+      button.addEventListener('click', () => { ppIndex = index; ppRender(); });
+      ppList.appendChild(button);
+    });
+    if (ppVisible.length) ppVisible[ppIndex].classList.add('active');
+    ppPosition.textContent = ppVisible.length ? `${ppIndex + 1} / ${ppVisible.length}` : '0 / 0';
+    document.getElementById('pp-record-prev').disabled = ppIndex <= 0;
+    document.getElementById('pp-record-next').disabled = ppIndex >= ppVisible.length - 1;
+  }
+  ppScopeButtons.forEach(button => button.addEventListener('click', () => {
+    ppScope = button.dataset.ppScope;
+    ppIndex = 0;
+    ppScopeButtons.forEach(item => item.classList.toggle('active', item === button));
+    ppRender();
+  }));
+  document.getElementById('pp-record-prev').addEventListener('click', () => { if (ppIndex > 0) { ppIndex -= 1; ppRender(); } });
+  document.getElementById('pp-record-next').addEventListener('click', () => { if (ppIndex < ppVisible.length - 1) { ppIndex += 1; ppRender(); } });
+  ppRender();
+</script>
+{% endblock %}

@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}订单详情 | 邮件自动化转码Agent{% endblock %}
+{% block content %}
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('mail_transcode.orders_page') }}">返回订单任务</a>
+  <span>订单任务 #{{ task.id }}</span>
+</div>
+
+<section class="feature-hero">
+  <div class="hero-watermark feature-mark">TASK</div>
+  <div class="feature-hero-copy">
+    <div class="panel-tag">订单详情</div>
+    <h1>{{ task.customer_name or '未识别客户' }}</h1>
+    <p>{{ task.subject }}</p>
+  </div>
+  <div class="feature-metrics">
+    <div>
+      <span>字段状态</span>
+      <strong>{{ '完整' if task.field_status == 'complete' else '缺字段' }}</strong>
+    </div>
+    <div>
+      <span>核实状态</span>
+      <strong>{{ '已核实' if task.review_status == 'reviewed' else '待人工核实' }}</strong>
+    </div>
+    <div>
+      <span>转码状态</span>
+      <strong>{{ task.transcode_status }}</strong>
+    </div>
+  </div>
+</section>
+
+<section class="split-layout">
+  <div class="work-column">
+    <article class="card task-card">
+      <div class="step-tag">字段编辑</div>
+      <h2>订单字段</h2>
+      <form method="post" action="{{ url_for('mail_transcode.review_order', task_id=task.id) }}" class="form-grid">
+        <div class="result-actions">
+          <label class="mail-field" style="flex:1;">
+            <span>客户代码</span>
+            <input type="text" name="customer_code" value="{{ task.customer_code }}">
+          </label>
+          <label class="mail-field" style="flex:1;">
+            <span>客户名称</span>
+            <input type="text" name="customer_name" value="{{ task.customer_name }}">
+          </label>
+        </div>
+        <label>
+          <span>订单号</span>
+          <input type="text" name="order_number" value="{{ task.order_number }}">
+        </label>
+        <label>
+          <span>客户规格</span>
+          <textarea name="spec" rows="4">{{ task.spec }}</textarea>
+        </label>
+        <label>
+          <span>订单备注</span>
+          <textarea name="remark" rows="4">{{ task.remark }}</textarea>
+        </label>
+        <button type="submit">保存字段</button>
+      </form>
+    </article>
+
+    <article class="card task-card">
+      <div class="step-tag">转码结果</div>
+      <h2>转码状态</h2>
+      <table class="table">
+        <tbody>
+          <tr><th>状态</th><td>{{ task.transcode_status }}</td></tr>
+          <tr><th>码值</th><td>{{ task.transcode_code or '-' }}</td></tr>
+          <tr><th>置信度</th><td>{{ task.transcode_confidence }}</td></tr>
+          <tr><th>说明</th><td>{{ task.transcode_note or '-' }}</td></tr>
+        </tbody>
+      </table>
+    </article>
+  </div>
+
+  <div class="work-column">
+    <article class="card task-card">
+      <div class="step-tag">来源</div>
+      <h2>邮件信息</h2>
+      <table class="table">
+        <tbody>
+          <tr><th>发件人</th><td>{{ task.sender or '-' }}</td></tr>
+          <tr><th>时间</th><td>{{ task.sent_at or '-' }}</td></tr>
+          <tr><th>订单号</th><td>{{ task.order_number or '-' }}</td></tr>
+        </tbody>
+      </table>
+    </article>
+
+    <article class="card task-card">
+      <div class="section-head">
+        <div>
+          <div class="step-tag">附件</div>
+          <h2>邮件附件</h2>
+        </div>
+        <form method="post" action="{{ url_for('mail_transcode.parse_attachments', task_id=task.id) }}">
+          <button type="submit">解析附件</button>
+        </form>
+      </div>
+      <div class="table-scroll">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>文件名</th>
+              <th>类型</th>
+              <th>解析状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for attachment in attachments %}
+            <tr>
+              <td>{{ attachment.filename }}</td>
+              <td>{{ '正文内嵌' if attachment.is_inline else '附件' }}</td>
+              <td><span class="status">{{ attachment.parse_status }}</span></td>
+            </tr>
+            {% else %}
+            <tr><td colspan="3">无附件</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </article>
+  </div>
+</section>
+{% endblock %}

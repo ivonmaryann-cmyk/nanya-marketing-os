@@ -7,7 +7,8 @@
     <link rel="icon" href="{{ url_for('static', filename='brand/favicon.ico') }}" sizes="any">
     <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='brand/favicon-32.png') }}">
     <link rel="apple-touch-icon" href="{{ url_for('static', filename='brand/favicon-180.png') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=20260803-model-key-toggle">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=20260803-model-key-toggle">
+  {% block extra_head %}{% endblock %}
   </head>
   <body>
     <div class="shell {% if not session.employee_id %}shell-login{% endif %}">
@@ -23,10 +24,14 @@
             <div class="brand-product-name">{{ platform_name }} {{ platform_version }}</div>
           </div>
           <nav class="nav" aria-label="主导航">
-            <a href="{{ url_for('main.dashboard') }}" class="{% if request.endpoint == 'main.dashboard' %}active{% endif %}">
+      <a href="{{ url_for('main.dashboard') }}" class="{% if request.endpoint == 'main.dashboard' %}active{% endif %}">
               <span class="nav-icon nav-icon-dashboard" aria-hidden="true"></span>
               <span>功能中心</span>
-            </a>
+      </a>
+      <a href="{{ url_for('main.my_settings') }}" class="{% if request.endpoint in ['main.my_settings', 'mail_transcode.accounts_page'] %}active{% endif %}">
+        <span class="nav-icon nav-icon-admin" aria-hidden="true"></span>
+        <span>我的配置</span>
+      </a>
             <a href="{{ url_for('main.history') }}" class="{% if request.endpoint == 'main.history' %}active{% endif %}">
               <span class="nav-icon nav-icon-history" aria-hidden="true"></span>
               <span>历史记录</span>
