@@ -114,6 +114,33 @@ B_HEADERS = [
     "解析状态",
 ]
 
+B_WITH_PRODUCT_HEADERS = [
+    "品名",
+    "品号",
+    "规格",
+    "上海_江西",
+    "胶系",
+    "厚度",
+    "铜箔",
+    "单重",
+    "数量",
+    "折合大板",
+    "是否光板",
+    "规格胶系",
+    "厚度mm",
+    "厚度类型",
+    "铜厚规格",
+    "尺寸长",
+    "尺寸宽",
+    "尺寸",
+    "铜箔类型",
+    "基板等级",
+    "颜色",
+    "水印",
+    "特殊备注",
+    "解析状态",
+]
+
 REQUIRED_HEADERS = {
     "品号",
     "品名",
@@ -324,13 +351,17 @@ def run_inventory_detail_job(job_id: int, employee_id: str) -> None:
             rows_by_grade, stats = load_inventory_rows(shanghai_path, jiangxi_path, job_id=job_id)
             a_path = job_dir / f"无订单库存明细_{date_text}_A级_胶系分类导航版.xlsx"
             b_path = job_dir / f"无订单库存明细_{date_text}_B级_胶系分类导航版.xlsx"
+            b_with_product_path = job_dir / f"无订单库存明细_{date_text}_B级_含品名品号_胶系分类导航版.xlsx"
             append_job_log(job_id, f"开始生成A级导航版，共 {len(rows_by_grade['A'])} 行。")
             build_inventory_workbook(rows_by_grade["A"], "A", a_path)
             append_job_log(job_id, f"A级导航版已生成：{a_path.name}")
             append_job_log(job_id, f"开始生成B级导航版，共 {len(rows_by_grade['B'])} 行。")
             build_inventory_workbook(rows_by_grade["B"], "B", b_path)
             append_job_log(job_id, f"B级导航版已生成：{b_path.name}")
-            result_files = {"a": str(a_path), "b": str(b_path)}
+            append_job_log(job_id, f"开始生成B级含品名品号导航版，共 {len(rows_by_grade['B'])} 行。")
+            build_inventory_workbook(rows_by_grade["B"], "B", b_with_product_path, include_b_product_fields=True)
+            append_job_log(job_id, f"B级含品名品号导航版已生成：{b_with_product_path.name}")
+            result_files = {"a": str(a_path), "b": str(b_path), "b-with-product": str(b_with_product_path)}
             total_rows = len(rows_by_grade["A"]) + len(rows_by_grade["B"])
             issue_count = sum(1 for rows in rows_by_grade.values() for row in rows if row.parse_status != "正常")
             filtered_count = stats["shanghai"]["filtered"] + stats["jiangxi"]["filtered"]
@@ -399,7 +430,7 @@ def load_inventory_input_manifest(job: Any) -> dict[str, Any]:
 
 def get_inventory_result_path(job: Any, grade: str) -> Path | None:
     grade_key = grade.strip().lower()
-    if grade_key not in {"a", "b", "plan-a"}:
+    if grade_key not in {"a", "b", "b-with-product", "plan-a"}:
         return None
     manifest = load_inventory_result_manifest(job)
     path_value = (manifest.get("files") or {}).get(grade_key)
@@ -1017,13 +1048,22 @@ def build_inventory_workbook(
     output_path: str | Path,
     *,
     workbook_mode: str = WAREHOUSE_MODE,
+    include_b_product_fields: bool = False,
 ) -> Path:
     grade = grade.upper()
     if grade not in {"A", "B"}:
         raise ValueError("库存等级只能是 A 或 B")
     workbook_mode = normalize_inventory_mode(workbook_mode)
     profile = "plan_a" if workbook_mode == PLAN_A_MODE else "a" if grade == "A" else "b"
-    headers = PLAN_A_HEADERS if profile == "plan_a" else A_HEADERS if profile == "a" else B_HEADERS
+    headers = (
+        PLAN_A_HEADERS
+        if profile == "plan_a"
+        else A_HEADERS
+        if profile == "a"
+        else B_WITH_PRODUCT_HEADERS
+        if include_b_product_fields
+        else B_HEADERS
+    )
 
     workbook = Workbook()
     workbook.remove(workbook.active)
@@ -1042,11 +1082,11 @@ def build_inventory_workbook(
         sheet_name = _safe_sheet_name(glue, used_sheet_names)
         sheet_map[glue] = sheet_name
         sheet = workbook.create_sheet(sheet_name)
-        _write_glue_sheet(sheet, glue, glue_rows, headers, profile, table_index)
+        _write_glue_sheet(sheet, glue, glue_rows, headers, profile, table_index, include_b_product_fields=include_b_product_fields)
         table_index += 1
 
     all_sheet = workbook.create_sheet("全部明细")
-    _write_all_sheet(all_sheet, rows, headers, profile, table_index)
+    _write_all_sheet(all_sheet, rows, headers, profile, table_index, include_b_product_fields=include_b_product_fields)
     table_index += 1
 
     summary_sheet = workbook.create_sheet("胶系厚度汇总")
@@ -1055,12 +1095,12 @@ def build_inventory_workbook(
 
     light_rows = [row for row in rows if row.is_light == "是"]
     light_sheet = workbook.create_sheet("光板明细")
-    _write_special_sheet(light_sheet, "光板明细", light_rows, headers, profile, table_index)
+    _write_special_sheet(light_sheet, "光板明细", light_rows, headers, profile, table_index, include_b_product_fields=include_b_product_fields)
     table_index += 1
 
     exception_rows = [row for row in rows if row.parse_status != "正常"]
     exception_sheet = workbook.create_sheet("异常待确认")
-    _write_special_sheet(exception_sheet, "异常待确认", exception_rows, headers, profile, table_index)
+    _write_special_sheet(exception_sheet, "异常待确认", exception_rows, headers, profile, table_index, include_b_product_fields=include_b_product_fields)
 
     _write_dashboard(dashboard, rows, glue_items, sheet_map, profile, len(light_rows), len(exception_rows))
     workbook.calculation.fullCalcOnLoad = True
@@ -1117,6 +1157,8 @@ def _write_glue_sheet(
     headers: list[str],
     profile: str,
     table_index: int,
+    *,
+    include_b_product_fields: bool = False,
 ) -> None:
     last_col = len(headers)
     primary = NAVY if profile != "b" else TEAL
@@ -1159,21 +1201,29 @@ def _write_glue_sheet(
 
     _write_header(sheet, 4, headers)
     for output_row in rows:
-        sheet.append(_row_values(output_row, profile))
+        sheet.append(_row_values(output_row, profile, include_b_product_fields=include_b_product_fields))
     _style_data_rows(sheet, 5, sheet.max_row, headers)
     _add_table(sheet, f"GlueDetailTable{table_index}", 4, sheet.max_row, last_col)
-    _set_detail_widths(sheet, profile)
+    _set_detail_widths(sheet, profile, include_b_product_fields=include_b_product_fields)
 
 
-def _write_all_sheet(sheet, rows: list[InventoryRow], headers: list[str], profile: str, table_index: int) -> None:
+def _write_all_sheet(
+    sheet,
+    rows: list[InventoryRow],
+    headers: list[str],
+    profile: str,
+    table_index: int,
+    *,
+    include_b_product_fields: bool = False,
+) -> None:
     sheet.sheet_view.showGridLines = False
     sheet.freeze_panes = "D2" if profile != "b" else "B2"
     _write_header(sheet, 1, headers)
     for output_row in rows:
-        sheet.append(_row_values(output_row, profile))
+        sheet.append(_row_values(output_row, profile, include_b_product_fields=include_b_product_fields))
     _style_data_rows(sheet, 2, sheet.max_row, headers)
     _add_table(sheet, f"InventoryAllTable{table_index}", 1, sheet.max_row, len(headers))
-    _set_detail_widths(sheet, profile)
+    _set_detail_widths(sheet, profile, include_b_product_fields=include_b_product_fields)
 
 
 def _write_special_sheet(
@@ -1183,6 +1233,8 @@ def _write_special_sheet(
     headers: list[str],
     profile: str,
     table_index: int,
+    *,
+    include_b_product_fields: bool = False,
 ) -> None:
     last_col = len(headers)
     primary = NAVY if profile != "b" else TEAL
@@ -1200,10 +1252,10 @@ def _write_special_sheet(
         sheet.cell(2, 1).font = Font(name="等线", size=10, color=MUTED)
     _write_header(sheet, header_row, headers)
     for output_row in rows:
-        sheet.append(_row_values(output_row, profile))
+        sheet.append(_row_values(output_row, profile, include_b_product_fields=include_b_product_fields))
     _style_data_rows(sheet, header_row + 1, sheet.max_row, headers)
     _add_table(sheet, f"InventorySpecialTable{table_index}", header_row, sheet.max_row, last_col)
-    _set_detail_widths(sheet, profile)
+    _set_detail_widths(sheet, profile, include_b_product_fields=include_b_product_fields)
 
 
 def _write_thickness_summary(sheet, rows: list[InventoryRow], profile: str, table_index: int) -> None:
@@ -1410,7 +1462,7 @@ def _write_dashboard(
     sheet.sheet_properties.pageSetUpPr.fitToPage = True
 
 
-def _row_values(row: InventoryRow, profile: str) -> list[Any]:
+def _row_values(row: InventoryRow, profile: str, *, include_b_product_fields: bool = False) -> list[Any]:
     common = [
         row.spec,
         row.plant,
@@ -1435,6 +1487,33 @@ def _row_values(row: InventoryRow, profile: str) -> list[Any]:
         row.parse_status,
     ]
     if profile == "b":
+        if include_b_product_fields:
+            return [
+                row.product_name,
+                row.product_no,
+                row.spec,
+                row.plant,
+                row.glue,
+                row.thickness_raw,
+                row.copper_raw,
+                row.unit_weight,
+                _excel_number(row.quantity),
+                _excel_number(row.folded_large_quantity),
+                row.is_light,
+                row.spec_glue,
+                _excel_number(row.thickness_mm) if row.thickness_mm is not None else "",
+                row.thickness_type,
+                row.copper_spec,
+                _excel_number(row.length) if row.length is not None else "",
+                _excel_number(row.width) if row.width is not None else "",
+                row.size_text,
+                row.copper_type,
+                row.spec_grade,
+                row.color,
+                row.watermark,
+                row.special_note,
+                row.parse_status,
+            ]
         return common
     if profile == "plan_a":
         return [
@@ -1546,11 +1625,20 @@ def _add_table(sheet, name: str, header_row: int, max_row: int, max_col: int) ->
     sheet.add_table(table)
 
 
-def _set_detail_widths(sheet, profile: str) -> None:
+def _set_detail_widths(sheet, profile: str, *, include_b_product_fields: bool = False) -> None:
     widths_a = [24, 15, 58, 12, 16, 10, 12, 10, 12, 16, 10, 15, 11, 12, 18, 11, 11, 18, 14, 11, 11, 12, 30, 38]
     widths_plan_a = [24, 15, 58, 18, 12, 16, 10, 12, 10, 12, 16, 10, 15, 11, 12, 18, 11, 11, 18, 14, 11, 11, 12, 30, 38]
     widths_b = [58, 12, 16, 10, 12, 12, 16, 10, 15, 11, 12, 18, 11, 11, 18, 14, 11, 11, 12, 30, 38]
-    widths = widths_plan_a if profile == "plan_a" else widths_a if profile == "a" else widths_b
+    widths_b_with_product = widths_a
+    widths = (
+        widths_plan_a
+        if profile == "plan_a"
+        else widths_a
+        if profile == "a"
+        else widths_b_with_product
+        if include_b_product_fields
+        else widths_b
+    )
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[_column_letter(index)].width = width
 

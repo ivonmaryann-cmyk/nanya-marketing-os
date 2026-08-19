@@ -871,6 +871,7 @@ def _decorate_job(job) -> dict:
             expected_results = [
                 {"key": "a", "label": "仓库A级结果"},
                 {"key": "b", "label": "仓库B级结果"},
+                {"key": "b-with-product", "label": "仓库B级含品名品号"},
             ]
         available_keys = set((result_manifest.get("files") or {}).keys())
         data["inventory_results"] = [
