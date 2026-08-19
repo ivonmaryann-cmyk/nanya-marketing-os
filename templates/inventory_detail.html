@@ -237,6 +237,18 @@
     const logEl = document.getElementById("live-log");
     const barEl = document.getElementById("live-bar");
     const downloadEl = document.getElementById("live-download");
+    function renderInventoryDownloads(results) {
+      const box = downloadEl.querySelector(".result-ready");
+      if (!box || !Array.isArray(results) || !results.length) return;
+      box.innerHTML = "";
+      results.forEach(result => {
+        const link = document.createElement("a");
+        link.className = "primary-link";
+        link.href = `/inventory-detail/jobs/${jobId}/download/${encodeURIComponent(result.key)}`;
+        link.textContent = result.label;
+        box.appendChild(link);
+      });
+    }
     async function refreshJob() {
       const response = await fetch(`/api/jobs/${jobId}`);
       if (!response.ok) return;
@@ -250,7 +262,10 @@
       const total = Number(data.total_rows || 0);
       const current = Number(data.current_row || 0);
       barEl.style.width = total ? `${Math.min(100, Math.round(current / total * 100))}%` : "12%";
-      if (data.status === "completed") downloadEl.classList.remove("hidden");
+      if (data.status === "completed") {
+        renderInventoryDownloads(data.inventory_results);
+        downloadEl.classList.remove("hidden");
+      }
       if (["completed", "failed", "canceled"].includes(data.status)) clearInterval(timer);
     }
     const timer = setInterval(refreshJob, 1500);
