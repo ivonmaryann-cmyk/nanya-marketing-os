@@ -183,6 +183,21 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertEqual(second["values"]["quantity"], "20")
         self.assertEqual(len(_merge_initial_rows([first, second])), 2)
 
+    def test_pipeline_mapping_keeps_a_real_tax_inclusive_unit_price(self) -> None:
+        line = _line_from_pipeline_row(
+            {
+                "original": {
+                    "物料描述 Description": "测试规格",
+                    "数量 Quantity": "2",
+                    "含税单价 Tax inclusive Unit Price": "12.50",
+                },
+                "standard": {"数量": "2"},
+            },
+            "PO123456", "附件：采购订单.pdf", "识别明细第 2 行", 1,
+        )
+        self.assertEqual(line["values"]["price_before_tax"], "")
+        self.assertEqual(line["values"]["unit_price"], "12.50")
+
     def test_batch_reextract_keeps_header_and_backs_up_before_replacing_lines(self) -> None:
         get_or_create_template(self.case_id, "employee-a")
         save_template(self.case_id, "employee-a", {

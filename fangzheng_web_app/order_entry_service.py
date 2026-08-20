@@ -254,6 +254,25 @@ def _value_by_alias(mapping: dict[str, Any], *aliases: str) -> Any:
     return ""
 
 
+def _tax_inclusive_unit_price(mapping: dict[str, Any]) -> Any:
+    excluded_markers = {
+        "不含税",
+        "未税",
+        "税前",
+        "nottaxinclusive",
+        "taxexclusive",
+        "excludingtax",
+        "excltax",
+        "withouttax",
+    }
+    eligible = {
+        key: value
+        for key, value in mapping.items()
+        if not any(marker in _compact_key(key) for marker in excluded_markers)
+    }
+    return _value_by_alias(eligible, "含税单价", "单价", "Unit Price")
+
+
 def _canonical_order_number(header: dict[str, Any]) -> str:
     """Keep the actual PO token and discard surrounding document decorations."""
     for key in (
@@ -324,7 +343,7 @@ def _line_from_pipeline_row(row: dict[str, Any], order_number: str, label: str, 
     standard = row.get("standard") or {}
     raw_spec = _value_by_alias(original, "物料描述", "Material Description", "名称规格", "客户规格", "物料规格", "规格", "型号")
     raw_before_tax_price = _value_by_alias(original, "不含税单价", "未税单价", "税前单价", "Not tax inclusive Unit Price")
-    raw_unit_price = _value_by_alias(original, "含税单价", "单价", "Unit Price")
+    raw_unit_price = _tax_inclusive_unit_price(original)
     raw_quantity_unit = _value_by_alias(original, "单位", "计量单位", "Unit", "UOM")
     raw_material_name = _value_by_alias(original, "物料品名", "物料名称", "Material Name") or standard.get("物料名称") or ""
     values = {
