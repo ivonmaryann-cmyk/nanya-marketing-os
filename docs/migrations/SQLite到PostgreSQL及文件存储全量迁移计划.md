@@ -764,7 +764,7 @@ fangzheng_web_app/database/
 - 负责人：Codex
 - 开始时间：2026-08-20 17:20:00 +08:00
 - 分支：`feature/postgresql-automation-migration`
-- 执行边界：仅开发切换准备和双人确认保护；未执行生产切换
+- 执行边界：仅开发切换准备和三人职责分离保护；未执行生产切换
 - 修改文件：`automation_migration/cutover.py`、`cli.py`、`config/automation_preflight.example.json`
 - 测试结果：准入失败关闭、三名不同负责人、备份哈希和授权令牌保护测试通过；未连接PostgreSQL
 - 数据核对结果：真实切换前备份和20表最终核对尚未执行
@@ -785,7 +785,8 @@ fangzheng_web_app/database/
   12. 持续监控错误、性能和数据差异。
 - 实际切换时间：待填写
 - 切换结果：待填写
-- Git提交/部署版本：待填写
+- Git提交：`c8f9d97`
+- 部署版本：待填写（未部署、未切换）
 
 ### DB-17 回滚能力
 
@@ -811,7 +812,8 @@ fangzheng_web_app/database/
   8. 保存故障现场和日志。
 - 要求：正式上线前至少完整演练一次。
 - 演练时间：待填写
-- 演练结果：待填写
+- 演练结果：待填写（仅完成隔离SQLite单元测试）
+- Git提交：`c8f9d97`
 
 ### DB-18 稳定观察
 
@@ -837,7 +839,8 @@ fangzheng_web_app/database/
   - 文件下载和路径；
   - 用户数据隔离。
 - SQLite原表至少保留只读30天，不立即删除。
-- 观察结论：待填写
+- 观察结论：待填写（正式观察尚未开始）
+- Git提交：`c8f9d97`
 
 ---
 
@@ -1230,6 +1233,7 @@ order-entry/{case_id}/exports/{export_id}.xlsx
 | 2026-08-20 | Codex | M0 | 完成全量迁移评估并创建执行计划 | 文档v1.0 | 已完成 | 尚未修改代码和数据库 |
 | 2026-08-20 | Codex | DB-01至DB-11、FS-01 | 完成第一阶段开发准备、SQLite审计和迁移验证工具 | `a842e12` / `0001_automation_schema.sql` | 待验证 | 定向40项通过、PG集成1项跳过；未切换读写、未迁移附件、未修改SQLite |
 | 2026-08-20 | Codex | DB-12至DB-15 | 完成Outbox/Inbox、影子比较、只读基准和准入检查开发 | `2467e15` / `0002_shadow_sync.sql` | 待验证 | 全套56项通过、PG集成1项跳过；准入检查有16个阻塞项，DB-16保持未开始 |
+| 2026-08-20 | Codex | DB-16至DB-18 | 完成切换准备、变更捕获、幂等回放和观察门禁开发 | `c8f9d97` / `0003_cutover_rollback.sql` | 待验证 | 全套63项通过、PG集成1项跳过；未切换、未回放生产数据、未开始正式观察 |
 
 ---
 
