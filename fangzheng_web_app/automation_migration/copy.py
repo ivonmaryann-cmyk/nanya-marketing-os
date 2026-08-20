@@ -38,24 +38,28 @@ def copy_snapshot(snapshot: Path, target: Any) -> dict[str, int]:
     with closing(sqlite3.connect(snapshot)) as source:
         source.row_factory = sqlite3.Row
         source.execute("PRAGMA query_only=ON")
-        for table in TABLES:
-            columns = _columns(source, table)
-            rows = source.execute(f"SELECT * FROM {_quote(table)}").fetchall()
-            if rows:
-                target.executemany(_upsert_sql(table, columns), [tuple(row[column] for column in columns) for row in rows])
-            counts[table] = len(rows)
+        with target.cursor() as cursor:
+            for table in TABLES:
+                columns = _columns(source, table)
+                rows = source.execute(f"SELECT * FROM {_quote(table)}").fetchall()
+                if rows:
+                    cursor.executemany(
+                        _upsert_sql(table, columns),
+                        [tuple(row[column] for column in columns) for row in rows],
+                    )
+                counts[table] = len(rows)
 
-        metadata_rows = source.execute(
-            "SELECT key, value FROM settings WHERE "
-            "key LIKE 'order_mail_rule_%' OR key LIKE 'order_change_%' OR key LIKE 'order_intake_rule_engine_%'"
-        ).fetchall()
-        if metadata_rows:
-            target.executemany(
-                "INSERT INTO automation_metadata(key,value,updated_at) VALUES (%s,%s,%s) "
-                "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at",
-                [(row["key"], row["value"], row["value"]) for row in metadata_rows],
-            )
-        counts["automation_metadata"] = len(metadata_rows)
+            metadata_rows = source.execute(
+                "SELECT key, value FROM settings WHERE "
+                "key LIKE 'order_mail_rule_%' OR key LIKE 'order_change_%' OR key LIKE 'order_intake_rule_engine_%'"
+            ).fetchall()
+            if metadata_rows:
+                cursor.executemany(
+                    "INSERT INTO automation_metadata(key,value,updated_at) VALUES (%s,%s,%s) "
+                    "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at",
+                    [(row["key"], row["value"], row["value"]) for row in metadata_rows],
+                )
+            counts["automation_metadata"] = len(metadata_rows)
     _reset_identity_sequences(target)
     return counts
 

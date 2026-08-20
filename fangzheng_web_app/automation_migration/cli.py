@@ -75,7 +75,10 @@ def rollback_test_target(confirm: str) -> None:
         target.execute("DROP TABLE IF EXISTS automation_metadata CASCADE")
         target.execute("DROP TABLE IF EXISTS automation_shadow_runs CASCADE")
         target.execute("DROP TABLE IF EXISTS automation_migration_inbox CASCADE")
+        target.execute("DROP TABLE IF EXISTS automation_change_log CASCADE")
+        target.execute("DROP TABLE IF EXISTS automation_runtime_flags CASCADE")
         target.execute("DROP TABLE IF EXISTS automation_schema_migrations CASCADE")
+        target.execute("DROP FUNCTION IF EXISTS automation_capture_change() CASCADE")
 
 
 def _write_reports(result: dict, report_path: Path) -> None:

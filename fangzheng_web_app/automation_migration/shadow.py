@@ -17,7 +17,7 @@ from .outbox import ensure_sqlite_outbox
 
 
 METRICS = {
-    "mail_date_counts": "SELECT substr(received_at,1,10) day,COUNT(*) total FROM mail_messages GROUP BY day ORDER BY day",
+    "mail_date_counts": "SELECT substr(received_at,1,10) AS date_key,COUNT(*) total FROM mail_messages GROUP BY date_key ORDER BY date_key",
     "mail_category_counts": "SELECT is_order,COUNT(*) total FROM mail_messages GROUP BY is_order ORDER BY is_order",
     "mail_list_order": "SELECT id,received_at FROM mail_messages ORDER BY received_at DESC,id DESC",
     "case_workflow_counts": "SELECT status,action_type,workflow_stage,COUNT(*) total FROM order_intake_cases GROUP BY status,action_type,workflow_stage ORDER BY status,action_type,workflow_stage",
