@@ -54,7 +54,9 @@ class PostgresConnectionAdapter:
 
     def executemany(self, sql: str, params_seq, *, postgres_sql: str | None = None):
         statement = postgres_sql if postgres_sql is not None else qmark_to_pyformat(sql)
-        return self._connection.executemany(statement, params_seq)
+        cursor = self._connection.cursor()
+        cursor.executemany(statement, params_seq)
+        return PostgresResultAdapter(cursor, False)
 
 
 _pool = None
