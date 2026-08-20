@@ -311,6 +311,7 @@ def simulate_routing_rule(rule: dict[str, Any], employee_id: str, account_id: in
 
 SCOPE_LABELS = {"subject": "邮件主题", "body": "邮件正文", "attachment_name": "附件名称", "attachment_content": "附件内容"}
 ROUTING_STATE_LABELS = {"routed": "已明确分流", "needs_business_routing": "待业务分流", "unrouted": "暂不分流", "business_routed": "业务已分流"}
+CLEAR_ROUTING_SCOPES = {"subject", "attachment_name"}
 
 DEFAULT_GROUPS = (
     ("录单", "new_order", (
@@ -327,16 +328,24 @@ DEFAULT_GROUPS = (
     )),
     ("修改订单", "order_change", (
         ("subject", "变更"), ("subject", "改期"), ("subject", "取消订单"), ("subject", "单价修改"),
+        ("subject", "交期提前"), ("subject", "交期协同提前"), ("subject", "交期加急"), ("subject", "提前交货"), ("subject", "提前交期"),
         ("body", "变更"), ("body", "改期"), ("body", "价格调整"), ("body", "单价修改"), ("body", "版本更新"), ("body", "取消"),
+        ("body", "交期提前"), ("body", "交期协同提前"), ("body", "交期加急"), ("body", "提前交货"), ("body", "提前交期"),
         ("attachment_name", "变更"), ("attachment_name", "改单"), ("attachment_name", "改期"),
+        ("attachment_name", "交期提前"), ("attachment_name", "交期协同提前"), ("attachment_name", "交期加急"), ("attachment_name", "提前交货"), ("attachment_name", "提前交期"),
         ("attachment_content", "变更"), ("attachment_content", "价格调整"), ("attachment_content", "交期修改"),
+        ("attachment_content", "交期提前"), ("attachment_content", "交期协同提前"), ("attachment_content", "交期加急"), ("attachment_content", "提前交货"), ("attachment_content", "提前交期"),
     )),
 )
 DEFAULT_CHANGE_TAGS = (
     ("交期 / 发货日期", (
         ("subject", "交期修改"), ("subject", "交期变更"), ("subject", "改期"),
+        ("subject", "交期提前"), ("subject", "交期协同提前"), ("subject", "交期加急"), ("subject", "提前交货"), ("subject", "提前交期"),
         ("body", "交期修改"), ("body", "交期变更"), ("body", "改期"),
         ("body", "发货日期修改"), ("body", "发货日期变更"),
+        ("body", "交期提前"), ("body", "交期协同提前"), ("body", "交期加急"), ("body", "提前交货"), ("body", "提前交期"),
+        ("attachment_name", "交期提前"), ("attachment_name", "交期协同提前"), ("attachment_name", "交期加急"), ("attachment_name", "提前交货"), ("attachment_name", "提前交期"),
+        ("attachment_content", "交期提前"), ("attachment_content", "交期协同提前"), ("attachment_content", "交期加急"), ("attachment_content", "提前交货"), ("attachment_content", "提前交期"),
     )),
     ("价格调整", (("subject", "单价修改"), ("subject", "价格调整"), ("body", "价格调整"), ("body", "单价修改"), ("body", "单价调整"), ("body", "调价"))),
     ("数量调整", (("body", "数量调整"), ("body", "数量变更"))),
@@ -423,6 +432,46 @@ def ensure_universal_rules(employee_id: str) -> None:
                         conn.execute("INSERT INTO order_change_tag_keywords (tag_id,scope,keyword,created_at) VALUES (?,?,?,?)", (tag["id"], scope, keyword, now))
             conn.execute("INSERT INTO settings(key,value) VALUES (?,?)", (refinement_key, now))
 
+        # 补齐明确的交期提前／加急表达；不使用孤立的“交期”或“最短交期”，
+        # 避免把正常新订单的交期说明误判为订单变更。
+        delivery_acceleration_key = f"order_change_delivery_acceleration_v6:{employee_id}"
+        accelerated = conn.execute("SELECT 1 FROM settings WHERE key=?", (delivery_acceleration_key,)).fetchone()
+        if not accelerated:
+            delivery_keywords = (
+                "交期提前", "交期协同提前", "交期加急", "提前交货", "提前交期",
+            )
+            scopes = ("subject", "body", "attachment_name", "attachment_content")
+            change_group = conn.execute(
+                "SELECT id FROM order_mail_rule_groups WHERE employee_id=? AND action_type='order_change' ORDER BY id LIMIT 1",
+                (employee_id,),
+            ).fetchone()
+            if change_group:
+                existing_pairs = {(row["scope"], row["keyword"]) for row in conn.execute(
+                    "SELECT scope,keyword FROM order_mail_rule_keywords WHERE group_id=?", (change_group["id"],)
+                ).fetchall()}
+                for scope in scopes:
+                    for keyword in delivery_keywords:
+                        if (scope, keyword) not in existing_pairs:
+                            conn.execute(
+                                "INSERT INTO order_mail_rule_keywords (group_id,scope,keyword,created_at) VALUES (?,?,?,?)",
+                                (change_group["id"], scope, keyword, now),
+                            )
+            delivery_tag = conn.execute(
+                "SELECT id FROM order_change_tags WHERE employee_id=? AND name='交期 / 发货日期'", (employee_id,)
+            ).fetchone()
+            if delivery_tag:
+                existing_pairs = {(row["scope"], row["keyword"]) for row in conn.execute(
+                    "SELECT scope,keyword FROM order_change_tag_keywords WHERE tag_id=?", (delivery_tag["id"],)
+                ).fetchall()}
+                for scope in scopes:
+                    for keyword in delivery_keywords:
+                        if (scope, keyword) not in existing_pairs:
+                            conn.execute(
+                                "INSERT INTO order_change_tag_keywords (tag_id,scope,keyword,created_at) VALUES (?,?,?,?)",
+                                (delivery_tag["id"], scope, keyword, now),
+                            )
+            conn.execute("INSERT INTO settings(key,value) VALUES (?,?)", (delivery_acceleration_key, now))
+
 
 def list_universal_rules(employee_id: str) -> list[dict[str, Any]]:
     ensure_universal_rules(employee_id)
@@ -489,24 +538,42 @@ def save_universal_rule_scope(employee_id: str, group_id: int, scope: str, keywo
     return next(item for item in list_universal_rules(employee_id) if item["id"] == group_id)
 
 
-def save_change_tag(employee_id: str, name: str, keywords: list[dict[str, Any]], tag_id: int | None = None) -> None:
-    pairs = [(str(x.get("scope") or "").strip(), str(x.get("keyword") or "").strip()) for x in keywords if str(x.get("keyword") or "").strip()]
-    if not name.strip() or not pairs or any(scope not in SCOPE_LABELS for scope, _ in pairs): raise ValueError("请填写标签名称和至少一个关键词")
+def save_change_tag(employee_id: str, name: str, keywords: list[dict[str, Any]], tag_id: int | None = None) -> int:
+    """Save one business-facing order change type and its recognition phrases.
+
+    ``all`` is deliberately a UI convenience: a business phrase should work
+    wherever it appears, while the database still stores the four explicit
+    source scopes required by the routing engine.
+    """
+    pairs: list[tuple[str, str]] = []
+    for item in keywords:
+        scope = str(item.get("scope") or "").strip()
+        word = str(item.get("keyword") or "").strip()
+        if not word:
+            continue
+        if scope == "all":
+            pairs.extend((source_scope, word) for source_scope in SCOPE_LABELS)
+        else:
+            pairs.append((scope, word))
+    pairs = list(dict.fromkeys(pairs))
+    if not name.strip() or not pairs or any(scope not in SCOPE_LABELS for scope, _ in pairs):
+        raise ValueError("请填写变更类型名称和至少一个业务说法")
     now = utcnow()
     with db_cursor() as conn:
         if tag_id:
             existing = conn.execute("SELECT id FROM order_change_tags WHERE id=? AND employee_id=?", (tag_id, employee_id)).fetchone()
             if not existing:
-                raise ValueError("订单变更事项不存在或无权修改")
+                raise ValueError("变更类型不存在或无权修改")
             conn.execute("UPDATE order_change_tags SET name=?,updated_at=? WHERE id=? AND employee_id=?", (name.strip(), now, tag_id, employee_id))
             conn.execute("DELETE FROM order_change_tag_keywords WHERE tag_id=?", (tag_id,)); saved_id = tag_id
         else:
             existing = conn.execute("SELECT id FROM order_change_tags WHERE employee_id=? AND name=?", (employee_id, name.strip())).fetchone()
             if existing:
-                raise ValueError("该订单变更事项已存在")
+                raise ValueError("该变更类型已存在")
             cursor=conn.execute("INSERT INTO order_change_tags (employee_id,name,enabled,created_at,updated_at) VALUES (?,?,?,?,?)", (employee_id,name.strip(),1,now,now)); saved_id=int(cursor.lastrowid)
         for scope, keyword in pairs: conn.execute("INSERT INTO order_change_tag_keywords (tag_id,scope,keyword,created_at) VALUES (?,?,?,?)", (saved_id,scope,keyword,now))
     reclassify_cases(employee_id)
+    return saved_id
 
 
 def _mail_values(row: dict[str, Any]) -> dict[str, str]:
@@ -554,30 +621,39 @@ def reclassify_cases(employee_id: str, account_id: int | None = None) -> None:
         rows=conn.execute(f"""SELECT c.id,c.mail_id,m.subject,m.body_text,COALESCE((SELECT GROUP_CONCAT(a.filename,' ') FROM mail_attachments a WHERE a.mail_id=m.id AND a.is_inline=0),'') attachment_names FROM order_intake_cases c JOIN mail_messages m ON m.id=c.mail_id WHERE {' AND '.join(clauses)}""",params).fetchall()
         now=utcnow()
         for raw in rows:
-            row=dict(raw); row["attachment_content"]=_attachment_content(conn,row["mail_id"]) if needs_attachment_content else ""; values=_mail_values(row); matches=[]; action_types=set(); tag_names=[]
+            row=dict(raw); row["attachment_content"]=_attachment_content(conn,row["mail_id"]) if needs_attachment_content else ""; values=_mail_values(row); matches=[]; clear_action_types=set(); assist_action_types=set(); tag_names=[]
             for group in groups:
                 if not group["enabled"]: continue
                 for keyword in group["keywords"]:
                     if keyword["keyword"].lower() in values[keyword["scope"]]:
-                        matches.append({"scope":keyword["scope"],"keyword":keyword["keyword"],"group":group["name"],"action_type":group["action_type"]}); action_types.add(group["action_type"])
+                        strength = "clear" if keyword["scope"] in CLEAR_ROUTING_SCOPES else "assist"
+                        matches.append({"scope":keyword["scope"],"keyword":keyword["keyword"],"group":group["name"],"action_type":group["action_type"],"strength":strength})
+                        (clear_action_types if strength == "clear" else assist_action_types).add(group["action_type"])
             for tag in tags:
                 tag_hits = [k for k in tag["keywords"] if tag["enabled"] and k["keyword"].lower() in values[k["scope"]]]
                 if tag_hits:
                     tag_names.append(tag["name"])
                     for hit in tag_hits:
+                        strength = "clear" if hit["scope"] in CLEAR_ROUTING_SCOPES else "assist"
                         matches.append({
                             "scope": hit["scope"], "keyword": hit["keyword"], "group": f"订单变更事项：{tag['name']}",
-                            "action_type": "order_change", "source": "change_item",
+                            "action_type": "order_change", "source": "change_item", "strength": strength,
                         })
-            # 二级“订单变更事项”是修改订单的明确业务信号，而不只是展示备注。
-            # 命中后应同步进入修改订单；若同时命中录单/报价，交由业务分流决定。
-            if tag_names:
-                action_types.add("order_change")
-            if len(action_types)==1:
-                action_type=next(iter(action_types)); state="routed" if action_type != "unclassified" else "unrouted"
-            elif len(action_types)>1: action_type="unclassified"; state="needs_business_routing"
-            else: action_type="unclassified"; state="unrouted"
-            conn.execute("UPDATE order_intake_cases SET action_type=?,routing_state=?,routing_source='keyword_rule',routing_reason=?,routing_matches_json=?,change_tags_json=?,updated_at=? WHERE id=?", (action_type,state,"关键词规则匹配" if matches else "未命中通用规则",json.dumps(matches,ensure_ascii=False),json.dumps(tag_names,ensure_ascii=False),now,row["id"]))
+                        (clear_action_types if strength == "clear" else assist_action_types).add("order_change")
+
+            # 先用主题、附件名称进行明确分流。正文和附件内容仅在没有明确
+            # 结果时辅助判断；因此“采购订单 + PO + 附件内报价”仍明确属于录单。
+            if len(clear_action_types) == 1:
+                action_type = next(iter(clear_action_types)); state = "routed"; reason = "明确分流依据匹配"
+            elif len(clear_action_types) > 1:
+                action_type = "unclassified"; state = "needs_business_routing"; reason = "多个明确分流依据同时命中"
+            elif len(assist_action_types) == 1:
+                action_type = next(iter(assist_action_types)); state = "routed"; reason = "辅助识别线索匹配"
+            elif len(assist_action_types) > 1:
+                action_type = "unclassified"; state = "needs_business_routing"; reason = "多个辅助识别线索同时命中"
+            else:
+                action_type = "unclassified"; state = "unrouted"; reason = "未命中通用规则"
+            conn.execute("UPDATE order_intake_cases SET action_type=?,routing_state=?,routing_source='keyword_rule',routing_reason=?,routing_matches_json=?,change_tags_json=?,updated_at=? WHERE id=?", (action_type,state,reason,json.dumps(matches,ensure_ascii=False),json.dumps(tag_names,ensure_ascii=False),now,row["id"]))
 
 
 def bootstrap_cases(employee_id: str, account_id: int | None = None) -> None:
@@ -588,7 +664,7 @@ def bootstrap_cases(employee_id: str, account_id: int | None = None) -> None:
         for row in rows:
             cursor = conn.execute("INSERT OR IGNORE INTO order_intake_cases (employee_id,mail_id,action_type,customer_code,customer_name,order_number,routing_state,routing_source,routing_reason,created_at,updated_at) VALUES (?,?,?,?,?,?, 'unrouted','keyword_rule','未命中通用规则',?,?)",(employee_id,row["mail_id"],"unclassified",row["customer_code"],row["customer_name"],row["order_number"],now,now))
             created_count += int(cursor.rowcount > 0)
-        revision_key = f"order_intake_rule_engine_v4:{employee_id}"
+        revision_key = f"order_intake_rule_engine_v6:{employee_id}"
         revision_needed = conn.execute("SELECT 1 FROM settings WHERE key=?", (revision_key,)).fetchone() is None
     if created_count or revision_needed:
         reclassify_cases(employee_id, account_id)
@@ -828,13 +904,28 @@ def case_summary(cases: list[dict[str, Any]]) -> dict[str, int]:
     }
 
 
-def work_summary(employee_id: str, account_id: int | None = None) -> dict[str, Any]:
-    """Return the current workload independently from the mail-date view."""
+def work_summary(
+    employee_id: str,
+    account_id: int | None = None,
+    *,
+    target_date: str | None = None,
+) -> dict[str, Any]:
+    """Return workload for all cases whose source mail belongs to ``target_date``.
+
+    When no date is supplied this remains the cross-date summary used by older
+    callers.  A supplied date deliberately scopes both open and completed work
+    to the source-mail date, so a user can close the loop for one mail day.
+    """
     clauses = ["c.employee_id=?"]
     params: list[Any] = [employee_id]
     if account_id:
         clauses.append("m.account_id=?")
         params.append(account_id)
+    if target_date:
+        clauses.append(
+            "substr(COALESCE(NULLIF(m.sent_at, ''), NULLIF(m.received_at, ''), m.created_at), 1, 10)=?"
+        )
+        params.append(target_date)
     with db_cursor() as conn:
         rows = conn.execute(
             f"""SELECT c.action_type,c.status,c.routing_state,c.completed_at
@@ -851,7 +942,7 @@ def work_summary(employee_id: str, account_id: int | None = None) -> dict[str, A
     for raw in rows:
         item = dict(raw)
         if item["status"] == "archived":
-            if _business_date(str(item.get("completed_at") or "")) == today:
+            if target_date or _business_date(str(item.get("completed_at") or "")) == today:
                 result["completed_today"] += 1
             continue
         if item["routing_state"] == "needs_business_routing":

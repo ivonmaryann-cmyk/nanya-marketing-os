@@ -72,6 +72,7 @@
     <article class="card task-card">
       <div class="step-tag">我的账号</div>
       <h2>已配置邮箱</h2>
+      <p class="mail-account-note">删除仅移除本系统中的邮箱配置，不会删除网易邮箱里的邮件或本地历史记录。</p>
       <div class="table-scroll">
         <table class="table">
           <thead><tr><th>邮箱</th><th>服务器</th><th>状态</th><th>上次抓取</th><th>操作</th></tr></thead>
@@ -82,7 +83,14 @@
               <td>{{ account.imap_host }}:{{ account.imap_port }}</td>
               <td><span class="status">{{ '启用' if account.enabled else '停用' }}</span></td>
               <td>{{ account.last_fetch_at or '从未抓取' }}</td>
-              <td><a href="{{ url_for('mail_transcode.accounts_page', edit=account.id) }}">编辑</a></td>
+              <td>
+                <div class="mail-account-actions">
+                  <a href="{{ url_for('mail_transcode.accounts_page', edit=account.id) }}">编辑</a>
+                  <form method="post" action="{{ url_for('mail_transcode.delete_account', account_id=account.id) }}" onsubmit="return window.confirm('确定删除 {{ account.email }} 的邮箱配置吗？这不会删除网易邮箱中的邮件。');">
+                    <button type="submit" class="mail-delete-action">删除</button>
+                  </form>
+                </div>
+              </td>
             </tr>
             {% else %}
             <tr><td colspan="5">暂无邮箱配置</td></tr>

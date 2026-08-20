@@ -3,7 +3,7 @@
 {% block content %}
 <div class="page-backbar">
   {% if feature == 'transcode' %}
-  <a class="back-link" href="{{ url_for('main.transcode') }}">返回营销自动化转码</a>
+  <a class="back-link" href="{{ url_for('main.dashboard') }}">返回功能中心</a>
   <span>营销自动化转码 / 规则说明</span>
   {% elif feature == 'shennan' %}
   <a class="back-link" href="{{ url_for('main.price_calculation', calculator_key='shennan') }}">返回深南价格计算</a>

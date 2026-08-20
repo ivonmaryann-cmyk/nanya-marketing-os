@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 from copy import copy
+from decimal import Decimal, InvalidOperation
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -48,6 +49,11 @@ LINE_LABELS = {
 REQUIRED_HEADER_FIELDS = {"order_type", "bill_to_customer_code", "ledger"}
 REQUIRED_LINE_FIELDS = {"line_no", "customer_product_code", "quantity"}
 
+# These fields are deliberately not inferred from an order e-mail.  产品编号、品名
+# will later come from Nyeos 151; 产地和一对多 are business decisions.  Leaving a
+# value blank is safer than presenting an unverified guess as a usable result.
+MANUAL_ONLY_LINE_FIELDS = {"product_code", "product_name", "origin", "one_to_many"}
+
 # The source documents use different wording.  Keep this mapping here instead
 # of forcing business users to normalise their customers' Excel files first.
 _ATTACHMENT_HEADERS = {
@@ -58,6 +64,7 @@ _ATTACHMENT_HEADERS = {
     "customer_spec": {"客户规格", "规格", "型号", "名称规格", "物料规格", "物料描述"},
     "delivery_date": {"出货日期", "交货日期", "交期", "到货日期", "delivery date"},
     "quantity": {"数量", "采购量", "订购数量", "订单数量", "qty", "quantity"},
+    "_quantity_unit": {"单位", "计量单位", "数量单位", "uom"},
     "price_before_tax": {"税前单价", "未税单价", "不含税单价"},
     "unit_price": {"单价", "含税单价", "unit price", "price"},
     "origin": {"产地", "原产地"},
@@ -99,6 +106,82 @@ def _blank_line(line_no: int) -> dict[str, str]:
     return {field: str(line_no) if field == "line_no" else "" for field in LINE_FIELDS}
 
 
+def _is_pp_spec(value: str) -> bool:
+    """Only classify PP when the customer specification explicitly says so."""
+    text = clean_text(value)
+    return bool(re.search(r"(?:半固化片|(?<![A-Za-z0-9])PP(?![A-Za-z0-9]))", text, re.IGNORECASE))
+
+
+def _meter_values(value: str) -> list[Decimal]:
+    """Return unambiguous metre values, without mistaking 0.075MM for metres."""
+    found = re.findall(r"(\d+(?:\.\d+)?)\s*(?:米|[mM])(?![A-Za-z])", clean_text(value))
+    values: list[Decimal] = []
+    for item in found:
+        try:
+            values.append(Decimal(item))
+        except InvalidOperation:
+            continue
+    return values
+
+
+def _decimal_text(value: Decimal) -> str:
+    text = format(value.normalize(), "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def _append_remark(remark: str, meter: Decimal | None) -> str:
+    if meter is None:
+        return remark
+    meter_text = f"PP米数：{_decimal_text(meter)}米"
+    return "；".join(item for item in (remark, meter_text) if item)
+
+
+def _apply_auto_extraction_policy(
+    values: dict[str, str], *, quantity_unit: Any = "", product_context: Any = "",
+) -> dict[str, str]:
+    """Apply the conservative domestic order-entry extraction rules.
+
+    A value is kept only when its meaning is explicit in the source.  In
+    particular, PP conversion requires an explicit PP spec, a roll unit, one
+    unambiguous metre value and one numeric order quantity.  All other cases
+    remain for business completion.
+    """
+    result = dict(values)
+    for field in MANUAL_ONLY_LINE_FIELDS:
+        result[field] = ""
+
+    spec = result.get("customer_spec", "")
+    # A PO often puts “半固化片” in the material-name column and the metre
+    # value in the description column.  Both are explicit source evidence, but
+    # only the description is shown as the customer specification.
+    if not _is_pp_spec(f"{spec} {clean_text(product_context)}"):
+        return result
+
+    metres = _meter_values(spec)
+    distinct_metres = {value.normalize() for value in metres}
+    meter = next(iter(distinct_metres), None) if len(distinct_metres) == 1 else None
+    result["remark"] = _append_remark(result.get("remark", ""), meter)
+
+    unit = clean_text(quantity_unit)
+    if "张" in unit:
+        # PP 小片：客户明确以张计数，数量直接保留，不做米数换算。
+        return result
+    if "卷" not in unit or meter is None:
+        # PP 的单位或米数不明确，不能猜测换算关系。
+        result["quantity"] = ""
+        return result
+    try:
+        quantity = Decimal(str(result.get("quantity") or "").replace(",", ""))
+    except InvalidOperation:
+        result["quantity"] = ""
+        return result
+    if quantity < 0:
+        result["quantity"] = ""
+        return result
+    result["quantity"] = _decimal_text(quantity * meter)
+    return result
+
+
 def _split_body_order_rows(body_text: str) -> list[dict[str, Any]]:
     """Extract simple ERP-style rows from the line-oriented mail body.
 
@@ -121,19 +204,14 @@ def _split_body_order_rows(body_text: str) -> list[dict[str, Any]]:
             spec = " ".join(chunk[material_index:min(len(chunk), material_index + 9)])
         if not customer_code and not spec:
             continue
-        values = _blank_line(len(result) + 1)
-        values.update({
+        values = {
+            **_blank_line(len(result) + 1),
             "customer_product_code": customer_code,
-            "product_name": f"南亚{chunk[material_index]}" if material_index >= 0 and "南亚" in chunk else "",
             "customer_spec": spec,
             "quantity": quantity.replace(",", ""),
             "customer_order_number": chunk[0],
-        })
-        sources = {
-            key: {"label": "邮件正文", "reference": f"第 {start + 1} 行附近"}
-            for key, value in values.items() if value and key != "line_no"
         }
-        result.append({"values": values, "sources": sources})
+        result.append(_line_entry(values, label="邮件正文", reference=f"第 {start + 1} 行附近", line_no=len(result) + 1))
     return result
 
 
@@ -141,7 +219,9 @@ def _source(label: str, reference: str, values: dict[str, str]) -> dict[str, dic
     return {field: {"label": label, "reference": reference} for field, value in values.items() if value and field != "line_no"}
 
 
-def _line_entry(values: dict[str, Any], *, label: str, reference: str, line_no: int = 1) -> dict[str, Any]:
+def _line_entry(
+    values: dict[str, Any], *, label: str, reference: str, line_no: int = 1, quantity_unit: Any = "", product_context: Any = "",
+) -> dict[str, Any]:
     line = _blank_line(line_no)
     for field in LINE_FIELDS:
         value = values.get(field)
@@ -153,7 +233,45 @@ def _line_entry(values: dict[str, Any], *, label: str, reference: str, line_no: 
     for field in {"quantity", "price_before_tax", "unit_price"}:
         if line[field]:
             line[field] = normalize_number(line[field]) or line[field]
+    line = _apply_auto_extraction_policy(line, quantity_unit=quantity_unit, product_context=product_context)
     return {"values": line, "sources": _source(label, reference, line)}
+
+
+def _value_by_alias(mapping: dict[str, Any], *aliases: str) -> Any:
+    """Return an explicit source value even when a document uses bilingual headings."""
+    if not mapping:
+        return ""
+    wanted = {_compact_key(alias) for alias in aliases}
+    for key, value in mapping.items():
+        if _compact_key(key) in wanted:
+            return value
+    for key, value in mapping.items():
+        compact = _compact_key(key)
+        if any(alias and alias in compact for alias in wanted):
+            return value
+    return ""
+
+
+def _canonical_order_number(header: dict[str, Any]) -> str:
+    """Keep the actual PO token and discard surrounding document decorations."""
+    for key in (
+        "客户订单号",
+        "订单号",
+        "订单编号",
+        "采购订单号",
+        "合同编号",
+        "PO号",
+        "PO No",
+    ):
+        raw = clean_text(_value_by_alias(header, key))
+        if not raw:
+            continue
+        candidates = re.findall(r"[A-Za-z]{1,10}[A-Za-z0-9_-]*\d{4,}[A-Za-z0-9_-]*", raw)
+        if candidates:
+            return max(candidates, key=len).upper()
+        if re.fullmatch(r"[A-Za-z0-9_-]{6,}", raw):
+            return raw
+    return ""
 
 
 def _rows_from_excel(path: Path, filename: str) -> list[dict[str, Any]]:
@@ -187,7 +305,13 @@ def _rows_from_excel(path: Path, filename: str) -> list[dict[str, Any]]:
                 text = " ".join(clean_text(value) for value in values.values())
                 if any(token in text for token in ("合计", "总计", "小计")):
                     continue
-                result.append(_line_entry(values, label=f"附件：{filename}", reference=f"{sheet.title} 第 {index} 行", line_no=len(result) + 1))
+                result.append(_line_entry(
+                    values,
+                    label=f"附件：{filename}",
+                    reference=f"{sheet.title} 第 {index} 行",
+                    line_no=len(result) + 1,
+                    quantity_unit=values.get("_quantity_unit", ""),
+                ))
         return result
     finally:
         book.close()
@@ -196,19 +320,38 @@ def _rows_from_excel(path: Path, filename: str) -> list[dict[str, Any]]:
 def _line_from_pipeline_row(row: dict[str, Any], order_number: str, label: str, reference: str, line_no: int) -> dict[str, Any]:
     original = row.get("original") or {}
     standard = row.get("standard") or {}
+    raw_spec = _value_by_alias(original, "物料描述", "Material Description", "名称规格", "客户规格", "物料规格", "规格", "型号")
+    raw_before_tax_price = _value_by_alias(original, "不含税单价", "未税单价", "税前单价", "Not tax inclusive Unit Price")
+    raw_unit_price = _value_by_alias(original, "含税单价", "单价", "Unit Price")
+    raw_quantity_unit = _value_by_alias(original, "单位", "计量单位", "Unit", "UOM")
+    raw_material_name = _value_by_alias(original, "物料品名", "物料名称", "Material Name") or standard.get("物料名称") or ""
     values = {
-        "line_no": standard.get("序号") or original.get("序号") or line_no,
-        "product_code": standard.get("物料编码") or original.get("物料编码") or original.get("料件编号") or "",
-        "product_name": standard.get("物料名称") or original.get("物料名称") or original.get("品名") or "",
-        "customer_product_code": original.get("客户产品编号") or standard.get("物料编码") or original.get("物料编码") or "",
-        "customer_spec": standard.get("说明") or standard.get("物料名称") or original.get("名称规格") or original.get("规格") or "",
-        "delivery_date": standard.get("交货日期") or original.get("交货日期") or "",
-        "quantity": standard.get("数量") or original.get("数量") or "",
-        "unit_price": standard.get("含税单价") or original.get("含税单价") or original.get("单价") or "",
+        "line_no": standard.get("序号") or _value_by_alias(original, "序号", "No") or line_no,
+        "customer_product_code": _value_by_alias(original, "客户产品编号", "客户料号", "客户物料编号", "客户产品码") or "",
+        "customer_spec": raw_spec or standard.get("说明") or standard.get("物料名称") or "",
+        "delivery_date": standard.get("交货日期") or _value_by_alias(original, "交货日期", "出货日期", "交期", "Delivery Date") or "",
+        "quantity": standard.get("数量") or _value_by_alias(original, "数量", "Quantity", "Qty") or "",
+        "price_before_tax": raw_before_tax_price or standard.get("不含税单价") or "",
+        "unit_price": raw_unit_price or "",
         "customer_order_number": order_number,
-        "remark": standard.get("备注") or original.get("备注") or "",
+        "remark": standard.get("备注") or _value_by_alias(original, "备注", "说明", "订单备注") or "",
     }
-    return _line_entry(values, label=label, reference=reference, line_no=line_no)
+    entry = _line_entry(
+        values,
+        label=label,
+        reference=reference,
+        line_no=line_no,
+        quantity_unit=raw_quantity_unit or standard.get("单位") or "",
+        product_context=raw_material_name,
+    )
+    # Similar PP rows may intentionally retain a blank quantity. Their source
+    # row identity still makes them distinct order lines and prevents collapse.
+    entry["_source_identity"] = "|".join(clean_text(value) for value in (
+        label, reference,
+        _value_by_alias(original, "PO项目号", "Project No", "项目号"),
+        _value_by_alias(original, "物料编码", "Material Code"), raw_spec,
+    ))
+    return entry
 
 
 def _rows_from_pdf_or_image(path: Path, filename: str) -> list[dict[str, Any]]:
@@ -219,7 +362,7 @@ def _rows_from_pdf_or_image(path: Path, filename: str) -> list[dict[str, Any]]:
         # business can still fill the row manually from the downloaded source.
         return []
     header = document.get("header_info") or {}
-    order_number = clean_text(header.get("订单号"))
+    order_number = _canonical_order_number(header)
     rows = document.get("mapped_detail_rows") or []
     return [
         _line_from_pipeline_row(row, order_number, f"附件：{filename}", f"识别明细第 {index} 行", index)
@@ -262,14 +405,17 @@ def _attachment_rows(case: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def _line_signature(entry: dict[str, Any]) -> tuple[str, str, str, str]:
+def _line_signature(entry: dict[str, Any]) -> tuple[str, ...]:
+    source_identity = _compact_key(entry.get("_source_identity"))
+    if source_identity:
+        return ("source", source_identity)
     values = entry["values"]
     return tuple(_compact_key(values.get(field)) for field in ("customer_order_number", "customer_product_code", "customer_spec", "quantity"))
 
 
 def _merge_initial_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str, str]] = set()
+    seen: set[tuple[str, ...]] = set()
     for entry in rows:
         signature = _line_signature(entry)
         # Do not collapse rows that have no identifying data: a blank source
@@ -344,6 +490,115 @@ def get_or_create_template(case_id: int, employee_id: str) -> tuple[dict[str, An
         return case, _serialize_template(conn, template_id)
 
 
+def reextract_template(case_id: int, employee_id: str) -> dict[str, Any]:
+    """Rebuild one saved template's detail rows with the current extraction rules.
+
+    The customer/header section is business-maintained and is intentionally left
+    untouched.  Before replacing the current detail rows, both the previous
+    contents and the regenerated contents are stored as immutable versions so a
+    bulk re-extraction never discards a recoverable copy.
+    """
+    case = _case_for_template(case_id, employee_id)
+    with db_cursor() as conn:
+        row = conn.execute(
+            "SELECT id,current_version FROM order_entry_templates WHERE case_id=? AND employee_id=?",
+            (case_id, employee_id),
+        ).fetchone()
+        if not row:
+            raise ValueError("请先打开录单模板")
+        template_id = int(row["id"])
+        current_version = int(row["current_version"] or 0)
+        previous = _serialize_template(conn, template_id)
+
+    # Recognition can involve OCR and file conversion, so do it outside of the
+    # database transaction.  It only reads the original mail and attachments.
+    regenerated_lines = _initial_lines(case)
+    now = utcnow()
+    previous_lines = [
+        {"values": line.get("values") or {}, "sources": line.get("sources") or {}}
+        for line in previous.get("lines") or []
+    ]
+    previous_header = previous.get("header") or {}
+    backup_version = current_version + 1
+    regenerated_version = backup_version + 1
+
+    with db_cursor() as conn:
+        # Record an explicit pre-run snapshot even when an older manual-save
+        # version exists.  This protects the exact database state the user
+        # asked to reprocess.
+        conn.execute(
+            "INSERT INTO order_entry_template_versions(template_id,version_number,header_json,lines_json,saved_by,saved_at) VALUES (?,?,?,?,?,?)",
+            (
+                template_id,
+                backup_version,
+                json.dumps(previous_header, ensure_ascii=False),
+                json.dumps(previous_lines, ensure_ascii=False),
+                employee_id,
+                now,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO order_entry_template_versions(template_id,version_number,header_json,lines_json,saved_by,saved_at) VALUES (?,?,?,?,?,?)",
+            (
+                template_id,
+                regenerated_version,
+                json.dumps(previous_header, ensure_ascii=False),
+                json.dumps(regenerated_lines, ensure_ascii=False),
+                employee_id,
+                now,
+            ),
+        )
+        conn.execute(
+            "UPDATE order_entry_templates SET current_version=?,updated_at=? WHERE id=?",
+            (regenerated_version, now, template_id),
+        )
+        conn.execute("DELETE FROM order_entry_template_lines WHERE template_id=?", (template_id,))
+        for entry in regenerated_lines:
+            values = entry["values"]
+            conn.execute(
+                "INSERT INTO order_entry_template_lines(template_id,line_no,values_json,sources_json,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+                (
+                    template_id,
+                    int(values["line_no"] or 0),
+                    json.dumps(values, ensure_ascii=False),
+                    json.dumps(entry["sources"], ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+        template = _serialize_template(conn, template_id)
+
+    return {
+        "case_id": case_id,
+        "subject": str(case.get("subject") or ""),
+        "previous_line_count": len(previous_lines),
+        "line_count": len(template.get("lines") or []),
+        "backup_version": backup_version,
+        "current_version": regenerated_version,
+        "template": template,
+    }
+
+
+def reextract_all_templates(employee_id: str) -> dict[str, Any]:
+    """Batch re-extract every existing domestic template owned by one user."""
+    with db_cursor() as conn:
+        rows = conn.execute(
+            """SELECT t.case_id
+               FROM order_entry_templates t
+               JOIN order_intake_cases c ON c.id=t.case_id
+               WHERE t.employee_id=? AND c.action_type='new_order'
+               ORDER BY t.id""",
+            (employee_id,),
+        ).fetchall()
+    results = [reextract_template(int(row["case_id"]), employee_id) for row in rows]
+    return {
+        "template_count": len(results),
+        "previous_line_count": sum(item["previous_line_count"] for item in results),
+        "line_count": sum(item["line_count"] for item in results),
+        "results": results,
+    }
+
+
 def template_progress(case_id: int, employee_id: str) -> dict[str, Any]:
     """Return read-only workflow facts; no business user maintains this state."""
     with db_cursor() as conn:
@@ -352,7 +607,23 @@ def template_progress(case_id: int, employee_id: str) -> dict[str, Any]:
             (case_id, employee_id),
         ).fetchone()
     version = int(row["current_version"] or 0) if row else 0
-    return {"created": bool(row), "saved": version > 0, "version": version}
+    if not row:
+        return {
+            "created": False, "saved": False, "version": 0,
+            "stage": "pending_extraction", "label": "待提取订单",
+            "next_action": "提取订单到内销模板", "step": 2,
+        }
+    if version <= 0:
+        return {
+            "created": True, "saved": False, "version": 0,
+            "stage": "pending_template_save", "label": "待保存模板",
+            "next_action": "核对并保存内销模板", "step": 3,
+        }
+    return {
+        "created": True, "saved": True, "version": version,
+        "stage": "pending_interface_submit", "label": "待接口提交",
+        "next_action": "等待接口接入后提交", "step": 4,
+    }
 
 
 def _clean_values(values: dict[str, Any], fields: tuple[str, ...]) -> dict[str, str]:

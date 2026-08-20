@@ -119,6 +119,16 @@ def save_account():
     return redirect(url_for("mail_transcode.accounts_page"))
 
 
+@bp.post("/accounts/<int:account_id>/delete")
+def delete_account(account_id: int):
+    try:
+        email = mail_store.delete_account(account_id, owner_employee_id=_owner())
+        flash(f"已删除 {email} 的邮箱配置。原邮箱和已导入的本地历史记录不会受影响。", "success")
+    except ValueError as exc:
+        flash(f"删除失败：{exc}", "error")
+    return redirect(url_for("mail_transcode.accounts_page"))
+
+
 @bp.post("/accounts/<int:account_id>/reveal-auth-code")
 def reveal_auth_code(account_id: int):
     auth_code = mail_store.get_account_auth_code(account_id, owner_employee_id=_owner())

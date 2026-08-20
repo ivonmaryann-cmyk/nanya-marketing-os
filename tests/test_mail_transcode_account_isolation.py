@@ -66,6 +66,40 @@ class MailTranscodeAccountIsolationTests(unittest.TestCase):
             "owner-auth-code",
         )
 
+    def test_edit_updates_email_and_delete_removes_only_owned_configuration(self) -> None:
+        account_id = mail_store.create_or_update_account(
+            "before@example.com",
+            owner_employee_id="employee-a",
+            auth_code="owner-auth-code",
+        )
+
+        updated_id = mail_store.create_or_update_account(
+            "after@example.com",
+            owner_employee_id="employee-a",
+            account_id=account_id,
+            imap_host="imaphz.qiye.163.com",
+            imap_port=993,
+            auth_code="",
+            enabled=0,
+        )
+
+        self.assertEqual(updated_id, account_id)
+        updated = mail_store.get_account(account_id, owner_employee_id="employee-a")
+        self.assertEqual(updated["email"], "after@example.com")
+        self.assertEqual(updated["enabled"], 0)
+        self.assertEqual(
+            mail_store.get_account_auth_code(account_id, owner_employee_id="employee-a"),
+            "owner-auth-code",
+        )
+        with self.assertRaisesRegex(ValueError, "无权删除"):
+            mail_store.delete_account(account_id, owner_employee_id="employee-b")
+
+        self.assertEqual(
+            mail_store.delete_account(account_id, owner_employee_id="employee-a"),
+            "after@example.com",
+        )
+        self.assertIsNone(mail_store.get_account(account_id, owner_employee_id="employee-a"))
+
     def test_fetch_uses_read_only_and_only_yesterday_and_today(self) -> None:
         account_id = mail_store.create_or_update_account(
             "owner@example.com",

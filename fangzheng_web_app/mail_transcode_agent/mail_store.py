@@ -74,6 +74,12 @@ def create_or_update_account(
             ).fetchone()
             if not existing:
                 raise ValueError("邮箱账号不存在或无权编辑")
+            duplicate = conn.execute(
+                "SELECT id FROM mail_accounts WHERE email = ? AND id != ?",
+                (email, int(existing["id"])),
+            ).fetchone()
+            if duplicate:
+                raise ValueError("该邮箱已被其他账号配置")
         else:
             existing = conn.execute("SELECT * FROM mail_accounts WHERE email = ?", (email,)).fetchone()
             if existing and str(existing["owner_employee_id"] or "") != owner_employee_id:
@@ -85,11 +91,20 @@ def create_or_update_account(
             conn.execute(
                 """
                 UPDATE mail_accounts
-                SET imap_host = ?, imap_port = ?, auth_code_ciphertext = ?,
+                SET email = ?, imap_host = ?, imap_port = ?, auth_code_ciphertext = ?,
                     enabled = ?, updated_at = ?
                 WHERE id = ? AND owner_employee_id = ?
                 """,
-                (imap_host.strip(), int(imap_port), ciphertext, int(enabled), now, existing["id"], owner_employee_id),
+                (
+                    email,
+                    imap_host.strip(),
+                    int(imap_port),
+                    ciphertext,
+                    int(enabled),
+                    now,
+                    existing["id"],
+                    owner_employee_id,
+                ),
             )
             return int(existing["id"])
         cursor = conn.execute(
@@ -111,6 +126,29 @@ def create_or_update_account(
             ),
         )
         return int(cursor.lastrowid)
+
+
+def delete_account(account_id: int, *, owner_employee_id: str) -> str:
+    """Remove only the current user's mailbox configuration.
+
+    Imported local mail records are deliberately retained; deleting a configured
+    account must not remove business history or touch the original mailbox.
+    """
+    owner_employee_id = str(owner_employee_id or "").strip()
+    if not owner_employee_id:
+        raise ValueError("未识别当前登录用户")
+    with db_cursor() as conn:
+        account = conn.execute(
+            "SELECT id, email FROM mail_accounts WHERE id = ? AND owner_employee_id = ?",
+            (int(account_id), owner_employee_id),
+        ).fetchone()
+        if not account:
+            raise ValueError("邮箱账号不存在或无权删除")
+        conn.execute(
+            "DELETE FROM mail_accounts WHERE id = ? AND owner_employee_id = ?",
+            (int(account_id), owner_employee_id),
+        )
+    return str(account["email"])
 
 
 def set_account_fetch_status(account_id: int, status: str, *, at: str | None = None) -> None:

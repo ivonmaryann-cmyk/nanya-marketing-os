@@ -7,13 +7,16 @@
     <link rel="icon" href="{{ url_for('static', filename='brand/favicon.ico') }}" sizes="any">
     <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='brand/favicon-32.png') }}">
     <link rel="apple-touch-icon" href="{{ url_for('static', filename='brand/favicon-180.png') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=20260803-model-key-toggle">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=20260819-sidebar-icon">
   {% block extra_head %}{% endblock %}
   </head>
   <body>
     <div class="shell {% if not session.employee_id %}shell-login{% endif %}">
       {% if session.employee_id %}
       <aside class="sidebar">
+        <button class="sidebar-toggle" type="button" aria-label="收窄菜单栏" aria-expanded="true" title="收窄菜单栏">
+          <span class="sidebar-toggle-icon" aria-hidden="true">‹</span><span class="sidebar-toggle-label">收窄</span>
+        </button>
         <div>
           <div class="brand">
             <img
@@ -24,42 +27,42 @@
             <div class="brand-product-name">{{ platform_name }} {{ platform_version }}</div>
           </div>
           <nav class="nav" aria-label="主导航">
-      <a href="{{ url_for('main.dashboard') }}" class="{% if request.endpoint == 'main.dashboard' %}active{% endif %}">
+      <a href="{{ url_for('main.dashboard') }}" title="功能中心" class="{% if request.endpoint == 'main.dashboard' %}active{% endif %}">
               <span class="nav-icon nav-icon-dashboard" aria-hidden="true"></span>
-              <span>功能中心</span>
+              <span class="nav-label">功能中心</span>
       </a>
-      <a href="{{ url_for('main.my_settings') }}" class="{% if request.endpoint in ['main.my_settings', 'mail_transcode.accounts_page'] %}active{% endif %}">
+      <a href="{{ url_for('main.my_settings') }}" title="我的配置" class="{% if request.endpoint in ['main.my_settings', 'mail_transcode.accounts_page'] %}active{% endif %}">
         <span class="nav-icon nav-icon-admin" aria-hidden="true"></span>
-        <span>我的配置</span>
+        <span class="nav-label">我的配置</span>
       </a>
-            <a href="{{ url_for('main.history') }}" class="{% if request.endpoint == 'main.history' %}active{% endif %}">
+            <a href="{{ url_for('main.history') }}" title="历史记录" class="{% if request.endpoint == 'main.history' %}active{% endif %}">
               <span class="nav-icon nav-icon-history" aria-hidden="true"></span>
-              <span>历史记录</span>
+              <span class="nav-label">历史记录</span>
             </a>
-            <a href="{{ url_for('main.work_planning') }}" class="{% if request.endpoint in ['main.work_planning', 'main.create_personal_task_view', 'main.update_personal_task_view', 'main.archive_personal_task_view', 'main.restore_personal_task_view', 'main.delete_personal_task_view', 'main.create_task_category_view', 'main.update_task_category_view', 'main.delete_task_category_view'] %}active{% endif %}">
+            <a href="{{ url_for('main.work_planning') }}" title="工作规划" class="{% if request.endpoint in ['main.work_planning', 'main.create_personal_task_view', 'main.update_personal_task_view', 'main.archive_personal_task_view', 'main.restore_personal_task_view', 'main.delete_personal_task_view', 'main.create_task_category_view', 'main.update_task_category_view', 'main.delete_task_category_view'] %}active{% endif %}">
               <span class="nav-icon nav-icon-workplan" aria-hidden="true"></span>
-              <span>工作规划</span>
+              <span class="nav-label">工作规划</span>
             </a>
-            <a href="{{ url_for('main.feedback_center') }}" class="{% if request.endpoint in ['main.feedback_center', 'main.feedback_form', 'main.admin_feedback'] %}active{% endif %}">
+            <a href="{{ url_for('main.feedback_center') }}" title="反馈意见" class="{% if request.endpoint in ['main.feedback_center', 'main.feedback_form', 'main.admin_feedback'] %}active{% endif %}">
               <span class="nav-icon nav-icon-feedback" aria-hidden="true"></span>
-              <span>反馈意见</span>
+              <span class="nav-label">反馈意见</span>
             </a>
-            <a href="{{ url_for('main.admin_password') }}" class="{% if request.endpoint == 'main.admin_password' %}active{% endif %}">
+            <a href="{{ url_for('main.admin_password') }}" title="管理员密码" class="{% if request.endpoint == 'main.admin_password' %}active{% endif %}">
               <span class="nav-icon nav-icon-admin" aria-hidden="true"></span>
-              <span>管理员密码</span>
+              <span class="nav-label">管理员密码</span>
             </a>
           </nav>
         </div>
         <div class="sidebar-footer" aria-label="当前账户">
           <div class="user-card">
             <div class="user-avatar" aria-hidden="true">{{ session.employee_id[:1] }}</div>
-            <div>
+            <div class="user-info">
               <div>当前工号</div>
               <strong>{{ session.employee_id }}</strong>
             </div>
           </div>
           <form method="post" action="{{ url_for('main.logout') }}">
-            <button type="submit" class="ghost-button">退出登录</button>
+            <button type="submit" class="ghost-button"><span class="logout-label">退出登录</span></button>
           </form>
         </div>
       </aside>
@@ -77,5 +80,27 @@
         {% block content %}{% endblock %}
       </main>
     </div>
+    <script>
+      (() => {
+        const shell = document.querySelector('.shell');
+        const toggle = document.querySelector('.sidebar-toggle');
+        if (!shell || !toggle) return;
+        const storageKey = 'nouya-sidebar-collapsed';
+        const setCollapsed = (collapsed) => {
+          shell.classList.toggle('sidebar-collapsed', collapsed);
+          toggle.setAttribute('aria-expanded', String(!collapsed));
+          toggle.setAttribute('aria-label', collapsed ? '展开菜单栏' : '收窄菜单栏');
+          toggle.setAttribute('title', collapsed ? '展开菜单栏' : '收窄菜单栏');
+          toggle.querySelector('.sidebar-toggle-icon').textContent = collapsed ? '›' : '‹';
+          toggle.querySelector('.sidebar-toggle-label').textContent = collapsed ? '展开' : '收窄';
+        };
+        setCollapsed(window.localStorage.getItem(storageKey) === '1');
+        toggle.addEventListener('click', () => {
+          const collapsed = !shell.classList.contains('sidebar-collapsed');
+          setCollapsed(collapsed);
+          window.localStorage.setItem(storageKey, collapsed ? '1' : '0');
+        });
+      })();
+    </script>
   </body>
 </html>

@@ -84,7 +84,7 @@ class OrderIntakeRoutingTests(unittest.TestCase):
         self.assertEqual(case["routing_state"], "routed")
         self.assertTrue(any(hit["keyword"] == "报价" for hit in case["routing_matches"]))
 
-    def test_cross_category_keyword_hits_need_business_routing(self) -> None:
+    def test_clear_new_order_signal_wins_over_auxiliary_quotation_signal(self) -> None:
         account_id = mail_store.create_or_update_account(
             "orders@example.com", owner_employee_id="employee-a", auth_code="auth-code"
         )
@@ -95,9 +95,25 @@ class OrderIntakeRoutingTests(unittest.TestCase):
             body_html="", body_text="请确认报价", eml_path="", is_order=1,
         )
         bootstrap_cases("employee-a", account_id)
+        cases = list_cases("employee-a", "2026-08-18", "new_order", account_id)
+        self.assertEqual(len(cases), 1)
+        self.assertEqual(cases[0]["routing_state"], "routed")
+        self.assertEqual(cases[0]["routing_reason"], "明确分流依据匹配")
+
+    def test_multiple_clear_categories_need_business_routing(self) -> None:
+        account_id = mail_store.create_or_update_account(
+            "orders@example.com", owner_employee_id="employee-a", auth_code="auth-code"
+        )
+        mail_store.upsert_message(
+            account_id, folder="INBOX", uid="20031", message_id="<20031@example.com>",
+            subject="采购订单报价确认", sender="buyer@bominelec.com",
+            sent_at="2026-08-18 09:00:00", received_at="2026-08-18 09:00:00",
+            body_html="", body_text="", eml_path="", is_order=1,
+        )
+        bootstrap_cases("employee-a", account_id)
         cases = list_cases("employee-a", "2026-08-18", "needs_business_routing", account_id)
         self.assertEqual(len(cases), 1)
-        self.assertEqual(cases[0]["routing_state"], "needs_business_routing")
+        self.assertEqual(cases[0]["routing_reason"], "多个明确分流依据同时命中")
 
     def test_one_search_scope_can_be_saved_without_overwriting_others(self) -> None:
         rule = next(rule for rule in list_universal_rules("employee-a") if rule["action_type"] == "new_order")

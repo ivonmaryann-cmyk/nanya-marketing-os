@@ -6170,6 +6170,11 @@ table[data-rule-list] thead th {
 .mail-header-actions { align-items: center; }.mail-header-actions form { margin: 0; }
 .mail-primary-action,.mail-outline-action { display: inline-flex; min-height: 42px; align-items: center; justify-content: center; padding: 0 18px; border: 1px solid #3478f6; border-radius: 7px; font: 700 15px "Microsoft YaHei UI", "PingFang SC", sans-serif; cursor: pointer; text-decoration: none; }
 .mail-primary-action { color: #fff; background: #3478f6; }.mail-primary-action:hover { background: #2367dc; }.mail-outline-action { color: #2865cf; background: #fff; }.mail-outline-action:hover { background: #f2f6ff; }
+.mail-account-note { margin: -4px 0 14px; color: #74829a; font-size: 13px; line-height: 1.55; }
+.mail-account-actions { display: inline-flex; align-items: center; gap: 12px; white-space: nowrap; }
+.mail-account-actions form { margin: 0; }
+.mail-delete-action { padding: 0; border: 0; color: #c66045; background: transparent; font: inherit; font-weight: 700; cursor: pointer; }
+.mail-delete-action:hover { color: #a9442d; text-decoration: underline; }
 .mail-stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); overflow: hidden; margin-bottom: 20px; border: 1px solid #dce5f3; border-radius: 8px; background: #fff; }
 .mail-stat-grid article { min-height: 115px; padding: 20px 24px; border-right: 1px solid #e2e9f4; }.mail-stat-grid article:last-child { border-right: 0; }.mail-stat-grid span,.mail-stat-grid em { display: block; color: #71809a; font-size: 13px; font-style: normal; }.mail-stat-grid strong { display: block; margin: 7px 0 4px; color: #172959; font-size: 31px; line-height: 1; }.mail-stat-grid .attention strong { color: #b86d00; }.mail-stat-grid .complete strong { color: #14865e; }
 .mail-flow { display: grid; grid-template-columns: 1fr 70px 1fr 70px 1fr; align-items: center; margin-bottom: 20px; padding: 18px 24px; border: 1px solid #dce5f3; border-radius: 8px; background: #fff; }.mail-flow i { height: 1px; background: #cfdaeb; }.mail-flow-step { display: flex; align-items: center; gap: 12px; }.mail-flow-step b { display: grid; width: 30px; height: 30px; place-items: center; border-radius: 50%; color: #71809a; background: #ebf0f8; font-size: 14px; }.mail-flow-step.done b,.mail-flow-step.active b { color: #fff; background: #3478f6; }.mail-flow-step strong,.mail-flow-step span { display: block; }.mail-flow-step strong { color: #203462; font-size: 15px; }.mail-flow-step span { margin-top: 3px; color: #7b899f; font-size: 12px; }
@@ -6229,3 +6234,159 @@ table[data-rule-list] thead th {
 .pp-confirm-actions .secondary { color: #365a9b; border: 1px solid #b8c7e5; background: #fff; }
 .pp-confirmed-note { margin: 18px 0 0; color: #287752; }
 @media (max-width: 760px) { .pp-batch-form, .pp-confirm-actions { align-items: stretch; flex-direction: column; }.pp-confirm-context { grid-template-columns: 1fr; }.pp-batch-card .section-head, .pp-task-card .section-head { align-items: flex-start; flex-direction: column; } }
+
+/* 全局侧栏收窄：使用贴近导航边缘的图标入口，不占用整行导航空间。 */
+.sidebar-toggle {
+  display: none;
+}
+
+@media (min-width: 961px) {
+  .sidebar {
+    position: relative;
+  }
+
+  .sidebar-toggle {
+    position: absolute;
+    z-index: 5;
+    top: 20px;
+    right: -12px;
+    display: grid;
+    width: 24px;
+    min-height: 24px;
+    align-items: center;
+    justify-content: center;
+    margin: 0;
+    padding: 0;
+    border: 1px solid #dce5f2;
+    border-radius: 8px;
+    color: #31486e;
+    background: #fff;
+    box-shadow: 0 8px 22px rgba(31, 55, 96, .13);
+    font: 800 18px/1 "Microsoft YaHei UI", "PingFang SC", sans-serif;
+    cursor: pointer;
+    transition: background .18s ease, box-shadow .18s ease, transform .18s ease;
+  }
+
+  .sidebar-toggle:hover {
+    background: #f4f8ff;
+    box-shadow: 0 11px 26px rgba(31, 55, 96, .18);
+    transform: translateY(-1px);
+  }
+
+  .sidebar-toggle-icon {
+    display: inline-block;
+    margin-top: -2px;
+    font-family: Arial, sans-serif;
+    font-size: 30px;
+    font-weight: 400;
+    line-height: 1;
+  }
+
+  .sidebar-toggle-label { display: none; }
+
+  .shell.sidebar-collapsed {
+    grid-template-columns: 82px minmax(0, 1fr);
+  }
+
+  .shell.sidebar-collapsed .sidebar {
+    padding: 22px 12px;
+    align-items: center;
+  }
+
+  .shell.sidebar-collapsed .sidebar > div:first-of-type,
+  .shell.sidebar-collapsed .sidebar-footer {
+    width: 100%;
+  }
+
+  .shell.sidebar-collapsed .sidebar-toggle {
+    right: -12px;
+    margin: 0;
+  }
+
+  .shell.sidebar-collapsed .nav-label,
+  .shell.sidebar-collapsed .brand-logo-horizontal,
+  .shell.sidebar-collapsed .brand-product-name,
+  .shell.sidebar-collapsed .user-info,
+  .shell.sidebar-collapsed .logout-label {
+    display: none;
+  }
+
+  .shell.sidebar-collapsed .brand {
+    display: grid;
+    min-height: 50px;
+    place-items: center;
+    margin: 0 0 28px;
+    padding: 0;
+    border: 0;
+  }
+
+  .shell.sidebar-collapsed .brand::before {
+    content: "N";
+    display: grid;
+    width: 42px;
+    height: 42px;
+    place-items: center;
+    border-radius: 14px;
+    color: #286be0;
+    background: #eef4ff;
+    font: 900 21px/1 Arial, sans-serif;
+  }
+
+  .shell.sidebar-collapsed .nav {
+    gap: 10px;
+    margin-top: 0;
+  }
+
+  .shell.sidebar-collapsed .nav a {
+    justify-content: center;
+    min-height: 48px;
+    padding: 0;
+    border-radius: 14px;
+  }
+
+  .shell.sidebar-collapsed .nav a::before {
+    top: 10px;
+    right: -12px;
+    left: auto;
+    height: 28px;
+  }
+
+  .shell.sidebar-collapsed .nav a:hover {
+    transform: none;
+  }
+
+  .shell.sidebar-collapsed .nav-icon {
+    width: 20px;
+    height: 20px;
+  }
+
+  .shell.sidebar-collapsed .sidebar-footer {
+    display: grid;
+    justify-items: center;
+    gap: 12px;
+  }
+
+  .shell.sidebar-collapsed .user-card {
+    width: 48px;
+    padding: 6px;
+    justify-content: center;
+    border-radius: 14px;
+  }
+
+  .shell.sidebar-collapsed .ghost-button {
+    display: grid;
+    width: 48px;
+    min-height: 48px;
+    place-items: center;
+    padding: 0;
+    border-radius: 14px;
+    font-size: 0;
+  }
+
+  .shell.sidebar-collapsed .ghost-button::before {
+    content: "↪";
+    color: #3478ee;
+    font-size: 21px;
+    line-height: 1;
+  }
+}

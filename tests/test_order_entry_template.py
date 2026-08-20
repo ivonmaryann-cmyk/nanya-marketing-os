@@ -10,8 +10,12 @@ from openpyxl import Workbook, load_workbook
 from fangzheng_web_app import db
 from fangzheng_web_app.mail_transcode_agent import mail_store
 from fangzheng_web_app.order_entry_service import (
+    _line_entry,
+    _line_from_pipeline_row,
+    _merge_initial_rows,
     build_domestic_export,
     get_or_create_template,
+    reextract_all_templates,
     save_template,
 )
 from fangzheng_web_app.order_intake_service import bootstrap_cases, list_cases
@@ -93,3 +97,113 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertEqual(matching[0]["values"]["quantity"], "500")
         self.assertEqual(matching[0]["values"]["unit_price"], "12.5")
         self.assertEqual(matching[0]["sources"]["quantity"]["label"], "附件：客户订单.xlsx")
+
+    def test_ccl_and_manual_only_fields_follow_conservative_extraction_policy(self) -> None:
+        line = _line_entry(
+            {
+                "customer_product_code": "CUST-001",
+                "customer_spec": "FR-4 1.6MM",
+                "quantity": "500",
+                "product_code": "FACTORY-001",
+                "product_name": "不应自动填入的品名",
+                "origin": "中国",
+                "one_to_many": "一对多关系",
+            },
+            label="附件：订单.xlsx", reference="订单 第 2 行",
+        )
+        values = line["values"]
+        self.assertEqual(values["quantity"], "500")
+        self.assertEqual(values["customer_product_code"], "CUST-001")
+        for field in ("product_code", "product_name", "origin", "one_to_many"):
+            self.assertEqual(values[field], "")
+            self.assertNotIn(field, line["sources"])
+
+    def test_pp_roll_converts_quantity_only_with_explicit_unit_and_metre_value(self) -> None:
+        line = _line_entry(
+            {
+                "customer_product_code": "PP-01",
+                "customer_spec": "PP 1080 300M/卷",
+                "quantity": "2",
+                "remark": "客户加急",
+            },
+            label="附件：PP订单.xlsx", reference="订单 第 2 行", quantity_unit="卷",
+        )
+        self.assertEqual(line["values"]["quantity"], "600")
+        self.assertEqual(line["values"]["remark"], "客户加急；PP米数：300米")
+
+    def test_pp_sheet_keeps_customer_quantity_and_unknown_pp_is_blank(self) -> None:
+        small_piece = _line_entry(
+            {"customer_spec": "PP 1080 300m", "quantity": "30"},
+            label="附件：PP订单.xlsx", reference="订单 第 2 行", quantity_unit="张",
+        )
+        unknown = _line_entry(
+            {"customer_spec": "PP 1080 300m", "quantity": "2"},
+            label="附件：PP订单.xlsx", reference="订单 第 3 行", quantity_unit="",
+        )
+        self.assertEqual(small_piece["values"]["quantity"], "30")
+        self.assertEqual(small_piece["values"]["remark"], "PP米数：300米")
+        self.assertEqual(unknown["values"]["quantity"], "")
+        self.assertEqual(unknown["values"]["remark"], "PP米数：300米")
+
+    def test_pipeline_mapping_uses_raw_description_and_keeps_pp_detail_rows(self) -> None:
+        first = _line_from_pipeline_row(
+            {
+                "original": {
+                    "PO项目号 Project No": "2713186",
+                    "物料编码 Material Code": "10601001676",
+                    "物料品名 Material Name": "半固化片",
+                    "物料描述 Description": "南亚新材料 NY6180LP 106 RC=75% 经300.00 m 纬49.50 inch",
+                    "单位 Unit": "卷",
+                    "数量 Quantity": "0.1",
+                    "不含税单价 Not tax inclusive Unit Price": "10914.1593",
+                },
+                "standard": {"数量": "0.1", "单位": "卷"},
+            },
+            "MZPOM12608190027", "附件：采购订单.pdf", "识别明细第 2 行", 1,
+        )
+        second = _line_from_pipeline_row(
+            {
+                "original": {
+                    "PO项目号 Project No": "2713185",
+                    "物料编码 Material Code": "10601001674",
+                    "物料品名 Material Name": "半固化片",
+                    "物料描述 Description": "南亚新材料 NY6180LP 2116 RC=56% 经200.00 m 纬49.50 inch",
+                    "单位 Unit": "卷",
+                    "数量 Quantity": "0.1",
+                },
+                "standard": {"数量": "0.1", "单位": "卷"},
+            },
+            "MZPOM12608190027", "附件：采购订单.pdf", "识别明细第 3 行", 2,
+        )
+        self.assertEqual(first["values"]["customer_spec"], "南亚新材料 NY6180LP 106 RC=75% 经300.00 m 纬49.50 inch")
+        self.assertEqual(first["values"]["quantity"], "30")
+        self.assertEqual(first["values"]["price_before_tax"], "10914.1593")
+        self.assertEqual(first["values"]["unit_price"], "")
+        self.assertEqual(first["values"]["product_name"], "")
+        self.assertEqual(second["values"]["quantity"], "20")
+        self.assertEqual(len(_merge_initial_rows([first, second])), 2)
+
+    def test_batch_reextract_keeps_header_and_backs_up_before_replacing_lines(self) -> None:
+        get_or_create_template(self.case_id, "employee-a")
+        save_template(self.case_id, "employee-a", {
+            "header": {"order_type": "SO", "bill_to_customer_code": "C001", "ledger": "151"},
+            "lines": [{"values": {
+                "line_no": "1", "product_name": "历史错误品名",
+                "customer_product_code": "OLD-CODE", "quantity": "999",
+            }}],
+        })
+
+        summary = reextract_all_templates("employee-a")
+        self.assertEqual(summary["template_count"], 1)
+        self.assertEqual(summary["previous_line_count"], 1)
+        self.assertGreaterEqual(summary["line_count"], 1)
+        _case, template = get_or_create_template(self.case_id, "employee-a")
+        self.assertEqual(template["header"]["ledger"], "151")
+        self.assertEqual(template["current_version"], 3)
+        self.assertTrue(all(line["values"]["product_name"] == "" for line in template["lines"]))
+        with db.db_cursor() as conn:
+            versions = conn.execute(
+                "SELECT version_number,lines_json FROM order_entry_template_versions ORDER BY version_number"
+            ).fetchall()
+        self.assertEqual([row["version_number"] for row in versions], [1, 2, 3])
+        self.assertIn("历史错误品名", versions[1]["lines_json"])

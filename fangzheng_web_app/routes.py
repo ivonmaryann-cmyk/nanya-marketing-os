@@ -116,6 +116,7 @@ from .order_entry_service import (
     LINE_LABELS as ORDER_ENTRY_LINE_LABELS,
     build_domestic_export as build_order_entry_domestic_export,
     get_or_create_template as get_order_entry_template,
+    reextract_template as reextract_order_entry_template,
     save_template as save_order_entry_template,
     template_progress as order_entry_template_progress,
     validation_issues as order_entry_validation_issues,
@@ -841,25 +842,36 @@ def order_automation():
     fetch_tasks = mail_store.list_fetch_tasks(
         limit=10, owner_employee_id=employee_id, account_id=selected_account_id
     ) if selected_account_id else []
-    requested_batch_id = request.args.get("batch", type=int)
-    selected_batch = next((item for item in fetch_tasks if item["id"] == requested_batch_id), None)
-    selected_batch_id = int(selected_batch["id"]) if selected_batch else None
     if selected_action not in {*ORDER_ACTION_LABELS, "needs_business_routing"} and selected_action != "all":
         selected_action = "all"
-    visible_date = None if selected_batch_id else selected_date
+    per_page = request.args.get("per_page", 20, type=int) or 20
+    if per_page not in {10, 20, 50}:
+        per_page = 20
+    page = max(1, request.args.get("page", 1, type=int) or 1)
     overview_cases = list_order_intake_cases(
-        employee_id, visible_date, "all", selected_account_id, selected_batch_id
+        employee_id, selected_date, "all", selected_account_id
     )
-    cases = overview_cases if selected_action == "all" else list_order_intake_cases(
-        employee_id, visible_date, selected_action, selected_account_id, selected_batch_id, prepare=False
+    filtered_cases = overview_cases if selected_action == "all" else list_order_intake_cases(
+        employee_id, selected_date, selected_action, selected_account_id, prepare=False
     )
+    total_cases = len(filtered_cases)
+    total_pages = max(1, (total_cases + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    page_start = (page - 1) * per_page
+    cases = filtered_cases[page_start:page_start + per_page]
+    entry_progresses = {
+        int(item["id"]): order_entry_template_progress(int(item["id"]), employee_id)
+        for item in cases if item.get("action_type") == "new_order"
+    }
     date_counts = list_order_intake_date_counts(employee_id, selected_account_id, prepare=False) if selected_account_id else []
     return render_template(
         "order_automation.html",
         cases=cases,
         overview_cases=overview_cases,
         counts=case_summary(overview_cases),
-        work_summary=order_intake_work_summary(employee_id, selected_account_id),
+        work_summary=order_intake_work_summary(
+            employee_id, selected_account_id, target_date=selected_date
+        ),
         action_labels=ORDER_ACTION_LABELS,
         scope_labels=ORDER_SCOPE_LABELS,
         selected_action=selected_action,
@@ -870,7 +882,14 @@ def order_automation():
         mail_accounts=accounts,
         selected_account=selected_account,
         fetch_tasks=fetch_tasks,
-        selected_batch=selected_batch,
+        selected_batch=None,
+        selected_batch_id=None,
+        total_cases=total_cases,
+        page=page,
+        per_page=per_page,
+        total_pages=total_pages,
+        page_start=page_start,
+        entry_progresses=entry_progresses,
     )
 
 
@@ -899,7 +918,7 @@ def order_automation_sync():
         flash(result["message"], "success")
     except Exception as exc:
         flash("邮件同步失败，请检查业务邮箱连接、客户端授权码和网络后重试。", "error")
-    return redirect(url_for("main.order_automation", date=order_intake_business_today().isoformat(), batch=result.get("fetch_task_id")))
+    return redirect(url_for("main.order_automation", date=order_intake_business_today().isoformat()))
 
 
 @bp.post("/order-automation/history-sync")
@@ -920,7 +939,7 @@ def order_automation_history_sync():
         flash(result["message"], "success")
     except Exception as exc:
         flash("历史邮件同步失败，请检查业务邮箱连接、客户端授权码和网络后重试。", "error")
-    return redirect(url_for("main.order_automation", date=order_intake_business_today().isoformat(), batch=result.get("fetch_task_id")))
+    return redirect(url_for("main.order_automation", date=order_intake_business_today().isoformat()))
 
 
 def _order_business_account(employee_id: str):
@@ -958,11 +977,18 @@ def order_automation_rules():
     selected_tab = request.args.get("tab", "keywords")
     if selected_tab == "change_tags" and (not editing_rule or editing_rule["action_type"] != "order_change"):
         selected_tab = "keywords"
+    change_tags = list_order_change_tags(employee_id)
+    selected_change_tag_id = request.args.get("change_tag", type=int)
+    editing_change_tag = next(
+        (item for item in change_tags if item["id"] == selected_change_tag_id),
+        change_tags[0] if change_tags else None,
+    )
     return render_template(
         "order_automation_rules.html",
         rules=rules,
         editing_rule=editing_rule,
-        change_tags=list_order_change_tags(employee_id),
+        change_tags=change_tags,
+        editing_change_tag=editing_change_tag,
         action_labels=ORDER_ACTION_LABELS,
         scope_labels=ORDER_SCOPE_LABELS,
         selected_scope=selected_scope,
@@ -976,13 +1002,26 @@ def order_automation_change_tags():
     if redirect_resp:
         return redirect_resp
     try:
-        keywords = [{"scope": scope, "keyword": word} for scope, word in zip(request.form.getlist("scope"), request.form.getlist("keyword"))]
-        save_order_change_tag(current_employee() or "", request.form.get("name", ""), keywords)
-        flash("修改订单标签已新增，并已重新计算邮件标签。", "success")
+        split_words = lambda values: [word.strip() for value in values for word in str(value).splitlines() if word.strip()]
+        keywords = [{"scope": "all", "keyword": word} for word in split_words(request.form.getlist("all_keyword"))]
+        for scope in ORDER_SCOPE_LABELS:
+            keywords.extend(
+                {"scope": scope, "keyword": word}
+                for word in split_words(request.form.getlist(f"{scope}_keyword"))
+            )
+        tag_id = request.form.get("tag_id", type=int)
+        saved_id = save_order_change_tag(
+            current_employee() or "", request.form.get("name", ""), keywords, tag_id=tag_id
+        )
+        flash("变更类型已保存，并已重新计算邮件标签。", "success")
     except ValueError as exc:
         flash(str(exc), "error")
+        saved_id = request.form.get("tag_id", type=int)
     edit_id = request.form.get("edit", type=int)
-    return redirect(url_for("main.order_automation_rules", edit=edit_id, tab="change_tags") if edit_id else url_for("main.order_automation_rules"))
+    return redirect(
+        url_for("main.order_automation_rules", edit=edit_id, tab="change_tags", change_tag=saved_id)
+        if edit_id else url_for("main.order_automation_rules")
+    )
 
 
 
@@ -1004,6 +1043,43 @@ def order_automation_case_routing(case_id: int):
     return redirect(return_to)
 
 
+def _order_automation_return_context(case: dict[str, Any]) -> dict[str, Any]:
+    """Keep a mail detail page anchored to the exact list the user came from."""
+    fallback_date = str(case.get("sent_at") or case.get("received_at") or "")[:10]
+    selected_date = request.args.get("return_date", fallback_date)
+    try:
+        selected_date = date.fromisoformat(selected_date).isoformat()
+    except (TypeError, ValueError):
+        selected_date = fallback_date or order_intake_business_today().isoformat()
+    selected_action = request.args.get("return_category", "all")
+    if selected_action not in {*ORDER_ACTION_LABELS, "needs_business_routing", "all"}:
+        selected_action = "all"
+    per_page = request.args.get("return_per_page", 20, type=int) or 20
+    if per_page not in {10, 20, 50}:
+        per_page = 20
+    page = max(1, request.args.get("return_page", 1, type=int) or 1)
+    batch_id = request.args.get("return_batch", type=int)
+    values: dict[str, Any] = {
+        "date": selected_date,
+        "category": selected_action,
+        "per_page": per_page,
+        "page": page,
+    }
+    if batch_id:
+        values["batch"] = batch_id
+    return {
+        "values": values,
+        "url": url_for("main.order_automation", **values),
+        "query": {
+            "return_date": selected_date,
+            "return_category": selected_action,
+            "return_per_page": per_page,
+            "return_page": page,
+            "return_batch": batch_id,
+        },
+    }
+
+
 @bp.route("/order-automation/cases/<int:case_id>", methods=["GET", "POST"])
 def order_automation_case(case_id: int):
     redirect_resp = require_login()
@@ -1016,14 +1092,16 @@ def order_automation_case(case_id: int):
             flash("邮件分流与业务信息已保存。", "success")
         except ValueError as exc:
             flash(str(exc), "error")
-        return redirect(url_for("main.order_automation_case", case_id=case_id))
+        return redirect(url_for("main.order_automation_case", case_id=case_id, **request.args.to_dict()))
     case = get_order_intake_case(case_id, employee_id)
     if not case:
         abort(404)
+    return_context = _order_automation_return_context(case)
     return render_template(
         "order_automation_case.html",
         case=case,
         entry_progress=order_entry_template_progress(case_id, employee_id) if case["action_type"] == "new_order" else None,
+        return_context=return_context,
         status_labels=ORDER_INTAKE_STATUS_LABELS,
         action_labels=ORDER_ACTION_LABELS,
         workflow_stage_labels=ORDER_WORKFLOW_STAGE_LABELS,
@@ -1047,7 +1125,7 @@ def order_automation_entry_template(case_id: int):
             flash("内销录单模板已保存。", "success")
         except (ValueError, json.JSONDecodeError) as exc:
             flash(str(exc) if isinstance(exc, ValueError) else "模板数据格式错误。", "error")
-        return redirect(url_for("main.order_automation_entry_template", case_id=case_id))
+        return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))
     try:
         case, template = get_order_entry_template(case_id, employee_id)
     except ValueError:
@@ -1061,7 +1139,22 @@ def order_automation_entry_template(case_id: int):
         line_fields=ORDER_ENTRY_LINE_FIELDS,
         line_labels=ORDER_ENTRY_LINE_LABELS,
         validation_issues=order_entry_validation_issues(template),
+        return_context=_order_automation_return_context(case),
     )
+
+
+@bp.post("/order-automation/cases/<int:case_id>/entry-template/refresh")
+def order_automation_entry_template_refresh(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    try:
+        result = reextract_order_entry_template(case_id, employee_id)
+        flash(f"已重新抓取邮件订单内容，共生成 {result['line_count']} 条明细；原明细已保留在历史版本中。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))
 
 
 @bp.get("/order-automation/cases/<int:case_id>/entry-template/download")
@@ -1073,7 +1166,7 @@ def order_automation_entry_template_download(case_id: int):
         output, filename = build_order_entry_domestic_export(case_id, current_employee() or "")
     except ValueError as exc:
         flash(str(exc), "error")
-        return redirect(url_for("main.order_automation_entry_template", case_id=case_id))
+        return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))
     return send_file(
         output,
         as_attachment=True,
