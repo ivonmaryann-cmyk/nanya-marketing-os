@@ -666,7 +666,9 @@ def bootstrap_cases(employee_id: str, account_id: int | None = None) -> None:
     now=utcnow()
     created_count = 0
     with db_cursor() as conn:
-        rows=conn.execute("""SELECT m.id mail_id,COALESCE(t.customer_code,'') customer_code,COALESCE(t.customer_name,'') customer_name,COALESCE(t.order_number,'') order_number FROM mail_messages m JOIN mail_accounts a ON a.id=m.account_id LEFT JOIN mail_order_tasks t ON t.id=(SELECT id FROM mail_order_tasks WHERE mail_id=m.id ORDER BY id LIMIT 1) WHERE a.owner_employee_id=? AND (? IS NULL OR m.account_id=?)""",(employee_id,account_id,account_id)).fetchall()
+        account_filter = " AND m.account_id=?" if account_id is not None else ""
+        params = (employee_id, account_id) if account_id is not None else (employee_id,)
+        rows=conn.execute(f"""SELECT m.id mail_id,COALESCE(t.customer_code,'') customer_code,COALESCE(t.customer_name,'') customer_name,COALESCE(t.order_number,'') order_number FROM mail_messages m JOIN mail_accounts a ON a.id=m.account_id LEFT JOIN mail_order_tasks t ON t.id=(SELECT id FROM mail_order_tasks WHERE mail_id=m.id ORDER BY id LIMIT 1) WHERE a.owner_employee_id=?{account_filter}""",params).fetchall()
         for row in rows:
             cursor = conn.execute("INSERT OR IGNORE INTO order_intake_cases (employee_id,mail_id,action_type,customer_code,customer_name,order_number,routing_state,routing_source,routing_reason,created_at,updated_at) VALUES (?,?,?,?,?,?, 'unrouted','keyword_rule','未命中通用规则',?,?)",(employee_id,row["mail_id"],"unclassified",row["customer_code"],row["customer_name"],row["order_number"],now,now))
             created_count += int(cursor.rowcount > 0)

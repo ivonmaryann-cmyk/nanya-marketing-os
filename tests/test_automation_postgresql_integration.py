@@ -38,6 +38,8 @@ class AutomationPostgresqlIntegrationTests(unittest.TestCase):
             "AUTOMATION_DATABASE_URL": database_url,
         }
         with patch.dict(os.environ, environment, clear=False):
+            bootstrap_cases("employee-without-account")
+            self.assertEqual([], list_cases("employee-without-account", prepare=False))
             account_id = mail_store.create_or_update_account(
                 "postgres-smoke@example.com", owner_employee_id="employee-pg", auth_code="test-auth-code"
             )
