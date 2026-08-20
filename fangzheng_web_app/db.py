@@ -699,6 +699,10 @@ def init_db() -> None:
             """
         )
 
+        from .automation_migration.outbox import ensure_sqlite_outbox
+
+        ensure_sqlite_outbox(conn)
+
         existing_users = conn.execute("SELECT COUNT(*) AS total FROM users").fetchone()["total"]
         if existing_users == 0:
             employee_rows = conn.execute(

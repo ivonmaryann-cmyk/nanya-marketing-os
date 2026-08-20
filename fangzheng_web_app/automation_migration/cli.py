@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 from pathlib import Path
 
 import psycopg
@@ -13,8 +14,12 @@ from psycopg.rows import dict_row
 from .copy import copy_snapshot
 from .audit import audit_snapshot
 from .schema import apply_migrations
+from .performance import run_read_benchmark
+from .preflight import evaluate_preflight
+from .shadow import run_shadow_comparison, shadow_summary
 from .snapshot import sqlite_snapshot
 from .spec import TABLES
+from .sync import outbox_status, process_outbox
 from .verify import verify_snapshot
 
 
@@ -30,6 +35,13 @@ def _database_url(test: bool = False) -> str:
     value = os.getenv(name, "").strip()
     if not value:
         raise RuntimeError(f"{name} is required")
+    return value
+
+
+def _shadow_database_url() -> str:
+    value = os.getenv("AUTOMATION_SHADOW_DATABASE_URL", "").strip()
+    if not value:
+        raise RuntimeError("AUTOMATION_SHADOW_DATABASE_URL is required")
     return value
 
 
@@ -51,6 +63,8 @@ def rollback_test_target(confirm: str) -> None:
         for table in reversed(TABLES):
             target.execute(f'DROP TABLE IF EXISTS "{table}" CASCADE')
         target.execute("DROP TABLE IF EXISTS automation_metadata CASCADE")
+        target.execute("DROP TABLE IF EXISTS automation_shadow_runs CASCADE")
+        target.execute("DROP TABLE IF EXISTS automation_migration_inbox CASCADE")
         target.execute("DROP TABLE IF EXISTS automation_schema_migrations CASCADE")
 
 
@@ -66,7 +80,10 @@ def _write_reports(result: dict, report_path: Path) -> None:
         Path(temporary_name).unlink(missing_ok=True)
         raise
     markdown_path = report_path.with_suffix(".md")
-    lines = ["# Order-mail automation migration report", "", f"- Result: {'passed' if result.get('ok', result.get('verification', {}).get('ok')) else 'failed'}", ""]
+    passed = result.get("ok", result.get("passed", result.get("verification", {}).get("ok")))
+    if passed is None and "difference_count" in result:
+        passed = result["difference_count"] == 0
+    lines = ["# Order-mail automation migration report", "", f"- Result: {'passed' if passed else 'failed'}", ""]
     if "copied" in result:
         lines.extend(["## Copied rows", "", *[f"- `{table}`: {count}" for table, count in result["copied"].items()]])
     elif "tables" in result:
@@ -88,6 +105,26 @@ def main() -> int:
     audit_parser.add_argument("--report", type=Path)
     rollback_parser = subparsers.add_parser("rollback-test-target")
     rollback_parser.add_argument("--confirm", required=True)
+    status_parser = subparsers.add_parser("outbox-status")
+    status_parser.add_argument("--sqlite", type=Path, required=True)
+    sync_parser = subparsers.add_parser("sync-outbox")
+    sync_parser.add_argument("--sqlite", type=Path, required=True)
+    sync_parser.add_argument("--batch-size", type=int, default=100)
+    sync_parser.add_argument("--watch", action="store_true")
+    sync_parser.add_argument("--poll-seconds", type=int, default=5)
+    shadow_parser = subparsers.add_parser("shadow-compare")
+    shadow_parser.add_argument("--sqlite", type=Path, required=True)
+    shadow_parser.add_argument("--report", type=Path)
+    summary_parser = subparsers.add_parser("shadow-summary")
+    summary_parser.add_argument("--sqlite", type=Path, required=True)
+    summary_parser.add_argument("--days", type=int, default=7)
+    benchmark_parser = subparsers.add_parser("benchmark-read")
+    benchmark_parser.add_argument("--concurrency", type=int, default=30)
+    benchmark_parser.add_argument("--iterations", type=int, default=5)
+    benchmark_parser.add_argument("--report", type=Path)
+    preflight_parser = subparsers.add_parser("preflight")
+    preflight_parser.add_argument("--evidence", type=Path, required=True)
+    preflight_parser.add_argument("--report", type=Path)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     try:
@@ -103,9 +140,42 @@ def main() -> int:
                 _write_reports(result, args.report)
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0 if result["ok"] else 2
-        else:
+        elif args.command == "rollback-test-target":
             rollback_test_target(args.confirm)
             print(json.dumps({"ok": True, "scope": "automation test target"}))
+        elif args.command == "outbox-status":
+            print(json.dumps(outbox_status(args.sqlite), ensure_ascii=False, indent=2))
+        elif args.command == "sync-outbox":
+            if args.poll_seconds <= 0 or args.poll_seconds > 300:
+                raise ValueError("poll-seconds must be between 1 and 300")
+            while True:
+                result = process_outbox(args.sqlite, _shadow_database_url(), batch_size=args.batch_size)
+                print(json.dumps(result, ensure_ascii=False))
+                if not args.watch:
+                    return 0 if result["failed"] == 0 else 2
+                time.sleep(args.poll_seconds)
+        elif args.command == "shadow-compare":
+            result = run_shadow_comparison(args.sqlite, _shadow_database_url())
+            if args.report:
+                _write_reports(result, args.report)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0 if result["difference_count"] == 0 else 2
+        elif args.command == "shadow-summary":
+            print(json.dumps(shadow_summary(args.sqlite, days=args.days), ensure_ascii=False, indent=2))
+        elif args.command == "benchmark-read":
+            result = run_read_benchmark(
+                _shadow_database_url(), concurrency=args.concurrency, iterations=args.iterations
+            )
+            if args.report:
+                _write_reports(result, args.report)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0 if not result["errors"] else 2
+        elif args.command == "preflight":
+            result = evaluate_preflight(json.loads(args.evidence.read_text(encoding="utf-8")))
+            if args.report:
+                _write_reports(result, args.report)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0 if result["passed"] else 2
     except Exception as exc:
         error = {"ok": False, "error_type": type(exc).__name__}
         report_path = getattr(args, "report", None)

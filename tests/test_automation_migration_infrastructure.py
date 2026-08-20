@@ -75,6 +75,15 @@ class AutomationMigrationInfrastructureTests(unittest.TestCase):
         self.assertEqual(set(TABLES), declared - auxiliary)
         self.assertEqual(auxiliary, declared & auxiliary)
 
+    def test_shadow_migration_adds_only_auxiliary_tables(self) -> None:
+        sql = (MIGRATION_DIR / "0002_shadow_sync.sql").read_text(encoding="utf-8").lower()
+        declared = {
+            line.split("(", 1)[0].split()[-1]
+            for line in sql.splitlines()
+            if line.startswith("create table if not exists ")
+        }
+        self.assertEqual({"automation_migration_inbox", "automation_shadow_runs"}, declared)
+
     def test_generated_copy_statement_is_idempotent(self) -> None:
         sql = _upsert_sql("mail_accounts", ["id", "email", "updated_at"])
         self.assertIn('ON CONFLICT ("id") DO UPDATE', sql)

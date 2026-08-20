@@ -656,8 +656,15 @@ fangzheng_web_app/database/
 
 ### DB-12 可靠增量同步
 
-- [ ] 状态：未开始
-- 负责人：待填写
+- [ ] 状态：待验证
+- 负责人：Codex
+- 开始时间：2026-08-20 16:35:00 +08:00
+- 分支：`feature/postgresql-automation-migration`
+- 修改文件：`automation_migration/outbox.py`、`sync.py`、`db.py`、`0002_shadow_sync.sql`
+- 测试结果：事务回滚、断线重试、元数据过滤、Inbox重复投递等7项第二阶段测试通过；真实PostgreSQL恢复追平待验证
+- 数据核对结果：测试事件不含正文、附件内容、模板内容或授权密文；真实积压为0尚待运行环境确认
+- 回滚验证结果：停止同步器后SQLite继续提交；故障注入确认业务数据保留且事件进入重试
+- 遗留风险：需真实PostgreSQL验证长时间断线、积压告警和批量追平性能
 - 推荐方案：SQLite事务内写业务数据和 `automation_migration_outbox`，后台同步器幂等写入PostgreSQL。
 - 禁止方案：业务代码简单执行“先写SQLite、再写PostgreSQL”，因为第二次写入失败会造成静默分叉。
 - 要求：
@@ -675,8 +682,15 @@ fangzheng_web_app/database/
 
 ### DB-13 影子读比较
 
-- [ ] 状态：未开始
-- 负责人：待填写
+- [ ] 状态：待验证
+- 负责人：Codex
+- 开始时间：2026-08-20 16:35:00 +08:00
+- 分支：`feature/postgresql-automation-migration`
+- 修改文件：`automation_migration/shadow.py`、`cli.py`
+- 测试结果：规范化哈希和7天汇总逻辑通过；尚无PostgreSQL实例，未开始连续7天观察
+- 数据核对结果：影子日志仅保存计数、哈希、耗时和差异标记，无业务原文
+- 回滚验证结果：影子命令不接管页面结果，停止后台命令即可取消
+- 遗留风险：下载Excel关键单元格和人工页面结果仍需真实环境验收
 - 规则：页面仍使用SQLite结果，同时读取PostgreSQL并记录差异，不把PostgreSQL差异结果展示给业务。
 - 比较内容：
   - 日期栏数量；
@@ -693,8 +707,15 @@ fangzheng_web_app/database/
 
 ### DB-14 性能与并发测试
 
-- [ ] 状态：未开始
-- 负责人：待填写
+- [ ] 状态：待验证
+- 负责人：Codex
+- 开始时间：2026-08-20 16:35:00 +08:00
+- 分支：`feature/postgresql-automation-migration`
+- 修改文件：`automation_migration/performance.py`、`cli.py`
+- 测试结果：并发/迭代参数边界和只读基准工具已实现；未执行真实压测
+- 数据核对结果：不涉及业务迁移
+- 回滚验证结果：基准为只读，停止命令即可；未写入压测数据
+- 遗留风险：阈值待负责人批准，写入并发场景待隔离测试环境
 - 场景：
   - 30名业务同时浏览邮件列表；
   - 多人同时修改分流和模板；
@@ -713,8 +734,15 @@ fangzheng_web_app/database/
 
 ### DB-15 切换前准入检查
 
-- [ ] 状态：未开始
-- 负责人：待填写
+- [ ] 状态：待验证
+- 负责人：Codex
+- 开始时间：2026-08-20 16:35:00 +08:00
+- 分支：`feature/postgresql-automation-migration`
+- 修改文件：`automation_migration/preflight.py`、`config/automation_preflight.example.json`、`cli.py`
+- 测试结果：空证据默认拒绝，完整合格证据单元测试通过；示例执行返回16个阻塞项和退出码2
+- 数据核对结果：未满足全量核对、7天影子、积压为0及人工验收等正式证据
+- 回滚验证结果：检查器只读，不修改数据库或开关
+- 遗留风险：全部准入条件满足前DB-16必须保持未开始
 - 必须全部满足：
   - 代码评审完成；
   - 自动化测试通过；
