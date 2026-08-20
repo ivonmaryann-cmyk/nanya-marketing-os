@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from ..db import db_cursor
+from ..database import automation_cursor as db_cursor
 from ..transcode_customer_rule_admin import resolve_customer_code_by_name
 from .mail_crypto import decrypt_text, encrypt_text
 

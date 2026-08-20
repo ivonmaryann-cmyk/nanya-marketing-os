@@ -6,6 +6,7 @@ from typing import Any
 
 from openpyxl import Workbook
 
+from ..file_storage import resolve_attachment_path
 from ..paths import STORAGE_DIR
 from ..transcode_agent_service import calculate_transcode_agent_quote
 from . import mail_store
@@ -26,7 +27,10 @@ def parse_attachments_for_task(task_id: int) -> dict[str, Any]:
     for attachment in attachments:
         if attachment["is_inline"] or attachment["parse_status"] == "ignored":
             continue
-        path = Path(attachment["stored_path"])
+        try:
+            path = resolve_attachment_path(attachment["stored_path"])
+        except FileNotFoundError:
+            continue
         if not path.exists():
             errors.append(f"{attachment['filename']} 文件不存在")
             continue

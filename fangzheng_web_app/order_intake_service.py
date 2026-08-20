@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from .db import db_cursor, utcnow
+from .database import automation_cursor as db_cursor
+from .db import utcnow
+from .file_storage import resolve_attachment_path
 
 
 ACTION_LABELS = {
@@ -581,6 +583,10 @@ def _mail_values(row: dict[str, Any]) -> dict[str, str]:
 
 
 def _extract_attachment_text(path: str) -> tuple[str, str]:
+    try:
+        path = str(resolve_attachment_path(path))
+    except FileNotFoundError:
+        return "", "missing"
     file_path = Path(path)
     suffix = file_path.suffix.lower()
     if not file_path.is_file(): return "", "missing"

@@ -358,8 +358,16 @@ AUTOMATION_DATABASE_URL=postgresql://...
 
 ### DB-01 PostgreSQL环境与连接信息
 
-- [ ] 状态：未开始
-- 负责人：待填写
+- [ ] 状态：待验证
+- 负责人：Codex
+- 开始时间：2026-08-20 15:36:55 +08:00
+- 分支：`feature/postgresql-automation-migration`（基于 `dev@e09e2ae`）
+- 修改文件：`compose.postgres.yaml`、`.env.example`
+- 测试命令：配置脱敏单元测试；本机环境探测
+- 测试结果：配置测试通过；本机无Docker/psql，实例连接、备份恢复和权限验证待执行
+- 数据核对结果：不涉及业务数据
+- 回滚验证结果：默认后端保持SQLite；未创建本地PostgreSQL实例
+- 遗留风险：需隔离PostgreSQL实例验证SSL、权限、备份和恢复
 - 目标：准备开发、测试和生产隔离的PostgreSQL实例。
 - 修改内容：
   - 创建独立数据库和最小权限应用账号；
@@ -379,8 +387,11 @@ AUTOMATION_DATABASE_URL=postgresql://...
 
 ### DB-02 引入PostgreSQL驱动和连接池
 
-- [ ] 状态：未开始
-- 负责人：待填写
+- [ ] 状态：待验证
+- 负责人：Codex
+- 开始时间：2026-08-20 16:05:00 +08:00
+- 修改文件：`requirements.txt`、`fangzheng_web_app/database/config.py`、`fangzheng_web_app/database/automation.py`
+- 测试结果：驱动3.3.4、连接池3.3.1导入成功；配置、超时、脱敏测试通过；真实并发待PostgreSQL实例验证
 - 建议依赖：`psycopg` 3 与 `psycopg_pool`。
 - 预计涉及：`requirements.txt`、应用初始化、配置加载。
 - 修改内容：
@@ -399,8 +410,11 @@ AUTOMATION_DATABASE_URL=postgresql://...
 
 ### DB-03 拆分核心库与自动化库访问入口
 
-- [ ] 状态：未开始
-- 负责人：待填写
+- [ ] 状态：待验证
+- 负责人：Codex
+- 开始时间：2026-08-20 16:05:00 +08:00
+- 修改文件：`fangzheng_web_app/database/`及3个自动化服务入口
+- 测试结果：SQLite自动化回归通过；异常时PostgreSQL事务显式回滚；PostgreSQL业务矩阵待验证
 - 目标：避免所有模块继续依赖同一个全局 `db_cursor()`。
 - 建议结构：
 
@@ -430,8 +444,11 @@ fangzheng_web_app/database/
 
 ### DB-04 建立版本化迁移脚本
 
-- [ ] 状态：未开始
-- 负责人：待填写
+- [ ] 状态：待验证
+- 负责人：Codex
+- 开始时间：2026-08-20 16:20:00 +08:00
+- 修改文件：`migrations/automation/postgresql/0001_automation_schema.sql`、`automation_migration/schema.py`
+- 测试结果：迁移范围和SHA256防篡改单元测试通过；空PostgreSQL升级与测试回滚待验证
 - 目标：替代启动时零散执行 `CREATE TABLE`、`PRAGMA` 和 `ALTER TABLE`。
 - 要求：
   - 每个迁移版本不可修改历史内容，只能新增版本；
@@ -453,8 +470,11 @@ fangzheng_web_app/database/
 
 ### DB-05 自动化表PostgreSQL DDL
 
-- [ ] 状态：未开始
-- 负责人：待填写
+- [ ] 状态：待验证
+- 负责人：Codex
+- 开始时间：2026-08-20 16:20:00 +08:00
+- 修改文件：`migrations/automation/postgresql/0001_automation_schema.sql`
+- 测试结果：静态测试确认恰好20张业务表及2张迁移辅助表；真实PostgreSQL约束测试待验证
 - 修改内容：
   - 为20张业务表建立PostgreSQL DDL；
   - 保留字段含义、默认值和唯一约束；
@@ -475,8 +495,11 @@ fangzheng_web_app/database/
 
 ### DB-06 SQLite方言改造清单
 
-- [ ] 状态：未开始
-- 负责人：待填写
+- [ ] 状态：待验证
+- 负责人：Codex
+- 开始时间：2026-08-20 17:05:00 +08:00
+- 修改文件：`fangzheng_web_app/database/sql.py`、`automation.py`
+- 测试结果：参数、Identity/RETURNING、冲突处理、聚合和元数据映射单元测试通过；双数据库业务矩阵待验证
 - 必须逐处改造：
 
 | SQLite写法 | PostgreSQL处理 |
@@ -505,8 +528,11 @@ fangzheng_web_app/database/
 
 ### DB-07 自动化事务边界梳理
 
-- [ ] 状态：未开始
-- 负责人：待填写
+- [ ] 状态：待验证
+- 负责人：Codex
+- 开始时间：2026-08-20 17:05:00 +08:00
+- 修改文件：`fangzheng_web_app/database/automation.py`、`automation_migration/cli.py`
+- 测试结果：迁移全量复制使用单事务且异常回滚；业务故障注入需PostgreSQL实例继续验证
 - 必须覆盖：
   - 保存邮件和附件元数据；
   - 邮件去重；
@@ -525,8 +551,11 @@ fangzheng_web_app/database/
 
 ### DB-08 自动化测试补齐
 
-- [ ] 状态：未开始
-- 负责人：待填写
+- [ ] 状态：待验证
+- 负责人：Codex
+- 开始时间：2026-08-20 17:20:00 +08:00
+- 修改文件：`tests/test_automation_migration_infrastructure.py`、`tests/test_automation_postgresql_integration.py`
+- 测试结果：迁移与相关SQLite回归38项通过、PostgreSQL集成1项跳过；全套45项保留1个既有业务失败
 - 必须覆盖：
   - 重复同步不新增重复邮件；
   - `BODY.PEEK`行为不改变原邮箱已读状态；
@@ -549,8 +578,11 @@ fangzheng_web_app/database/
 
 ### DB-09 迁移前数据审计
 
-- [ ] 状态：未开始
-- 负责人：待填写
+- [ ] 状态：待验证
+- 负责人：Codex
+- 开始时间：2026-08-20 16:45:00 +08:00
+- 修改文件：`automation_migration/audit.py`、`snapshot.py`、`cli.py`
+- 测试结果：本地`storage/app.db`完整审计通过；生产快照仍需执行
 - 必查项目：
   - SQLite `integrity_check`；
   - 20张业务表行数；
@@ -569,8 +601,11 @@ fangzheng_web_app/database/
 
 ### DB-10 一致性快照与全量复制工具
 
-- [ ] 状态：未开始
-- 负责人：待填写
+- [ ] 状态：待验证
+- 负责人：Codex
+- 开始时间：2026-08-20 16:35:00 +08:00
+- 修改文件：`automation_migration/snapshot.py`、`copy.py`、`cli.py`
+- 测试结果：在线备份快照、幂等Upsert、主键保留、序列重置和报告测试通过；真实PostgreSQL重复导入待验证
 - 要求：
   - 使用SQLite在线备份API或一致性读事务；
   - 禁止在应用运行时直接复制正在写入的 `app.db` 文件作为迁移源；
@@ -588,8 +623,11 @@ fangzheng_web_app/database/
 
 ### DB-11 全量核对
 
-- [ ] 状态：未开始
-- 负责人：待填写
+- [ ] 状态：待验证
+- 负责人：Codex
+- 开始时间：2026-08-20 16:35:00 +08:00
+- 修改文件：`automation_migration/verify.py`、`audit.py`
+- 测试结果：行数、主键、逐行哈希、唯一键、孤儿、模板及附件元数据核对能力已测试；跨库真实数据差异需PostgreSQL验证
 - 核对层级：
   1. 表行数；
   2. 主键集合；
@@ -798,8 +836,14 @@ order-entry/{case_id}/exports/{export_id}.xlsx
 
 ### FS-01 文件存储抽象
 
-- [ ] 状态：未开始
-- 负责人：待填写
+- [ ] 状态：待验证
+- 负责人：Codex
+- 开始时间：2026-08-20 16:50:00 +08:00
+- 修改文件：`fangzheng_web_app/file_storage/`及3个附件读取点
+- 测试结果：原子保存、打开、存在性、校验和、删除接口、对象键越界防护和旧路径回退测试通过
+- 数据核对结果：本地样本无附件，真实附件大小/SHA256与下载验证待执行
+- 回滚验证结果：移除对象键配置后仍从旧路径读取；未搬迁或删除任何文件
+- 遗留风险：对象存储适配器、受控临时链接和连续7天双读观察属于后续任务
 - 目标：业务代码不再直接 `Path(stored_path).read_bytes()`。
 - 统一接口至少包括：
   - `save(stream, object_key, metadata)`；

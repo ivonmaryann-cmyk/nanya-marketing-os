@@ -14,8 +14,10 @@ from typing import Any
 
 from openpyxl import load_workbook
 
-from .db import db_cursor, utcnow
+from .database import automation_cursor as db_cursor
+from .db import utcnow
 from .excel_utils import load_workbook_compat
+from .file_storage import resolve_attachment_path
 from .order_intake_service import get_case
 from .paths import PACKAGE_DIR
 from .purchase_field_rules import clean_text, normalize_date, normalize_number
@@ -392,7 +394,10 @@ def _attachment_rows(case: dict[str, Any]) -> list[dict[str, Any]]:
     for attachment in case.get("attachments") or []:
         if attachment.get("is_inline"):
             continue
-        path = Path(str(attachment.get("stored_path") or ""))
+        try:
+            path = resolve_attachment_path(str(attachment.get("stored_path") or ""))
+        except FileNotFoundError:
+            continue
         if not path.is_file():
             continue
         filename, suffix = str(attachment.get("filename") or path.name), path.suffix.lower()
