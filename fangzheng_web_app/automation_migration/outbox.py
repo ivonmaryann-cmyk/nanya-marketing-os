@@ -32,6 +32,13 @@ def ensure_sqlite_outbox(connection: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_automation_outbox_pending
             ON automation_migration_outbox(processed_at, next_attempt_at, id);
 
+        CREATE TABLE IF NOT EXISTS automation_runtime_flags (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        INSERT INTO automation_runtime_flags(key,value) VALUES ('suppress_outbox','0')
+            ON CONFLICT(key) DO NOTHING;
+
         CREATE TABLE IF NOT EXISTS automation_shadow_differences (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             run_id TEXT NOT NULL,
@@ -48,14 +55,21 @@ def ensure_sqlite_outbox(connection: sqlite3.Connection) -> None:
             ON automation_shadow_differences(observed_at, is_match, id);
         """
     )
+    trigger_version = connection.execute(
+        "SELECT value FROM automation_runtime_flags WHERE key='outbox_trigger_version'"
+    ).fetchone()
+    if trigger_version and trigger_version[0] == "2":
+        return
     for table in TABLES:
         keys = PRIMARY_KEYS[table]
         for suffix, operation, prefix in (("ai", "insert", "NEW"), ("au", "update", "NEW"), ("ad", "delete", "OLD")):
             trigger = f"automation_outbox_{table}_{suffix}"
+            connection.execute(f'DROP TRIGGER IF EXISTS "{trigger}"')
             connection.execute(
                 f"""
                 CREATE TRIGGER IF NOT EXISTS "{trigger}"
                 AFTER {operation.upper()} ON "{table}"
+                WHEN COALESCE((SELECT value FROM automation_runtime_flags WHERE key='suppress_outbox'),'0') <> '1'
                 BEGIN
                     INSERT INTO {OUTBOX_TABLE}
                         (event_id, source_table, operation, pk_json, created_at)
@@ -67,6 +81,10 @@ def ensure_sqlite_outbox(connection: sqlite3.Connection) -> None:
                 """
             )
     _ensure_metadata_triggers(connection)
+    connection.execute(
+        "INSERT INTO automation_runtime_flags(key,value) VALUES ('outbox_trigger_version','2') "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+    )
 
 
 def _ensure_metadata_triggers(connection: sqlite3.Connection) -> None:
@@ -79,11 +97,12 @@ def _ensure_metadata_triggers(connection: sqlite3.Connection) -> None:
         ("au", "UPDATE", "NEW", condition),
         ("ad", "DELETE", "OLD", condition.replace("NEW.", "OLD.")),
     ):
+        connection.execute(f'DROP TRIGGER IF EXISTS "automation_outbox_metadata_{suffix}"')
         connection.execute(
             f"""
             CREATE TRIGGER IF NOT EXISTS "automation_outbox_metadata_{suffix}"
             AFTER {operation} ON settings
-            WHEN {when}
+            WHEN ({when}) AND COALESCE((SELECT value FROM automation_runtime_flags WHERE key='suppress_outbox'),'0') <> '1'
             BEGIN
                 INSERT INTO {OUTBOX_TABLE}
                     (event_id, source_table, operation, pk_json, created_at)

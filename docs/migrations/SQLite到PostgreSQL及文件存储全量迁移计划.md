@@ -760,8 +760,16 @@ fangzheng_web_app/database/
 
 ### DB-16 正式切换步骤
 
-- [ ] 状态：未开始
-- 负责人：待填写
+- [ ] 状态：待验证
+- 负责人：Codex
+- 开始时间：2026-08-20 17:20:00 +08:00
+- 分支：`feature/postgresql-automation-migration`
+- 执行边界：仅开发切换准备和双人确认保护；未执行生产切换
+- 修改文件：`automation_migration/cutover.py`、`cli.py`、`config/automation_preflight.example.json`
+- 测试结果：准入失败关闭、三名不同负责人、备份哈希和授权令牌保护测试通过；未连接PostgreSQL
+- 数据核对结果：真实切换前备份和20表最终核对尚未执行
+- 回滚验证结果：准备工具失败不会修改应用后端或启用变更捕获
+- 遗留风险：维护窗口、人工验收、真实备份和冒烟测试均未完成，实际切换时间保持待填写
 - 推荐步骤：
   1. 通知进入自动化短暂维护窗口；
   2. 暂停自动化模块写入；
@@ -781,8 +789,16 @@ fangzheng_web_app/database/
 
 ### DB-17 回滚能力
 
-- [ ] 状态：未开始
-- 负责人：待填写
+- [ ] 状态：待验证
+- 负责人：Codex
+- 开始时间：2026-08-20 17:20:00 +08:00
+- 分支：`feature/postgresql-automation-migration`
+- 执行边界：仅开发变更日志和隔离回放工具；未回放生产数据
+- 修改文件：`0003_cutover_rollback.sql`、`automation_migration/rollback.py`、`outbox.py`
+- 测试结果：幂等插入/更新、重复删除、Outbox抑制和异常整批回滚测试通过；真实PostgreSQL回放待验证
+- 数据核对结果：测试回放后SQLite记录一致且未产生循环Outbox；未使用生产数据
+- 回滚验证结果：隔离SQLite故障注入通过；正式上线前完整演练仍未执行
+- 遗留风险：PostgreSQL触发器语法、权限、敏感日志表保护和恢复时长需真实实例验证
 - 回滚前提：正式切换后PostgreSQL新增的写入必须有可回放变更日志，否则不能安全切回旧SQLite。
 - 回滚步骤：
   1. 暂停自动化写入；
@@ -799,8 +815,16 @@ fangzheng_web_app/database/
 
 ### DB-18 稳定观察
 
-- [ ] 状态：未开始
-- 负责人：待填写
+- [ ] 状态：待验证
+- 负责人：Codex
+- 开始时间：2026-08-20 17:20:00 +08:00
+- 分支：`feature/postgresql-automation-migration`
+- 执行边界：仅开发观察报告和门禁；正式观察期尚未开始
+- 修改文件：`automation_migration/observation.py`、`cli.py`
+- 测试结果：7个不同日期、全部人工通过、Outbox为0和影子差异为0的门禁测试通过
+- 数据核对结果：无正式观察报告
+- 回滚验证结果：观察工具只读，不修改业务数据或后端开关
+- 遗留风险：正式切换后7至14天观察尚未发生，SQLite只读30天保留期未开始
 - 观察期：正式切换后至少7～14天。
 - 观察内容：
   - 数据库错误率；

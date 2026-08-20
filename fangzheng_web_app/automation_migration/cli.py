@@ -13,6 +13,8 @@ from psycopg.rows import dict_row
 
 from .copy import copy_snapshot
 from .audit import audit_snapshot
+from .cutover import enable_change_capture, prepare_cutover
+from .observation import collect_observation, evaluate_observation_reports
 from .schema import apply_migrations
 from .performance import run_read_benchmark
 from .preflight import evaluate_preflight
@@ -20,6 +22,7 @@ from .shadow import run_shadow_comparison, shadow_summary
 from .snapshot import sqlite_snapshot
 from .spec import TABLES
 from .sync import outbox_status, process_outbox
+from .rollback import replay_change_log
 from .verify import verify_snapshot
 
 
@@ -42,6 +45,13 @@ def _shadow_database_url() -> str:
     value = os.getenv("AUTOMATION_SHADOW_DATABASE_URL", "").strip()
     if not value:
         raise RuntimeError("AUTOMATION_SHADOW_DATABASE_URL is required")
+    return value
+
+
+def _required_url(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise RuntimeError(f"{name} is required")
     return value
 
 
@@ -125,6 +135,27 @@ def main() -> int:
     preflight_parser = subparsers.add_parser("preflight")
     preflight_parser.add_argument("--evidence", type=Path, required=True)
     preflight_parser.add_argument("--report", type=Path)
+    prepare_parser = subparsers.add_parser("prepare-cutover")
+    prepare_parser.add_argument("--sqlite", type=Path, required=True)
+    prepare_parser.add_argument("--evidence", type=Path, required=True)
+    prepare_parser.add_argument("--backup-dir", type=Path, required=True)
+    prepare_parser.add_argument("--report", type=Path, required=True)
+    capture_parser = subparsers.add_parser("enable-change-capture")
+    capture_parser.add_argument("--manifest", type=Path, required=True)
+    capture_parser.add_argument("--confirm", required=True)
+    replay_parser = subparsers.add_parser("rollback-replay")
+    replay_parser.add_argument("--sqlite", type=Path, required=True)
+    replay_parser.add_argument("--backup", type=Path, required=True)
+    replay_parser.add_argument("--backup-sha256", required=True)
+    replay_parser.add_argument("--confirm", required=True)
+    replay_parser.add_argument("--batch-size", type=int, default=100)
+    observe_parser = subparsers.add_parser("observe")
+    observe_parser.add_argument("--sqlite", type=Path, required=True)
+    observe_parser.add_argument("--report", type=Path, required=True)
+    observation_gate_parser = subparsers.add_parser("observation-gate")
+    observation_gate_parser.add_argument("reports", nargs="+", type=Path)
+    observation_gate_parser.add_argument("--minimum-days", type=int, default=7)
+    observation_gate_parser.add_argument("--report", type=Path)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     try:
@@ -172,6 +203,45 @@ def main() -> int:
             return 0 if not result["errors"] else 2
         elif args.command == "preflight":
             result = evaluate_preflight(json.loads(args.evidence.read_text(encoding="utf-8")))
+            if args.report:
+                _write_reports(result, args.report)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0 if result["passed"] else 2
+        elif args.command == "prepare-cutover":
+            evidence = json.loads(args.evidence.read_text(encoding="utf-8"))
+            result = prepare_cutover(
+                args.sqlite,
+                _required_url("AUTOMATION_CUTOVER_DATABASE_URL"),
+                evidence,
+                args.backup_dir,
+            )
+            _write_reports(result, args.report)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif args.command == "enable-change-capture":
+            manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+            enable_change_capture(
+                _required_url("AUTOMATION_CUTOVER_DATABASE_URL"), manifest, args.confirm
+            )
+            print(json.dumps({"ok": True, "change_capture": "enabled"}))
+        elif args.command == "rollback-replay":
+            result = replay_change_log(
+                args.sqlite,
+                _required_url("AUTOMATION_ROLLBACK_DATABASE_URL"),
+                args.backup,
+                args.backup_sha256,
+                args.confirm,
+                batch_size=args.batch_size,
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif args.command == "observe":
+            result = collect_observation(
+                args.sqlite, _required_url("AUTOMATION_OBSERVATION_DATABASE_URL")
+            )
+            _write_reports(result, args.report)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 2
+        elif args.command == "observation-gate":
+            result = evaluate_observation_reports(args.reports, minimum_days=args.minimum_days)
             if args.report:
                 _write_reports(result, args.report)
             print(json.dumps(result, ensure_ascii=False, indent=2))
