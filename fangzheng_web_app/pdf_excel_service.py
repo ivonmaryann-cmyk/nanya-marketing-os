@@ -24,7 +24,7 @@ from .json_to_excel import build_business_document, write_conversion_workbook
 from .paths import JOBS_DIR
 from .pdf_native_parser import parse_pdf_native
 from .purchase_ai_repair import audit_and_repair_purchase_document
-from .purchase_excel_writer import write_purchase_order_workbook
+from .purchase_excel_writer import write_internal_sales_workbook, write_purchase_order_workbook
 from .purchase_factory_mapper import project_factory_document, safe_result_stem
 from .purchase_order_pipeline import run_purchase_order_pipeline
 from .purchase_performance import add_stage_ms, file_sha256, pipeline_fingerprint
@@ -532,6 +532,52 @@ def _write_purchase_results(
             for result_path in result_files:
                 archive.write(result_path, arcname=result_path.name)
     return output_path, aggregate_stats, result_files
+
+
+def get_or_create_internal_sales_result(job: dict[str, Any]) -> Path:
+    stored_result_path = Path(str(job.get("stored_result_path") or ""))
+    if not stored_result_path.exists():
+        raise FileNotFoundError("原转换结果不存在，无法定位任务目录。")
+
+    job_dir = stored_result_path.parent
+    json_dir = job_dir / "json"
+    json_paths = sorted(json_dir.glob("*.json")) if json_dir.exists() else []
+    if not json_paths:
+        raise FileNotFoundError("该任务没有保留可生成内销模板的解析数据，请重新上传原文件。")
+
+    documents: list[dict[str, Any]] = []
+    for json_path in json_paths:
+        try:
+            document = json.loads(json_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"解析数据读取失败：{json_path.name}") from exc
+        if not isinstance(document, dict):
+            raise ValueError(f"解析数据格式无效：{json_path.name}")
+        documents.append(document)
+
+    suffix = ".xlsx" if len(documents) == 1 else ".zip"
+    output_path = job_dir / f"{job_dir.name}_内销导入模板{suffix}"
+    if output_path.exists():
+        return output_path
+
+    with tempfile.TemporaryDirectory(prefix="internal_sales_", dir=job_dir) as temp_dir_name:
+        temp_dir = Path(temp_dir_name)
+        generated_files: list[Path] = []
+        for index, document in enumerate(documents, start=1):
+            source_stem = safe_result_stem(document.get("source_file"), fallback=f"采购单_{index:03d}")
+            workbook_path = temp_dir / f"{index:03d}_{source_stem}_内销导入模板.xlsx"
+            write_internal_sales_workbook(document, workbook_path)
+            generated_files.append(workbook_path)
+
+        temp_output = temp_dir / output_path.name
+        if len(generated_files) == 1:
+            shutil.copy2(generated_files[0], temp_output)
+        else:
+            with zipfile.ZipFile(temp_output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for workbook_path in generated_files:
+                    archive.write(workbook_path, arcname=workbook_path.name)
+        temp_output.replace(output_path)
+    return output_path
 
 
 def run_pdf_excel_job(job_id: int, employee_id: str) -> None:

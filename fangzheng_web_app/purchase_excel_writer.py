@@ -11,9 +11,12 @@ from openpyxl.utils import get_column_letter
 from .purchase_factory_mapper import (
     FACTORY_DETAIL_HEADERS,
     FACTORY_MAIN_HEADERS,
+    INTERNAL_SALES_DETAIL_HEADERS,
+    INTERNAL_SALES_MAIN_HEADERS,
     _extract_roll_length,
     _project_detail_standard_fields,
     project_factory_document,
+    project_internal_sales_document,
 )
 from .purchase_field_rules import STANDARD_HEADERS, clean_text, decimal_or_none, normalize_date
 
@@ -462,3 +465,71 @@ def write_purchase_order_workbook(documents: list[dict[str, Any]], output_path: 
         "ready_count": sum(int((document.get("factory_mapping_summary") or {}).get("ready_rows") or 0) for document in documents),
         "review_count": sum(int((document.get("factory_mapping_summary") or {}).get("review_rows") or 0) for document in documents),
     }
+
+
+def _set_internal_sales_sheet_layout(ws) -> None:
+    widths = [16, 30, 18, 28, 52, 24, 18, 18, 18, 24, 24, 24, 22, 28]
+    for column, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(column)].width = width
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A4"
+
+
+def _style_internal_sales_cell(cell, *, header: bool = False) -> None:
+    cell.font = Font(name="宋体", size=11, bold=False, color="000000")
+    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=header or cell.column in {4, 5, 14})
+    cell.border = THIN_BORDER
+
+
+def write_internal_sales_workbook(document: dict[str, Any], output_path: Path) -> int:
+    internal_sales = project_internal_sales_document(document)
+    main_headers = list(internal_sales.get("main_headers") or INTERNAL_SALES_MAIN_HEADERS)
+    main_values = list(internal_sales.get("main_values") or [""] * len(main_headers))
+    detail_headers = list(internal_sales.get("detail_headers") or INTERNAL_SALES_DETAIL_HEADERS)
+    rows = list(internal_sales.get("rows") or [])
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "内销"
+    _set_internal_sales_sheet_layout(ws)
+
+    for column in range(1, 15):
+        header = main_headers[column - 1] if column <= len(main_headers) else ""
+        value = main_values[column - 1] if column <= len(main_values) else ""
+        ws.cell(row=1, column=column, value=header or None)
+        ws.cell(row=2, column=column, value=value or None)
+        _style_internal_sales_cell(ws.cell(row=1, column=column), header=True)
+        _style_internal_sales_cell(ws.cell(row=2, column=column))
+
+    for column, header in enumerate(detail_headers, start=1):
+        ws.cell(row=3, column=column, value=header)
+        _style_internal_sales_cell(ws.cell(row=3, column=column), header=True)
+
+    text_headers = {
+        "项次（必填）",
+        "产品编号",
+        "客户产品编号（必填）",
+        "客户订单序号（选填）",
+        "客户订单号",
+    }
+    for row_index, row in enumerate(rows, start=4):
+        for column, header in enumerate(detail_headers, start=1):
+            cell = ws.cell(row=row_index, column=column, value=_factory_cell_value(header, row.get(header, "")))
+            _style_internal_sales_cell(cell)
+            if header in text_headers:
+                cell.number_format = "@"
+            elif header == "出货日期（选填）":
+                cell.number_format = "yyyy/m/d;@"
+            elif header == "数量（必填）":
+                cell.number_format = "0.###"
+            elif header in {"税前单价（选填）", "单价（选填）"}:
+                cell.number_format = "#,##0.00_ "
+
+    ws.row_dimensions[1].height = 30
+    ws.row_dimensions[2].height = 24
+    ws.row_dimensions[3].height = 42
+    for row_index in range(4, 4 + len(rows)):
+        ws.row_dimensions[row_index].height = 66
+
+    wb.save(output_path)
+    return len(rows)

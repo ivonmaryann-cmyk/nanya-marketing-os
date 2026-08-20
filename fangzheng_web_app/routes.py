@@ -3267,6 +3267,28 @@ def download(job_id: int, kind: str):
     return send_file(file_path, as_attachment=True)
 
 
+@bp.get("/pdf-excel/jobs/<int:job_id>/download/internal-sales")
+def download_pdf_excel_internal_sales(job_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    job = get_job(job_id)
+    if not job or job["employee_id"] != current_employee() or job["feature"] != PDF_EXCEL_FEATURE:
+        flash("未找到该 PDF 转 Excel 任务。", "error")
+        return redirect(url_for("main.history"))
+    if job["status"] != "completed":
+        flash("任务尚未完成，暂时不能下载内销模板。", "error")
+        return redirect(url_for("main.job_detail", job_id=job_id))
+    try:
+        from .pdf_excel_service import get_or_create_internal_sales_result
+
+        file_path = get_or_create_internal_sales_result(dict(job))
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("main.job_detail", job_id=job_id))
+    return send_file(file_path, as_attachment=True, download_name=file_path.name)
+
+
 @bp.route("/admin/rules", methods=["GET", "POST"])
 def admin_rules():
     redirect_resp = require_login()

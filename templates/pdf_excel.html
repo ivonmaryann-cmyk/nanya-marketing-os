@@ -32,7 +32,7 @@
   </div>
 </section>
 
-<section class="split-layout">
+<section class="split-layout pdf-excel-layout">
   <div class="work-column">
     <article class="card task-card task-card-primary">
       <div class="task-card-title">
@@ -60,7 +60,8 @@
         </div>
         <a href="{{ url_for('main.history') }}">查看全部</a>
       </div>
-      <table class="table">
+      <div class="pdf-job-table-wrap">
+      <table class="table pdf-job-table">
         <thead>
           <tr>
             <th>ID</th>
@@ -79,9 +80,12 @@
             <td><span class="status {{ job.status }}">{{ job.status }}</span></td>
             <td>{{ job.display_total }}</td>
             <td>{{ job.created_at }}</td>
-            <td>
+            <td class="pdf-job-result-cell">
               {% if job.status == 'completed' %}
-              <a class="primary-link compact" href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载结果</a>
+              <div class="pdf-job-actions">
+                <a class="primary-link compact" href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载结果</a>
+                <a class="secondary-link compact" href="{{ url_for('main.download_pdf_excel_internal_sales', job_id=job.id) }}">下载内销模板</a>
+              </div>
               {% else %}
               -
               {% endif %}
@@ -92,6 +96,7 @@
           {% endfor %}
         </tbody>
       </table>
+      </div>
     </article>
   </div>
 
@@ -136,6 +141,7 @@
         <div id="live-download" class="{% if active_job.status != 'completed' %}hidden{% endif %}">
           <div class="result-ready">
             <a class="primary-link" href="{{ url_for('main.download', job_id=active_job.id, kind='result') }}">下载结果文件</a>
+            <a class="secondary-link" href="{{ url_for('main.download_pdf_excel_internal_sales', job_id=active_job.id) }}">下载内销模板</a>
           </div>
         </div>
       </div>

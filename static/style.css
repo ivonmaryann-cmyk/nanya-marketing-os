@@ -31,6 +31,107 @@
   margin-top: 14px;
 }
 
+.pdf-job-table-wrap {
+  overflow-x: auto;
+}
+
+.pdf-job-table {
+  min-width: 680px;
+  table-layout: fixed;
+}
+
+.pdf-job-table th:nth-child(1) { width: 58px; }
+.pdf-job-table th:nth-child(3) { width: 92px; }
+.pdf-job-table th:nth-child(4) { width: 62px; }
+.pdf-job-table th:nth-child(5) { width: 112px; }
+.pdf-job-table th:nth-child(6) { width: 118px; }
+
+.pdf-job-table td:nth-child(2) a {
+  overflow-wrap: anywhere;
+}
+
+.pdf-job-result-cell {
+  vertical-align: middle !important;
+}
+
+.pdf-job-actions {
+  display: grid;
+  gap: 6px;
+}
+
+.pdf-job-actions .compact {
+  width: 100%;
+  min-height: 32px;
+  padding: 0 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+@media (max-width: 1400px) {
+  .split-layout.pdf-excel-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .pdf-job-table-wrap {
+    overflow: visible;
+  }
+
+  .pdf-job-table {
+    min-width: 0;
+    table-layout: auto;
+  }
+
+  .pdf-job-table thead {
+    display: none;
+  }
+
+  .pdf-job-table tbody,
+  .pdf-job-table tr {
+    display: grid;
+  }
+
+  .pdf-job-table tr {
+    grid-template-columns: 104px minmax(0, 1fr);
+    padding: 12px 0;
+    border-top: 1px solid var(--line);
+  }
+
+  .pdf-job-table td {
+    padding: 4px 6px;
+    border: 0;
+  }
+
+  .pdf-job-table td:nth-child(1),
+  .pdf-job-table td:nth-child(3) {
+    grid-column: 1;
+  }
+
+  .pdf-job-table td:nth-child(2),
+  .pdf-job-table td:nth-child(5) {
+    grid-column: 2;
+  }
+
+  .pdf-job-table td:nth-child(4) {
+    display: none;
+  }
+
+  .pdf-job-table td:nth-child(5) {
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .pdf-job-table td:nth-child(6) {
+    grid-column: 1 / -1;
+  }
+
+  .pdf-job-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .result-file-card {
   display: flex;
   align-items: center;
@@ -3233,6 +3334,18 @@ button:hover,
 
 .secondary-link:hover {
   background: var(--accent-soft);
+}
+
+.log-console .result-ready .secondary-link {
+  background: #f4f7fe;
+  color: #2563eb;
+  border: 1px solid #dbe7ff;
+}
+
+.log-console .result-ready .secondary-link:hover {
+  background: #e8efff;
+  color: #1d4ed8;
+  border-color: #bfd2ff;
 }
 
 .command-panel {

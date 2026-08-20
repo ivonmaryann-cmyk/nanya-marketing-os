@@ -42,6 +42,40 @@ FACTORY_DETAIL_HEADERS = [
     "备注（选填）",
 ]
 
+INTERNAL_SALES_MAIN_HEADERS = [
+    "单别（必填）",
+    "类型1（选填）",
+    "类型2（选填）",
+    "账款客户编号（必填）",
+    "送货客户编号（选填）",
+    "送货厂别（选填）",
+    "客户订单号（选填）",
+    "账套（必填）",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+]
+
+INTERNAL_SALES_DETAIL_HEADERS = [
+    "项次（必填）",
+    "产品编号",
+    "品名（选填）",
+    "客户产品编号（必填）",
+    "客户规格（选填）",
+    "出货日期（选填）",
+    "数量（必填）",
+    "税前单价（选填）",
+    "单价（选填）",
+    "产地（根据账套默认产地）",
+    "客户订单序号（选填）",
+    "客户订单号",
+    "一对多（选填）",
+    "备注（选填）",
+]
+
 ROLE_ITEM = "item"
 ROLE_CONTRACT_ITEM = "contract_item"
 ROLE_CUSTOMER_PRODUCT = "customer_product_code"
@@ -840,6 +874,96 @@ def project_factory_document(
     }
     document["factory_mapping_summary"] = summary
     return summary
+
+
+def _internal_sales_customer_spec(detail: dict[str, Any]) -> str:
+    def normalize_spacing(value: Any) -> str:
+        text = clean_text(value)
+        text = re.sub(r"高\s+速材料", "高速材料", text)
+        text = re.sub(r"半\s+固化片", "半固化片", text)
+        text = re.sub(r"无\s+卤素", "无卤素", text)
+        text = re.sub(r"耐\s+CAF", "耐CAF", text, flags=re.I)
+        text = re.sub(r"耐CAF(?=高速材料)", "耐CAF ", text, flags=re.I)
+        text = re.sub(r"卷(?=耐CAF)", "卷 ", text, flags=re.I)
+        text = re.sub(r"\)(?=半固化片|高速材料)", ") ", text)
+        text = re.sub(r"高速材料(?=无卤素)", "高速材料 ", text)
+        text = re.sub(r"无卤素(?=半固化片)", "无卤素 ", text)
+        return clean_text(text)
+
+    standard = detail.get("standard") or {}
+    name = clean_text(standard.get("物料名称"))
+    description = clean_text(standard.get("说明"))
+    if not description:
+        for header, value in (detail.get("original") or {}).items():
+            header_key = _header_key(header)
+            if header_key in {"客户规格", "规格", "型号规格", "规格型号", "说明", "描述"}:
+                description = clean_text(value)
+                if description:
+                    break
+    if not name:
+        return normalize_spacing(description)
+    if not description:
+        return normalize_spacing(name)
+    compact_name = re.sub(r"\s+", "", name).lower()
+    compact_description = re.sub(r"\s+", "", description).lower()
+    if compact_description in compact_name:
+        return normalize_spacing(name)
+    if compact_name in compact_description:
+        return normalize_spacing(description)
+    return normalize_spacing(f"{name} {description}")
+
+
+def project_internal_sales_document(
+    document: dict[str, Any],
+    *,
+    config: AiRepairConfig | None = None,
+    log: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    if not document.get("factory_import"):
+        project_factory_document(document, config=config, log=log)
+
+    details = list(document.get("mapped_detail_rows") or [])
+    factory_import = document.get("factory_import") or {}
+    factory_rows = list(factory_import.get("rows") or [])
+    factory_main_values = list(factory_import.get("main_values") or [])
+    order_number = clean_text(factory_main_values[7]) if len(factory_main_values) > 7 else ""
+    rows: list[dict[str, Any]] = []
+
+    for index, detail in enumerate(details, start=1):
+        factory_row = factory_rows[index - 1] if index <= len(factory_rows) else {}
+        source_item = clean_text((detail.get("standard") or {}).get("序号"))
+        customer_order_item = _typed_identifier(source_item) if source_item else clean_text(
+            factory_row.get(FACTORY_DETAIL_HEADERS[0])
+        )
+        if not customer_order_item:
+            customer_order_item = str(index)
+
+        rows.append(
+            {
+                INTERNAL_SALES_DETAIL_HEADERS[0]: str(index),
+                INTERNAL_SALES_DETAIL_HEADERS[1]: "",
+                INTERNAL_SALES_DETAIL_HEADERS[2]: "",
+                INTERNAL_SALES_DETAIL_HEADERS[3]: clean_text(factory_row.get(FACTORY_DETAIL_HEADERS[3])),
+                INTERNAL_SALES_DETAIL_HEADERS[4]: _internal_sales_customer_spec(detail),
+                INTERNAL_SALES_DETAIL_HEADERS[5]: clean_text(factory_row.get(FACTORY_DETAIL_HEADERS[4])),
+                INTERNAL_SALES_DETAIL_HEADERS[6]: clean_text(factory_row.get(FACTORY_DETAIL_HEADERS[5])),
+                INTERNAL_SALES_DETAIL_HEADERS[7]: clean_text(factory_row.get(FACTORY_DETAIL_HEADERS[6])),
+                INTERNAL_SALES_DETAIL_HEADERS[8]: clean_text(factory_row.get(FACTORY_DETAIL_HEADERS[7])),
+                INTERNAL_SALES_DETAIL_HEADERS[9]: "",
+                INTERNAL_SALES_DETAIL_HEADERS[10]: customer_order_item,
+                INTERNAL_SALES_DETAIL_HEADERS[11]: clean_text(factory_row.get(FACTORY_DETAIL_HEADERS[10])) or order_number,
+                INTERNAL_SALES_DETAIL_HEADERS[12]: "",
+                INTERNAL_SALES_DETAIL_HEADERS[13]: clean_text(factory_row.get(FACTORY_DETAIL_HEADERS[11])),
+            }
+        )
+
+    document["internal_sales_import"] = {
+        "main_headers": list(INTERNAL_SALES_MAIN_HEADERS),
+        "main_values": ["220", "1", "1", "", "", "", order_number, "KL01", "", "", "", "", "", ""],
+        "detail_headers": list(INTERNAL_SALES_DETAIL_HEADERS),
+        "rows": rows,
+    }
+    return document["internal_sales_import"]
 
 
 def safe_result_stem(source_file: Any, fallback: str = "采购单") -> str:
