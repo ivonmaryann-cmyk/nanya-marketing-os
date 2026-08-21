@@ -805,13 +805,21 @@ def update_admin_password(new_password: str) -> None:
     set_setting("admin_password_hash", generate_password_hash(new_password))
 
 
+@contextmanager
+def identity_db_cursor():
+    from .database.identity import identity_cursor
+
+    with identity_cursor() as conn:
+        yield conn
+
+
 def get_user(employee_id: str):
-    with db_cursor() as conn:
+    with identity_db_cursor() as conn:
         return conn.execute("SELECT * FROM users WHERE employee_id = ?", (employee_id,)).fetchone()
 
 
 def list_users():
-    with db_cursor() as conn:
+    with identity_db_cursor() as conn:
         return conn.execute("SELECT * FROM users ORDER BY employee_id").fetchall()
 
 
@@ -824,7 +832,7 @@ def create_user(
     enabled: bool = True,
 ) -> None:
     now = utcnow()
-    with db_cursor() as conn:
+    with identity_db_cursor() as conn:
         conn.execute(
             """
             INSERT INTO users (
@@ -859,7 +867,7 @@ def verify_user_password(employee_id: str, password: str) -> bool:
 
 
 def change_user_password(employee_id: str, new_password: str, *, must_change_password: bool = False) -> None:
-    with db_cursor() as conn:
+    with identity_db_cursor() as conn:
         conn.execute(
             """
             UPDATE users
@@ -934,7 +942,7 @@ def save_transcode_model_config(
 
 def ensure_bootstrap_user(employee_id: str, password: str) -> bool:
     """Allow first legacy login only when no users exist yet."""
-    with db_cursor() as conn:
+    with identity_db_cursor() as conn:
         total = conn.execute("SELECT COUNT(*) AS total FROM users").fetchone()["total"]
     if total != 0 or not employee_id or password != employee_id:
         return False
