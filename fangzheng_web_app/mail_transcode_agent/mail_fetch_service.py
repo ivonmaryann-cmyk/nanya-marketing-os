@@ -10,6 +10,7 @@ from email.header import decode_header
 from pathlib import Path
 from typing import Any
 
+from ..file_storage import save_automation_file
 from ..paths import STORAGE_DIR
 from . import mail_store
 from .mail_crypto import decrypt_text
@@ -137,7 +138,7 @@ def _collect_attachments(message: email.message.Message, base_dir: Path) -> list
         while target.exists():
             target = sub_dir / f"{target.stem}_{counter}{target.suffix}"
             counter += 1
-        target.write_bytes(payload)
+        save_automation_file(payload, target)
         suffix = target.suffix.lower()
         parse_status = "inline" if is_inline else ("pending" if suffix in ATTACHMENT_PARSE_SUFFIXES else "ignored")
         attachments.append(
@@ -222,7 +223,7 @@ def fetch_latest_order_mails(
             mail_dir = STORAGE_DIR / "mail_transcode" / str(account_id) / uid
             mail_dir.mkdir(parents=True, exist_ok=True)
             eml_path = mail_dir / "original.eml"
-            eml_path.write_bytes(raw)
+            save_automation_file(raw, eml_path)
             html, text = _body_parts(message)
             fields = extract_order_fields(text, sender) if order_candidate else {}
             mail_id, is_new = mail_store.upsert_message(

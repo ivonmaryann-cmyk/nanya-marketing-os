@@ -59,6 +59,7 @@ from .db import (
     verify_user_password,
 )
 from .file_utils import safe_unlink
+from .file_storage import is_allowed_automation_path, resolve_attachment_path
 from .hushi_rules import (
     get_active_hushi_rule_version,
     get_hushi_rule_dir,
@@ -1206,8 +1207,11 @@ def order_automation_attachment(attachment_id: int):
     attachment = get_order_intake_attachment(attachment_id, current_employee() or "")
     if not attachment:
         abort(404)
-    file_path = Path(attachment["stored_path"]).resolve()
-    if STORAGE_DIR.resolve() not in file_path.parents or not file_path.is_file():
+    try:
+        file_path = resolve_attachment_path(str(attachment["stored_path"] or "")).resolve()
+    except FileNotFoundError:
+        abort(404)
+    if not is_allowed_automation_path(file_path) or not file_path.is_file():
         abort(404)
     return send_file(file_path, as_attachment=True, download_name=attachment["filename"])
 

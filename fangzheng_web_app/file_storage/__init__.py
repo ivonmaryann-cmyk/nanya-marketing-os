@@ -1,3 +1,19 @@
-from .local import FallbackFileStorage, LocalFileStorage, resolve_attachment_path
+from .local import (
+    AutomationFileWrite,
+    FallbackFileStorage,
+    LocalFileStorage,
+    automation_object_key,
+    is_allowed_automation_path,
+    resolve_attachment_path,
+    save_automation_file,
+)
 
-__all__ = ["FallbackFileStorage", "LocalFileStorage", "resolve_attachment_path"]
+__all__ = [
+    "AutomationFileWrite",
+    "FallbackFileStorage",
+    "LocalFileStorage",
+    "automation_object_key",
+    "is_allowed_automation_path",
+    "resolve_attachment_path",
+    "save_automation_file",
+]
