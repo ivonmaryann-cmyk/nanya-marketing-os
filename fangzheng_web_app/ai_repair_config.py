@@ -10,7 +10,8 @@ from urllib.parse import urlparse
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from .db import db_cursor, utcnow
+from .database import configuration_cursor as db_cursor
+from .db import utcnow
 
 try:
     from dotenv import load_dotenv
