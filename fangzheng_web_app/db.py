@@ -1660,7 +1660,9 @@ def create_feedback(
     urgency: str = "",
 ) -> int:
     now = utcnow()
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         cursor = conn.execute(
             """
             INSERT INTO feedback (
@@ -1699,17 +1701,23 @@ def list_feedback(employee_id: str | None = None, *, feedback_type: str | None =
         query += " AND status = ?"
         params.append(status)
     query += " ORDER BY id DESC"
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         return conn.execute(query, params).fetchall()
 
 
 def get_feedback(feedback_id: int):
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         return conn.execute("SELECT * FROM feedback WHERE id = ?", (feedback_id,)).fetchone()
 
 
 def update_feedback_status(feedback_id: int, status: str, admin_note: str = "") -> None:
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         conn.execute(
             """
             UPDATE feedback
@@ -1740,7 +1748,9 @@ DEFAULT_TASK_CATEGORIES = ["人力资源任务", "AI开发任务", "其它业务
 
 def ensure_default_task_categories(employee_id: str) -> None:
     now = utcnow()
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         existing_count = conn.execute(
             "SELECT COUNT(*) AS total FROM task_categories WHERE employee_id = ?",
             (employee_id,),
@@ -1769,7 +1779,9 @@ def ensure_default_task_categories(employee_id: str) -> None:
 
 def list_task_categories(employee_id: str):
     ensure_default_task_categories(employee_id)
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         return conn.execute(
             """
             SELECT
@@ -1787,7 +1799,9 @@ def list_task_categories(employee_id: str):
 
 
 def get_task_category(category_id: int, employee_id: str):
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         return conn.execute(
             "SELECT * FROM task_categories WHERE id = ? AND employee_id = ?",
             (category_id, employee_id),
@@ -1797,7 +1811,9 @@ def get_task_category(category_id: int, employee_id: str):
 def create_task_category(employee_id: str, name: str, short_label: str = "") -> int:
     now = utcnow()
     name = name.strip()
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         max_sort = conn.execute(
             "SELECT COALESCE(MAX(sort_order), 0) AS sort_order FROM task_categories WHERE employee_id = ?",
             (employee_id,),
@@ -1820,7 +1836,9 @@ def create_task_category(employee_id: str, name: str, short_label: str = "") -> 
 
 
 def update_task_category(category_id: int, employee_id: str, name: str, short_label: str = "") -> bool:
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         cursor = conn.execute(
             """
             UPDATE task_categories
@@ -1833,7 +1851,9 @@ def update_task_category(category_id: int, employee_id: str, name: str, short_la
 
 
 def delete_task_category(category_id: int, employee_id: str) -> bool:
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         category = conn.execute(
             "SELECT * FROM task_categories WHERE id = ? AND employee_id = ?",
             (category_id, employee_id),
@@ -1860,7 +1880,9 @@ def create_personal_task(
     due_date: str | None = None,
 ) -> int:
     now = utcnow()
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         max_sort = conn.execute(
             """
             SELECT COALESCE(MAX(sort_order), 0) AS sort_order
@@ -1941,12 +1963,16 @@ def list_personal_tasks(
             t.sort_order,
             t.id DESC
     """
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         return conn.execute(query, params).fetchall()
 
 
 def get_personal_task(task_id: int, employee_id: str):
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         return conn.execute(
             """
             SELECT t.*, c.name AS category_name, c.short_label AS category_label
@@ -1971,7 +1997,9 @@ def update_personal_task(
     due_date: str | None,
 ) -> bool:
     archived_at = utcnow() if progress == "completed" else None
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         cursor = conn.execute(
             """
             UPDATE personal_tasks
@@ -2004,7 +2032,9 @@ def update_personal_task(
 
 
 def archive_personal_task(task_id: int, employee_id: str) -> bool:
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         cursor = conn.execute(
             """
             UPDATE personal_tasks
@@ -2017,7 +2047,9 @@ def archive_personal_task(task_id: int, employee_id: str) -> bool:
 
 
 def restore_personal_task(task_id: int, employee_id: str) -> bool:
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         cursor = conn.execute(
             """
             UPDATE personal_tasks
@@ -2030,7 +2062,9 @@ def restore_personal_task(task_id: int, employee_id: str) -> bool:
 
 
 def delete_personal_task(task_id: int, employee_id: str) -> bool:
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         cursor = conn.execute(
             "DELETE FROM personal_tasks WHERE id = ? AND employee_id = ?",
             (task_id, employee_id),
@@ -2041,7 +2075,9 @@ def delete_personal_task(task_id: int, employee_id: str) -> bool:
 def reorder_personal_tasks(employee_id: str, ordered_ids: list[int], category_id: int | None) -> int:
     if not ordered_ids:
         return 0
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         valid_rows = conn.execute(
             f"""
             SELECT id
@@ -2069,7 +2105,9 @@ def reorder_personal_tasks(employee_id: str, ordered_ids: list[int], category_id
 def reorder_personal_tasks_by_priority(employee_id: str, ordered_ids: list[int], priority: str) -> int:
     if not ordered_ids:
         return 0
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         valid_rows = conn.execute(
             f"""
             SELECT id
