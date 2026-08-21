@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 import sqlite3
+import tempfile
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -120,6 +121,28 @@ from .order_entry_service import (
     save_template as save_order_entry_template,
     template_progress as order_entry_template_progress,
     validation_issues as order_entry_validation_issues,
+)
+from .customer_archive_service import (
+    CONTACT_TYPE_LABELS,
+    CUSTOMER_FIELDS,
+    CUSTOMER_FIELD_LABELS,
+    EXTRACTION_SOURCE_KIND_LABELS,
+    EXTRACTION_TARGET_LABELS,
+    ROUTING_SCOPE_LABELS,
+    TRANSFORM_LABELS,
+    customer_summary,
+    delete_contact,
+    delete_extraction_map,
+    delete_routing_rule,
+    get_customer_workspace,
+    import_customer_workbook,
+    list_customers,
+    save_contact,
+    save_customer,
+    save_extraction_map,
+    save_routing_rule,
+    set_customer_status,
+    set_routing_rule_enabled,
 )
 from .paths import STORAGE_DIR
 from .price_calculation_customers import (
@@ -1198,6 +1221,237 @@ def my_settings():
         "my_settings.html",
         mail_config_available="mail_transcode.accounts_page" in current_app.view_functions,
     )
+
+
+@bp.get("/customers")
+def customer_archive():
+    """Customer master data and customer-level automation configurations."""
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    keyword = request.args.get("keyword", "").strip()
+    # 客户数据维护不向业务展示“启用/停用”等技术状态；历史数据仍保留
+    # status 字段以兼容既有自动化逻辑，列表默认展示全部客户。
+    status = request.args.get("status", "all")
+    clerk_name = request.args.get("clerk", "").strip()
+    page_size = request.args.get("page_size", 20, type=int) or 20
+    if page_size not in {20, 50, 100}:
+        page_size = 20
+    page = max(request.args.get("page", 1, type=int) or 1, 1)
+    new_mode = request.args.get("new") == "1"
+    selected_id = None if new_mode else request.args.get("customer_id", type=int)
+    tab = request.args.get("tab", "base")
+    if tab not in {"base", "contacts", "routing", "mapping"}:
+        tab = "base"
+    all_customers = list_customers(
+        keyword=keyword,
+        status=status,
+        clerk_name=clerk_name,
+    )
+    total_customers = len(all_customers)
+    total_pages = max(1, (total_customers + page_size - 1) // page_size)
+    page = min(page, total_pages)
+    customers = all_customers[(page - 1) * page_size: page * page_size]
+    workspace = get_customer_workspace(selected_id) if selected_id else None
+    return render_template(
+        "customer_archive.html",
+        customers=customers,
+        workspace=workspace,
+        selected_id=selected_id,
+        new_mode=new_mode,
+        selected_tab=tab,
+        keyword=keyword,
+        selected_status=status,
+        selected_clerk=clerk_name,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+        total_customers=total_customers,
+        summary=customer_summary(),
+        customer_fields=CUSTOMER_FIELDS,
+        customer_field_labels=CUSTOMER_FIELD_LABELS,
+        contact_type_labels=CONTACT_TYPE_LABELS,
+        routing_scope_labels=ROUTING_SCOPE_LABELS,
+        extraction_source_kind_labels=EXTRACTION_SOURCE_KIND_LABELS,
+        extraction_target_labels=EXTRACTION_TARGET_LABELS,
+        transform_labels=TRANSFORM_LABELS,
+        action_labels=ORDER_ACTION_LABELS,
+    )
+
+
+def _customer_redirect(customer_id: int | None = None, tab: str = "base"):
+    params: dict[str, object] = {"tab": tab}
+    if customer_id:
+        params["customer_id"] = customer_id
+    return redirect(url_for("main.customer_archive", **params))
+
+
+@bp.post("/customers/save")
+def customer_archive_save():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    customer_id = request.form.get("customer_id", type=int)
+    values = {field: request.form.get(field, "") for field in CUSTOMER_FIELDS}
+    try:
+        saved_id = save_customer(values, customer_id=customer_id, operated_by=current_employee() or "")
+        flash("客户信息已保存。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+        saved_id = customer_id
+    return _customer_redirect(saved_id, "base")
+
+
+@bp.post("/customers/<int:customer_id>/status")
+def customer_archive_status(customer_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    try:
+        set_customer_status(customer_id, request.form.get("status", ""), operated_by=current_employee() or "")
+        flash("客户状态已更新。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return _customer_redirect(customer_id, "base")
+
+
+@bp.post("/customers/import")
+def customer_archive_import():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    upload = request.files.get("workbook")
+    if not upload or not upload.filename:
+        flash("请选择客户基础信息 Excel 文件。", "error")
+        return _customer_redirect()
+    suffix = Path(upload.filename).suffix.lower()
+    if suffix not in {".xlsx", ".xlsm"}:
+        flash("仅支持 .xlsx 或 .xlsm 格式的客户基础信息表。", "error")
+        return _customer_redirect()
+    temp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(prefix="customer_archive_", suffix=suffix, delete=False) as handle:
+            upload.save(handle)
+            temp_path = handle.name
+        result = import_customer_workbook(temp_path, operated_by=current_employee() or "")
+        flash(f"客户信息导入完成：新增 {result['imported']} 条，更新 {result['updated']} 条，跳过 {result['skipped']} 条。", "success")
+    except Exception as exc:
+        current_app.logger.exception("customer archive import failed")
+        flash(f"客户档案导入失败：{exc}", "error")
+    finally:
+        if temp_path:
+            safe_unlink(temp_path)
+    return _customer_redirect()
+
+
+@bp.post("/customers/<int:customer_id>/contacts/save")
+def customer_archive_contact_save(customer_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    try:
+        save_contact(
+            customer_id,
+            contact_id=request.form.get("contact_id", type=int),
+            contact_type=request.form.get("contact_type", ""),
+            contact_value=request.form.get("contact_value", ""),
+            note=request.form.get("note", ""),
+            enabled=request.form.get("enabled", "1") == "1",
+            operated_by=current_employee() or "",
+        )
+        flash("客户邮件身份已保存。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return _customer_redirect(customer_id, "contacts")
+
+
+@bp.post("/customers/<int:customer_id>/contacts/<int:contact_id>/delete")
+def customer_archive_contact_delete(customer_id: int, contact_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    delete_contact(customer_id, contact_id, operated_by=current_employee() or "")
+    flash("客户邮件身份已删除。", "success")
+    return _customer_redirect(customer_id, "contacts")
+
+
+@bp.post("/customers/<int:customer_id>/routing-rules/save")
+def customer_archive_routing_rule_save(customer_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    try:
+        save_routing_rule(
+            customer_id,
+            rule_id=request.form.get("rule_id", type=int),
+            name=request.form.get("name", ""),
+            action_type=request.form.get("action_type", ""),
+            scope=request.form.get("scope", ""),
+            keywords=request.form.get("keywords", "").replace("，", ",").replace("\n", ",").split(","),
+            note=request.form.get("note", ""),
+            priority=request.form.get("priority", 100, type=int) or 100,
+            operated_by=current_employee() or "",
+        )
+        flash("客户分流规则已保存。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return _customer_redirect(customer_id, "routing")
+
+
+@bp.post("/customers/<int:customer_id>/routing-rules/<int:rule_id>/toggle")
+def customer_archive_routing_rule_toggle(customer_id: int, rule_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    try:
+        set_routing_rule_enabled(customer_id, rule_id, request.form.get("enabled") == "1", operated_by=current_employee() or "")
+        flash("客户分流规则状态已更新。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return _customer_redirect(customer_id, "routing")
+
+
+@bp.post("/customers/<int:customer_id>/routing-rules/<int:rule_id>/delete")
+def customer_archive_routing_rule_delete(customer_id: int, rule_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    delete_routing_rule(customer_id, rule_id, operated_by=current_employee() or "")
+    flash("客户分流规则已删除。", "success")
+    return _customer_redirect(customer_id, "routing")
+
+
+@bp.post("/customers/<int:customer_id>/extraction-maps/save")
+def customer_archive_extraction_map_save(customer_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    try:
+        save_extraction_map(
+            customer_id,
+            map_id=request.form.get("map_id", type=int),
+            target_field=request.form.get("target_field", ""),
+            source_kind=request.form.get("source_kind", ""),
+            source_label=request.form.get("source_label", ""),
+            transform_type=request.form.get("transform_type", ""),
+            note=request.form.get("note", ""),
+            sort_order=request.form.get("sort_order", 100, type=int) or 100,
+            operated_by=current_employee() or "",
+        )
+        flash("客户订单提取映射已保存。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return _customer_redirect(customer_id, "mapping")
+
+
+@bp.post("/customers/<int:customer_id>/extraction-maps/<int:map_id>/delete")
+def customer_archive_extraction_map_delete(customer_id: int, map_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    delete_extraction_map(customer_id, map_id, operated_by=current_employee() or "")
+    flash("客户订单提取映射已删除。", "success")
+    return _customer_redirect(customer_id, "mapping")
 
 
 def _active_job_for(feature: str, jobs):

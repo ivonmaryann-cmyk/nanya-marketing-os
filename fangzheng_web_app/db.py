@@ -537,6 +537,53 @@ def init_db() -> None:
                 FOREIGN KEY(attachment_id) REFERENCES mail_attachments(id)
             );
 
+            CREATE TABLE IF NOT EXISTS automation_customers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                customer_code TEXT NOT NULL UNIQUE,
+                customer_short_name TEXT NOT NULL DEFAULT '', quick_code TEXT NOT NULL DEFAULT '',
+                customer_name TEXT NOT NULL DEFAULT '', group_name TEXT NOT NULL DEFAULT '', customer_type TEXT NOT NULL DEFAULT '',
+                sales_name TEXT NOT NULL DEFAULT '', service_name TEXT NOT NULL DEFAULT '', internal_clerk_name TEXT NOT NULL DEFAULT '',
+                internal_clerk_employee_id TEXT NOT NULL DEFAULT '', technical_support_name TEXT NOT NULL DEFAULT '',
+                insurer_days TEXT NOT NULL DEFAULT '', credit_amount TEXT NOT NULL DEFAULT '', payment_terms TEXT NOT NULL DEFAULT '',
+                grace_days TEXT NOT NULL DEFAULT '', invoice_address TEXT NOT NULL DEFAULT '', delivery_address TEXT NOT NULL DEFAULT '',
+                contact_name TEXT NOT NULL DEFAULT '', contact_phone TEXT NOT NULL DEFAULT '', settlement_day TEXT NOT NULL DEFAULT '',
+                transit_days TEXT NOT NULL DEFAULT '', first_trade_at TEXT NOT NULL DEFAULT '', last_order_at TEXT NOT NULL DEFAULT '',
+                last_delivery_at TEXT NOT NULL DEFAULT '', last_payment_at TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active',
+                source_json TEXT NOT NULL DEFAULT '{}', note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS automation_customer_contacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id INTEGER NOT NULL, contact_type TEXT NOT NULL,
+                contact_value TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(customer_id, contact_type, contact_value),
+                FOREIGN KEY(customer_id) REFERENCES automation_customers(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS automation_customer_routing_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id INTEGER NOT NULL, name TEXT NOT NULL, action_type TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL DEFAULT 100, note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(customer_id) REFERENCES automation_customers(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS automation_customer_routing_conditions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, rule_id INTEGER NOT NULL, scope TEXT NOT NULL, keyword TEXT NOT NULL,
+                created_at TEXT NOT NULL, FOREIGN KEY(rule_id) REFERENCES automation_customer_routing_rules(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS automation_customer_extraction_maps (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id INTEGER NOT NULL, target_field TEXT NOT NULL,
+                source_kind TEXT NOT NULL DEFAULT 'attachment_table', source_label TEXT NOT NULL DEFAULT '',
+                transform_type TEXT NOT NULL DEFAULT 'direct', transform_config_json TEXT NOT NULL DEFAULT '{}',
+                enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 100, note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(customer_id) REFERENCES automation_customers(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS automation_customer_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id INTEGER NOT NULL, action TEXT NOT NULL,
+                before_json TEXT NOT NULL DEFAULT '{}', after_json TEXT NOT NULL DEFAULT '{}', operated_by TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL, FOREIGN KEY(customer_id) REFERENCES automation_customers(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_automation_customers_status ON automation_customers(status, customer_code);
+            CREATE INDEX IF NOT EXISTS idx_automation_customer_contacts_lookup ON automation_customer_contacts(contact_type, contact_value, enabled);
+            CREATE INDEX IF NOT EXISTS idx_automation_customer_rules_customer ON automation_customer_routing_rules(customer_id, enabled, priority, id);
+            CREATE INDEX IF NOT EXISTS idx_automation_customer_conditions_rule ON automation_customer_routing_conditions(rule_id, scope);
+            CREATE INDEX IF NOT EXISTS idx_automation_customer_maps_customer ON automation_customer_extraction_maps(customer_id, enabled, sort_order);
+
             -- One domestic order-entry workbook belongs to exactly one routed
             -- mail case. The current editable values live in the header/line
             -- tables; every save also records an immutable snapshot version.
@@ -603,6 +650,9 @@ def init_db() -> None:
             "routing_matches_json": "TEXT NOT NULL DEFAULT '[]'",
             "change_tags_json": "TEXT NOT NULL DEFAULT '[]'",
             "completed_at": "TEXT",
+            "customer_id": "INTEGER",
+            "customer_match_source": "TEXT NOT NULL DEFAULT ''",
+            "customer_match_detail": "TEXT NOT NULL DEFAULT ''",
         }
         for column, definition in order_intake_migrations.items():
             if column not in order_intake_cols:

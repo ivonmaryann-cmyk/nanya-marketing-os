@@ -10,6 +10,11 @@ from zoneinfo import ZoneInfo
 from .database import automation_cursor as db_cursor
 from .db import utcnow
 from .file_storage import resolve_attachment_path
+from .customer_archive_service import (
+    customer_routing_needs_attachment_content,
+    identify_customer,
+    match_customer_routing_rules,
+)
 
 
 ACTION_LABELS = {
@@ -624,42 +629,75 @@ def reclassify_cases(employee_id: str, account_id: int | None = None) -> None:
     if account_id: clauses.append("m.account_id=?"); params.append(account_id)
     with db_cursor() as conn:
         needs_attachment_content=any(k["scope"] == "attachment_content" for group in groups for k in group["keywords"]) or any(k["scope"] == "attachment_content" for tag in tags for k in tag["keywords"])
-        rows=conn.execute(f"""SELECT c.id,c.mail_id,m.subject,m.body_text,COALESCE((SELECT GROUP_CONCAT(a.filename,' ') FROM mail_attachments a WHERE a.mail_id=m.id AND a.is_inline=0),'') attachment_names FROM order_intake_cases c JOIN mail_messages m ON m.id=c.mail_id WHERE {' AND '.join(clauses)}""",params).fetchall()
+        rows=conn.execute(f"""SELECT c.id,c.mail_id,m.subject,m.sender,m.body_text,COALESCE((SELECT GROUP_CONCAT(a.filename,' ') FROM mail_attachments a WHERE a.mail_id=m.id AND a.is_inline=0),'') attachment_names FROM order_intake_cases c JOIN mail_messages m ON m.id=c.mail_id WHERE {' AND '.join(clauses)}""",params).fetchall()
         now=utcnow()
         for raw in rows:
-            row=dict(raw); row["attachment_content"]=_attachment_content(conn,row["mail_id"]) if needs_attachment_content else ""; values=_mail_values(row); matches=[]; clear_action_types=set(); assist_action_types=set(); tag_names=[]
-            for group in groups:
-                if not group["enabled"]: continue
-                for keyword in group["keywords"]:
-                    if keyword["keyword"].lower() in values[keyword["scope"]]:
-                        strength = "clear" if keyword["scope"] in CLEAR_ROUTING_SCOPES else "assist"
-                        matches.append({"scope":keyword["scope"],"keyword":keyword["keyword"],"group":group["name"],"action_type":group["action_type"],"strength":strength})
-                        (clear_action_types if strength == "clear" else assist_action_types).add(group["action_type"])
-            for tag in tags:
-                tag_hits = [k for k in tag["keywords"] if tag["enabled"] and k["keyword"].lower() in values[k["scope"]]]
-                if tag_hits:
-                    tag_names.append(tag["name"])
-                    for hit in tag_hits:
-                        strength = "clear" if hit["scope"] in CLEAR_ROUTING_SCOPES else "assist"
-                        matches.append({
-                            "scope": hit["scope"], "keyword": hit["keyword"], "group": f"订单变更事项：{tag['name']}",
-                            "action_type": "order_change", "source": "change_item", "strength": strength,
-                        })
-                        (clear_action_types if strength == "clear" else assist_action_types).add("order_change")
-
-            # 先用主题、附件名称进行明确分流。正文和附件内容仅在没有明确
-            # 结果时辅助判断；因此“采购订单 + PO + 附件内报价”仍明确属于录单。
-            if len(clear_action_types) == 1:
-                action_type = next(iter(clear_action_types)); state = "routed"; reason = "明确分流依据匹配"
-            elif len(clear_action_types) > 1:
-                action_type = "unclassified"; state = "needs_business_routing"; reason = "多个明确分流依据同时命中"
-            elif len(assist_action_types) == 1:
-                action_type = next(iter(assist_action_types)); state = "routed"; reason = "辅助识别线索匹配"
-            elif len(assist_action_types) > 1:
-                action_type = "unclassified"; state = "needs_business_routing"; reason = "多个辅助识别线索同时命中"
+            row=dict(raw)
+            row["attachment_content"] = _attachment_content(conn,row["mail_id"]) if needs_attachment_content else ""
+            values = _mail_values(row)
+            customer = identify_customer(str(row.get("sender") or ""))
+            if customer and not row["attachment_content"] and customer_routing_needs_attachment_content(int(customer["customer_id"])):
+                row["attachment_content"] = _attachment_content(conn, row["mail_id"])
+                values = _mail_values(row)
+            customer_result = match_customer_routing_rules(int(customer["customer_id"]), values) if customer else None
+            matches=[]; clear_action_types=set(); assist_action_types=set(); tag_names=[]
+            if customer_result:
+                action_type = str(customer_result["action_type"])
+                state = str(customer_result["state"])
+                reason = str(customer_result["reason"])
+                matches = [
+                    {"source": "customer_identity", "scope": "sender", "keyword": customer["match_detail"], "group": "客户识别", "action_type": ""},
+                    *list(customer_result["matches"]),
+                ]
+                routing_source = "customer_rule"
             else:
-                action_type = "unclassified"; state = "unrouted"; reason = "未命中通用规则"
-            conn.execute("UPDATE order_intake_cases SET action_type=?,routing_state=?,routing_source='keyword_rule',routing_reason=?,routing_matches_json=?,change_tags_json=?,updated_at=? WHERE id=?", (action_type,state,reason,json.dumps(matches,ensure_ascii=False),json.dumps(tag_names,ensure_ascii=False),now,row["id"]))
+                routing_source = "keyword_rule"
+
+                for group in groups:
+                    if not group["enabled"]: continue
+                    for keyword in group["keywords"]:
+                        if keyword["keyword"].lower() in values[keyword["scope"]]:
+                            strength = "clear" if keyword["scope"] in CLEAR_ROUTING_SCOPES else "assist"
+                            matches.append({"scope":keyword["scope"],"keyword":keyword["keyword"],"group":group["name"],"action_type":group["action_type"],"strength":strength})
+                            (clear_action_types if strength == "clear" else assist_action_types).add(group["action_type"])
+                for tag in tags:
+                    tag_hits = [k for k in tag["keywords"] if tag["enabled"] and k["keyword"].lower() in values[k["scope"]]]
+                    if tag_hits:
+                        tag_names.append(tag["name"])
+                        for hit in tag_hits:
+                            strength = "clear" if hit["scope"] in CLEAR_ROUTING_SCOPES else "assist"
+                            matches.append({
+                                "scope": hit["scope"], "keyword": hit["keyword"], "group": f"订单变更事项：{tag['name']}",
+                                "action_type": "order_change", "source": "change_item", "strength": strength,
+                            })
+                            (clear_action_types if strength == "clear" else assist_action_types).add("order_change")
+
+                # 先用主题、附件名称进行明确分流。正文和附件内容仅在没有明确
+                # 结果时辅助判断；因此“采购订单 + PO + 附件内报价”仍明确属于录单。
+                if len(clear_action_types) == 1:
+                    action_type = next(iter(clear_action_types)); state = "routed"; reason = "明确分流依据匹配"
+                elif len(clear_action_types) > 1:
+                    action_type = "unclassified"; state = "needs_business_routing"; reason = "多个明确分流依据同时命中"
+                elif len(assist_action_types) == 1:
+                    action_type = next(iter(assist_action_types)); state = "routed"; reason = "辅助识别线索匹配"
+                elif len(assist_action_types) > 1:
+                    action_type = "unclassified"; state = "needs_business_routing"; reason = "多个辅助识别线索同时命中"
+                else:
+                    action_type = "unclassified"; state = "unrouted"; reason = "未命中通用规则"
+            conn.execute(
+                """UPDATE order_intake_cases
+                      SET action_type=?,routing_state=?,routing_source=?,routing_reason=?,routing_matches_json=?,change_tags_json=?,
+                          customer_id=?,customer_code=COALESCE(NULLIF(?,''),customer_code),customer_name=COALESCE(NULLIF(?,''),customer_name),
+                          customer_match_status=?,customer_match_source=?,customer_match_detail=?,updated_at=?
+                    WHERE id=?""",
+                (
+                    action_type, state, routing_source, reason, json.dumps(matches,ensure_ascii=False), json.dumps(tag_names,ensure_ascii=False),
+                    customer["customer_id"] if customer else None,
+                    customer["customer_code"] if customer else "", customer["customer_name"] if customer else "",
+                    "matched" if customer else "unmatched", customer["match_source"] if customer else "", customer["match_detail"] if customer else "",
+                    now, row["id"],
+                ),
+            )
 
 
 def bootstrap_cases(employee_id: str, account_id: int | None = None) -> None:
@@ -672,7 +710,7 @@ def bootstrap_cases(employee_id: str, account_id: int | None = None) -> None:
         for row in rows:
             cursor = conn.execute("INSERT OR IGNORE INTO order_intake_cases (employee_id,mail_id,action_type,customer_code,customer_name,order_number,routing_state,routing_source,routing_reason,created_at,updated_at) VALUES (?,?,?,?,?,?, 'unrouted','keyword_rule','未命中通用规则',?,?)",(employee_id,row["mail_id"],"unclassified",row["customer_code"],row["customer_name"],row["order_number"],now,now))
             created_count += int(cursor.rowcount > 0)
-        revision_key = f"order_intake_rule_engine_v6:{employee_id}"
+        revision_key = f"order_intake_rule_engine_v7_customer_archive:{employee_id}"
         revision_needed = conn.execute("SELECT 1 FROM settings WHERE key=?", (revision_key,)).fetchone() is None
     if created_count or revision_needed:
         reclassify_cases(employee_id, account_id)

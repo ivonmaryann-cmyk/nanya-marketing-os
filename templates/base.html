@@ -35,6 +35,10 @@
         <span class="nav-icon nav-icon-admin" aria-hidden="true"></span>
         <span class="nav-label">我的配置</span>
       </a>
+            <a href="{{ url_for('main.customer_archive') }}" title="客户信息维护" class="{% if request.endpoint and request.endpoint.startswith('main.customer_archive') %}active{% endif %}">
+              <span class="nav-icon nav-icon-workplan" aria-hidden="true"></span>
+              <span class="nav-label">客户信息维护</span>
+            </a>
             <a href="{{ url_for('main.history') }}" title="历史记录" class="{% if request.endpoint == 'main.history' %}active{% endif %}">
               <span class="nav-icon nav-icon-history" aria-hidden="true"></span>
               <span class="nav-label">历史记录</span>

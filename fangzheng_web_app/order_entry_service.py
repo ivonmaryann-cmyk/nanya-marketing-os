@@ -15,6 +15,7 @@ from typing import Any
 from openpyxl import load_workbook
 
 from .database import automation_cursor as db_cursor
+from .customer_archive_service import get_enabled_extraction_maps
 from .db import utcnow
 from .excel_utils import load_workbook_compat
 from .file_storage import resolve_attachment_path
@@ -273,6 +274,56 @@ def _tax_inclusive_unit_price(mapping: dict[str, Any]) -> Any:
     return _value_by_alias(eligible, "含税单价", "单价", "Unit Price")
 
 
+def _mapping_source_value(source: dict[str, Any], source_label: str, transform_type: str) -> str:
+    """Read explicitly named attachment columns for one customer mapping.
+
+    The mapping UI intentionally uses the customer's visible column names
+    (for example ``Material Code``), not technical column indices.  Concatenation
+    accepts ``+`` or Chinese/English commas.  Missing parts make the whole
+    result blank: the system must never present a partially guessed value.
+    """
+    labels = [item.strip() for item in re.split(r"[+，,]", str(source_label or "")) if item.strip()]
+    if not labels:
+        return ""
+    values = [clean_text(_value_by_alias(source, label)) for label in labels]
+    if not all(values):
+        return ""
+    if transform_type == "concat":
+        return " ".join(values)
+    return values[0] if len(values) == 1 else ""
+
+
+def _apply_customer_extraction_mappings(
+    values: dict[str, Any], source: dict[str, Any], mappings: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Apply only a uniquely identified customer's attachment-table mappings.
+
+    Manual mappings explicitly blank the target.  For all other mapping source
+    types we leave the universal result untouched for now; that preserves the
+    source-of-truth rule until a dedicated body/filename extractor exists.
+    """
+    if not mappings:
+        return values
+    result = dict(values)
+    for mapping in mappings:
+        if mapping.get("source_kind") != "attachment_table":
+            continue
+        target = str(mapping.get("target_field") or "")
+        transform = str(mapping.get("transform_type") or "")
+        if target not in LINE_FIELDS:
+            continue
+        if transform == "manual":
+            result[target] = ""
+            continue
+        value = _mapping_source_value(source, str(mapping.get("source_label") or ""), transform)
+        # A configured customer mapping takes precedence only when it produces
+        # an explicit source value.  Otherwise retain an already verified
+        # universal value; no fallback guess is introduced.
+        if value:
+            result[target] = value
+    return result
+
+
 def _canonical_order_number(header: dict[str, Any]) -> str:
     """Keep the actual PO token and discard surrounding document decorations."""
     for key in (
@@ -295,7 +346,7 @@ def _canonical_order_number(header: dict[str, Any]) -> str:
     return ""
 
 
-def _rows_from_excel(path: Path, filename: str) -> list[dict[str, Any]]:
+def _rows_from_excel(path: Path, filename: str, customer_mappings: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """Read customer Excel attachments as structured data without OCR."""
     try:
         book = load_workbook_compat(path, data_only=True)
@@ -326,6 +377,11 @@ def _rows_from_excel(path: Path, filename: str) -> list[dict[str, Any]]:
                 text = " ".join(clean_text(value) for value in values.values())
                 if any(token in text for token in ("合计", "总计", "小计")):
                     continue
+                source_row = {
+                    clean_text(rows[header_index][column]): row[column] if column < len(row) else ""
+                    for column in range(len(rows[header_index])) if clean_text(rows[header_index][column])
+                }
+                values = _apply_customer_extraction_mappings(values, source_row, customer_mappings or [])
                 result.append(_line_entry(
                     values,
                     label=f"附件：{filename}",
@@ -338,7 +394,10 @@ def _rows_from_excel(path: Path, filename: str) -> list[dict[str, Any]]:
         book.close()
 
 
-def _line_from_pipeline_row(row: dict[str, Any], order_number: str, label: str, reference: str, line_no: int) -> dict[str, Any]:
+def _line_from_pipeline_row(
+    row: dict[str, Any], order_number: str, label: str, reference: str, line_no: int,
+    customer_mappings: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     original = row.get("original") or {}
     standard = row.get("standard") or {}
     raw_spec = _value_by_alias(original, "物料描述", "Material Description", "名称规格", "客户规格", "物料规格", "规格", "型号")
@@ -357,6 +416,7 @@ def _line_from_pipeline_row(row: dict[str, Any], order_number: str, label: str, 
         "customer_order_number": order_number,
         "remark": standard.get("备注") or _value_by_alias(original, "备注", "说明", "订单备注") or "",
     }
+    values = _apply_customer_extraction_mappings(values, original, customer_mappings or [])
     entry = _line_entry(
         values,
         label=label,
@@ -375,7 +435,7 @@ def _line_from_pipeline_row(row: dict[str, Any], order_number: str, label: str, 
     return entry
 
 
-def _rows_from_pdf_or_image(path: Path, filename: str) -> list[dict[str, Any]]:
+def _rows_from_pdf_or_image(path: Path, filename: str, customer_mappings: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     try:
         document = run_purchase_order_pipeline({"stored_path": str(path), "original_filename": filename})
     except Exception:
@@ -386,12 +446,15 @@ def _rows_from_pdf_or_image(path: Path, filename: str) -> list[dict[str, Any]]:
     order_number = _canonical_order_number(header)
     rows = document.get("mapped_detail_rows") or []
     return [
-        _line_from_pipeline_row(row, order_number, f"附件：{filename}", f"识别明细第 {index} 行", index)
+        _line_from_pipeline_row(
+            row, order_number, f"附件：{filename}", f"识别明细第 {index} 行", index,
+            customer_mappings=customer_mappings,
+        )
         for index, row in enumerate(rows, start=1)
     ]
 
 
-def _rows_from_word(path: Path, filename: str) -> list[dict[str, Any]]:
+def _rows_from_word(path: Path, filename: str, customer_mappings: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """Convert Word attachments locally, then use the same PDF/OCR pipeline."""
     soffice = shutil.which("soffice")
     if not soffice:
@@ -405,11 +468,12 @@ def _rows_from_word(path: Path, filename: str) -> list[dict[str, Any]]:
         except (OSError, subprocess.SubprocessError):
             return []
         pdf = Path(output_dir) / f"{path.stem}.pdf"
-        return _rows_from_pdf_or_image(pdf, filename) if pdf.is_file() else []
+        return _rows_from_pdf_or_image(pdf, filename, customer_mappings=customer_mappings) if pdf.is_file() else []
 
 
 def _attachment_rows(case: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    customer_mappings = get_enabled_extraction_maps(case.get("customer_id"))
     for attachment in case.get("attachments") or []:
         if attachment.get("is_inline"):
             continue
@@ -421,11 +485,11 @@ def _attachment_rows(case: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         filename, suffix = str(attachment.get("filename") or path.name), path.suffix.lower()
         if suffix in {".xlsx", ".xlsm", ".xls"}:
-            rows.extend(_rows_from_excel(path, filename))
+            rows.extend(_rows_from_excel(path, filename, customer_mappings=customer_mappings))
         elif suffix in {".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}:
-            rows.extend(_rows_from_pdf_or_image(path, filename))
+            rows.extend(_rows_from_pdf_or_image(path, filename, customer_mappings=customer_mappings))
         elif suffix in {".doc", ".docx"}:
-            rows.extend(_rows_from_word(path, filename))
+            rows.extend(_rows_from_word(path, filename, customer_mappings=customer_mappings))
     return rows
 
 
