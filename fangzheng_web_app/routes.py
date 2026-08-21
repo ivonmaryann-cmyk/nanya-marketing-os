@@ -146,6 +146,7 @@ from .customer_archive_service import (
     set_routing_rule_enabled,
 )
 from .paths import STORAGE_DIR
+from .pdf_excel_domestic_export import build_job_domestic_export
 from .price_calculation_customers import (
     PRICE_CALCULATION_CUSTOMERS,
     default_price_customer_key,
@@ -4288,6 +4289,35 @@ def download_inventory_detail(job_id: int, grade: str):
         flash("库存明细结果文件不存在。", "error")
         return redirect(url_for("main.job_detail", job_id=job_id))
     return send_file(file_path, as_attachment=True, download_name=file_path.name)
+
+
+@bp.get("/pdf-excel/jobs/<int:job_id>/domestic-export")
+def download_pdf_excel_domestic(job_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    job = get_job(job_id)
+    if (
+        not job
+        or job["employee_id"] != current_employee()
+        or job["feature"] != PDF_EXCEL_FEATURE
+    ):
+        flash("未找到该 PDF/图片转Excel 任务。", "error")
+        return redirect(url_for("main.history"))
+    if job["status"] != "completed":
+        flash("任务尚未完成，暂时不能下载内销模板。", "error")
+        return redirect(url_for("main.job_detail", job_id=job_id))
+    try:
+        output, filename, mimetype = build_job_domestic_export(job)
+    except (OSError, ValueError) as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("main.job_detail", job_id=job_id))
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name=filename,
+        mimetype=mimetype,
+    )
 
 
 @bp.get("/download/<int:job_id>/<kind>")

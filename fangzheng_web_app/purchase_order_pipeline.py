@@ -991,6 +991,68 @@ def _sections_from_docling(lines: list[str], tables: list[dict[str, Any]]) -> di
     return sections
 
 
+def _native_detail_rows_missing_from_docling(
+    native: dict[str, Any], mapped_rows: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Recover validated native rows that Docling omitted from its Markdown."""
+    known = {
+        (
+            clean_text((row.get("standard") or {}).get("序号")),
+            clean_text((row.get("standard") or {}).get("物料编码")),
+        )
+        for row in mapped_rows
+    }
+    recovered_tables: list[dict[str, Any]] = []
+    recovered_rows: list[dict[str, Any]] = []
+    recovered_issues: list[dict[str, Any]] = []
+    for page in native.get("pages") or []:
+        for table in page.get("tables") or []:
+            source_rows = _repair_split_native_headers(
+                _matrix_from_native_cells(table.get("cells") or [], drop_trailing_sparse=False)
+            )
+            header_index, mapping = find_detail_header_row(source_rows)
+            if header_index is None or not _native_table_has_required_fields(mapping):
+                continue
+            table_rows = [list(row) for row in source_rows[header_index:]]
+            table_document = {
+                "page_index": page.get("page_index", 0),
+                "table_index": table.get("table_index", 0),
+                "table_type": "detail_table",
+                "rows": table_rows,
+                "raw_rows": table_rows,
+                "method": "pdf_native_table_recovery",
+                "confidence": 1.0,
+            }
+            candidates, issues = build_detail_rows_from_table(table_document)
+            if not candidates or not _native_table_rows_reliable(candidates, minimum_rows=1):
+                continue
+            missing: list[dict[str, Any]] = []
+            for row in candidates:
+                standard = row.get("standard") or {}
+                identity = (clean_text(standard.get("序号")), clean_text(standard.get("物料编码")))
+                if not any(identity) or identity in known:
+                    continue
+                row["method"] = "pdf_native_table_recovery"
+                missing.append(row)
+                known.add(identity)
+            if not missing:
+                continue
+            recovered_tables.append(
+                {
+                    "page_index": page.get("page_index", 0),
+                    "table_index": table.get("table_index", len(recovered_tables)),
+                    "bbox": [],
+                    "rows": table_rows,
+                    "method": "pdf_native_table_recovery",
+                    "confidence": 1.0,
+                    "title": "原生表格补充明细",
+                }
+            )
+            recovered_rows.extend(missing)
+            recovered_issues.extend(issues)
+    return recovered_tables, recovered_rows, recovered_issues
+
+
 def _docling_purchase_document(file_item: dict[str, str], native: dict[str, Any]) -> dict[str, Any] | None:
     input_path = Path(file_item["stored_path"])
     source_file = file_item.get("original_filename") or input_path.name
@@ -1053,11 +1115,20 @@ def _docling_purchase_document(file_item: dict[str, str], native: dict[str, Any]
         mapped_rows.extend(rows)
         issues.extend(table_issues)
 
+    recovered_tables, recovered_rows, recovered_issues = _native_detail_rows_missing_from_docling(
+        native, mapped_rows
+    )
+    raw_detail_tables.extend(recovered_tables)
+    mapped_rows.extend(recovered_rows)
+    issues.extend(recovered_issues)
+
     parser_mode = "template_docling_markdown_pdf" if template else "docling_markdown_pdf"
     warnings = list(native.get("warnings") or [])
     if docling_result.get("error"):
         warnings.append(f"Docling 解析提示：{docling_result.get('error')}")
     warnings.append("PDF 使用 Docling/Markdown 快速分层解析，未渲染页面图片，未调用 OCR。")
+    if recovered_rows:
+        warnings.append(f"Docling 漏行时已从原生 PDF 表格安全补充 {len(recovered_rows)} 条明细。")
     return {
         "pipeline_version": "purchase_order_v1",
         "source_file": source_file,
