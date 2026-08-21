@@ -813,6 +813,14 @@ def identity_db_cursor():
         yield conn
 
 
+@contextmanager
+def transcode_db_cursor():
+    from .database.transcode import transcode_cursor
+
+    with transcode_cursor() as conn:
+        yield conn
+
+
 def get_user(employee_id: str):
     with identity_db_cursor() as conn:
         return conn.execute("SELECT * FROM users WHERE employee_id = ?", (employee_id,)).fetchone()
@@ -890,7 +898,7 @@ def is_admin_user(employee_id: str | None) -> bool:
 
 
 def get_transcode_model_config(employee_id: str):
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return conn.execute(
             "SELECT * FROM transcode_model_configs WHERE employee_id = ?",
             (employee_id,),
@@ -911,7 +919,7 @@ def save_transcode_model_config(
     stored_key = str(existing["api_key"] or "") if existing else ""
     if api_key is not None:
         stored_key = str(api_key).strip()
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         conn.execute(
             """
             INSERT INTO transcode_model_configs (
@@ -951,7 +959,7 @@ def ensure_bootstrap_user(employee_id: str, password: str) -> bool:
 
 
 def create_job(employee_id: str, source_filename: str, stored_input_path: str, rule_version: str, feature: str = "fangzheng") -> int:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         cursor = conn.execute(
             """
             INSERT INTO jobs (
@@ -1017,12 +1025,12 @@ def update_job_status(
         params.append(utcnow())
 
     params.append(job_id)
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         conn.execute(f"UPDATE jobs SET {', '.join(fields)} WHERE id = ?", params)
 
 
 def set_job_worker(job_id: int, worker_pid: int | None) -> None:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         conn.execute(
             """
             UPDATE jobs
@@ -1045,7 +1053,7 @@ def append_job_log(
     current_row: int | None = None,
     total_rows: int | None = None,
 ) -> None:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         row = conn.execute("SELECT log_text FROM jobs WHERE id = ?", (job_id,)).fetchone()
         existing = row["log_text"] if row and row["log_text"] else ""
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -1078,7 +1086,7 @@ def append_job_log(
 
 
 def get_job(job_id: int):
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
 
 
@@ -1105,12 +1113,12 @@ def list_jobs(
     query += " ORDER BY id DESC LIMIT ?"
     params.append(limit)
 
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return conn.execute(query, params).fetchall()
 
 
 def get_active_job(employee_id: str, feature: str):
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return conn.execute(
             """
             SELECT * FROM jobs
@@ -1129,7 +1137,7 @@ def replace_transcode_agent_confirmation_items(
 ) -> list[int]:
     now = utcnow()
     inserted_ids: list[int] = []
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         conn.execute(
             "DELETE FROM transcode_agent_confirmation_events WHERE job_id = ?",
             (job_id,),
@@ -1188,12 +1196,12 @@ def list_transcode_agent_confirmation_items(
         query += " AND status = ?"
         params.append(status)
     query += " ORDER BY excel_row, id"
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return conn.execute(query, params).fetchall()
 
 
 def get_transcode_agent_confirmation_item(item_id: int) -> sqlite3.Row | None:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return conn.execute(
             "SELECT * FROM transcode_agent_confirmation_items WHERE id = ?",
             (item_id,),
@@ -1212,7 +1220,7 @@ def update_transcode_agent_confirmation_item(
     pending_rule_id: str | None = None,
 ) -> sqlite3.Row | None:
     now = utcnow()
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         before = conn.execute(
             "SELECT * FROM transcode_agent_confirmation_items WHERE id = ?",
             (item_id,),
@@ -1285,7 +1293,7 @@ def refresh_transcode_agent_confirmation_item(
     evidence: dict,
     analysis: dict,
 ) -> None:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         conn.execute(
             """
             UPDATE transcode_agent_confirmation_items
@@ -1311,7 +1319,7 @@ def update_transcode_agent_row_analysis(
     excel_row: int,
     analysis: dict,
 ) -> None:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         conn.execute(
             """
             UPDATE transcode_agent_confirmation_items
@@ -1329,7 +1337,7 @@ def update_transcode_agent_row_analysis(
 
 
 def transcode_agent_confirmation_counts(job_id: int) -> dict[str, int]:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         rows = conn.execute(
             """
             SELECT status, COUNT(*) AS total
@@ -1347,7 +1355,7 @@ def transcode_agent_confirmation_counts(job_id: int) -> dict[str, int]:
 
 
 def list_transcode_agent_confirmation_events(job_id: int) -> list[sqlite3.Row]:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return conn.execute(
             """
             SELECT id, item_id, job_id, employee_id, action,
@@ -1374,7 +1382,7 @@ def create_transcode_agent_pending_rule(
     source_excel_row: int | None,
 ) -> int:
     now = utcnow()
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         cursor = conn.execute(
             """
             INSERT INTO transcode_agent_pending_rules (
@@ -1420,12 +1428,12 @@ def list_transcode_agent_pending_rules(
     if conditions:
         sql += " WHERE " + " AND ".join(conditions)
     sql += " ORDER BY created_at DESC, id DESC"
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return conn.execute(sql, params).fetchall()
 
 
 def get_transcode_agent_pending_rule(rule_id: int) -> sqlite3.Row | None:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return conn.execute(
             "SELECT * FROM transcode_agent_pending_rules WHERE id = ?",
             (rule_id,),
@@ -1443,7 +1451,7 @@ def update_transcode_agent_pending_rule(
     condition_summary: str,
     updated_by: str,
 ) -> None:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         conn.execute(
             """
             UPDATE transcode_agent_pending_rules
@@ -1472,7 +1480,7 @@ def set_transcode_agent_pending_rule_status(
     *,
     processed_by: str = "",
 ) -> None:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         conn.execute(
             """
             UPDATE transcode_agent_pending_rules
@@ -1494,7 +1502,7 @@ def upsert_transcode_agent_row_verification(
     after_code: str,
     basis: str = "",
 ) -> None:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         conn.execute(
             """
             INSERT INTO transcode_agent_row_verifications (
@@ -1526,7 +1534,7 @@ def get_transcode_agent_row_verification(
     job_id: int,
     excel_row: int,
 ) -> sqlite3.Row | None:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return conn.execute(
             """
             SELECT * FROM transcode_agent_row_verifications
@@ -1539,7 +1547,7 @@ def get_transcode_agent_row_verification(
 def list_transcode_agent_row_verifications(
     job_id: int,
 ) -> list[sqlite3.Row]:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return conn.execute(
             """
             SELECT * FROM transcode_agent_row_verifications
@@ -1551,7 +1559,7 @@ def list_transcode_agent_row_verifications(
 
 
 def prune_jobs_for_employee(employee_id: str, keep_limit: int = 500) -> list[sqlite3.Row]:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         rows = conn.execute(
             """
             SELECT * FROM jobs
@@ -1581,7 +1589,7 @@ def prune_jobs_for_employee(employee_id: str, keep_limit: int = 500) -> list[sql
 
 
 def delete_job(job_id: int) -> sqlite3.Row | None:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         if row:
             conn.execute(
@@ -1601,7 +1609,7 @@ def delete_job(job_id: int) -> sqlite3.Row | None:
 
 
 def list_expired_terminal_jobs(cutoff: str) -> list[sqlite3.Row]:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return conn.execute(
             """
             SELECT * FROM jobs
@@ -1617,7 +1625,7 @@ def delete_terminal_jobs(job_ids: list[int]) -> int:
     if not job_ids:
         return 0
     placeholders = ", ".join("?" for _ in job_ids)
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         cursor = conn.execute(
             f"""
             DELETE FROM jobs
@@ -1630,7 +1638,7 @@ def delete_terminal_jobs(job_ids: list[int]) -> int:
 
 
 def list_job_ids() -> set[int]:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return {int(row["id"]) for row in conn.execute("SELECT id FROM jobs").fetchall()}
 
 

@@ -12,6 +12,11 @@ _IDENTITY_TABLES = {
     "automation_customers", "automation_customer_contacts", "automation_customer_routing_rules",
     "automation_customer_routing_conditions", "automation_customer_extraction_maps",
     "automation_customer_events",
+    "jobs", "pp_transcode_base_rules", "pp_transcode_customer_rules",
+    "pp_transcode_rule_changes", "pp_transcode_confirmation_items",
+    "transcode_agent_confirmation_items", "transcode_agent_confirmation_events",
+    "transcode_agent_pending_rules", "transcode_agent_row_verifications",
+    "transcode_customer_rule_changes", "transcode_rule_center_changes",
 }
 
 
@@ -78,6 +83,22 @@ def sqlite_to_postgresql(sql: str) -> tuple[str, bool]:
     if ignore_match:
         statement = re.sub(r"INSERT\s+OR\s+IGNORE", "INSERT", statement, count=1, flags=re.IGNORECASE)
         statement += " ON CONFLICT (employee_id, mail_id) DO NOTHING"
+
+    pp_ignore_match = re.match(
+        r"\s*INSERT\s+OR\s+IGNORE\s+INTO\s+pp_transcode_base_rules\b",
+        statement,
+        re.IGNORECASE,
+    )
+    if pp_ignore_match:
+        statement = re.sub(r"INSERT\s+OR\s+IGNORE", "INSERT", statement, count=1, flags=re.IGNORECASE)
+        statement += " ON CONFLICT (field_key, input_value) DO NOTHING"
+
+    statement = re.sub(
+        r"datetime\(COALESCE\(([^)]+)\)\)\s*<\s*datetime\((%s)\)",
+        r"(COALESCE(\1))::timestamp < (\2)::timestamp",
+        statement,
+        flags=re.IGNORECASE,
+    )
 
     insert_match = re.match(r"\s*INSERT\s+INTO\s+([a-zA-Z_][a-zA-Z0-9_]*)\b", statement, re.IGNORECASE)
     returns_identity = bool(

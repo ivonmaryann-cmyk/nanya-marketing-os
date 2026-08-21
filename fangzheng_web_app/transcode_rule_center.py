@@ -7,7 +7,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping
 
-from .db import db_cursor, get_setting, set_setting
+from .database import transcode_cursor as db_cursor
+from .db import get_setting, set_setting
 from .paths import STORAGE_DIR
 from .transcode_agent_glue_resolver import is_retired_agent_glue_mapping
 
@@ -235,6 +236,8 @@ class RuleCenterError(ValueError):
 def ensure_rule_center_tables() -> None:
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     with db_cursor() as conn:
+        if getattr(conn, "dialect", "sqlite") == "postgresql":
+            return
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS transcode_rule_center_base_overrides (
@@ -1632,10 +1635,13 @@ def create_backup(*, path: Path | None = None, reason: str = "手动备份") -> 
         "tables": {},
     }
     with db_cursor() as conn:
-        existing = {
-            row["name"]
-            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-        }
+        if getattr(conn, "dialect", "sqlite") == "postgresql":
+            existing = set(BACKUP_TABLES)
+        else:
+            existing = {
+                row["name"]
+                for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            }
         for table in BACKUP_TABLES:
             if table not in existing:
                 payload["tables"][table] = []
@@ -1680,10 +1686,16 @@ def restore_backup(name: str, *, updated_by: str) -> None:
     create_backup(reason=f"恢复{name}前自动备份")
     tables = payload.get("tables") or {}
     with db_cursor() as conn:
+        from .transcode_migration.spec import TABLE_COLUMNS
+
+        is_postgresql = getattr(conn, "dialect", "sqlite") == "postgresql"
         for table in BACKUP_TABLES:
             if table not in tables:
                 continue
-            columns = [row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+            if getattr(conn, "dialect", "sqlite") == "postgresql":
+                columns = list(TABLE_COLUMNS[table])
+            else:
+                columns = [row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
             if not columns:
                 continue
             conn.execute(f"DELETE FROM {table}")
@@ -1692,6 +1704,14 @@ def restore_backup(name: str, *, updated_by: str) -> None:
                 conn.execute(
                     f"INSERT INTO {table} ({','.join(columns)}) VALUES ({placeholders})",
                     tuple(row.get(column) for column in columns),
+                )
+        if is_postgresql:
+            for table in ("transcode_rule_center_changes", "transcode_customer_rule_changes"):
+                conn.execute(
+                    "SELECT setval(pg_get_serial_sequence(?, 'id'), "
+                    f"GREATEST(COALESCE((SELECT MAX(id) FROM {table}), 0), 1), "
+                    f"EXISTS(SELECT 1 FROM {table}))",
+                    (table,),
                 )
     score_raw = str((payload.get("settings") or {}).get(SCORE_SETTING_KEY) or "")
     set_setting(SCORE_SETTING_KEY, score_raw)

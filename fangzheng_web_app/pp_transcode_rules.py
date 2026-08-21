@@ -5,7 +5,8 @@ import re
 from datetime import datetime, timedelta
 from typing import Any
 
-from .db import db_cursor, utcnow
+from .database import transcode_cursor as db_cursor
+from .db import utcnow
 from .paths import STORAGE_DIR
 from .transcode_agent_glue_resolver import is_retired_agent_glue_mapping, resolve_agent_glue
 from .transcode_agent_rules import (
@@ -55,6 +56,8 @@ def _clean_output(field_key: str, value: object) -> str:
 def ensure_pp_transcode_tables() -> None:
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     with db_cursor() as conn:
+        if getattr(conn, "dialect", "sqlite") == "postgresql":
+            return
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS pp_transcode_base_rules (

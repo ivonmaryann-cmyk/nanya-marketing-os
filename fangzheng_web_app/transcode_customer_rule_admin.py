@@ -9,7 +9,7 @@ from typing import Any, Iterable, Mapping
 
 import openpyxl
 
-from .db import db_cursor
+from .database import transcode_cursor as db_cursor
 from .transcode_customer_identity import (
     CUSTOMER_ALIAS_GROUPS,
     normalize_customer_name,
@@ -197,6 +197,8 @@ class CustomerRuleMaintenanceError(ValueError):
 
 def ensure_customer_rule_maintenance_tables() -> None:
     with db_cursor() as conn:
+        if getattr(conn, "dialect", "sqlite") == "postgresql":
+            return
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS transcode_customer_rule_overrides (
