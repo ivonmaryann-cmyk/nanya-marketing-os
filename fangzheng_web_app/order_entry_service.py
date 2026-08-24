@@ -24,6 +24,7 @@ from .order_intake_service import get_case
 from .paths import PACKAGE_DIR, PROJECT_DIR
 from .pdf_excel_domestic_export import build_domestic_template_data
 from .order_document_sources import build_mail_html_purchase_document
+from .order_interface_service import record_order_detail_event
 from .purchase_field_rules import clean_text, normalize_date, normalize_number
 from .purchase_factory_mapper import project_factory_document
 from .pdf_excel_service import recognize_purchase_order_document
@@ -730,6 +731,16 @@ def get_or_create_template(case_id: int, employee_id: str) -> tuple[dict[str, An
                 "INSERT INTO order_entry_template_lines(template_id,line_no,values_json,sources_json,created_at,updated_at) VALUES (?,?,?,?,?,?)",
                 (template_id, int(values["line_no"] or 0), json.dumps(values, ensure_ascii=False), json.dumps(entry["sources"], ensure_ascii=False), now, now),
             )
+        record_order_detail_event(
+            conn,
+            case_id=case_id,
+            template_id=template_id,
+            employee_id=employee_id,
+            event_type="template_extracted",
+            title="已提取内销录单模板",
+            detail={"line_count": len(initial_lines), "source": "邮件正文和附件"},
+            operated_by=employee_id,
+        )
         return case, _serialize_template(conn, template_id)
 
 
@@ -934,6 +945,16 @@ def reextract_template(case_id: int, employee_id: str) -> dict[str, Any]:
                     now,
                 ),
             )
+        record_order_detail_event(
+            conn,
+            case_id=case_id,
+            template_id=template_id,
+            employee_id=employee_id,
+            event_type="template_reextracted",
+            title="已重新提取订单明细",
+            detail={"previous_line_count": len(previous_lines), "line_count": len(regenerated_lines)},
+            operated_by=employee_id,
+        )
         template = _serialize_template(conn, template_id)
 
     return {
@@ -1015,6 +1036,38 @@ def _clean_values(values: dict[str, Any], fields: tuple[str, ...]) -> dict[str, 
     return {field: str(values.get(field) or "").strip() for field in fields}
 
 
+def _template_changes(
+    previous_header: dict[str, Any],
+    previous_lines: list[dict[str, Any]],
+    header: dict[str, Any],
+    lines: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    changes: list[dict[str, str]] = []
+    for field in HEADER_FIELDS:
+        before = str(previous_header.get(field) or "")
+        after = str(header.get(field) or "")
+        if before != after:
+            changes.append({"field": HEADER_LABELS[field], "before": before, "after": after, "scope": "表头"})
+    old_by_line = {
+        str((entry.get("values") or {}).get("line_no") or index): entry.get("values") or {}
+        for index, entry in enumerate(previous_lines, start=1)
+    }
+    for index, entry in enumerate(lines, start=1):
+        values = entry.get("values") or {}
+        before_values = old_by_line.get(str(values.get("line_no") or index), {})
+        for field in LINE_FIELDS:
+            if field == "line_no":
+                continue
+            before = str(before_values.get(field) or "")
+            after = str(values.get(field) or "")
+            if before != after:
+                changes.append({
+                    "field": LINE_LABELS[field], "before": before, "after": after,
+                    "scope": f"第 {values.get('line_no') or index} 行",
+                })
+    return changes[:120]
+
+
 def save_template(case_id: int, employee_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     _case_for_template(case_id, employee_id)
     raw_header = payload.get("header") or {}
@@ -1054,6 +1107,7 @@ def save_template(case_id: int, employee_id: str, payload: dict[str, Any]) -> di
             {"values": line.get("values") or {}, "sources": line.get("sources") or {}}
             for line in previous.get("lines") or []
         ]
+        changes = _template_changes(previous_header, previous_lines, header, lines)
         _replace_backup(
             conn,
             template_id=template_id,
@@ -1070,6 +1124,27 @@ def save_template(case_id: int, employee_id: str, payload: dict[str, Any]) -> di
                 "INSERT INTO order_entry_template_lines(template_id,line_no,values_json,sources_json,created_at,updated_at) VALUES (?,?,?,?,?,?)",
                 (template_id, int(values["line_no"]), json.dumps(values, ensure_ascii=False), json.dumps(entry["sources"], ensure_ascii=False), now, now),
             )
+            # A business user can explicitly complete a problematic material
+            # number. That decision wins over a pending/failed external task,
+            # and makes the later recording validation meaningful.
+            if str(values.get("product_code") or "").strip() not in {"", "创建料号中"}:
+                conn.execute(
+                    """UPDATE order_material_resolution_tasks
+                       SET status='manual_resolved',updated_at=?
+                       WHERE template_id=? AND line_no=?
+                         AND status IN ('waiting_callback','requerying','failed')""",
+                    (now, template_id, int(values["line_no"])),
+                )
+        record_order_detail_event(
+            conn,
+            case_id=case_id,
+            template_id=template_id,
+            employee_id=employee_id,
+            event_type="template_saved",
+            title="保存内销录单模板",
+            detail={"changes": changes, "line_count": len(lines)},
+            operated_by=employee_id,
+        )
         return _serialize_template(conn, template_id)
 
 

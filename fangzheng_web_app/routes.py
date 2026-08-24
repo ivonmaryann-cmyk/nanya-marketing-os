@@ -124,6 +124,18 @@ from .order_entry_service import (
     template_progress as order_entry_template_progress,
     validation_issues as order_entry_validation_issues,
 )
+from .order_interface_service import (
+    MOCK_SCENARIOS as ORDER_INTERFACE_MOCK_SCENARIOS,
+    build_domestic_order_entry_mock,
+    build_material_query_mock,
+    get_order_detail_records,
+    get_material_resolution_states,
+    get_interface_config,
+    list_interface_configs,
+    process_material_created_callback,
+    save_interface_config,
+    test_interface_config,
+)
 from .customer_archive_service import (
     CONTACT_TYPE_LABELS,
     CUSTOMER_FIELDS,
@@ -771,6 +783,7 @@ def inject_platform_meta():
         # Some focused route tests register only the main blueprint. Keep optional
         # navigation links from requiring feature blueprints in those app instances.
         "mail_config_available": "mail_transcode.accounts_page" in current_app.view_functions,
+        "is_interface_admin": is_admin_user(current_employee()),
     }
 
 
@@ -1225,7 +1238,130 @@ def order_automation_entry_template(case_id: int):
         line_fields=ORDER_ENTRY_LINE_FIELDS,
         line_labels=ORDER_ENTRY_LINE_LABELS,
         validation_issues=order_entry_validation_issues(template),
+        order_details=get_order_detail_records(case_id, employee_id),
+        material_resolutions=get_material_resolution_states(case_id, employee_id),
         return_context=_order_automation_return_context(case),
+    )
+
+
+@bp.post("/order-automation/cases/<int:case_id>/material-query/mock")
+def order_automation_material_query_mock(case_id: int):
+    """Manual batch query; the Mock uses the same callback-shaped flow as production."""
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    if not get_order_intake_case(case_id, employee_id):
+        abort(404)
+    try:
+        result = build_material_query_mock(case_id, employee_id, employee_id)
+        flash(
+            f"批量料号查询 Mock 已完成：{len(result['items'])} 条明细已处理；创建中的料号将等待外部回调。",
+            "success" if result["status"] == "success" else "error",
+        )
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))
+
+
+@bp.get("/order-automation/cases/<int:case_id>/material-resolution-status")
+def order_automation_material_resolution_status(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    if not get_order_intake_case(case_id, employee_id):
+        abort(404)
+    return jsonify(get_material_resolution_states(case_id, employee_id))
+
+
+@bp.post("/integrations/material-number/callback")
+def material_number_callback():
+    """Partner callback endpoint; until a token is configured only explicit Mock calls are accepted."""
+    payload = request.get_json(silent=True) or {}
+    correlation_id = str(payload.get("correlation_id") or "").strip()
+    if not correlation_id:
+        return jsonify({"ok": False, "message": "缺少 correlation_id"}), 400
+    expected_token = os.getenv("MATERIAL_CALLBACK_TOKEN", "").strip()
+    incoming_token = request.headers.get("X-Material-Callback-Token", "")
+    if expected_token:
+        if not hmac.compare_digest(incoming_token, expected_token):
+            return jsonify({"ok": False, "message": "回调鉴权失败"}), 403
+    elif not payload.get("mock"):
+        return jsonify({"ok": False, "message": "回调令牌尚未配置"}), 503
+    product_code = str(payload.get("product_code") or payload.get("factory_part_no") or "").strip()
+    product_name = str(payload.get("product_name") or "").strip()
+    if not product_code or not product_name:
+        return jsonify({"ok": False, "message": "回调需包含 product_code 和 product_name"}), 400
+    try:
+        result = process_material_created_callback(correlation_id, product_code=product_code, product_name=product_name, source="partner-callback")
+    except ValueError as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 404
+    return jsonify({"ok": True, "result": result})
+
+
+@bp.post("/order-automation/cases/<int:case_id>/domestic-entry/mock")
+def order_automation_domestic_entry_mock(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    if not get_order_intake_case(case_id, employee_id):
+        abort(404)
+    try:
+        result = build_domestic_order_entry_mock(case_id, employee_id, employee_id)
+        flash(f"内销录单 Mock 已完成：模拟单号 {result['entry_no']}。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))
+
+
+@bp.route("/interface-maintenance", methods=["GET", "POST"])
+def interface_maintenance():
+    access_response = require_admin_role()
+    if access_response:
+        return access_response
+    selected_key = request.values.get("interface_key", "material_batch_query")
+    if request.method == "POST":
+        if request.form.get("action") == "test":
+            selected = get_interface_config(selected_key)
+            if not selected:
+                abort(404)
+            try:
+                test_result = test_interface_config(request.form)
+            except ValueError as exc:
+                test_result = {"ok": False, "error": str(exc)}
+            selected = {
+                **selected,
+                "display_name": request.form.get("display_name", selected["display_name"]),
+                "description": request.form.get("description", selected["description"]),
+                "mode": request.form.get("mode", selected["mode"]),
+                "method": request.form.get("method", selected["method"]),
+                "endpoint_url": request.form.get("endpoint_url", selected["endpoint_url"]),
+            }
+            return render_template(
+                "interface_maintenance.html",
+                configs=list_interface_configs(),
+                selected=selected,
+                mock_scenarios=ORDER_INTERFACE_MOCK_SCENARIOS,
+                test_result=test_result,
+            )
+        try:
+            save_interface_config(selected_key, request.form, current_employee() or "")
+            flash("接口配置已保存，并已生成新的配置版本。", "success")
+        except ValueError as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("main.interface_maintenance", interface_key=selected_key))
+    configs = list_interface_configs()
+    selected = get_interface_config(selected_key) or (configs[0] if configs else None)
+    if not selected:
+        abort(404)
+    return render_template(
+        "interface_maintenance.html",
+        configs=configs,
+        selected=selected,
+        mock_scenarios=ORDER_INTERFACE_MOCK_SCENARIOS,
+        test_result=None,
     )
 
 

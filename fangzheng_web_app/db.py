@@ -9,6 +9,9 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from .paths import DATABASE_PATH
 
+SYSTEM_ADMIN_EMPLOYEE_IDS = {"23582"}
+SYSTEM_ADMIN_DISPLAY_NAMES = {"傅佳峰"}
+
 
 def utcnow() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat()
@@ -636,6 +639,106 @@ def init_db() -> None:
                 FOREIGN KEY(template_id) REFERENCES order_entry_templates(id)
             );
 
+            CREATE TABLE IF NOT EXISTS order_interface_configs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                interface_key TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                mode TEXT NOT NULL DEFAULT 'mock',
+                method TEXT NOT NULL DEFAULT 'POST',
+                base_url TEXT NOT NULL DEFAULT '',
+                port INTEGER NOT NULL DEFAULT 443,
+                path TEXT NOT NULL DEFAULT '',
+                timeout_seconds INTEGER NOT NULL DEFAULT 8,
+                request_mapping_json TEXT NOT NULL DEFAULT '{}',
+                response_mapping_json TEXT NOT NULL DEFAULT '{}',
+                mock_scenarios_json TEXT NOT NULL DEFAULT '{}',
+                config_version INTEGER NOT NULL DEFAULT 1,
+                created_by TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS order_interface_config_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                interface_config_id INTEGER NOT NULL,
+                config_version INTEGER NOT NULL,
+                before_json TEXT NOT NULL DEFAULT '{}',
+                after_json TEXT NOT NULL DEFAULT '{}',
+                operated_by TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(interface_config_id) REFERENCES order_interface_configs(id)
+            );
+            CREATE TABLE IF NOT EXISTS order_entry_detail_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id INTEGER NOT NULL,
+                template_id INTEGER,
+                employee_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                detail_json TEXT NOT NULL DEFAULT '{}',
+                operated_by TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(case_id) REFERENCES order_intake_cases(id),
+                FOREIGN KEY(template_id) REFERENCES order_entry_templates(id)
+            );
+            CREATE TABLE IF NOT EXISTS order_interface_call_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id INTEGER NOT NULL,
+                template_id INTEGER,
+                employee_id TEXT NOT NULL,
+                interface_config_id INTEGER,
+                interface_key TEXT NOT NULL,
+                config_version INTEGER NOT NULL DEFAULT 1,
+                is_mock INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL,
+                http_status INTEGER,
+                duration_ms INTEGER,
+                request_json TEXT NOT NULL DEFAULT '{}',
+                response_json TEXT NOT NULL DEFAULT '{}',
+                error_message TEXT NOT NULL DEFAULT '',
+                triggered_by TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(case_id) REFERENCES order_intake_cases(id),
+                FOREIGN KEY(template_id) REFERENCES order_entry_templates(id),
+                FOREIGN KEY(interface_config_id) REFERENCES order_interface_configs(id)
+            );
+            CREATE TABLE IF NOT EXISTS order_material_query_suggestions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                call_log_id INTEGER NOT NULL,
+                template_id INTEGER NOT NULL,
+                line_no INTEGER NOT NULL,
+                factory_part_no TEXT NOT NULL DEFAULT '',
+                product_name TEXT NOT NULL DEFAULT '',
+                matched_spec TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL,
+                message TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(call_log_id) REFERENCES order_interface_call_logs(id),
+                FOREIGN KEY(template_id) REFERENCES order_entry_templates(id)
+            );
+            CREATE TABLE IF NOT EXISTS order_material_resolution_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id INTEGER NOT NULL,
+                template_id INTEGER NOT NULL,
+                employee_id TEXT NOT NULL,
+                line_no INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                correlation_id TEXT NOT NULL UNIQUE,
+                external_task_id TEXT NOT NULL DEFAULT '',
+                input_json TEXT NOT NULL DEFAULT '{}',
+                result_json TEXT NOT NULL DEFAULT '{}',
+                last_call_log_id INTEGER,
+                callback_received_at TEXT,
+                resolved_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(template_id, line_no),
+                FOREIGN KEY(case_id) REFERENCES order_intake_cases(id),
+                FOREIGN KEY(template_id) REFERENCES order_entry_templates(id),
+                FOREIGN KEY(last_call_log_id) REFERENCES order_interface_call_logs(id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_order_entry_templates_case
                 ON order_entry_templates(case_id, employee_id);
             CREATE INDEX IF NOT EXISTS idx_order_entry_lines_template
@@ -644,6 +747,12 @@ def init_db() -> None:
                 ON order_entry_template_tasks(case_id, employee_id, id DESC);
             CREATE INDEX IF NOT EXISTS idx_order_entry_template_tasks_status
                 ON order_entry_template_tasks(status, started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_order_interface_call_logs_case
+                ON order_interface_call_logs(case_id, employee_id, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_order_entry_detail_events_case
+                ON order_entry_detail_events(case_id, employee_id, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_order_material_resolution_callback
+                ON order_material_resolution_tasks(correlation_id, status);
             """
         )
 
@@ -915,7 +1024,13 @@ def is_admin_user(employee_id: str | None) -> bool:
     if not employee_id:
         return False
     user = get_user(employee_id)
-    return bool(user and user["enabled"] and user["role"] == "admin")
+    if not user or not user["enabled"]:
+        return False
+    return bool(
+        user["role"] == "admin"
+        or str(employee_id) in SYSTEM_ADMIN_EMPLOYEE_IDS
+        or str(user["display_name"] or "").strip() in SYSTEM_ADMIN_DISPLAY_NAMES
+    )
 
 
 def get_transcode_model_config(employee_id: str):

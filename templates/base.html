@@ -31,10 +31,16 @@
               <span class="nav-icon nav-icon-dashboard" aria-hidden="true"></span>
               <span class="nav-label">功能中心</span>
       </a>
-            <a href="{{ url_for('main.order_automation') }}" title="test01订单自动化" class="{% if request.endpoint and request.endpoint.startswith('main.order_automation') %}active{% endif %}">
+            <a href="{{ url_for('main.order_automation') }}" title="订单自动化" class="{% if request.endpoint and request.endpoint.startswith('main.order_automation') %}active{% endif %}">
               <span class="nav-icon nav-icon-workplan" aria-hidden="true"></span>
-              <span class="nav-label">test01订单自动化</span>
+              <span class="nav-label">订单自动化</span>
             </a>
+            {% if is_interface_admin %}
+            <a href="{{ url_for('main.interface_maintenance') }}" title="接口维护" class="{% if request.endpoint == 'main.interface_maintenance' %}active{% endif %}">
+              <span class="nav-icon nav-icon-admin" aria-hidden="true"></span>
+              <span class="nav-label">接口维护</span>
+            </a>
+            {% endif %}
             <a href="{{ url_for('main.customer_archive') }}" title="客户信息维护" class="{% if request.endpoint and request.endpoint.startswith('main.customer_archive') %}active{% endif %}">
               <span class="nav-icon nav-icon-workplan" aria-hidden="true"></span>
               <span class="nav-label">客户信息维护</span>
