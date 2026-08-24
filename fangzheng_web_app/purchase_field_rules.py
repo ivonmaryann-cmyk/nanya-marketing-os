@@ -168,12 +168,19 @@ def _is_explicit_spec_header(value: Any) -> bool:
     return any(keyword in text for keyword in ["型号/规格", "型号规格", "规格型号", "型号及规格"])
 
 
+def _is_explicit_material_description_header(value: Any) -> bool:
+    text = compact(value)
+    return any(keyword in text for keyword in ["物料描述", "材料描述", "materialdescription"])
+
+
 def header_score(row: list[str]) -> tuple[int, dict[int, str]]:
     mapping: dict[int, str] = {}
     has_separate_material_name = any(_is_explicit_material_name_header(value) for value in row)
     for index, value in enumerate(row):
         standard = classify_header_cell(value)
-        if has_separate_material_name and _is_explicit_spec_header(value):
+        if has_separate_material_name and (
+            _is_explicit_spec_header(value) or _is_explicit_material_description_header(value)
+        ):
             standard = "说明"
         if standard:
             mapping[index] = standard

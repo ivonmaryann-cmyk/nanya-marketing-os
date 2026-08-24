@@ -198,6 +198,27 @@ class PdfExcelDomesticExportTests(unittest.TestCase):
 
         self.assertEqual(rows[0]["客户规格（选填）"], "考试板 PP 1067 526*626mm纬向")
 
+    def test_customer_spec_prefers_material_description_over_item_name(self) -> None:
+        document = _document()
+        document["mapped_detail_rows"][0]["original"] = {
+            "物料品名 Material Name": "FR-4",
+            "物料描述 Description": "南亚新材料 NY2150 0.8 mm H/H HTE/HTE 7628x4 TG150",
+            "单价": "182.6637",
+        }
+        document["mapped_detail_rows"][0]["standard"].update(
+            {
+                "物料名称": "FR-4",
+                "说明": "南亚新材料 NY2150 0.8 mm H/H HTE/HTE 7628x4 TG150",
+            }
+        )
+
+        _header, rows = build_domestic_rows(document)
+
+        self.assertEqual(
+            rows[0]["客户规格（选填）"],
+            "南亚新材料 NY2150 0.8 mm H/H HTE/HTE 7628x4 TG150",
+        )
+
     def test_job_export_returns_xlsx_or_one_workbook_per_order_in_zip(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             job_dir = Path(temp_dir)
