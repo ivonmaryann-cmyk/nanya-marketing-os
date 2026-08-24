@@ -532,6 +532,8 @@ def build_material_query_mock(case_id: int, employee_id: str, triggered_by: str,
                               *, line_nos: set[int] | None = None,
                               callback_requery: bool = False) -> dict[str, Any]:
     """Run the production-shaped Mock: hit, creation callback, then automatic backfill."""
+    if is_domestic_order_entry_completed(case_id, employee_id):
+        raise ValueError("内销录单已完成，不能再次请求料号查询接口")
     if scenario not in MOCK_SCENARIOS:
         raise ValueError("不支持的 Mock 场景")
     config = get_interface_config("material_batch_query")
@@ -660,8 +662,27 @@ def validate_domestic_order_entry(case_id: int, employee_id: str) -> list[str]:
     return issues
 
 
+def is_domestic_order_entry_completed(case_id: int, employee_id: str) -> bool:
+    """Whether a successful domestic-entry request has already been accepted.
+
+    The interface log is the source of truth here: a case can remain visible for
+    review after entry, but it must not submit the same order a second time.
+    """
+    with db_cursor() as conn:
+        row = conn.execute(
+            """SELECT 1 FROM order_interface_call_logs
+               WHERE case_id=? AND employee_id=? AND interface_key='domestic_order_entry'
+                 AND status='success'
+               LIMIT 1""",
+            (case_id, employee_id),
+        ).fetchone()
+    return bool(row)
+
+
 def build_domestic_order_entry_mock(case_id: int, employee_id: str, triggered_by: str) -> dict[str, Any]:
     """Record a manual domestic-order submission Mock without changing the template."""
+    if is_domestic_order_entry_completed(case_id, employee_id):
+        raise ValueError("内销录单已完成，不能重复提交")
     issues = validate_domestic_order_entry(case_id, employee_id)
     if issues:
         raise ValueError("暂不能提交录单：" + "；".join(issues))
@@ -701,6 +722,13 @@ def build_domestic_order_entry_mock(case_id: int, employee_id: str, triggered_by
             ),
         )
         call_id = int(cursor.lastrowid)
+        conn.execute(
+            """UPDATE order_intake_cases
+               SET status='archived', workflow_stage='completed', erp_prepare_status='submitted',
+                   completed_at=?, updated_at=?
+               WHERE id=? AND employee_id=?""",
+            (now, now, case_id, employee_id),
+        )
         record_order_detail_event(
             conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
             event_type="domestic_order_entry_mock", title="提交内销录单（Mock）完成",

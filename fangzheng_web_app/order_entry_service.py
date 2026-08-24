@@ -1033,18 +1033,36 @@ def reextract_all_templates(employee_id: str) -> dict[str, Any]:
 
 
 def template_progress(case_id: int, employee_id: str) -> dict[str, Any]:
-    """Return read-only workflow facts; no business user maintains this state."""
+    """Return the single read-only workflow state used by every order view.
+
+    A successful domestic-entry interface call is the terminal business fact.
+    A completed order has a saved template too, but must not be shown as still
+    waiting for an interface submission on another page.
+    """
     with db_cursor() as conn:
         row = conn.execute(
             "SELECT current_version FROM order_entry_templates WHERE case_id=? AND employee_id=?",
             (case_id, employee_id),
         ).fetchone()
+        completed = conn.execute(
+            """SELECT 1 FROM order_interface_call_logs
+               WHERE case_id=? AND employee_id=? AND interface_key='domestic_order_entry'
+                 AND status='success'
+               LIMIT 1""",
+            (case_id, employee_id),
+        ).fetchone()
     version = int(row["current_version"] or 0) if row else 0
+    if completed:
+        return {
+            "created": bool(row), "saved": bool(row and version > 0), "completed": True,
+            "version": version, "stage": "completed", "label": "已完成",
+            "next_action": "录单已完成", "step": 5,
+        }
     if not row:
         task = _template_task_row(case_id, employee_id)
         if task and task.get("status") in {"queued", "running"}:
             return {
-                "created": False, "saved": False, "version": 0,
+                "created": False, "saved": False, "completed": False, "version": 0,
                 "stage": "extracting", "label": "正在提取订单",
                 "next_action": "正在后台解析附件…", "step": 2,
                 "task_id": task["id"], "task_status": task["status"],
@@ -1052,27 +1070,27 @@ def template_progress(case_id: int, employee_id: str) -> dict[str, Any]:
             }
         if task and task.get("status") == "error":
             return {
-                "created": False, "saved": False, "version": 0,
+                "created": False, "saved": False, "completed": False, "version": 0,
                 "stage": "extraction_error", "label": "提取失败",
                 "next_action": "重新提取订单", "step": 2,
                 "task_id": task["id"], "task_status": "error",
                 "task_message": task.get("message") or "请重新提取订单信息。",
             }
         return {
-            "created": False, "saved": False, "version": 0,
+            "created": False, "saved": False, "completed": False, "version": 0,
             "stage": "pending_extraction", "label": "待提取订单",
             "next_action": "提取订单到内销模板", "step": 2,
         }
     if version <= 0:
         return {
-            "created": True, "saved": False, "version": 0,
+            "created": True, "saved": False, "completed": False, "version": 0,
             "stage": "pending_template_save", "label": "待保存模板",
             "next_action": "核对并保存内销模板", "step": 3,
         }
     return {
-        "created": True, "saved": True, "version": version,
-        "stage": "pending_interface_submit", "label": "待接口提交",
-        "next_action": "等待接口接入后提交", "step": 4,
+        "created": True, "saved": True, "completed": False, "version": version,
+        "stage": "pending_interface_submit", "label": "订单信息确认",
+        "next_action": "订单信息确认", "step": 4,
     }
 
 

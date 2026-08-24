@@ -19,10 +19,12 @@ from fangzheng_web_app.order_intake_service import (
     save_universal_rule,
     save_universal_rule_scope,
     reclassify_cases,
+    refresh_customer_recognition,
     update_case,
     update_routing,
     work_summary,
 )
+from fangzheng_web_app.customer_archive_service import save_contact, save_customer
 
 
 class OrderIntakeRoutingTests(unittest.TestCase):
@@ -188,6 +190,30 @@ class OrderIntakeRoutingTests(unittest.TestCase):
             ).fetchone()["total"]
         self.assertEqual(first_count, 1)
         self.assertEqual(second_count, first_count)
+
+    def test_refresh_customer_recognition_updates_one_date_without_changing_manual_routing(self) -> None:
+        account_id = mail_store.create_or_update_account(
+            "orders@example.com", owner_employee_id="employee-a", auth_code="auth-code"
+        )
+        mail_store.upsert_message(
+            account_id, folder="INBOX", uid="customer-refresh", message_id="<customer-refresh@example.com>",
+            subject="采购订单", sender="buyer@acme.example", sent_at="2026-08-18 09:00:00",
+            received_at="2026-08-18 09:00:00", body_html="", body_text="", eml_path="", is_order=1,
+        )
+        bootstrap_cases("employee-a", account_id)
+        case = list_cases("employee-a", "2026-08-18", "all", account_id)[0]
+        update_routing(case["id"], "employee-a", "quotation")
+        customer_id = save_customer({
+            "customer_code": "C-ACME", "customer_name": "Acme 客户", "status": "active",
+        })
+        save_contact(customer_id, contact_type="sender_domain", contact_value="acme.example")
+
+        self.assertEqual(1, refresh_customer_recognition("employee-a", account_id, "2026-08-18"))
+        refreshed = list_cases("employee-a", "2026-08-18", "all", account_id, prepare=False)[0]
+        self.assertEqual("matched", refreshed["customer_match_status"])
+        self.assertEqual("Acme 客户", refreshed["customer_name"])
+        self.assertEqual("quotation", refreshed["action_type"])
+        self.assertEqual("manual", refreshed["routing_source"])
 
     def test_change_item_promotes_mail_to_order_change(self) -> None:
         account_id = mail_store.create_or_update_account(

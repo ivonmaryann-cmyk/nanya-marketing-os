@@ -8,7 +8,9 @@ import secrets
 import sqlite3
 import tempfile
 from datetime import date, timedelta
+from email.utils import parseaddr
 from pathlib import Path
+from typing import Any
 
 from flask import Blueprint, abort, current_app, flash, jsonify, redirect, render_template, request, send_file, session, url_for
 from openpyxl import load_workbook
@@ -101,6 +103,7 @@ from .order_intake_service import (
     get_case as get_order_intake_case,
     list_cases as list_order_intake_cases,
     list_date_counts as list_order_intake_date_counts,
+    refresh_customer_recognition as refresh_order_customer_recognition,
     work_summary as order_intake_work_summary,
     list_change_tags as list_order_change_tags,
     list_universal_rules as list_order_universal_rules,
@@ -128,6 +131,7 @@ from .order_interface_service import (
     MOCK_SCENARIOS as ORDER_INTERFACE_MOCK_SCENARIOS,
     build_domestic_order_entry_mock,
     build_material_query_mock,
+    is_domestic_order_entry_completed,
     get_order_detail_records,
     get_material_resolution_states,
     get_interface_config,
@@ -924,6 +928,7 @@ def order_automation():
             employee_id, selected_account_id, target_date=selected_date
         ),
         action_labels=ORDER_ACTION_LABELS,
+        status_labels=ORDER_INTAKE_STATUS_LABELS,
         scope_labels=ORDER_SCOPE_LABELS,
         selected_action=selected_action,
         selected_date=selected_date,
@@ -974,6 +979,36 @@ def order_automation_sync():
     return redirect(url_for(
         "main.order_automation",
         date=request.form.get("return_date") or order_intake_business_today().isoformat(),
+        category=request.form.get("return_category") or "all",
+        per_page=request.form.get("return_per_page", 20, type=int) or 20,
+        page=request.form.get("return_page", 1, type=int) or 1,
+        account_id=account_id,
+    ))
+
+
+@bp.post("/order-automation/customer-recognition/refresh")
+def order_automation_refresh_customer_recognition():
+    """Re-evaluate the selected day's active emails against current customer identities."""
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    account_id = request.form.get("account_id", type=int)
+    selected_date = str(request.form.get("return_date") or "").strip()
+    try:
+        date.fromisoformat(selected_date)
+        account = _order_business_account(employee_id, account_id)
+        if not account:
+            raise ValueError("请选择已启用的业务邮箱。")
+        refreshed = refresh_order_customer_recognition(
+            employee_id, int(account["id"]), selected_date
+        )
+        flash(f"已刷新 {refreshed} 封邮件的客户识别结果。不会改写人工确认过的业务分类或处理状态。", "success")
+    except ValueError as exc:
+        flash(str(exc) or "邮件日期无效。", "error")
+    return redirect(url_for(
+        "main.order_automation",
+        date=selected_date or order_intake_business_today().isoformat(),
         category=request.form.get("return_category") or "all",
         per_page=request.form.get("return_per_page", 20, type=int) or 20,
         page=request.form.get("return_page", 1, type=int) or 1,
@@ -1158,6 +1193,33 @@ def _order_automation_return_context(case: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _order_reply_default_body(
+    case: dict[str, Any], header: dict[str, Any], lines: list[dict[str, Any]],
+) -> str:
+    """Build a restrained, editable reply draft from the current order template."""
+    customer_name = str(case.get("customer_name") or "客户").strip()
+    order_no = str(header.get("customer_order_number") or "").strip()
+    line_count = len(lines)
+    parts = [
+        f"尊敬的{customer_name}：",
+        "",
+        "您好！",
+        "您的订单我司已收到并完成内部处理。",
+    ]
+    if order_no:
+        parts.append(f"客户订单号：{order_no}")
+    if line_count:
+        parts.append(f"订单明细：共 {line_count} 项")
+    parts.extend([
+        "",
+        "如需补充交期或其他信息，请直接回复本邮件。",
+        "",
+        "此致",
+        "南亚营销自动化平台",
+    ])
+    return "\n".join(parts)
+
+
 @bp.route("/order-automation/cases/<int:case_id>", methods=["GET", "POST"])
 def order_automation_case(case_id: int):
     redirect_resp = require_login()
@@ -1190,6 +1252,74 @@ def order_automation_case(case_id: int):
     )
 
 
+@bp.route("/order-automation/cases/<int:case_id>/reply", methods=["GET", "POST"])
+def order_automation_reply(case_id: int):
+    """Prepare a customer reply without sending it through an unconfigured SMTP server.
+
+    The compose screen is deliberately useful before SMTP is available: it keeps a
+    per-session draft and always shows the exact order data that will be cited in
+    the reply.  A later SMTP integration can reuse this route and payload without
+    changing the business-facing page.
+    """
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    case = get_order_intake_case(case_id, employee_id)
+    if not case:
+        abort(404)
+
+    progress = order_entry_template_progress(case_id, employee_id)
+    template = None
+    if progress.get("created"):
+        try:
+            _case, template = get_order_entry_template(case_id, employee_id)
+        except ValueError:
+            template = None
+
+    sender_name, sender_email = parseaddr(str(case.get("sender") or ""))
+    recipient = sender_email or str(case.get("sender") or "").strip()
+    subject = str(case.get("subject") or "订单回复").strip()
+    if not subject.lower().startswith("re:"):
+        subject = f"Re: {subject}"
+    header = (template or {}).get("header") or {}
+    lines = (template or {}).get("lines") or []
+    draft_key = f"order_reply_draft:{case_id}"
+    saved_draft = session.get(draft_key) or {}
+    default_body = _order_reply_default_body(case, header, lines)
+    draft = {
+        "to": str(saved_draft.get("to") or recipient),
+        "cc": str(saved_draft.get("cc") or ""),
+        "subject": str(saved_draft.get("subject") or subject),
+        "body": str(saved_draft.get("body") or default_body),
+    }
+    if request.method == "POST":
+        draft = {
+            "to": str(request.form.get("to") or "").strip(),
+            "cc": str(request.form.get("cc") or "").strip(),
+            "subject": str(request.form.get("subject") or "").strip(),
+            "body": str(request.form.get("body") or "").strip(),
+        }
+        if not draft["to"] or not draft["subject"] or not draft["body"]:
+            flash("请填写收件人、主题和邮件正文后再保存草稿。", "error")
+        else:
+            session[draft_key] = draft
+            session.modified = True
+            flash("回复草稿已保存；SMTP 尚未开通，本次不会发送邮件。", "success")
+
+    return render_template(
+        "order_automation_reply.html",
+        case=case,
+        draft=draft,
+        sender_name=sender_name,
+        entry_progress=progress,
+        template=template,
+        line_count=len(lines),
+        reply_lines=lines[:6],
+        return_context=_order_automation_return_context(case),
+    )
+
+
 @bp.post("/order-automation/cases/<int:case_id>/entry-template/start")
 def order_automation_entry_template_start(case_id: int):
     """Queue first-time document extraction and return to the mail at once."""
@@ -1214,12 +1344,15 @@ def order_automation_entry_template(case_id: int):
         return redirect_resp
     employee_id = current_employee() or ""
     if request.method == "POST":
-        try:
-            payload = json.loads(request.form.get("template_payload") or "{}")
-            save_order_entry_template(case_id, employee_id, payload)
-            flash("内销录单模板已保存。", "success")
-        except (ValueError, json.JSONDecodeError) as exc:
-            flash(str(exc) if isinstance(exc, ValueError) else "模板数据格式错误。", "error")
+        if is_domestic_order_entry_completed(case_id, employee_id):
+            flash("内销录单已完成，不能再保存或覆盖模板。", "error")
+        else:
+            try:
+                payload = json.loads(request.form.get("template_payload") or "{}")
+                save_order_entry_template(case_id, employee_id, payload)
+                flash("内销录单模板已保存。", "success")
+            except (ValueError, json.JSONDecodeError) as exc:
+                flash(str(exc) if isinstance(exc, ValueError) else "模板数据格式错误。", "error")
         return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))
     case = get_order_intake_case(case_id, employee_id)
     if not case:
@@ -1252,6 +1385,9 @@ def order_automation_entry_template(case_id: int):
         validation_issues=order_entry_validation_issues(template),
         order_details=get_order_detail_records(case_id, employee_id),
         material_resolutions=get_material_resolution_states(case_id, employee_id),
+        # Share the same workflow state as the mail list and mail detail.
+        order_entry_completed=progress["completed"],
+        entry_progress=progress,
         return_context=_order_automation_return_context(case),
     )
 
@@ -1400,6 +1536,9 @@ def order_automation_entry_template_refresh(case_id: int):
     if redirect_resp:
         return redirect_resp
     employee_id = current_employee() or ""
+    if is_domestic_order_entry_completed(case_id, employee_id):
+        flash("内销录单已完成，不能重新提取或覆盖模板。", "error")
+        return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))
     try:
         result = reextract_order_entry_template(case_id, employee_id)
         flash(f"已重新抓取邮件订单内容，共生成 {result['line_count']} 条明细；原明细已保留在历史版本中。", "success")

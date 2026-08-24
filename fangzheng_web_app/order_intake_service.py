@@ -838,7 +838,8 @@ def reclassify_cases(
     account_id: int | None = None,
     *,
     changed_terms: dict[str, set[str]] | None = None,
-) -> None:
+    target_date: str | None = None,
+) -> int:
     ensure_universal_rules(employee_id)
     groups, tags = list_universal_rules(employee_id), list_change_tags(employee_id)
     # Archived cases are immutable history.  Rule saves should only recalculate
@@ -846,6 +847,9 @@ def reclassify_cases(
     # than every email ever imported.
     clauses=["c.employee_id=?", "c.routing_source != 'manual'", "c.status != 'archived'"]; params: list[Any]=[employee_id]
     if account_id: clauses.append("m.account_id=?"); params.append(account_id)
+    if target_date:
+        clauses.append("substr(COALESCE(NULLIF(m.sent_at, ''), NULLIF(m.received_at, ''), m.created_at), 1, 10)=?")
+        params.append(target_date)
     changed_sql, changed_params = _changed_terms_clause(changed_terms)
     with db_cursor() as conn:
         needs_attachment_content=any(k["scope"] == "attachment_content" for group in groups for k in group["keywords"]) or any(k["scope"] == "attachment_content" for tag in tags for k in tag["keywords"])
@@ -857,6 +861,7 @@ def reclassify_cases(
                            FROM order_intake_cases c JOIN mail_messages m ON m.id=c.mail_id
                            WHERE {' AND '.join(clauses)}{changed_sql}""", [*params, *changed_params]).fetchall()
         now=utcnow()
+        refreshed_count = len(rows)
         for raw in rows:
             row=dict(raw)
             # Missing text is marked pending.  The mail-fetch worker fills the
@@ -918,6 +923,76 @@ def reclassify_cases(
                 "INSERT INTO order_intake_case_events (case_id,employee_id,action,before_json,after_json,created_at) VALUES (?,?,?,?,?,?)",
                 (row["id"], SYSTEM_ACTOR, "auto_reclassify", json.dumps(before, ensure_ascii=False), json.dumps(after, ensure_ascii=False), now),
             )
+    return refreshed_count
+
+
+def refresh_customer_recognition(
+    employee_id: str,
+    account_id: int,
+    target_date: str,
+) -> int:
+    """Refresh only customer identity for one visible mail date.
+
+    This intentionally does not touch routing, handling state, or any manual
+    business decision.  It lets a newly maintained sender email/domain take
+    effect for all of that day's mails at once.
+    """
+    with db_cursor() as conn:
+        rows = conn.execute(
+            """
+            SELECT c.id,c.customer_id,c.customer_code,c.customer_name,
+                   c.customer_match_status,c.customer_match_source,c.customer_match_detail,m.sender
+            FROM order_intake_cases c
+            JOIN mail_messages m ON m.id=c.mail_id
+            WHERE c.employee_id=? AND m.account_id=?
+              AND substr(COALESCE(NULLIF(m.sent_at, ''), NULLIF(m.received_at, ''), m.created_at), 1, 10)=?
+            """,
+            (employee_id, account_id, target_date),
+        ).fetchall()
+        now = utcnow()
+        for raw in rows:
+            row = dict(raw)
+            customer = identify_customer(str(row.get("sender") or ""))
+            before = {
+                "customer_id": row.get("customer_id"),
+                "customer_code": row.get("customer_code"),
+                "customer_name": row.get("customer_name"),
+                "customer_match_status": row.get("customer_match_status"),
+                "customer_match_source": row.get("customer_match_source"),
+                "customer_match_detail": row.get("customer_match_detail"),
+            }
+            after = {
+                "customer_id": customer["customer_id"] if customer else None,
+                "customer_code": customer["customer_code"] if customer else row.get("customer_code", ""),
+                "customer_name": customer["customer_name"] if customer else row.get("customer_name", ""),
+                "customer_match_status": "matched" if customer else "unmatched",
+                "customer_match_source": customer["match_source"] if customer else "",
+                "customer_match_detail": customer["match_detail"] if customer else "",
+            }
+            if before == after:
+                continue
+            conn.execute(
+                """
+                UPDATE order_intake_cases
+                SET customer_id=?,customer_code=COALESCE(NULLIF(?,''),customer_code),
+                    customer_name=COALESCE(NULLIF(?,''),customer_name),customer_match_status=?,
+                    customer_match_source=?,customer_match_detail=?,updated_at=?
+                WHERE id=?
+                """,
+                (
+                    after["customer_id"], after["customer_code"], after["customer_name"],
+                    after["customer_match_status"], after["customer_match_source"],
+                    after["customer_match_detail"], now, row["id"],
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO order_intake_case_events(case_id,employee_id,action,before_json,after_json,created_at)
+                VALUES (?,?,'refresh_customer_recognition',?,?,?)
+                """,
+                (row["id"], employee_id, json.dumps(before, ensure_ascii=False), json.dumps(after, ensure_ascii=False), now),
+            )
+    return len(rows)
 
 
 def _reclassify_all_cases(changed_terms: dict[str, set[str]] | None = None) -> None:

@@ -6,7 +6,10 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-nanya_automation}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD locally}
     ports:
+      # Keep local development on loopback. The optional second binding exposes
+      # the same database only to a trusted LAN/VPN address from local config.
       - "127.0.0.1:${POSTGRES_PORT:-55432}:5432"
+      - "${POSTGRES_BIND_ADDRESS:?set POSTGRES_BIND_ADDRESS for trusted LAN/VPN access}:${POSTGRES_PORT:-55432}:5432"
     volumes:
       - nanya_automation_postgres:/var/lib/postgresql/data
     healthcheck:

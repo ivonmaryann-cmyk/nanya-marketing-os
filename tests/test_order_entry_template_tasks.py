@@ -9,8 +9,10 @@ from fangzheng_web_app import db
 from fangzheng_web_app.database.sql import sqlite_to_postgresql
 from fangzheng_web_app.mail_transcode_agent import mail_store
 from fangzheng_web_app.order_entry_service import (
+    get_or_create_template,
     queue_template_extraction,
     run_template_extraction_task,
+    save_template,
     template_progress,
 )
 from fangzheng_web_app.order_intake_service import bootstrap_cases, list_cases
@@ -75,3 +77,38 @@ class OrderEntryTemplateTaskTests(unittest.TestCase):
         progress = template_progress(self.case_id, "employee-a")
         self.assertEqual(progress["stage"], "extraction_error")
         self.assertIn("PDF 无法读取", progress["task_message"])
+
+    def test_successful_entry_is_the_terminal_progress_for_all_views(self) -> None:
+        get_or_create_template(self.case_id, "employee-a")
+        saved = save_template(self.case_id, "employee-a", {
+            "header": {"order_type": "220", "bill_to_customer_code": "C001", "ledger": "KL01"},
+            "lines": [{"values": {
+                "line_no": "1", "customer_product_code": "CUST-1", "quantity": "20",
+            }}],
+        })
+        with db.db_cursor() as conn:
+            conn.execute(
+                """INSERT INTO order_interface_call_logs
+                   (case_id,template_id,employee_id,interface_key,status,created_at)
+                   VALUES (?,?,?,?,?,?)""",
+                (self.case_id, saved["id"], "employee-a", "domestic_order_entry", "success", db.utcnow()),
+            )
+        progress = template_progress(self.case_id, "employee-a")
+        self.assertTrue(progress["completed"])
+        self.assertEqual(progress["stage"], "completed")
+        self.assertEqual(progress["label"], "已完成")
+
+    def test_saved_template_enters_order_information_confirmation(self) -> None:
+        get_or_create_template(self.case_id, "employee-a")
+        save_template(self.case_id, "employee-a", {
+            "header": {"order_type": "220", "bill_to_customer_code": "C001", "ledger": "KL01"},
+            "lines": [{"values": {
+                "line_no": "1", "customer_product_code": "CUST-1", "quantity": "20",
+            }}],
+        })
+
+        progress = template_progress(self.case_id, "employee-a")
+
+        self.assertEqual(progress["stage"], "pending_interface_submit")
+        self.assertEqual(progress["label"], "订单信息确认")
+        self.assertEqual(progress["next_action"], "订单信息确认")

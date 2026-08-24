@@ -12,6 +12,7 @@ from fangzheng_web_app.order_interface_service import (
     build_domestic_order_entry_mock,
     build_material_query_mock,
     get_interface_config,
+    is_domestic_order_entry_completed,
     get_order_detail_records,
     get_material_resolution_states,
     list_interface_configs,
@@ -129,6 +130,21 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         result = build_domestic_order_entry_mock(self.case_id, "employee-a", "employee-a")
         self.assertEqual(result["status"], "success")
         self.assertTrue(result["entry_no"].startswith("MOCK-SO-"))
+        self.assertTrue(is_domestic_order_entry_completed(self.case_id, "employee-a"))
+        with db.db_cursor() as conn:
+            case = conn.execute(
+                "SELECT status,workflow_stage,erp_prepare_status,completed_at FROM order_intake_cases WHERE id=?",
+                (self.case_id,),
+            ).fetchone()
+        self.assertEqual(
+            (case["status"], case["workflow_stage"], case["erp_prepare_status"]),
+            ("archived", "completed", "submitted"),
+        )
+        self.assertTrue(case["completed_at"])
+        with self.assertRaisesRegex(ValueError, "不能重复提交"):
+            build_domestic_order_entry_mock(self.case_id, "employee-a", "employee-a")
+        with self.assertRaisesRegex(ValueError, "不能再次请求料号查询接口"):
+            build_material_query_mock(self.case_id, "employee-a", "employee-a")
         details = get_order_detail_records(self.case_id, "employee-a")
         self.assertEqual(details["calls"][0]["interface_key"], "domestic_order_entry")
         self.assertTrue(any(item["event_type"] == "domestic_order_entry_mock" for item in details["events"]))
