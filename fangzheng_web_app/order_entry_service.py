@@ -17,6 +17,7 @@ from openpyxl import load_workbook
 
 from .database import automation_cursor as db_cursor
 from .customer_archive_service import get_enabled_extraction_maps
+from .customer_spec_mapping_service import build_customer_spec_match
 from .db import utcnow
 from .excel_utils import load_workbook_compat
 from .file_storage import resolve_attachment_path
@@ -651,6 +652,46 @@ def _merge_initial_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+def _apply_customer_spec_matches(
+    header: dict[str, Any], lines: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    customer_code = clean_text(header.get("bill_to_customer_code"))
+    result: list[dict[str, Any]] = []
+    for entry in lines:
+        values = dict(entry.get("values") or {})
+        sources = dict(entry.get("sources") or {})
+        match_context = json.dumps([
+            customer_code,
+            clean_text(values.get("product_type")),
+            clean_text(values.get("customer_spec")),
+        ], ensure_ascii=False, separators=(",", ":"))
+        existing_source = sources.get("customer_spec_match") or {}
+        manual_match = (
+            customer_code
+            and existing_source.get("label") == "人工修改"
+            and existing_source.get("context") == match_context
+        )
+        if manual_match:
+            result.append({**entry, "values": values, "sources": sources})
+            continue
+        matched = build_customer_spec_match(
+            customer_code,
+            values.get("product_type"),
+            values.get("customer_spec"),
+        ) if customer_code else ""
+        values["customer_spec_match"] = matched
+        if matched:
+            sources["customer_spec_match"] = {
+                "label": "客户规格对照表",
+                "reference": f"客户编号 {customer_code} / {values.get('product_type') or '未填写产品类型'}",
+                "context": match_context,
+            }
+        else:
+            sources.pop("customer_spec_match", None)
+        result.append({**entry, "values": values, "sources": sources})
+    return result
+
+
 def _initial_template_data(case: dict[str, Any]) -> tuple[dict[str, str], list[dict[str, Any]]]:
     attachment_rows = _attachment_rows(case)
     # An order attachment remains authoritative.  When there is no supported
@@ -672,11 +713,11 @@ def _initial_template_data(case: dict[str, Any]) -> tuple[dict[str, str], list[d
             (case.get("detected_fields") or {}).get("order_number")
         )
     if rows:
-        return header, rows
+        return header, _apply_customer_spec_matches(header, rows)
     fields = case.get("detected_fields") or {}
     specs = fields.get("specs") or []
     header["customer_order_number"] = clean_text(fields.get("order_number"))
-    return header, [
+    lines = [
         {
             "values": {
                 **_blank_line(index + 1),
@@ -686,6 +727,7 @@ def _initial_template_data(case: dict[str, Any]) -> tuple[dict[str, str], list[d
         }
         for index, spec in enumerate(specs)
     ] or [{"values": _blank_line(1), "sources": {}}]
+    return header, _apply_customer_spec_matches(header, lines)
 
 
 def _initial_lines(case: dict[str, Any]) -> list[dict[str, Any]]:
@@ -699,7 +741,7 @@ def _serialize_template(conn, template_id: int) -> dict[str, Any]:
     rows = conn.execute(
         "SELECT * FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no,id", (template_id,)
     ).fetchall()
-    return {
+    result = {
         **dict(template),
         "header": {**DEFAULT_HEADER_VALUES, **_json(template["header_json"], {})},
         "lines": [
@@ -707,6 +749,8 @@ def _serialize_template(conn, template_id: int) -> dict[str, Any]:
             for row in rows
         ],
     }
+    result["lines"] = _apply_customer_spec_matches(result["header"], result["lines"])
+    return result
 
 
 def get_or_create_template(case_id: int, employee_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1040,6 +1084,7 @@ def save_template(case_id: int, employee_id: str, payload: dict[str, Any]) -> di
         lines.append({"values": values, "sources": sources if isinstance(sources, dict) else {}})
     if not lines:
         lines = [{"values": _blank_line(1), "sources": {}}]
+    lines = _apply_customer_spec_matches(header, lines)
     now = utcnow()
     with db_cursor() as conn:
         template = conn.execute(

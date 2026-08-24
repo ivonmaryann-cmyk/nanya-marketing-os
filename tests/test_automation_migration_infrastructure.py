@@ -94,6 +94,12 @@ class AutomationMigrationInfrastructureTests(unittest.TestCase):
         self.assertEqual({"automation_runtime_flags", "automation_change_log"}, declared)
         self.assertIn("values ('capture_changes', 'false')", sql)
 
+    def test_customer_spec_mapping_migration_has_unique_business_key(self) -> None:
+        sql = (MIGRATION_DIR / "0006_customer_spec_mappings.sql").read_text(encoding="utf-8").lower()
+        self.assertIn("create table if not exists automation_customer_spec_mappings", sql)
+        self.assertIn("unique(customer_code, product_type)", sql)
+        self.assertIn("check(product_type in ('base', 'pp'))", sql)
+
     def test_generated_copy_statement_is_idempotent(self) -> None:
         sql = _upsert_sql("mail_accounts", ["id", "email", "updated_at"])
         self.assertIn('ON CONFLICT ("id") DO UPDATE', sql)

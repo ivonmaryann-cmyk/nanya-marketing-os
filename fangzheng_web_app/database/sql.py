@@ -12,7 +12,7 @@ _IDENTITY_TABLES = {
     "order_entry_template_tasks",
     "automation_customers", "automation_customer_contacts", "automation_customer_routing_rules",
     "automation_customer_routing_conditions", "automation_customer_extraction_maps",
-    "automation_customer_events",
+    "automation_customer_events", "automation_customer_spec_mappings",
     "jobs", "pp_transcode_base_rules", "pp_transcode_customer_rules",
     "pp_transcode_rule_changes", "pp_transcode_confirmation_items",
     "transcode_agent_confirmation_items", "transcode_agent_confirmation_events",

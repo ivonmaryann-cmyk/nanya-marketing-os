@@ -10,6 +10,7 @@ from openpyxl import Workbook, load_workbook
 from fangzheng_web_app import db
 from fangzheng_web_app.mail_transcode_agent import mail_store
 from fangzheng_web_app.order_entry_service import (
+    _apply_customer_spec_matches,
     _line_entry,
     _line_from_pipeline_row,
     _merge_initial_rows,
@@ -75,7 +76,7 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertEqual(sheet["D2"].value, "C001")
         self.assertEqual(sheet["H2"].value, "151")
         self.assertEqual(sheet["D4"].value, "A1A150224149YNNYZ002")
-        self.assertEqual(sheet["F4"].value, "NY2150")
+        self.assertIsNone(sheet["F4"].value)
         self.assertEqual(sheet["G4"].value, "基板")
         self.assertEqual(sheet["I4"].value, 300)
         # The business template is a populated example; exporting a different
@@ -83,6 +84,105 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertIsNone(sheet["D5"].value)
         self.assertIsNone(sheet["I6"].value)
         book.close()
+
+    def test_customer_spec_match_recalculates_from_header_code_and_line_values(self) -> None:
+        lines = [{
+            "values": {
+                "customer_spec": "NY2150_TG150_1.6MM",
+                "customer_spec_match": "旧值",
+                "product_type": "基板",
+            },
+            "sources": {"customer_spec_match": {"label": "旧来源", "reference": "旧规则"}},
+        }]
+        with patch(
+            "fangzheng_web_app.order_entry_service.build_customer_spec_match",
+            return_value="NY2150_*_1.6MM",
+        ) as matcher:
+            matched = _apply_customer_spec_matches(
+                {"bill_to_customer_code": "C001"}, lines
+            )
+
+        self.assertEqual("NY2150_*_1.6MM", matched[0]["values"]["customer_spec_match"])
+        self.assertEqual("客户规格对照表", matched[0]["sources"]["customer_spec_match"]["label"])
+        matcher.assert_called_once_with("C001", "基板", "NY2150_TG150_1.6MM")
+
+    def test_empty_customer_code_clears_customer_spec_match(self) -> None:
+        lines = [{
+            "values": {"customer_spec": "NY2150", "customer_spec_match": "旧值", "product_type": "基板"},
+            "sources": {"customer_spec_match": {"label": "旧来源"}},
+        }]
+        with patch("fangzheng_web_app.order_entry_service.build_customer_spec_match") as matcher:
+            matched = _apply_customer_spec_matches({"bill_to_customer_code": ""}, lines)
+
+        self.assertEqual("", matched[0]["values"]["customer_spec_match"])
+        self.assertNotIn("customer_spec_match", matched[0]["sources"])
+        matcher.assert_not_called()
+
+    def test_manual_customer_spec_match_is_preserved_for_same_context(self) -> None:
+        lines = [{
+            "values": {
+                "customer_spec": "NY2150_TG150_1.6MM",
+                "customer_spec_match": "人工调整后的结果",
+                "product_type": "基板",
+            },
+            "sources": {"customer_spec_match": {
+                "label": "人工修改",
+                "reference": "录单模板手工修改",
+                "context": '["C001","基板","NY2150_TG150_1.6MM"]',
+            }},
+        }]
+        with patch("fangzheng_web_app.order_entry_service.build_customer_spec_match") as matcher:
+            matched = _apply_customer_spec_matches(
+                {"bill_to_customer_code": "C001"}, lines
+            )
+
+        self.assertEqual("人工调整后的结果", matched[0]["values"]["customer_spec_match"])
+        self.assertEqual("人工修改", matched[0]["sources"]["customer_spec_match"]["label"])
+        matcher.assert_not_called()
+
+    def test_manual_customer_spec_match_recalculates_after_context_change(self) -> None:
+        lines = [{
+            "values": {
+                "customer_spec": "NY2150_TG150_1.6MM",
+                "customer_spec_match": "人工调整后的结果",
+                "product_type": "PP",
+            },
+            "sources": {"customer_spec_match": {
+                "label": "人工修改",
+                "context": '["C001","基板","NY2150_TG150_1.6MM"]',
+            }},
+        }]
+        with patch(
+            "fangzheng_web_app.order_entry_service.build_customer_spec_match",
+            return_value="重新自动匹配",
+        ) as matcher:
+            matched = _apply_customer_spec_matches(
+                {"bill_to_customer_code": "C001"}, lines
+            )
+
+        self.assertEqual("重新自动匹配", matched[0]["values"]["customer_spec_match"])
+        self.assertEqual("客户规格对照表", matched[0]["sources"]["customer_spec_match"]["label"])
+        matcher.assert_called_once_with("C001", "PP", "NY2150_TG150_1.6MM")
+
+    def test_save_template_ignores_manual_match_and_persists_generated_value(self) -> None:
+        get_or_create_template(self.case_id, "employee-a")
+        with patch(
+            "fangzheng_web_app.order_entry_service.build_customer_spec_match",
+            return_value="NY2150_*_1.6MM",
+        ):
+            saved = save_template(self.case_id, "employee-a", {
+                "header": {"bill_to_customer_code": "C001"},
+                "lines": [{"values": {
+                    "customer_spec": "NY2150_TG150_1.6MM",
+                    "customer_spec_match": "手工旧值",
+                    "product_type": "基板",
+                }}],
+            })
+
+        self.assertEqual(
+            "NY2150_*_1.6MM",
+            saved["lines"][0]["values"]["customer_spec_match"],
+        )
 
     def test_excel_attachment_is_merged_into_the_same_email_template(self) -> None:
         attachment_path = Path(self.temp_dir.name) / "客户订单.xlsx"

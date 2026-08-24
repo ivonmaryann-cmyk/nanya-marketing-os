@@ -146,6 +146,18 @@ from .customer_archive_service import (
     set_customer_status,
     set_routing_rule_enabled,
 )
+from .customer_spec_mapping_service import (
+    FORM_FIELDS as CUSTOMER_SPEC_FORM_FIELDS,
+    MATCH_STATUS_LABELS as CUSTOMER_SPEC_MATCH_STATUS_LABELS,
+    POSITION_FIELDS as CUSTOMER_SPEC_POSITION_FIELDS,
+    PRODUCT_TYPE_LABELS as CUSTOMER_SPEC_PRODUCT_TYPE_LABELS,
+    build_customer_spec_match_detail,
+    get_spec_mapping,
+    import_spec_mapping_workbook,
+    list_spec_mappings,
+    save_spec_mapping,
+    set_spec_mapping_enabled,
+)
 from .paths import STORAGE_DIR
 from .pdf_excel_domestic_export import build_job_domestic_export
 from .price_calculation_customers import (
@@ -1229,6 +1241,23 @@ def order_automation_entry_template(case_id: int):
     )
 
 
+@bp.post("/order-automation/cases/<int:case_id>/entry-template/spec-match")
+def order_automation_entry_template_spec_match(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    case = get_order_intake_case(case_id, employee_id)
+    if not case or case.get("action_type") != "new_order":
+        abort(404)
+    payload = request.get_json(silent=True) or {}
+    return jsonify(build_customer_spec_match_detail(
+        payload.get("customer_code"),
+        payload.get("product_type"),
+        payload.get("customer_spec"),
+    ))
+
+
 @bp.post("/order-automation/cases/<int:case_id>/entry-template/refresh")
 def order_automation_entry_template_refresh(case_id: int):
     redirect_resp = require_login()
@@ -1297,6 +1326,51 @@ def customer_archive():
     redirect_resp = require_login()
     if redirect_resp:
         return redirect_resp
+    dataset = request.args.get("dataset", "customers")
+    if dataset == "specs":
+        keyword = request.args.get("keyword", "").strip()
+        product_type = request.args.get("product_type", "all")
+        status = request.args.get("status", "all")
+        match_status = request.args.get("match_status", "all")
+        if product_type not in {"all", *CUSTOMER_SPEC_PRODUCT_TYPE_LABELS}:
+            product_type = "all"
+        if status not in {"all", "active", "disabled"}:
+            status = "all"
+        if match_status not in {"all", *CUSTOMER_SPEC_MATCH_STATUS_LABELS}:
+            match_status = "all"
+        page_size = request.args.get("page_size", 20, type=int) or 20
+        if page_size not in {20, 50, 100}:
+            page_size = 20
+        page = max(request.args.get("page", 1, type=int) or 1, 1)
+        mappings = list_spec_mappings(
+            keyword=keyword,
+            product_type=product_type,
+            status=status,
+            match_status=match_status,
+        )
+        total_mappings = len(mappings)
+        total_pages = max(1, (total_mappings + page_size - 1) // page_size)
+        page = min(page, total_pages)
+        selected_id = request.args.get("spec_id", type=int)
+        new_mode = request.args.get("spec_new") == "1"
+        selected_mapping = get_spec_mapping(selected_id) if selected_id and not new_mode else None
+        return render_template(
+            "customer_spec_mappings.html",
+            mappings=mappings[(page - 1) * page_size: page * page_size],
+            selected_mapping=selected_mapping,
+            new_mode=new_mode,
+            keyword=keyword,
+            selected_product_type=product_type,
+            selected_status=status,
+            selected_match_status=match_status,
+            product_type_labels=CUSTOMER_SPEC_PRODUCT_TYPE_LABELS,
+            match_status_labels=CUSTOMER_SPEC_MATCH_STATUS_LABELS,
+            position_fields=CUSTOMER_SPEC_POSITION_FIELDS,
+            page=page,
+            page_size=page_size,
+            total_pages=total_pages,
+            total_mappings=total_mappings,
+        )
     keyword = request.args.get("keyword", "").strip()
     # 客户数据维护不向业务展示“启用/停用”等技术状态；历史数据仍保留
     # status 字段以兼容既有自动化逻辑，列表默认展示全部客户。
@@ -1410,6 +1484,84 @@ def customer_archive_import():
         if temp_path:
             safe_unlink(temp_path)
     return _customer_redirect()
+
+
+def _customer_spec_redirect(mapping_id: int | None = None):
+    params: dict[str, object] = {"dataset": "specs"}
+    if mapping_id:
+        params["spec_id"] = mapping_id
+    return redirect(url_for("main.customer_archive", **params))
+
+
+@bp.post("/customers/spec-mappings/import")
+def customer_spec_mapping_import():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    upload = request.files.get("workbook")
+    if not upload or not upload.filename:
+        flash("请选择客户规格与厂内规格对照表 Excel 文件。", "error")
+        return _customer_spec_redirect()
+    suffix = Path(upload.filename).suffix.lower()
+    if suffix not in {".xlsx", ".xlsm"}:
+        flash("仅支持 .xlsx 或 .xlsm 格式的规格对照表。", "error")
+        return _customer_spec_redirect()
+    temp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(prefix="customer_spec_mapping_", suffix=suffix, delete=False) as handle:
+            upload.save(handle)
+            temp_path = handle.name
+        result = import_spec_mapping_workbook(temp_path, operated_by=current_employee() or "")
+        message = (
+            f"规格对照导入完成：新增 {result['imported']} 条，更新 {result['updated']} 条，"
+            f"跳过 {result['skipped']} 条。"
+        )
+        if result["errors"]:
+            first = result["errors"][0]
+            message += f" 首个错误：第 {first['row']} 行，{first['error']}"
+        flash(message, "success" if not result["errors"] else "warning")
+    except Exception as exc:
+        current_app.logger.exception("customer spec mapping import failed")
+        flash(f"规格对照导入失败：{exc}", "error")
+    finally:
+        if temp_path:
+            safe_unlink(temp_path)
+    return _customer_spec_redirect()
+
+
+@bp.post("/customers/spec-mappings/save")
+def customer_spec_mapping_save():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    mapping_id = request.form.get("mapping_id", type=int)
+    values = {field: request.form.get(field, "") for field in CUSTOMER_SPEC_FORM_FIELDS}
+    try:
+        saved_id = save_spec_mapping(
+            values, mapping_id=mapping_id, operated_by=current_employee() or ""
+        )
+        flash("客户规格与厂内规格对照已保存。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+        saved_id = mapping_id
+    return _customer_spec_redirect(saved_id)
+
+
+@bp.post("/customers/spec-mappings/<int:mapping_id>/status")
+def customer_spec_mapping_status(mapping_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    try:
+        set_spec_mapping_enabled(
+            mapping_id,
+            request.form.get("enabled") == "1",
+            operated_by=current_employee() or "",
+        )
+        flash("规格对照状态已更新。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return _customer_spec_redirect()
 
 
 @bp.post("/customers/<int:customer_id>/contacts/save")
