@@ -28,6 +28,17 @@ from .verify import verify_snapshot
 
 LOG = logging.getLogger("automation_migration")
 
+POST_BASELINE_TABLES = (
+    "order_entry_template_tasks",
+    "automation_customer_spec_mappings",
+    "automation_customer_events",
+    "automation_customer_extraction_maps",
+    "automation_customer_routing_conditions",
+    "automation_customer_routing_rules",
+    "automation_customer_contacts",
+    "automation_customers",
+)
+
 
 def _connect(url: str):
     return psycopg.connect(url, row_factory=dict_row)
@@ -70,6 +81,8 @@ def rollback_test_target(confirm: str) -> None:
     if confirm != "DROP-AUTOMATION-TEST-DATA":
         raise RuntimeError("test rollback requires --confirm DROP-AUTOMATION-TEST-DATA")
     with _connect(_database_url(test=True)) as target, target.transaction():
+        for table in POST_BASELINE_TABLES:
+            target.execute(f'DROP TABLE IF EXISTS "{table}" CASCADE')
         for table in reversed(TABLES):
             target.execute(f'DROP TABLE IF EXISTS "{table}" CASCADE')
         target.execute("DROP TABLE IF EXISTS automation_metadata CASCADE")
@@ -112,6 +125,7 @@ def main() -> int:
     migrate_parser.add_argument("--test-target", action="store_true")
     migrate_parser.add_argument("--skip-file-check", action="store_true")
     migrate_parser.add_argument("--report", type=Path)
+    subparsers.add_parser("apply-schema")
     audit_parser = subparsers.add_parser("audit-sqlite")
     audit_parser.add_argument("--sqlite", type=Path, required=True)
     audit_parser.add_argument("--skip-file-check", action="store_true")
@@ -167,6 +181,10 @@ def main() -> int:
             if args.report:
                 _write_reports(result, args.report)
             print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif args.command == "apply-schema":
+            with _connect(_database_url()) as target, target.transaction():
+                applied = apply_migrations(target)
+            print(json.dumps({"ok": True, "applied": applied}, ensure_ascii=False, indent=2))
         elif args.command == "audit-sqlite":
             with sqlite_snapshot(args.sqlite) as snapshot:
                 result = audit_snapshot(snapshot, check_files=not args.skip_file_check)

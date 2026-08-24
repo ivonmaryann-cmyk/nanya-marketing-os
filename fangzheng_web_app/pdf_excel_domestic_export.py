@@ -66,18 +66,27 @@ def _customer_spec(detail: dict[str, Any]) -> str:
         "规格",
         "型号",
     )
+    original_description = _original_value(
+        detail,
+        "物料描述",
+        "材料描述",
+        "Material Description",
+        "Description",
+    )
     original_name = _original_value(
         detail,
         "材料名称",
         "物料名称",
-        "物料描述",
-        "Material Description",
+        "物料品名",
+        "Material Name",
         "品名",
     )
-    parts = [
-        original_spec or clean_text(standard.get("说明")),
-        original_name or clean_text(standard.get("物料名称")),
-    ]
+    description = original_description
+    if not description and not (original_spec or original_name):
+        description = clean_text(standard.get("说明"))
+    parts = [original_spec, description]
+    if not description:
+        parts.append(original_name or clean_text(standard.get("物料名称")))
     combined: list[str] = []
     for value in parts:
         text = clean_text(value)

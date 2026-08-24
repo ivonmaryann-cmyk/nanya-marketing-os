@@ -85,6 +85,7 @@ class AutomationPostgresqlIntegrationTests(unittest.TestCase):
             ).fetchall()
             names = {row["table_name"] for row in rows}
             self.assertTrue(set(TABLES).issubset(names))
+            self.assertIn("automation_customer_spec_mappings", names)
 
     def test_local_snapshot_can_be_copied_with_psycopg_connection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

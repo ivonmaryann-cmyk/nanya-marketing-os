@@ -139,6 +139,51 @@ def _matrix_from_native_cells(cells: list[dict[str, Any]], *, drop_trailing_spar
     return rows
 
 
+def _native_grid_rows_from_page(page: dict[str, Any], expected_column_count: int) -> list[list[str]]:
+    """Rebuild headerless continuation rows from their visible PDF grid."""
+    if expected_column_count < 2:
+        return []
+
+    vertical_groups: dict[tuple[float, float], set[float]] = {}
+    for line in page.get("lines") or []:
+        if line.get("orientation") != "v":
+            continue
+        bbox = line.get("bbox") or []
+        if len(bbox) != 4:
+            continue
+        x0, top, x1, bottom = (float(value) for value in bbox)
+        if bottom - top < 12:
+            continue
+        key = (round(top, 1), round(bottom, 1))
+        vertical_groups.setdefault(key, set()).add(round((x0 + x1) / 2, 2))
+
+    rows: list[list[str]] = []
+    for (top, bottom), positions in sorted(vertical_groups.items()):
+        boundaries = sorted(positions)
+        if len(boundaries) != expected_column_count + 1:
+            continue
+        if boundaries[-1] - boundaries[0] < float(page.get("width") or 0) * 0.5:
+            continue
+
+        row: list[str] = []
+        for left, right in zip(boundaries, boundaries[1:]):
+            words = []
+            for word in page.get("words") or []:
+                bbox = word.get("bbox") or []
+                if len(bbox) != 4:
+                    continue
+                x0, word_top, x1, word_bottom = (float(value) for value in bbox)
+                center_x = (x0 + x1) / 2
+                center_y = (word_top + word_bottom) / 2
+                if left <= center_x <= right and top <= center_y <= bottom:
+                    words.append((word_top, x0, clean_text(word.get("text"))))
+            words.sort(key=lambda item: (item[0], item[1]))
+            row.append(normalize_pdf_table_cell("\n".join(value for _, _, value in words if value)))
+        if any(row):
+            rows.append(row)
+    return rows
+
+
 def _repair_split_native_headers(rows: list[list[str]]) -> list[list[str]]:
     """Restore headers that pdfplumber splits over adjacent table columns."""
     repaired = [list(row) for row in rows]
@@ -846,8 +891,15 @@ def _native_table_purchase_document(file_item: dict[str, str], native: dict[str,
                 source_rows = _compact_native_material_code_column(source_rows, header_index, mapping)
                 reusable_headers = list(source_rows[header_index])
                 table_rows = [list(row) for row in source_rows[header_index:]]
-            elif reusable_headers is not None and max((len(row) for row in source_rows), default=0) == len(reusable_headers):
-                table_rows = [list(reusable_headers), *[list(row) for row in source_rows]]
+            elif reusable_headers is not None:
+                continuation_rows = (
+                    [list(row) for row in source_rows]
+                    if max((len(row) for row in source_rows), default=0) == len(reusable_headers)
+                    else _native_grid_rows_from_page(page, len(reusable_headers))
+                )
+                if not continuation_rows:
+                    continue
+                table_rows = [list(reusable_headers), *continuation_rows]
             else:
                 continue
 

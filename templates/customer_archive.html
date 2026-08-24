@@ -17,6 +17,7 @@
   .pagination form span,.pagination-summary{white-space:nowrap}
   .pagination-summary{text-align:center}
   .pagination select{min-width:74px}
+  .dataset-tabs{display:flex;gap:4px;margin-bottom:18px;border-bottom:1px solid #dce6f3}.dataset-tabs a{padding:11px 18px;border-bottom:3px solid transparent;color:#6a7e9c;text-decoration:none;font-weight:700}.dataset-tabs a.active{border-bottom-color:#377ceb;color:#2670d9}
   @media(max-width:1100px){.pagination{grid-template-columns:1fr auto}.pagination-summary{grid-column:1/-1;grid-row:2;text-align:left}}
   @media(max-width:760px){.pagination{display:flex;align-items:flex-start}.pagination-summary{width:100%;text-align:left}}
 </style>
@@ -24,6 +25,7 @@
 {% block content %}
 <main class="customer-page {% if workspace or new_mode %}only-detail{% endif %}">
   {% if not workspace and not new_mode %}
+  <nav class="dataset-tabs" aria-label="客户维护数据表"><a class="active" href="{{ url_for('main.customer_archive') }}">客户信息表</a><a href="{{ url_for('main.customer_archive', dataset='specs') }}">客户规格与厂内规格对照表</a></nav>
   <div class="page-head">
     <div><h1>客户信息维护</h1><p>维护客户基本资料、负责人员和联系方式；邮件识别、客户分流及订单提取规则均在客户详情中维护。</p></div>
     <div class="page-actions">
