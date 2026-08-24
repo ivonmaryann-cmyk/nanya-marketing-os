@@ -15,7 +15,7 @@
       <div class="or-field"><label for="replySubject">主题</label><input id="replySubject" name="subject" required value="{{ draft.subject }}"></div>
       <div class="or-field body"><label for="replyBody">正文</label><textarea id="replyBody" name="body" required>{{ draft.body }}</textarea></div>
       <details class="or-preview"><summary>查看将引用的订单数据</summary><pre>订单主题：{{ case.subject or '（无主题）' }}
-客户订单号：{{ template.header.get('customer_order_number','未填写') if template else '未提取' }}
+客户订单号：{{ order_template['header'].get('customer_order_number','未填写') if order_template else '未提取' }}
 订单明细：{{ line_count }} 项
 录单状态：{{ entry_progress.label }}</pre></details>
       <div class="or-actions"><button class="or-button secondary" type="submit">保存草稿</button><button class="or-button" type="button" disabled title="需完成 SMTP 服务器和授权码配置后才能发送">发送邮件（待开通）</button></div>
@@ -23,7 +23,7 @@
     </form>
     <aside class="or-card or-side">
       <section><h2>原邮件</h2><div class="or-facts"><div class="or-fact"><span>原发件人</span><b>{{ case.sender or '未提供' }}</b></div><div class="or-fact"><span>邮件时间</span><b>{{ case.sent_at or case.received_at or '未提供' }}</b></div><div class="or-fact"><span>客户识别</span><b>{{ case.customer_name or '待确认客户' }}</b></div></div></section>
-      <section><h2>订单数据摘要</h2><div class="or-facts"><div class="or-fact"><span>账款客户编号</span><b>{{ template.header.get('bill_to_customer_code','未填写') if template else '未提取' }}</b></div><div class="or-fact"><span>客户订单号</span><b>{{ template.header.get('customer_order_number','未填写') if template else '未提取' }}</b></div><div class="or-fact"><span>订单明细</span><b>{{ line_count }} 项</b></div></div><div class="or-order-list">{% for line in reply_lines %}<div class="or-order-row"><span>{{ line.line_no }}</span><div><b>{{ line.values.get('product_code') or line.values.get('customer_product_code') or '未填写料号' }}</b><small>{{ line.values.get('product_name') or line.values.get('customer_spec') or '无规格说明' }}</small></div></div>{% else %}<p class="or-more">订单明细尚未提取。</p>{% endfor %}</div>{% if line_count > reply_lines|length %}<p class="or-more">另有 {{ line_count - reply_lines|length }} 项明细未在此展开。</p>{% endif %}</section>
+      <section><h2>订单数据摘要</h2><div class="or-facts"><div class="or-fact"><span>账款客户编号</span><b>{{ order_template['header'].get('bill_to_customer_code','未填写') if order_template else '未提取' }}</b></div><div class="or-fact"><span>客户订单号</span><b>{{ order_template['header'].get('customer_order_number','未填写') if order_template else '未提取' }}</b></div><div class="or-fact"><span>订单明细</span><b>{{ line_count }} 项</b></div></div><div class="or-order-list">{% for line in reply_lines %}<div class="or-order-row"><span>{{ line.line_no }}</span><div><b>{{ line['values'].get('product_code') or line['values'].get('customer_product_code') or '未填写料号' }}</b><small>{{ line['values'].get('product_name') or line['values'].get('customer_spec') or '无规格说明' }}</small></div></div>{% else %}<p class="or-more">订单明细尚未提取。</p>{% endfor %}</div>{% if line_count > reply_lines|length %}<p class="or-more">另有 {{ line_count - reply_lines|length }} 项明细未在此展开。</p>{% endif %}</section>
       <section><h2>发送状态</h2><div class="or-reference">当前未发送。草稿可继续编辑；真实发信开通后会记录发件人、收件人、发送时间、请求编号与发送结果。</div></section>
     </aside>
   </div>

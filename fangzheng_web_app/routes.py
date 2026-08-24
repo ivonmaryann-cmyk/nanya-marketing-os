@@ -1313,7 +1313,7 @@ def order_automation_reply(case_id: int):
         draft=draft,
         sender_name=sender_name,
         entry_progress=progress,
-        template=template,
+        order_template=template,
         line_count=len(lines),
         reply_lines=lines[:6],
         return_context=_order_automation_return_context(case),
