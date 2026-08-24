@@ -12,11 +12,13 @@ from fangzheng_web_app.order_intake_service import (
     bootstrap_cases,
     business_today,
     classify_mail,
+    GLOBAL_RULE_OWNER,
     list_cases,
     list_change_tags,
     list_universal_rules,
     save_universal_rule,
     save_universal_rule_scope,
+    reclassify_cases,
     update_case,
     update_routing,
     work_summary,
@@ -124,6 +126,68 @@ class OrderIntakeRoutingTests(unittest.TestCase):
         self.assertEqual([item["keyword"] for item in updated["keywords"] if item["scope"] == "subject"], before_subjects)
         self.assertEqual([item["keyword"] for item in updated["keywords"] if item["scope"] == "body"], ["订单明细", "下单通知"])
         self.assertFalse(any(item["action_type"] == "unclassified" for item in list_universal_rules("employee-a")))
+
+    def test_universal_rules_are_shared_between_employees(self) -> None:
+        rule_a = next(rule for rule in list_universal_rules("employee-a") if rule["action_type"] == "new_order")
+        rule_b = next(rule for rule in list_universal_rules("employee-b") if rule["action_type"] == "new_order")
+        self.assertEqual(rule_a["id"], rule_b["id"])
+        self.assertEqual(rule_a["employee_id"], GLOBAL_RULE_OWNER)
+        saved = save_universal_rule_scope("employee-a", rule_a["id"], "body", ["共享订单信号"])
+        other = next(rule for rule in list_universal_rules("employee-b") if rule["id"] == saved["id"])
+        self.assertEqual([item["keyword"] for item in other["keywords"] if item["scope"] == "body"], ["共享订单信号"])
+
+    def test_rule_scope_edit_reclassifies_only_cases_matching_changed_terms(self) -> None:
+        account_id = mail_store.create_or_update_account(
+            "orders@example.com", owner_employee_id="employee-a", auth_code="auth-code"
+        )
+        for uid, subject, body in (("2010", "采购订单", ""), ("2011", "普通通知", "共享订单信号")):
+            mail_store.upsert_message(
+                account_id, folder="INBOX", uid=uid, message_id=f"<{uid}@example.com>", subject=subject,
+                sender="buyer@customer.com", sent_at="2026-08-18 09:00:00", received_at="2026-08-18 09:00:00",
+                body_html="", body_text=body, eml_path="", is_order=1,
+            )
+        bootstrap_cases("employee-a", account_id)
+        cases = list_cases("employee-a", "2026-08-18", "all", account_id)
+        unaffected = next(case for case in cases if case["subject"] == "采购订单")
+        with db.db_cursor() as conn:
+            before_events = conn.execute(
+                "SELECT COUNT(*) AS total FROM order_intake_case_events WHERE case_id=?", (unaffected["id"],)
+            ).fetchone()["total"]
+        rule = next(rule for rule in list_universal_rules("employee-a") if rule["action_type"] == "new_order")
+        save_universal_rule_scope("employee-a", rule["id"], "body", ["共享订单信号"])
+        updated = list_cases("employee-a", "2026-08-18", "new_order", account_id)
+        self.assertIn("普通通知", [case["subject"] for case in updated])
+        with db.db_cursor() as conn:
+            after_events = conn.execute(
+                "SELECT COUNT(*) AS total FROM order_intake_case_events WHERE case_id=?", (unaffected["id"],)
+            ).fetchone()["total"]
+        self.assertEqual(before_events, after_events)
+
+    def test_auto_reclassification_is_audited_only_when_result_changes(self) -> None:
+        account_id = mail_store.create_or_update_account(
+            "orders@example.com", owner_employee_id="employee-a", auth_code="auth-code"
+        )
+        mail_store.upsert_message(
+            account_id, folder="INBOX", uid="2007", message_id="<2007@example.com>",
+            subject="采购订单", sender="buyer@customer.com",
+            sent_at="2026-08-18 09:00:00", received_at="2026-08-18 09:00:00",
+            body_html="", body_text="", eml_path="", is_order=1,
+        )
+        bootstrap_cases("employee-a", account_id)
+        case = list_cases("employee-a", "2026-08-18", "new_order", account_id)[0]
+        with db.db_cursor() as conn:
+            first_count = conn.execute(
+                "SELECT COUNT(*) AS total FROM order_intake_case_events WHERE case_id=? AND action='auto_reclassify'",
+                (case["id"],),
+            ).fetchone()["total"]
+        reclassify_cases("employee-a", account_id)
+        with db.db_cursor() as conn:
+            second_count = conn.execute(
+                "SELECT COUNT(*) AS total FROM order_intake_case_events WHERE case_id=? AND action='auto_reclassify'",
+                (case["id"],),
+            ).fetchone()["total"]
+        self.assertEqual(first_count, 1)
+        self.assertEqual(second_count, first_count)
 
     def test_change_item_promotes_mail_to_order_change(self) -> None:
         account_id = mail_store.create_or_update_account(

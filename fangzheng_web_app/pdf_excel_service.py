@@ -457,6 +457,44 @@ def _parse_file_with_purchase_pipeline(file_item: dict[str, str], work_dir: Path
         return normalize_purchase_document(_legacy_to_purchase_document(legacy_document, fallback_reason=str(exc)))
 
 
+def recognize_purchase_order_document(
+    file_item: dict[str, str],
+    work_dir: Path | None = None,
+    *,
+    ai_config: AiRepairConfig | None = None,
+    log: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """Recognize one purchase-order PDF/image for reuse outside the Excel job.
+
+    This is the shared recognition boundary for the PDF/图片转Excel feature:
+    it keeps the primary purchase-order pipeline, its legacy fallback, and the
+    configured evidence-based AI repair.  It deliberately does not create a
+    job, write an Excel file, or apply factory-import projection, so callers
+    such as the mail order-entry workflow can map the recognized source data
+    into their own business template.
+    """
+    config = ai_config or get_ai_repair_config()
+
+    def recognize(target_dir: Path) -> dict[str, Any]:
+        document = _parse_file_with_purchase_pipeline(file_item, target_dir)
+        ai_started = time.perf_counter()
+        document = audit_and_repair_purchase_document(document, config=config, log=log)
+        document["ai_config_summary"] = config.safe_metadata()
+        add_stage_ms(
+            "ai_repair",
+            (time.perf_counter() - ai_started) * 1000,
+            summary=document.setdefault("performance_summary", {}),
+        )
+        return document
+
+    if work_dir is not None:
+        target_dir = Path(work_dir)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        return recognize(target_dir)
+    with tempfile.TemporaryDirectory(prefix="purchase-order-recognition-") as temp_dir:
+        return recognize(Path(temp_dir))
+
+
 def _parse_repair_and_project(
     file_item: dict[str, str],
     work_dir: Path,
@@ -464,14 +502,8 @@ def _parse_repair_and_project(
     ai_config: AiRepairConfig,
     log: Callable[[str], None] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    document = _parse_file_with_purchase_pipeline(file_item, work_dir)
-    ai_started = time.perf_counter()
-    document = audit_and_repair_purchase_document(document, config=ai_config, log=log)
-    document["ai_config_summary"] = ai_config.safe_metadata()
-    add_stage_ms(
-        "ai_repair",
-        (time.perf_counter() - ai_started) * 1000,
-        summary=document.setdefault("performance_summary", {}),
+    document = recognize_purchase_order_document(
+        file_item, work_dir, ai_config=ai_config, log=log
     )
     factory_started = time.perf_counter()
     factory_summary = project_factory_document(document, config=ai_config, log=log)

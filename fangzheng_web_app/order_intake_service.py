@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import date, datetime, timedelta, timezone
+from email.utils import parseaddr
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -62,6 +63,67 @@ ERP_PREPARE_STATUS_LABELS = {
 }
 
 BUSINESS_TIMEZONE = ZoneInfo("Asia/Shanghai")
+GLOBAL_RULE_OWNER = "__global__"
+SYSTEM_ACTOR = "__system__"
+MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+MAX_ATTACHMENT_PDF_PAGES = 20
+MAX_ATTACHMENT_WORKBOOK_ROWS = 20_000
+
+
+def _list_sender(sender: str) -> tuple[str, str]:
+    """Return concise sender text for a list row without repeating an address."""
+    raw = str(sender or "").strip()
+    name, address = parseaddr(raw)
+    name = str(name or "").strip().strip('"')
+    address = str(address or "").strip()
+    if not address:
+        return raw or "发件人未提供", ""
+    if not name or name.casefold() == address.casefold():
+        return address, ""
+    return name, address
+
+
+def _list_summary(body_text: str, fallback: str = "") -> str:
+    """Keep the list focused on one useful, readable business summary."""
+    text = re.sub(r"\s+", " ", str(body_text or "")).strip()
+    if not text:
+        text = re.sub(r"\s+", " ", str(fallback or "")).strip()
+    return text[:116] + ("…" if len(text) > 116 else "")
+
+
+def _metadata_get(conn, key: str) -> str | None:
+    """Read automation metadata without relying on SQL dialect rewrites.
+
+    SQLite keeps the legacy ``settings`` table for compatibility.  PostgreSQL
+    explicitly uses ``automation_metadata`` so this module does not depend on
+    the broad regexp replacement in ``database.sql``.
+    """
+    if getattr(conn, "dialect", "sqlite") == "postgresql":
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key=?",
+            (key,),
+            postgres_sql="SELECT value FROM automation_metadata WHERE key=?",
+        ).fetchone()
+    else:
+        row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    return str(row["value"]) if row else None
+
+
+def _metadata_set(conn, key: str, value: str) -> None:
+    if getattr(conn, "dialect", "sqlite") == "postgresql":
+        conn.execute(
+            "INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+            postgres_sql=(
+                "INSERT INTO automation_metadata(key,value,updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at"
+            ),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
 
 
 def business_today() -> date:
@@ -84,6 +146,13 @@ def _business_date(timestamp: str) -> str:
 
 def _as_dict(row) -> dict[str, Any] | None:
     return dict(row) if row else None
+
+
+def _json(value: str | None, fallback: Any) -> Any:
+    try:
+        return json.loads(value or "")
+    except (TypeError, ValueError):
+        return fallback
 
 
 def _rule_matches(rule: dict[str, Any], *, subject: str, sender: str, attachment_text: str = "") -> bool:
@@ -362,128 +431,147 @@ DEFAULT_CHANGE_TAGS = (
 )
 
 
+def _migrate_rule_groups_to_global(conn, now: str) -> None:
+    """Copy existing personal rules into one shared, de-duplicated rule set.
+
+    Legacy rows remain untouched as a rollback safety net.  All reads use the
+    global owner after this migration, so stale per-user copies cannot alter a
+    colleague's route.  The idempotency marker makes the migration safe on
+    SQLite and PostgreSQL and safe to run on every application start.
+    """
+    marker = "order_mail_rule_global_migration_v1"
+    if _metadata_get(conn, marker):
+        return
+    legacy_groups = conn.execute(
+        "SELECT * FROM order_mail_rule_groups WHERE employee_id<>? AND action_type IN ('new_order','quotation','order_change') ORDER BY id",
+        (GLOBAL_RULE_OWNER,),
+    ).fetchall()
+    for raw_group in legacy_groups:
+        group = dict(raw_group)
+        target = conn.execute(
+            "SELECT id FROM order_mail_rule_groups WHERE employee_id=? AND name=? AND action_type=? ORDER BY id LIMIT 1",
+            (GLOBAL_RULE_OWNER, group["name"], group["action_type"]),
+        ).fetchone()
+        if target is None:
+            target_id = int(conn.execute(
+                "INSERT INTO order_mail_rule_groups (employee_id,name,action_type,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+                (GLOBAL_RULE_OWNER, group["name"], group["action_type"], group["enabled"], now, now),
+            ).lastrowid)
+        else:
+            target_id = int(target["id"])
+        present = {(item["scope"], item["keyword"]) for item in conn.execute(
+            "SELECT scope,keyword FROM order_mail_rule_keywords WHERE group_id=?", (target_id,)
+        ).fetchall()}
+        for keyword in conn.execute("SELECT scope,keyword FROM order_mail_rule_keywords WHERE group_id=?", (group["id"],)).fetchall():
+            pair = (keyword["scope"], keyword["keyword"])
+            if pair not in present:
+                conn.execute(
+                    "INSERT INTO order_mail_rule_keywords (group_id,scope,keyword,created_at) VALUES (?,?,?,?)",
+                    (target_id, pair[0], pair[1], now),
+                )
+                present.add(pair)
+    _metadata_set(conn, marker, now)
+
+
 def ensure_universal_rules(employee_id: str) -> None:
+    """Ensure shared universal rules and per-user change tags exist.
+
+    Change tags deliberately stay personal until the product decision C2 is
+    confirmed.  Universal routing groups are global as already agreed.
+    """
     now = utcnow()
     with db_cursor() as conn:
-        # “暂不分流”是未命中或冲突时的系统状态，不能作为业务规则维护。
+        _migrate_rule_groups_to_global(conn, now)
         obsolete_ids = [row["id"] for row in conn.execute(
-            "SELECT id FROM order_mail_rule_groups WHERE employee_id=? AND action_type='unclassified'", (employee_id,)
+            "SELECT id FROM order_mail_rule_groups WHERE employee_id=? AND action_type='unclassified'", (GLOBAL_RULE_OWNER,)
         ).fetchall()]
         for group_id in obsolete_ids:
             conn.execute("DELETE FROM order_mail_rule_keywords WHERE group_id=?", (group_id,))
             conn.execute("DELETE FROM order_mail_rule_groups WHERE id=?", (group_id,))
-        seed_key = f"order_mail_rule_seed_v2:{employee_id}"
-        seeded = conn.execute("SELECT 1 FROM settings WHERE key=?", (seed_key,)).fetchone()
+
+        seed_key = "order_mail_rule_seed_v3:global"
+        seeded = _metadata_get(conn, seed_key) is not None
         for name, action_type, keywords in DEFAULT_GROUPS:
-            group = conn.execute("SELECT id FROM order_mail_rule_groups WHERE employee_id=? AND action_type=? ORDER BY id LIMIT 1", (employee_id, action_type)).fetchone()
+            group = conn.execute(
+                "SELECT id FROM order_mail_rule_groups WHERE employee_id=? AND action_type=? ORDER BY id LIMIT 1",
+                (GLOBAL_RULE_OWNER, action_type),
+            ).fetchone()
             if group is None:
-                cursor = conn.execute("INSERT INTO order_mail_rule_groups (employee_id,name,action_type,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?)", (employee_id, name, action_type, 1, now, now))
-                group_id = int(cursor.lastrowid)
+                group_id = int(conn.execute(
+                    "INSERT INTO order_mail_rule_groups (employee_id,name,action_type,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+                    (GLOBAL_RULE_OWNER, name, action_type, 1, now, now),
+                ).lastrowid)
             else:
                 group_id = int(group["id"])
-            # 仅在首次升级到四个检索区域时补齐示例词；之后业务删除的词不会再被加回。
             if not seeded:
-                existing_pairs = {(row["scope"], row["keyword"]) for row in conn.execute("SELECT scope,keyword FROM order_mail_rule_keywords WHERE group_id=?", (group_id,)).fetchall()}
+                existing_pairs = {(row["scope"], row["keyword"]) for row in conn.execute(
+                    "SELECT scope,keyword FROM order_mail_rule_keywords WHERE group_id=?", (group_id,)
+                ).fetchall()}
                 for scope, keyword in keywords:
                     if (scope, keyword) not in existing_pairs:
                         conn.execute("INSERT INTO order_mail_rule_keywords (group_id,scope,keyword,created_at) VALUES (?,?,?,?)", (group_id, scope, keyword, now))
         if not seeded:
-            conn.execute("INSERT INTO settings(key,value) VALUES (?,?)", (seed_key, now))
+            _metadata_set(conn, seed_key, now)
 
-        # “交期”本身是新订单的正常字段，只有明确表达修改/变更时才可识别为订单修改。
-        cleanup_key = f"order_mail_rule_cleanup_v3:{employee_id}"
-        cleaned = conn.execute("SELECT 1 FROM settings WHERE key=?", (cleanup_key,)).fetchone()
-        if not cleaned:
-            change_group = conn.execute(
-                "SELECT id FROM order_mail_rule_groups WHERE employee_id=? AND action_type='order_change' ORDER BY id LIMIT 1",
-                (employee_id,),
-            ).fetchone()
-            if change_group:
-                conn.execute("DELETE FROM order_mail_rule_keywords WHERE group_id=? AND keyword='交期'", (change_group["id"],))
-                existing_pairs = {(row["scope"], row["keyword"]) for row in conn.execute("SELECT scope,keyword FROM order_mail_rule_keywords WHERE group_id=?", (change_group["id"],)).fetchall()}
-                for scope, keyword in (("attachment_content", "交期修改"), ("attachment_content", "交期变更"), ("attachment_content", "发货日期修改")):
-                    if (scope, keyword) not in existing_pairs:
-                        conn.execute("INSERT INTO order_mail_rule_keywords (group_id,scope,keyword,created_at) VALUES (?,?,?,?)", (change_group["id"], scope, keyword, now))
-            delivery_tag = conn.execute("SELECT id FROM order_change_tags WHERE employee_id=? AND name='交期 / 发货日期'", (employee_id,)).fetchone()
-            if delivery_tag:
-                conn.execute("DELETE FROM order_change_tag_keywords WHERE tag_id=? AND keyword='交期'", (delivery_tag["id"],))
-                existing_pairs = {(row["scope"], row["keyword"]) for row in conn.execute("SELECT scope,keyword FROM order_change_tag_keywords WHERE tag_id=?", (delivery_tag["id"],)).fetchall()}
-                for scope, keyword in DEFAULT_CHANGE_TAGS[0][1]:
-                    if (scope, keyword) not in existing_pairs:
-                        conn.execute("INSERT INTO order_change_tag_keywords (tag_id,scope,keyword,created_at) VALUES (?,?,?,?)", (delivery_tag["id"], scope, keyword, now))
-            conn.execute("INSERT INTO settings(key,value) VALUES (?,?)", (cleanup_key, now))
+        # Change tags remain backward-compatible and per employee pending C2.
         tags_exist = conn.execute("SELECT 1 FROM order_change_tags WHERE employee_id=?", (employee_id,)).fetchone()
         if not tags_exist:
             for name, keywords in DEFAULT_CHANGE_TAGS:
-                cursor = conn.execute("INSERT INTO order_change_tags (employee_id,name,enabled,created_at,updated_at) VALUES (?,?,?,?,?)", (employee_id, name, 1, now, now))
+                tag_id = int(conn.execute(
+                    "INSERT INTO order_change_tags (employee_id,name,enabled,created_at,updated_at) VALUES (?,?,?,?,?)",
+                    (employee_id, name, 1, now, now),
+                ).lastrowid)
                 for scope, keyword in keywords:
-                    conn.execute("INSERT INTO order_change_tag_keywords (tag_id,scope,keyword,created_at) VALUES (?,?,?,?)", (cursor.lastrowid, scope, keyword, now))
+                    conn.execute("INSERT INTO order_change_tag_keywords (tag_id,scope,keyword,created_at) VALUES (?,?,?,?)", (tag_id, scope, keyword, now))
 
-        # 收紧过于宽泛的二级事项词，避免普通订单中的规格、型号、单价字段被误判为变更。
-        refinement_key = f"order_change_item_refinement_v4:{employee_id}"
-        refined = conn.execute("SELECT 1 FROM settings WHERE key=?", (refinement_key,)).fetchone()
-        if not refined:
-            replacements = {
-                "价格调整": {"remove": {"单价"}, "add": DEFAULT_CHANGE_TAGS[1][1]},
-                "规格 / 型号调整": {"remove": {"规格", "型号"}, "add": DEFAULT_CHANGE_TAGS[3][1]},
-            }
-            for tag_name, change in replacements.items():
+        # Preserve the existing conservative refinements during the global
+        # migration: a bare “交期”/“规格”/“单价” in a normal PO is not a
+        # change signal.  Rule keys are global; change-tag keys remain scoped.
+        cleanup_key = "order_mail_rule_cleanup_v4:global"
+        if _metadata_get(conn, cleanup_key) is None:
+            change_group = conn.execute(
+                "SELECT id FROM order_mail_rule_groups WHERE employee_id=? AND action_type='order_change' ORDER BY id LIMIT 1",
+                (GLOBAL_RULE_OWNER,),
+            ).fetchone()
+            if change_group:
+                conn.execute("DELETE FROM order_mail_rule_keywords WHERE group_id=? AND keyword='交期'", (change_group["id"],))
+            delivery_tag = conn.execute("SELECT id FROM order_change_tags WHERE employee_id=? AND name='交期 / 发货日期'", (employee_id,)).fetchone()
+            if delivery_tag:
+                conn.execute("DELETE FROM order_change_tag_keywords WHERE tag_id=? AND keyword='交期'", (delivery_tag["id"],))
+            _metadata_set(conn, cleanup_key, now)
+
+        refinement_key = f"order_change_item_refinement_v5:{employee_id}"
+        if _metadata_get(conn, refinement_key) is None:
+            for tag_name, removed in (("价格调整", {"单价"}), ("规格 / 型号调整", {"规格", "型号"})):
                 tag = conn.execute("SELECT id FROM order_change_tags WHERE employee_id=? AND name=?", (employee_id, tag_name)).fetchone()
-                if not tag:
-                    continue
-                for word in change["remove"]:
-                    conn.execute("DELETE FROM order_change_tag_keywords WHERE tag_id=? AND keyword=?", (tag["id"], word))
-                existing_pairs = {(row["scope"], row["keyword"]) for row in conn.execute("SELECT scope,keyword FROM order_change_tag_keywords WHERE tag_id=?", (tag["id"],)).fetchall()}
-                for scope, keyword in change["add"]:
-                    if (scope, keyword) not in existing_pairs:
-                        conn.execute("INSERT INTO order_change_tag_keywords (tag_id,scope,keyword,created_at) VALUES (?,?,?,?)", (tag["id"], scope, keyword, now))
-            conn.execute("INSERT INTO settings(key,value) VALUES (?,?)", (refinement_key, now))
+                if tag:
+                    for word in removed:
+                        conn.execute("DELETE FROM order_change_tag_keywords WHERE tag_id=? AND keyword=?", (tag["id"], word))
+            _metadata_set(conn, refinement_key, now)
 
-        # 补齐明确的交期提前／加急表达；不使用孤立的“交期”或“最短交期”，
-        # 避免把正常新订单的交期说明误判为订单变更。
-        delivery_acceleration_key = f"order_change_delivery_acceleration_v6:{employee_id}"
-        accelerated = conn.execute("SELECT 1 FROM settings WHERE key=?", (delivery_acceleration_key,)).fetchone()
-        if not accelerated:
-            delivery_keywords = (
-                "交期提前", "交期协同提前", "交期加急", "提前交货", "提前交期",
-            )
+        acceleration_key = "order_change_delivery_acceleration_v7:global"
+        if _metadata_get(conn, acceleration_key) is None:
+            words = ("交期提前", "交期协同提前", "交期加急", "提前交货", "提前交期")
             scopes = ("subject", "body", "attachment_name", "attachment_content")
             change_group = conn.execute(
                 "SELECT id FROM order_mail_rule_groups WHERE employee_id=? AND action_type='order_change' ORDER BY id LIMIT 1",
-                (employee_id,),
+                (GLOBAL_RULE_OWNER,),
             ).fetchone()
             if change_group:
-                existing_pairs = {(row["scope"], row["keyword"]) for row in conn.execute(
+                existing = {(row["scope"], row["keyword"]) for row in conn.execute(
                     "SELECT scope,keyword FROM order_mail_rule_keywords WHERE group_id=?", (change_group["id"],)
                 ).fetchall()}
                 for scope in scopes:
-                    for keyword in delivery_keywords:
-                        if (scope, keyword) not in existing_pairs:
-                            conn.execute(
-                                "INSERT INTO order_mail_rule_keywords (group_id,scope,keyword,created_at) VALUES (?,?,?,?)",
-                                (change_group["id"], scope, keyword, now),
-                            )
-            delivery_tag = conn.execute(
-                "SELECT id FROM order_change_tags WHERE employee_id=? AND name='交期 / 发货日期'", (employee_id,)
-            ).fetchone()
-            if delivery_tag:
-                existing_pairs = {(row["scope"], row["keyword"]) for row in conn.execute(
-                    "SELECT scope,keyword FROM order_change_tag_keywords WHERE tag_id=?", (delivery_tag["id"],)
-                ).fetchall()}
-                for scope in scopes:
-                    for keyword in delivery_keywords:
-                        if (scope, keyword) not in existing_pairs:
-                            conn.execute(
-                                "INSERT INTO order_change_tag_keywords (tag_id,scope,keyword,created_at) VALUES (?,?,?,?)",
-                                (delivery_tag["id"], scope, keyword, now),
-                            )
-            conn.execute("INSERT INTO settings(key,value) VALUES (?,?)", (delivery_acceleration_key, now))
+                    for word in words:
+                        if (scope, word) not in existing:
+                            conn.execute("INSERT INTO order_mail_rule_keywords (group_id,scope,keyword,created_at) VALUES (?,?,?,?)", (change_group["id"], scope, word, now))
+            _metadata_set(conn, acceleration_key, now)
 
 
 def list_universal_rules(employee_id: str) -> list[dict[str, Any]]:
     ensure_universal_rules(employee_id)
     with db_cursor() as conn:
-        groups = [dict(row) for row in conn.execute("SELECT * FROM order_mail_rule_groups WHERE employee_id=? ORDER BY id", (employee_id,)).fetchall()]
+        groups = [dict(row) for row in conn.execute("SELECT * FROM order_mail_rule_groups WHERE employee_id=? ORDER BY id", (GLOBAL_RULE_OWNER,)).fetchall()]
         for group in groups:
             group["keywords"] = [dict(row) for row in conn.execute("SELECT * FROM order_mail_rule_keywords WHERE group_id=? ORDER BY id", (group["id"],)).fetchall()]
     return groups
@@ -498,6 +586,31 @@ def list_change_tags(employee_id: str) -> list[dict[str, Any]]:
     return tags
 
 
+def _keyword_pairs(conn, *, group_id: int | None = None, tag_id: int | None = None, scope: str | None = None) -> list[tuple[str, str]]:
+    if group_id is not None:
+        table, id_column, identifier = "order_mail_rule_keywords", "group_id", group_id
+    elif tag_id is not None:
+        table, id_column, identifier = "order_change_tag_keywords", "tag_id", tag_id
+    else:
+        return []
+    sql = f"SELECT scope,keyword FROM {table} WHERE {id_column}=?"
+    params: list[Any] = [identifier]
+    if scope:
+        sql += " AND scope=?"
+        params.append(scope)
+    return [(str(row["scope"]), str(row["keyword"])) for row in conn.execute(sql, params).fetchall()]
+
+
+def _changed_terms(*collections: list[tuple[str, str]]) -> dict[str, set[str]]:
+    result: dict[str, set[str]] = {}
+    for collection in collections:
+        for scope, keyword in collection:
+            cleaned = keyword.strip().lower()
+            if cleaned:
+                result.setdefault(scope, set()).add(cleaned)
+    return result
+
+
 def save_universal_rule(employee_id: str, payload: dict[str, Any], group_id: int | None = None) -> dict[str, Any]:
     name, action_type = str(payload.get("name") or "").strip(), str(payload.get("action_type") or "").strip()
     keywords = [(str(x.get("scope") or "").strip(), str(x.get("keyword") or "").strip()) for x in payload.get("keywords", []) if str(x.get("keyword") or "").strip()]
@@ -505,18 +618,20 @@ def save_universal_rule(employee_id: str, payload: dict[str, Any], group_id: int
         raise ValueError("请填写规则名称、明确分流结果和至少一个有效关键词")
     now = utcnow()
     with db_cursor() as conn:
+        old_keywords: list[tuple[str, str]] = []
         if group_id:
-            row = conn.execute("SELECT id FROM order_mail_rule_groups WHERE id=? AND employee_id=?", (group_id, employee_id)).fetchone()
+            row = conn.execute("SELECT id FROM order_mail_rule_groups WHERE id=? AND employee_id=?", (group_id, GLOBAL_RULE_OWNER)).fetchone()
             if not row: raise ValueError("规则不存在")
+            old_keywords = _keyword_pairs(conn, group_id=group_id)
             conn.execute("UPDATE order_mail_rule_groups SET name=?,action_type=?,enabled=?,updated_at=? WHERE id=?", (name, action_type, 1 if payload.get("enabled", True) else 0, now, group_id))
             conn.execute("DELETE FROM order_mail_rule_keywords WHERE group_id=?", (group_id,))
             saved_id = group_id
         else:
-            cursor = conn.execute("INSERT INTO order_mail_rule_groups (employee_id,name,action_type,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?)", (employee_id, name, action_type, 1 if payload.get("enabled", True) else 0, now, now))
+            cursor = conn.execute("INSERT INTO order_mail_rule_groups (employee_id,name,action_type,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?)", (GLOBAL_RULE_OWNER, name, action_type, 1 if payload.get("enabled", True) else 0, now, now))
             saved_id = int(cursor.lastrowid)
         for scope, keyword in keywords:
             conn.execute("INSERT INTO order_mail_rule_keywords (group_id,scope,keyword,created_at) VALUES (?,?,?,?)", (saved_id, scope, keyword, now))
-    reclassify_cases(employee_id)
+    _reclassify_all_cases(_changed_terms(old_keywords, keywords))
     return next(item for item in list_universal_rules(employee_id) if item["id"] == saved_id)
 
 
@@ -533,15 +648,16 @@ def save_universal_rule_scope(employee_id: str, group_id: int, scope: str, keywo
     with db_cursor() as conn:
         group = conn.execute(
             "SELECT id FROM order_mail_rule_groups WHERE id=? AND employee_id=? AND action_type IN ('new_order','quotation','order_change')",
-            (group_id, employee_id),
+            (group_id, GLOBAL_RULE_OWNER),
         ).fetchone()
         if not group:
             raise ValueError("规则分类不存在")
+        old_keywords = _keyword_pairs(conn, group_id=group_id, scope=scope)
         conn.execute("DELETE FROM order_mail_rule_keywords WHERE group_id=? AND scope=?", (group_id, scope))
         for word in cleaned:
             conn.execute("INSERT INTO order_mail_rule_keywords (group_id,scope,keyword,created_at) VALUES (?,?,?,?)", (group_id, scope, word, now))
         conn.execute("UPDATE order_mail_rule_groups SET updated_at=? WHERE id=?", (now, group_id))
-    reclassify_cases(employee_id)
+    _reclassify_all_cases(_changed_terms(old_keywords, [(scope, word) for word in cleaned]))
     return next(item for item in list_universal_rules(employee_id) if item["id"] == group_id)
 
 
@@ -567,10 +683,12 @@ def save_change_tag(employee_id: str, name: str, keywords: list[dict[str, Any]],
         raise ValueError("请填写变更类型名称和至少一个业务说法")
     now = utcnow()
     with db_cursor() as conn:
+        old_keywords: list[tuple[str, str]] = []
         if tag_id:
             existing = conn.execute("SELECT id FROM order_change_tags WHERE id=? AND employee_id=?", (tag_id, employee_id)).fetchone()
             if not existing:
                 raise ValueError("变更类型不存在或无权修改")
+            old_keywords = _keyword_pairs(conn, tag_id=tag_id)
             conn.execute("UPDATE order_change_tags SET name=?,updated_at=? WHERE id=? AND employee_id=?", (name.strip(), now, tag_id, employee_id))
             conn.execute("DELETE FROM order_change_tag_keywords WHERE tag_id=?", (tag_id,)); saved_id = tag_id
         else:
@@ -579,7 +697,7 @@ def save_change_tag(employee_id: str, name: str, keywords: list[dict[str, Any]],
                 raise ValueError("该变更类型已存在")
             cursor=conn.execute("INSERT INTO order_change_tags (employee_id,name,enabled,created_at,updated_at) VALUES (?,?,?,?,?)", (employee_id,name.strip(),1,now,now)); saved_id=int(cursor.lastrowid)
         for scope, keyword in pairs: conn.execute("INSERT INTO order_change_tag_keywords (tag_id,scope,keyword,created_at) VALUES (?,?,?,?)", (saved_id,scope,keyword,now))
-    reclassify_cases(employee_id)
+    reclassify_cases(employee_id, changed_terms=_changed_terms(old_keywords, pairs))
     return saved_id
 
 
@@ -594,45 +712,156 @@ def _extract_attachment_text(path: str) -> tuple[str, str]:
         return "", "missing"
     file_path = Path(path)
     suffix = file_path.suffix.lower()
-    if not file_path.is_file(): return "", "missing"
+    if not file_path.is_file():
+        return "", "missing"
+    if file_path.stat().st_size > MAX_ATTACHMENT_BYTES:
+        return "", "too_large"
     try:
-        if suffix in {".txt", ".csv"}: return file_path.read_text(encoding="utf-8", errors="replace")[:120000], "parsed"
+        if suffix in {".txt", ".csv"}:
+            return file_path.read_text(encoding="utf-8", errors="replace")[:120000], "parsed"
         if suffix in {".xlsx", ".xlsm"}:
             from openpyxl import load_workbook
-            book=load_workbook(file_path, read_only=True, data_only=True); values=[]
-            for sheet in book.worksheets:
-                for row in sheet.iter_rows(values_only=True): values.extend(str(v) for v in row if v is not None)
+            book = load_workbook(file_path, read_only=True, data_only=True)
+            values: list[str] = []
+            row_count = 0
+            try:
+                for sheet in book.worksheets:
+                    for row in sheet.iter_rows(values_only=True):
+                        row_count += 1
+                        if row_count > MAX_ATTACHMENT_WORKBOOK_ROWS:
+                            return "", "too_large"
+                        values.extend(str(v) for v in row if v is not None)
+            finally:
+                book.close()
             return " ".join(values)[:120000], "parsed"
         if suffix == ".pdf":
             import pdfplumber
-            with pdfplumber.open(file_path) as pdf: return " ".join((page.extract_text() or "") for page in pdf.pages[:20])[:120000], "parsed"
+            with pdfplumber.open(file_path) as pdf:
+                if len(pdf.pages) > MAX_ATTACHMENT_PDF_PAGES:
+                    return "", "too_large"
+                return " ".join((page.extract_text() or "") for page in pdf.pages)[:120000], "parsed"
         return "", "unsupported"
-    except Exception: return "", "failed"
+    except Exception:
+        return "", "failed"
 
 
-def _attachment_content(conn, mail_id: int) -> str:
+def _attachment_content(conn, mail_id: int, *, parse_missing: bool = False) -> str:
+    """Return cached attachment text; parsing is opt-in for background workers."""
     rows = conn.execute("SELECT id,stored_path FROM mail_attachments WHERE mail_id=? AND is_inline=0", (mail_id,)).fetchall(); parts=[]
     for row in rows:
         cached=conn.execute("SELECT text_content,parse_status FROM mail_attachment_texts WHERE attachment_id=?", (row["id"],)).fetchone()
         if cached is None:
+            if not parse_missing:
+                conn.execute("INSERT INTO mail_attachment_texts (attachment_id,text_content,parse_status,updated_at) VALUES (?,?,?,?)", (row["id"],"","pending",utcnow()))
+                continue
             text,status=_extract_attachment_text(row["stored_path"])
             conn.execute("INSERT INTO mail_attachment_texts (attachment_id,text_content,parse_status,updated_at) VALUES (?,?,?,?)", (row["id"],text,status,utcnow()))
+            conn.execute("UPDATE mail_attachments SET parse_status=? WHERE id=?", (status, row["id"]))
             parts.append(text)
         else: parts.append(cached["text_content"])
     return " ".join(parts)
 
 
-def reclassify_cases(employee_id: str, account_id: int | None = None) -> None:
+def prepare_attachment_texts(mail_ids: list[int]) -> None:
+    """Parse new attachments in a worker, never in a rule-save request."""
+    if not mail_ids:
+        return
+    with db_cursor() as conn:
+        for mail_id in mail_ids:
+            _attachment_content(conn, int(mail_id), parse_missing=True)
+
+
+def _rule_decision(groups: list[dict[str, Any]], tags: list[dict[str, Any]], values: dict[str, str]) -> tuple[str, str, str, list[dict[str, Any]], list[str]]:
+    """Pure keyword-rule decision shared by production reclassification/tests."""
+    matches: list[dict[str, Any]] = []
+    clear_action_types: set[str] = set()
+    assist_action_types: set[str] = set()
+    tag_names: list[str] = []
+    for group in groups:
+        if not group["enabled"]:
+            continue
+        for keyword in group["keywords"]:
+            if keyword["keyword"].lower() in values[keyword["scope"]]:
+                strength = "clear" if keyword["scope"] in CLEAR_ROUTING_SCOPES else "assist"
+                matches.append({"scope": keyword["scope"], "keyword": keyword["keyword"], "group": group["name"], "action_type": group["action_type"], "strength": strength})
+                (clear_action_types if strength == "clear" else assist_action_types).add(group["action_type"])
+    for tag in tags:
+        tag_hits = [k for k in tag["keywords"] if tag["enabled"] and k["keyword"].lower() in values[k["scope"]]]
+        if tag_hits:
+            tag_names.append(tag["name"])
+            for hit in tag_hits:
+                strength = "clear" if hit["scope"] in CLEAR_ROUTING_SCOPES else "assist"
+                matches.append({"scope": hit["scope"], "keyword": hit["keyword"], "group": f"订单变更事项：{tag['name']}", "action_type": "order_change", "source": "change_item", "strength": strength})
+                (clear_action_types if strength == "clear" else assist_action_types).add("order_change")
+    if len(clear_action_types) == 1:
+        return next(iter(clear_action_types)), "routed", "明确分流依据匹配", matches, tag_names
+    if len(clear_action_types) > 1:
+        return "unclassified", "needs_business_routing", "多个明确分流依据同时命中", matches, tag_names
+    if len(assist_action_types) == 1:
+        return next(iter(assist_action_types)), "routed", "辅助识别线索匹配", matches, tag_names
+    if len(assist_action_types) > 1:
+        return "unclassified", "needs_business_routing", "多个辅助识别线索同时命中", matches, tag_names
+    return "unclassified", "unrouted", "未命中通用规则", matches, tag_names
+
+
+def _like_pattern(value: str) -> str:
+    return "%" + value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+def _changed_terms_clause(changed_terms: dict[str, set[str]] | None) -> tuple[str, list[str]]:
+    """Return a safe SQL filter for cases affected by a keyword edit."""
+    if not changed_terms:
+        return "", []
+    column_by_scope = {
+        "subject": "LOWER(m.subject)",
+        "body": "LOWER(m.body_text)",
+        "attachment_name": "EXISTS (SELECT 1 FROM mail_attachments a WHERE a.mail_id=m.id AND a.is_inline=0 AND LOWER(a.filename) LIKE ? ESCAPE '\\')",
+        "attachment_content": "EXISTS (SELECT 1 FROM mail_attachments a JOIN mail_attachment_texts t ON t.attachment_id=a.id WHERE a.mail_id=m.id AND a.is_inline=0 AND LOWER(t.text_content) LIKE ? ESCAPE '\\')",
+    }
+    clauses: list[str] = []
+    params: list[str] = []
+    for scope, terms in changed_terms.items():
+        source = column_by_scope.get(scope)
+        if not source:
+            continue
+        for term in sorted(terms):
+            if scope in {"attachment_name", "attachment_content"}:
+                clauses.append(source)
+            else:
+                clauses.append(f"{source} LIKE ? ESCAPE '\\'")
+            params.append(_like_pattern(term))
+    return (" AND (" + " OR ".join(clauses) + ")", params) if clauses else ("", [])
+
+
+def reclassify_cases(
+    employee_id: str,
+    account_id: int | None = None,
+    *,
+    changed_terms: dict[str, set[str]] | None = None,
+) -> None:
     ensure_universal_rules(employee_id)
     groups, tags = list_universal_rules(employee_id), list_change_tags(employee_id)
-    clauses=["c.employee_id=?", "c.routing_source != 'manual'"]; params: list[Any]=[employee_id]
+    # Archived cases are immutable history.  Rule saves should only recalculate
+    # active work, which makes the operation proportional to the queue rather
+    # than every email ever imported.
+    clauses=["c.employee_id=?", "c.routing_source != 'manual'", "c.status != 'archived'"]; params: list[Any]=[employee_id]
     if account_id: clauses.append("m.account_id=?"); params.append(account_id)
+    changed_sql, changed_params = _changed_terms_clause(changed_terms)
     with db_cursor() as conn:
         needs_attachment_content=any(k["scope"] == "attachment_content" for group in groups for k in group["keywords"]) or any(k["scope"] == "attachment_content" for tag in tags for k in tag["keywords"])
-        rows=conn.execute(f"""SELECT c.id,c.mail_id,m.subject,m.sender,m.body_text,COALESCE((SELECT GROUP_CONCAT(a.filename,' ') FROM mail_attachments a WHERE a.mail_id=m.id AND a.is_inline=0),'') attachment_names FROM order_intake_cases c JOIN mail_messages m ON m.id=c.mail_id WHERE {' AND '.join(clauses)}""",params).fetchall()
+        rows=conn.execute(f"""SELECT c.id,c.mail_id,c.action_type,c.routing_state,c.routing_source,c.routing_reason,
+                                  c.routing_matches_json,c.change_tags_json,c.customer_id,c.customer_code,c.customer_name,
+                                  c.customer_match_status,c.customer_match_source,c.customer_match_detail,
+                                  m.subject,m.sender,m.body_text,
+                                  COALESCE((SELECT GROUP_CONCAT(a.filename,' ') FROM mail_attachments a WHERE a.mail_id=m.id AND a.is_inline=0),'') attachment_names
+                           FROM order_intake_cases c JOIN mail_messages m ON m.id=c.mail_id
+                           WHERE {' AND '.join(clauses)}{changed_sql}""", [*params, *changed_params]).fetchall()
         now=utcnow()
         for raw in rows:
             row=dict(raw)
+            # Missing text is marked pending.  The mail-fetch worker fills the
+            # cache, after which its normal bootstrap/reclassification exposes
+            # the attachment rule matches without blocking this request.
             row["attachment_content"] = _attachment_content(conn,row["mail_id"]) if needs_attachment_content else ""
             values = _mail_values(row)
             customer = identify_customer(str(row.get("sender") or ""))
@@ -640,7 +869,7 @@ def reclassify_cases(employee_id: str, account_id: int | None = None) -> None:
                 row["attachment_content"] = _attachment_content(conn, row["mail_id"])
                 values = _mail_values(row)
             customer_result = match_customer_routing_rules(int(customer["customer_id"]), values) if customer else None
-            matches=[]; clear_action_types=set(); assist_action_types=set(); tag_names=[]
+            matches=[]; tag_names=[]
             if customer_result:
                 action_type = str(customer_result["action_type"])
                 state = str(customer_result["state"])
@@ -653,37 +882,24 @@ def reclassify_cases(employee_id: str, account_id: int | None = None) -> None:
             else:
                 routing_source = "keyword_rule"
 
-                for group in groups:
-                    if not group["enabled"]: continue
-                    for keyword in group["keywords"]:
-                        if keyword["keyword"].lower() in values[keyword["scope"]]:
-                            strength = "clear" if keyword["scope"] in CLEAR_ROUTING_SCOPES else "assist"
-                            matches.append({"scope":keyword["scope"],"keyword":keyword["keyword"],"group":group["name"],"action_type":group["action_type"],"strength":strength})
-                            (clear_action_types if strength == "clear" else assist_action_types).add(group["action_type"])
-                for tag in tags:
-                    tag_hits = [k for k in tag["keywords"] if tag["enabled"] and k["keyword"].lower() in values[k["scope"]]]
-                    if tag_hits:
-                        tag_names.append(tag["name"])
-                        for hit in tag_hits:
-                            strength = "clear" if hit["scope"] in CLEAR_ROUTING_SCOPES else "assist"
-                            matches.append({
-                                "scope": hit["scope"], "keyword": hit["keyword"], "group": f"订单变更事项：{tag['name']}",
-                                "action_type": "order_change", "source": "change_item", "strength": strength,
-                            })
-                            (clear_action_types if strength == "clear" else assist_action_types).add("order_change")
-
-                # 先用主题、附件名称进行明确分流。正文和附件内容仅在没有明确
-                # 结果时辅助判断；因此“采购订单 + PO + 附件内报价”仍明确属于录单。
-                if len(clear_action_types) == 1:
-                    action_type = next(iter(clear_action_types)); state = "routed"; reason = "明确分流依据匹配"
-                elif len(clear_action_types) > 1:
-                    action_type = "unclassified"; state = "needs_business_routing"; reason = "多个明确分流依据同时命中"
-                elif len(assist_action_types) == 1:
-                    action_type = next(iter(assist_action_types)); state = "routed"; reason = "辅助识别线索匹配"
-                elif len(assist_action_types) > 1:
-                    action_type = "unclassified"; state = "needs_business_routing"; reason = "多个辅助识别线索同时命中"
-                else:
-                    action_type = "unclassified"; state = "unrouted"; reason = "未命中通用规则"
+                action_type, state, reason, matches, tag_names = _rule_decision(groups, tags, values)
+            before = {
+                "action_type": row["action_type"], "routing_state": row["routing_state"],
+                "routing_source": row["routing_source"], "routing_reason": row["routing_reason"],
+                "routing_matches": _json(row["routing_matches_json"], []), "change_tags": _json(row["change_tags_json"], []),
+                "customer_id": row.get("customer_id"), "customer_code": row.get("customer_code"),
+                "customer_name": row.get("customer_name"), "customer_match_status": row.get("customer_match_status"),
+            }
+            after = {
+                "action_type": action_type, "routing_state": state, "routing_source": routing_source,
+                "routing_reason": reason, "routing_matches": matches, "change_tags": tag_names,
+                "customer_id": customer["customer_id"] if customer else None,
+                "customer_code": customer["customer_code"] if customer else row.get("customer_code", ""),
+                "customer_name": customer["customer_name"] if customer else row.get("customer_name", ""),
+                "customer_match_status": "matched" if customer else "unmatched",
+            }
+            if before == after:
+                continue
             conn.execute(
                 """UPDATE order_intake_cases
                       SET action_type=?,routing_state=?,routing_source=?,routing_reason=?,routing_matches_json=?,change_tags_json=?,
@@ -698,24 +914,61 @@ def reclassify_cases(employee_id: str, account_id: int | None = None) -> None:
                     now, row["id"],
                 ),
             )
+            conn.execute(
+                "INSERT INTO order_intake_case_events (case_id,employee_id,action,before_json,after_json,created_at) VALUES (?,?,?,?,?,?)",
+                (row["id"], SYSTEM_ACTOR, "auto_reclassify", json.dumps(before, ensure_ascii=False), json.dumps(after, ensure_ascii=False), now),
+            )
+
+
+def _reclassify_all_cases(changed_terms: dict[str, set[str]] | None = None) -> None:
+    """Apply a shared-rule change only to active cases it can affect."""
+    with db_cursor() as conn:
+        owners = [str(row["employee_id"]) for row in conn.execute(
+            "SELECT DISTINCT employee_id FROM order_intake_cases ORDER BY employee_id"
+        ).fetchall()]
+    for owner in owners:
+        reclassify_cases(owner, changed_terms=changed_terms)
 
 
 def bootstrap_cases(employee_id: str, account_id: int | None = None) -> None:
-    now=utcnow()
+    """Create cases only for mail IDs added after each mailbox's saved cursor."""
+    now = utcnow()
     created_count = 0
     with db_cursor() as conn:
-        account_filter = " AND m.account_id=?" if account_id is not None else ""
-        params = (employee_id, account_id) if account_id is not None else (employee_id,)
-        rows=conn.execute(f"""SELECT m.id mail_id,COALESCE(t.customer_code,'') customer_code,COALESCE(t.customer_name,'') customer_name,COALESCE(t.order_number,'') order_number FROM mail_messages m JOIN mail_accounts a ON a.id=m.account_id LEFT JOIN mail_order_tasks t ON t.id=(SELECT id FROM mail_order_tasks WHERE mail_id=m.id ORDER BY id LIMIT 1) WHERE a.owner_employee_id=?{account_filter}""",params).fetchall()
-        for row in rows:
-            cursor = conn.execute("INSERT OR IGNORE INTO order_intake_cases (employee_id,mail_id,action_type,customer_code,customer_name,order_number,routing_state,routing_source,routing_reason,created_at,updated_at) VALUES (?,?,?,?,?,?, 'unrouted','keyword_rule','未命中通用规则',?,?)",(employee_id,row["mail_id"],"unclassified",row["customer_code"],row["customer_name"],row["order_number"],now,now))
-            created_count += int(cursor.rowcount > 0)
+        accounts_sql = "SELECT id FROM mail_accounts WHERE owner_employee_id=?"
+        account_params: list[Any] = [employee_id]
+        if account_id is not None:
+            accounts_sql += " AND id=?"
+            account_params.append(account_id)
+        accounts = conn.execute(accounts_sql, account_params).fetchall()
+        for account in accounts:
+            current_account_id = int(account["id"])
+            cursor_key = f"intake_processed_max_mail_id:{employee_id}:{current_account_id}"
+            last_mail_id = int(_metadata_get(conn, cursor_key) or "0")
+            rows = conn.execute(
+                """SELECT m.id mail_id,COALESCE(t.customer_code,'') customer_code,COALESCE(t.customer_name,'') customer_name,
+                          COALESCE(t.order_number,'') order_number
+                   FROM mail_messages m
+                   LEFT JOIN mail_order_tasks t ON t.id=(SELECT id FROM mail_order_tasks WHERE mail_id=m.id ORDER BY id LIMIT 1)
+                   WHERE m.account_id=? AND m.id>? ORDER BY m.id""",
+                (current_account_id, last_mail_id),
+            ).fetchall()
+            max_mail_id = last_mail_id
+            for row in rows:
+                max_mail_id = max(max_mail_id, int(row["mail_id"]))
+                inserted = conn.execute(
+                    "INSERT OR IGNORE INTO order_intake_cases (employee_id,mail_id,action_type,customer_code,customer_name,order_number,routing_state,routing_source,routing_reason,created_at,updated_at) VALUES (?,?,?,?,?,?, 'unrouted','keyword_rule','未命中通用规则',?,?)",
+                    (employee_id,row["mail_id"],"unclassified",row["customer_code"],row["customer_name"],row["order_number"],now,now),
+                )
+                created_count += int(inserted.rowcount > 0)
+            if max_mail_id != last_mail_id:
+                _metadata_set(conn, cursor_key, str(max_mail_id))
         revision_key = f"order_intake_rule_engine_v7_customer_archive:{employee_id}"
-        revision_needed = conn.execute("SELECT 1 FROM settings WHERE key=?", (revision_key,)).fetchone() is None
+        revision_needed = _metadata_get(conn, revision_key) is None
     if created_count or revision_needed:
         reclassify_cases(employee_id, account_id)
         with db_cursor() as conn:
-            conn.execute("INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (revision_key, now))
+            _metadata_set(conn, revision_key, now)
 
 
 def list_cases(
@@ -752,9 +1005,11 @@ def list_cases(
     with db_cursor() as conn:
         rows = conn.execute(
             f"""
-            SELECT c.*, m.subject, m.sender, m.sent_at, m.received_at, a.email AS mailbox_email,
+            SELECT c.*, m.subject, m.sender, m.sent_at, m.received_at, m.body_text, a.email AS mailbox_email,
                    rr.name AS routing_rule_name,
                    (SELECT COUNT(*) FROM mail_attachments a WHERE a.mail_id = m.id AND a.is_inline = 0) AS attachment_count,
+                   (SELECT a.filename FROM mail_attachments a WHERE a.mail_id = m.id AND a.is_inline = 0 ORDER BY a.id LIMIT 1) AS first_attachment_name,
+                   (SELECT a.content_type FROM mail_attachments a WHERE a.mail_id = m.id AND a.is_inline = 0 ORDER BY a.id LIMIT 1) AS first_attachment_type,
                    (SELECT COUNT(*) FROM mail_order_tasks t WHERE t.mail_id = m.id) AS line_count
             FROM order_intake_cases c
             JOIN mail_messages m ON m.id = c.mail_id
@@ -774,6 +1029,8 @@ def list_cases(
         item["date_label"] = "今天" if item["received_day"] == today else "昨天" if item["received_day"] == yesterday else item["received_day"] or "日期待确认"
         item["routing_matches"] = json.loads(item.get("routing_matches_json") or "[]")
         item["change_tags"] = json.loads(item.get("change_tags_json") or "[]")
+        item["sender_display"], item["sender_email"] = _list_sender(item.get("sender") or "")
+        item["summary"] = _list_summary(item.get("body_text") or "", item.get("routing_reason") or "")
     return result
 
 
@@ -804,7 +1061,7 @@ def get_case(case_id: int, employee_id: str) -> dict[str, Any] | None:
     with db_cursor() as conn:
         row = conn.execute(
             """
-            SELECT c.*, m.subject, m.sender, m.sent_at, m.received_at, m.body_html, m.body_text, m.eml_path,
+            SELECT c.*, m.account_id, m.subject, m.sender, m.sent_at, m.received_at, m.body_html, m.body_text, m.eml_path,
                    rr.name AS routing_rule_name
             FROM order_intake_cases c
             JOIN mail_messages m ON m.id = c.mail_id
@@ -819,6 +1076,10 @@ def get_case(case_id: int, employee_id: str) -> dict[str, Any] | None:
         data["attachments"] = [dict(item) for item in conn.execute(
             "SELECT * FROM mail_attachments WHERE mail_id = ? ORDER BY is_inline, id", (data["mail_id"],)
         ).fetchall()]
+        for attachment in data["attachments"]:
+            attachment["previewable"] = Path(str(attachment.get("filename") or "")).suffix.lower() in {
+                ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp",
+            }
         data["lines"] = [dict(item) for item in conn.execute(
             "SELECT * FROM mail_order_tasks WHERE mail_id = ? ORDER BY id", (data["mail_id"],)
         ).fetchall()]

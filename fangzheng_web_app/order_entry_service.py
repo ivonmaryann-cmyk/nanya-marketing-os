@@ -4,6 +4,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from copy import copy
 from decimal import Decimal, InvalidOperation
@@ -20,12 +21,18 @@ from .db import utcnow
 from .excel_utils import load_workbook_compat
 from .file_storage import resolve_attachment_path
 from .order_intake_service import get_case
-from .paths import PACKAGE_DIR
+from .paths import PACKAGE_DIR, PROJECT_DIR
+from .pdf_excel_domestic_export import build_domestic_template_data
+from .order_document_sources import build_mail_html_purchase_document
 from .purchase_field_rules import clean_text, normalize_date, normalize_number
-from .purchase_order_pipeline import run_purchase_order_pipeline
+from .purchase_factory_mapper import project_factory_document
+from .pdf_excel_service import recognize_purchase_order_document
 
 
-DOMESTIC_TEMPLATE_PATH = PACKAGE_DIR / "default_rules" / "order_entry" / "营管151查询和录单导入模板.xlsx"
+# The mail workspace and PDF/图片转Excel export intentionally share this
+# exact workbook and field order.  The editable page remains the saved source
+# of truth for downloads.
+DOMESTIC_TEMPLATE_PATH = PACKAGE_DIR / "default_rules" / "order_entry" / "PDF转Excel内销录单模板.xlsx"
 
 HEADER_FIELDS = (
     "order_type", "type_1", "type_2", "bill_to_customer_code",
@@ -33,9 +40,9 @@ HEADER_FIELDS = (
 )
 LINE_FIELDS = (
     "line_no", "product_code", "product_name", "customer_product_code",
-    "customer_spec", "delivery_date", "quantity", "price_before_tax",
-    "unit_price", "origin", "customer_order_seq", "customer_order_number",
-    "one_to_many", "remark",
+    "customer_spec", "customer_spec_match", "product_type", "delivery_date",
+    "quantity", "price_before_tax", "unit_price", "origin",
+    "customer_order_seq", "one_to_many", "remark",
 )
 HEADER_LABELS = {
     "order_type": "单别", "type_1": "类型1", "type_2": "类型2",
@@ -45,12 +52,25 @@ HEADER_LABELS = {
 LINE_LABELS = {
     "line_no": "项次", "product_code": "产品编号", "product_name": "品名",
     "customer_product_code": "客户产品编号", "customer_spec": "客户规格",
+    "customer_spec_match": "客户规格匹配", "product_type": "产品类型（PP、基板）",
     "delivery_date": "出货日期", "quantity": "数量", "price_before_tax": "税前单价",
     "unit_price": "单价", "origin": "产地", "customer_order_seq": "客户订单序号",
-    "customer_order_number": "客户订单号", "one_to_many": "一对多", "remark": "备注",
+    "one_to_many": "一对多", "remark": "备注",
 }
 REQUIRED_HEADER_FIELDS = {"order_type", "bill_to_customer_code", "ledger"}
 REQUIRED_LINE_FIELDS = {"line_no", "customer_product_code", "quantity"}
+DEFAULT_HEADER_VALUES = {
+    "order_type": "220",
+    "type_1": "1",
+    "type_2": "1",
+    "bill_to_customer_code": "",
+    "ship_to_customer_code": "",
+    "delivery_factory": "",
+    "customer_order_number": "",
+    "ledger": "KL01",
+}
+MAX_ORDER_ATTACHMENT_BYTES = 20 * 1024 * 1024
+MAX_ORDER_ATTACHMENT_ROWS = 20_000
 
 # These fields are deliberately not inferred from an order e-mail.  产品编号、品名
 # will later come from Nyeos 151; 产地和一对多 are business decisions.  Leaving a
@@ -65,6 +85,8 @@ _ATTACHMENT_HEADERS = {
     "product_name": {"品名", "物料名称", "名称", "产品名称"},
     "customer_product_code": {"客户产品编号", "客户料号", "客户物料编号", "客户产品码", "part no", "p/n"},
     "customer_spec": {"客户规格", "规格", "型号", "名称规格", "物料规格", "物料描述"},
+    "customer_spec_match": {"客户规格匹配", "规格匹配"},
+    "product_type": {"产品类型", "产品类型（pp、基板）", "品类"},
     "delivery_date": {"出货日期", "交货日期", "交期", "到货日期", "delivery date"},
     "quantity": {"数量", "采购量", "订购数量", "订单数量", "qty", "quantity"},
     "_quantity_unit": {"单位", "计量单位", "数量单位", "uom"},
@@ -72,7 +94,6 @@ _ATTACHMENT_HEADERS = {
     "unit_price": {"单价", "含税单价", "unit price", "price"},
     "origin": {"产地", "原产地"},
     "customer_order_seq": {"客户订单序号", "订单序号", "客户项次"},
-    "customer_order_number": {"客户订单号", "订单号", "采购订单号", "采购单号", "po号", "po no"},
     "one_to_many": {"一对多"},
     "remark": {"备注", "说明", "订单备注", "需方备注", "供方备注"},
 }
@@ -295,18 +316,20 @@ def _mapping_source_value(source: dict[str, Any], source_label: str, transform_t
 
 def _apply_customer_extraction_mappings(
     values: dict[str, Any], source: dict[str, Any], mappings: list[dict[str, Any]],
+    *, source_kind: str = "attachment_table",
 ) -> dict[str, Any]:
-    """Apply only a uniquely identified customer's attachment-table mappings.
+    """Apply customer mappings registered for the current source adapter.
 
     Manual mappings explicitly blank the target.  For all other mapping source
-    types we leave the universal result untouched for now; that preserves the
-    source-of-truth rule until a dedicated body/filename extractor exists.
+    types we leave the universal result untouched.  ``source_kind`` is kept
+    explicit so an eventual rule-maintenance page can expose different source
+    adapters without making their mappings leak into one another.
     """
     if not mappings:
         return values
     result = dict(values)
     for mapping in mappings:
-        if mapping.get("source_kind") != "attachment_table":
+        if mapping.get("source_kind") != source_kind:
             continue
         target = str(mapping.get("target_field") or "")
         transform = str(mapping.get("transform_type") or "")
@@ -346,16 +369,34 @@ def _canonical_order_number(header: dict[str, Any]) -> str:
     return ""
 
 
+def _within_order_attachment_size(path: Path) -> bool:
+    """Reject real oversized files while keeping parser adapters mockable."""
+    try:
+        return path.stat().st_size <= MAX_ORDER_ATTACHMENT_BYTES
+    except OSError:
+        # The recognizer can operate on a virtual/test adapter path; its own
+        # error handling remains responsible for unavailable source files.
+        return True
+
+
 def _rows_from_excel(path: Path, filename: str, customer_mappings: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """Read customer Excel attachments as structured data without OCR."""
+    if not _within_order_attachment_size(path):
+        return []
     try:
         book = load_workbook_compat(path, data_only=True)
     except Exception:
         return []
     try:
         result: list[dict[str, Any]] = []
+        scanned_rows = 0
         for sheet in book.worksheets:
-            rows = list(sheet.iter_rows(values_only=True))
+            rows: list[tuple[Any, ...]] = []
+            for row in sheet.iter_rows(values_only=True):
+                scanned_rows += 1
+                if scanned_rows > MAX_ORDER_ATTACHMENT_ROWS:
+                    return []
+                rows.append(row)
             header_index = -1
             mapping: dict[int, str] = {}
             for index, row in enumerate(rows[:40]):
@@ -407,7 +448,21 @@ def _line_from_pipeline_row(
     raw_material_name = _value_by_alias(original, "物料品名", "物料名称", "Material Name") or standard.get("物料名称") or ""
     values = {
         "line_no": standard.get("序号") or _value_by_alias(original, "序号", "No") or line_no,
-        "customer_product_code": _value_by_alias(original, "客户产品编号", "客户料号", "客户物料编号", "客户产品码") or "",
+        # 采购订单中的“物料编码 / Material Code”是客户提供的明确料号，
+        # 可安全写入内销模板的“客户产品编号”；不从品名或规格推测编码。
+        "customer_product_code": (
+            _value_by_alias(
+                original,
+                "客户产品编号",
+                "客户料号",
+                "客户物料编号",
+                "客户产品码",
+                "物料编码",
+                "Material Code",
+            )
+            or standard.get("物料编码")
+            or ""
+        ),
         "customer_spec": raw_spec or standard.get("说明") or standard.get("物料名称") or "",
         "delivery_date": standard.get("交货日期") or _value_by_alias(original, "交货日期", "出货日期", "交期", "Delivery Date") or "",
         "quantity": standard.get("数量") or _value_by_alias(original, "数量", "Quantity", "Qty") or "",
@@ -436,26 +491,102 @@ def _line_from_pipeline_row(
 
 
 def _rows_from_pdf_or_image(path: Path, filename: str, customer_mappings: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    try:
-        document = run_purchase_order_pipeline({"stored_path": str(path), "original_filename": filename})
-    except Exception:
-        # An unreadable scanned attachment must not stop opening the template;
-        # business can still fill the row manually from the downloaded source.
+    if not _within_order_attachment_size(path):
         return []
-    header = document.get("header_info") or {}
-    order_number = _canonical_order_number(header)
-    rows = document.get("mapped_detail_rows") or []
-    return [
-        _line_from_pipeline_row(
-            row, order_number, f"附件：{filename}", f"识别明细第 {index} 行", index,
+    try:
+        document = recognize_purchase_order_document(
+            {"stored_path": str(path), "original_filename": filename}
+        )
+        return _rows_from_shared_purchase_document(
+            document,
+            label=f"附件：{filename}",
+            reference_prefix="识别明细",
             customer_mappings=customer_mappings,
         )
-        for index, row in enumerate(rows, start=1)
-    ]
+    except Exception as exc:
+        # A PDF/image order must never silently fall back to the lower-fidelity
+        # mail-body parser.  That used to look like a successful refresh while
+        # producing different rows from PDF/图片转Excel.
+        raise ValueError(f"附件《{filename}》未能按 PDF/图片转Excel 规则提取：{exc}") from exc
+
+
+def _rows_from_shared_purchase_document(
+    document: dict[str, Any], *, label: str, reference_prefix: str,
+    customer_mappings: list[dict[str, Any]] | None = None,
+    source_kind: str = "attachment_table",
+) -> list[dict[str, Any]]:
+    """Project one canonical purchase document into editable domestic rows.
+
+    Every source adapter (PDF/image, HTML mail tables, and later Excel) must
+    pass this boundary.  It deliberately delegates to the same factory
+    projection and domestic-template exporter used by PDF/图片转Excel.
+    """
+    project_factory_document(document)
+    domestic_data = build_domestic_template_data(document)
+    result: list[dict[str, Any]] = []
+    source_rows = document.get("mapped_detail_rows") or []
+    for index, (line, source_row) in enumerate(
+        zip(domestic_data["lines"], source_rows), start=1
+    ):
+        values = {field: clean_text(line.get(field)) for field in LINE_FIELDS}
+        values["line_no"] = str(index)
+        values = _apply_customer_extraction_mappings(
+            values,
+            source_row.get("original") or {},
+            customer_mappings or [],
+            source_kind=source_kind,
+        )
+        reference = f"{reference_prefix}第 {index} 行"
+        result.append(
+            {
+                "values": values,
+                "sources": _source(label, reference, values),
+                "_source_identity": "|".join(
+                    clean_text(value)
+                    for value in (
+                        label,
+                        reference,
+                        values.get("customer_product_code"),
+                        values.get("customer_spec"),
+                    )
+                ),
+                "extracted_header": domestic_data["header"],
+            }
+        )
+    return result
+
+
+def _rows_from_mail_html(case: dict[str, Any]) -> list[dict[str, Any]]:
+    """Use HTML mail order tables as another input to the common PO model.
+
+    A non-table mail body intentionally returns no rows so the established
+    line-oriented body fallback remains available.  Once a table is recognised
+    as an order table, failures are surfaced instead of quietly substituting a
+    lower-fidelity parser.
+    """
+    document = build_mail_html_purchase_document(
+        str(case.get("body_html") or ""),
+        str(case.get("body_text") or ""),
+        source_name=f"邮件正文#{case.get('id') or ''}.html",
+    )
+    if not document:
+        return []
+    try:
+        return _rows_from_shared_purchase_document(
+            document,
+            label="邮件正文表格",
+            reference_prefix="表格明细",
+            customer_mappings=get_enabled_extraction_maps(case.get("customer_id")),
+            source_kind="mail_html_table",
+        )
+    except Exception as exc:
+        raise ValueError(f"邮件正文表格未能按统一订单规则提取：{exc}") from exc
 
 
 def _rows_from_word(path: Path, filename: str, customer_mappings: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """Convert Word attachments locally, then use the same PDF/OCR pipeline."""
+    if not _within_order_attachment_size(path):
+        return []
     soffice = shutil.which("soffice")
     if not soffice:
         return []
@@ -498,7 +629,10 @@ def _line_signature(entry: dict[str, Any]) -> tuple[str, ...]:
     if source_identity:
         return ("source", source_identity)
     values = entry["values"]
-    return tuple(_compact_key(values.get(field)) for field in ("customer_order_number", "customer_product_code", "customer_spec", "quantity"))
+    return tuple(
+        _compact_key(values.get(field))
+        for field in ("customer_order_seq", "customer_product_code", "customer_spec", "quantity")
+    )
 
 
 def _merge_initial_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -517,25 +651,45 @@ def _merge_initial_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
-def _initial_lines(case: dict[str, Any]) -> list[dict[str, Any]]:
-    rows = _split_body_order_rows(str(case.get("body_text") or ""))
-    rows.extend(_attachment_rows(case))
+def _initial_template_data(case: dict[str, Any]) -> tuple[dict[str, str], list[dict[str, Any]]]:
+    attachment_rows = _attachment_rows(case)
+    # An order attachment remains authoritative.  When there is no supported
+    # attachment, an HTML mail table gets the *same* canonical mapping and
+    # validation path; only then use the legacy line-oriented body fallback.
+    rows = attachment_rows or _rows_from_mail_html(case) or _split_body_order_rows(str(case.get("body_text") or ""))
     rows = _merge_initial_rows(rows)
+    header = dict(DEFAULT_HEADER_VALUES)
+    extracted_header = next(
+        (item.get("extracted_header") for item in rows if item.get("extracted_header")),
+        {},
+    )
+    for field in HEADER_FIELDS:
+        value = clean_text((extracted_header or {}).get(field))
+        if value:
+            header[field] = value
+    if not header["customer_order_number"]:
+        header["customer_order_number"] = clean_text(
+            (case.get("detected_fields") or {}).get("order_number")
+        )
     if rows:
-        return rows
+        return header, rows
     fields = case.get("detected_fields") or {}
     specs = fields.get("specs") or []
-    return [
+    header["customer_order_number"] = clean_text(fields.get("order_number"))
+    return header, [
         {
             "values": {
                 **_blank_line(index + 1),
                 "customer_spec": str(spec),
-                "customer_order_number": str(fields.get("order_number") or ""),
             },
             "sources": {"customer_spec": {"label": "邮件正文", "reference": "自动识别"}},
         }
         for index, spec in enumerate(specs)
     ] or [{"values": _blank_line(1), "sources": {}}]
+
+
+def _initial_lines(case: dict[str, Any]) -> list[dict[str, Any]]:
+    return _initial_template_data(case)[1]
 
 
 def _serialize_template(conn, template_id: int) -> dict[str, Any]:
@@ -547,7 +701,7 @@ def _serialize_template(conn, template_id: int) -> dict[str, Any]:
     ).fetchall()
     return {
         **dict(template),
-        "header": _json(template["header_json"], {}),
+        "header": {**DEFAULT_HEADER_VALUES, **_json(template["header_json"], {})},
         "lines": [
             {"id": row["id"], "line_no": row["line_no"], "values": _json(row["values_json"], {}), "sources": _json(row["sources_json"], {})}
             for row in rows
@@ -564,12 +718,13 @@ def get_or_create_template(case_id: int, employee_id: str) -> tuple[dict[str, An
         if existing:
             return case, _serialize_template(conn, int(existing["id"]))
         now = utcnow()
+        initial_header, initial_lines = _initial_template_data(case)
         cursor = conn.execute(
-            "INSERT INTO order_entry_templates(case_id,employee_id,created_at,updated_at) VALUES (?,?,?,?)",
-            (case_id, employee_id, now, now),
+            "INSERT INTO order_entry_templates(case_id,employee_id,header_json,created_at,updated_at) VALUES (?,?,?,?,?)",
+            (case_id, employee_id, json.dumps(initial_header, ensure_ascii=False), now, now),
         )
         template_id = int(cursor.lastrowid)
-        for entry in _initial_lines(case):
+        for entry in initial_lines:
             values = entry["values"]
             conn.execute(
                 "INSERT INTO order_entry_template_lines(template_id,line_no,values_json,sources_json,created_at,updated_at) VALUES (?,?,?,?,?,?)",
@@ -578,13 +733,149 @@ def get_or_create_template(case_id: int, employee_id: str) -> tuple[dict[str, An
         return case, _serialize_template(conn, template_id)
 
 
+def _template_task_row(case_id: int, employee_id: str) -> dict[str, Any] | None:
+    """Return the latest extraction task for one employee-owned mail case."""
+    with db_cursor() as conn:
+        row = conn.execute(
+            """SELECT * FROM order_entry_template_tasks
+               WHERE case_id=? AND employee_id=?
+               ORDER BY id DESC LIMIT 1""",
+            (case_id, employee_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def queue_template_extraction(case_id: int, employee_id: str) -> dict[str, Any]:
+    """Create one background extraction task without doing document work in HTTP.
+
+    The original attachment can require native PDF parsing or OCR.  Keeping that
+    work out of the request is important: a click should always return at once,
+    while the case page can accurately show the durable task state.
+    """
+    _case_for_template(case_id, employee_id)
+    with db_cursor() as conn:
+        template = conn.execute(
+            "SELECT id FROM order_entry_templates WHERE case_id=? AND employee_id=?",
+            (case_id, employee_id),
+        ).fetchone()
+        if template:
+            return {
+                "status": "completed", "task_id": None, "template_id": int(template["id"]),
+                "message": "内销模板已生成，可直接打开核对。",
+            }
+        active = conn.execute(
+            """SELECT * FROM order_entry_template_tasks
+               WHERE case_id=? AND employee_id=? AND status IN ('queued', 'running')
+               ORDER BY id DESC LIMIT 1""",
+            (case_id, employee_id),
+        ).fetchone()
+        if active:
+            return {
+                "status": str(active["status"]), "task_id": int(active["id"]),
+                "template_id": None, "message": "订单信息正在后台提取，请稍候刷新。",
+            }
+        now = utcnow()
+        cursor = conn.execute(
+            """INSERT INTO order_entry_template_tasks
+               (case_id,employee_id,status,message,started_at)
+               VALUES (?,?,?,?,?)""",
+            (case_id, employee_id, "queued", "等待后台提取订单附件", now),
+        )
+        task_id = int(cursor.lastrowid)
+
+    command = [
+        sys.executable, "-m", "fangzheng_web_app.order_entry_template_worker",
+        "--task-id", str(task_id), "--case-id", str(case_id),
+        "--employee-id", employee_id,
+    ]
+    try:
+        subprocess.Popen(
+            command,
+            cwd=str(PROJECT_DIR),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as exc:
+        _complete_template_extraction_task(
+            task_id, status="error", message=f"无法启动后台提取：{exc}", template_id=None,
+        )
+        raise ValueError("无法启动后台订单提取，请稍后重试") from exc
+    return {
+        "status": "queued", "task_id": task_id, "template_id": None,
+        "message": "已开始后台提取订单信息，完成后会自动显示内销模板。",
+    }
+
+
+def _complete_template_extraction_task(
+    task_id: int, *, status: str, message: str, template_id: int | None,
+) -> None:
+    with db_cursor() as conn:
+        conn.execute(
+            """UPDATE order_entry_template_tasks
+               SET status=?, message=?, template_id=?, completed_at=? WHERE id=?""",
+            (status, message, template_id, utcnow(), task_id),
+        )
+
+
+def run_template_extraction_task(task_id: int, case_id: int, employee_id: str) -> None:
+    """Worker entry point.  This process owns the expensive first extraction."""
+    with db_cursor() as conn:
+        updated = conn.execute(
+            """UPDATE order_entry_template_tasks
+               SET status='running', message='正在解析邮件正文和附件', started_at=?
+               WHERE id=? AND case_id=? AND employee_id=? AND status='queued'""",
+            (utcnow(), task_id, case_id, employee_id),
+        )
+    if not updated.rowcount:
+        return
+    try:
+        _case, template = get_or_create_template(case_id, employee_id)
+        _complete_template_extraction_task(
+            task_id,
+            status="completed",
+            message="订单信息已提取，请核对并保存内销模板。",
+            template_id=int(template["id"]),
+        )
+    except Exception as exc:
+        _complete_template_extraction_task(
+            task_id,
+            status="error",
+            message=f"订单提取失败：{str(exc)[:240]}",
+            template_id=None,
+        )
+
+
+def _replace_backup(
+    conn,
+    *,
+    template_id: int,
+    header: dict[str, Any],
+    lines: list[dict[str, Any]],
+    employee_id: str,
+    saved_at: str,
+) -> None:
+    """Keep exactly one recoverable snapshot before replacing a template."""
+    conn.execute("DELETE FROM order_entry_template_versions WHERE template_id=?", (template_id,))
+    conn.execute(
+        "INSERT INTO order_entry_template_versions(template_id,version_number,header_json,lines_json,saved_by,saved_at) VALUES (?,?,?,?,?,?)",
+        (
+            template_id,
+            1,
+            json.dumps(header, ensure_ascii=False),
+            json.dumps(lines, ensure_ascii=False),
+            employee_id,
+            saved_at,
+        ),
+    )
+
+
 def reextract_template(case_id: int, employee_id: str) -> dict[str, Any]:
     """Rebuild one saved template's detail rows with the current extraction rules.
 
     The customer/header section is business-maintained and is intentionally left
-    untouched.  Before replacing the current detail rows, both the previous
-    contents and the regenerated contents are stored as immutable versions so a
-    bulk re-extraction never discards a recoverable copy.
+    untouched. Before replacing the current detail rows, the immediately prior
+    contents replace the single backup snapshot.
     """
     case = _case_for_template(case_id, employee_id)
     with db_cursor() as conn:
@@ -595,50 +886,39 @@ def reextract_template(case_id: int, employee_id: str) -> dict[str, Any]:
         if not row:
             raise ValueError("请先打开录单模板")
         template_id = int(row["id"])
-        current_version = int(row["current_version"] or 0)
         previous = _serialize_template(conn, template_id)
 
     # Recognition can involve OCR and file conversion, so do it outside of the
     # database transaction.  It only reads the original mail and attachments.
-    regenerated_lines = _initial_lines(case)
+    regenerated_header, regenerated_lines = _initial_template_data(case)
     now = utcnow()
     previous_lines = [
         {"values": line.get("values") or {}, "sources": line.get("sources") or {}}
         for line in previous.get("lines") or []
     ]
-    previous_header = previous.get("header") or {}
-    backup_version = current_version + 1
-    regenerated_version = backup_version + 1
+    previous_header = {**DEFAULT_HEADER_VALUES, **(previous.get("header") or {})}
+    # Refresh adopts the PDF/图片转Excel template defaults and its extracted
+    # order number, while retaining any customer information the business user
+    # has already entered in this mail workspace.
+    next_header = {
+        **regenerated_header,
+        **{field: value for field, value in previous_header.items() if clean_text(value)},
+    }
+    backup_version = 1
+    current_version = 1
 
     with db_cursor() as conn:
-        # Record an explicit pre-run snapshot even when an older manual-save
-        # version exists.  This protects the exact database state the user
-        # asked to reprocess.
-        conn.execute(
-            "INSERT INTO order_entry_template_versions(template_id,version_number,header_json,lines_json,saved_by,saved_at) VALUES (?,?,?,?,?,?)",
-            (
-                template_id,
-                backup_version,
-                json.dumps(previous_header, ensure_ascii=False),
-                json.dumps(previous_lines, ensure_ascii=False),
-                employee_id,
-                now,
-            ),
+        _replace_backup(
+            conn,
+            template_id=template_id,
+            header=previous_header,
+            lines=previous_lines,
+            employee_id=employee_id,
+            saved_at=now,
         )
         conn.execute(
-            "INSERT INTO order_entry_template_versions(template_id,version_number,header_json,lines_json,saved_by,saved_at) VALUES (?,?,?,?,?,?)",
-            (
-                template_id,
-                regenerated_version,
-                json.dumps(previous_header, ensure_ascii=False),
-                json.dumps(regenerated_lines, ensure_ascii=False),
-                employee_id,
-                now,
-            ),
-        )
-        conn.execute(
-            "UPDATE order_entry_templates SET current_version=?,updated_at=? WHERE id=?",
-            (regenerated_version, now, template_id),
+            "UPDATE order_entry_templates SET header_json=?,current_version=?,updated_at=? WHERE id=?",
+            (json.dumps(next_header, ensure_ascii=False), current_version, now, template_id),
         )
         conn.execute("DELETE FROM order_entry_template_lines WHERE template_id=?", (template_id,))
         for entry in regenerated_lines:
@@ -662,7 +942,7 @@ def reextract_template(case_id: int, employee_id: str) -> dict[str, Any]:
         "previous_line_count": len(previous_lines),
         "line_count": len(template.get("lines") or []),
         "backup_version": backup_version,
-        "current_version": regenerated_version,
+        "current_version": current_version,
         "template": template,
     }
 
@@ -696,6 +976,23 @@ def template_progress(case_id: int, employee_id: str) -> dict[str, Any]:
         ).fetchone()
     version = int(row["current_version"] or 0) if row else 0
     if not row:
+        task = _template_task_row(case_id, employee_id)
+        if task and task.get("status") in {"queued", "running"}:
+            return {
+                "created": False, "saved": False, "version": 0,
+                "stage": "extracting", "label": "正在提取订单",
+                "next_action": "正在后台解析附件…", "step": 2,
+                "task_id": task["id"], "task_status": task["status"],
+                "task_message": task.get("message") or "正在准备订单信息。",
+            }
+        if task and task.get("status") == "error":
+            return {
+                "created": False, "saved": False, "version": 0,
+                "stage": "extraction_error", "label": "提取失败",
+                "next_action": "重新提取订单", "step": 2,
+                "task_id": task["id"], "task_status": "error",
+                "task_message": task.get("message") or "请重新提取订单信息。",
+            }
         return {
             "created": False, "saved": False, "version": 0,
             "stage": "pending_extraction", "label": "待提取订单",
@@ -720,7 +1017,16 @@ def _clean_values(values: dict[str, Any], fields: tuple[str, ...]) -> dict[str, 
 
 def save_template(case_id: int, employee_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     _case_for_template(case_id, employee_id)
-    header = _clean_values(payload.get("header") or {}, HEADER_FIELDS)
+    raw_header = payload.get("header") or {}
+    if not isinstance(raw_header, dict):
+        raise ValueError("表头格式无效")
+    header = dict(DEFAULT_HEADER_VALUES)
+    # The browser submits every header field, so an explicitly cleared input
+    # remains blank.  Programmatic callers that omit a field keep the PDF
+    # template default instead of silently replacing it with an empty value.
+    for field in HEADER_FIELDS:
+        if field in raw_header:
+            header[field] = str(raw_header.get(field) or "").strip()
     raw_lines = payload.get("lines") or []
     if not isinstance(raw_lines, list):
         raise ValueError("明细行格式无效")
@@ -742,8 +1048,21 @@ def save_template(case_id: int, employee_id: str, payload: dict[str, Any]) -> di
         if not template:
             raise ValueError("请先打开录单模板")
         template_id = int(template["id"])
-        next_version = int(template["current_version"] or 0) + 1
-        conn.execute("UPDATE order_entry_templates SET header_json=?,current_version=?,updated_at=? WHERE id=?", (json.dumps(header, ensure_ascii=False), next_version, now, template_id))
+        previous = _serialize_template(conn, template_id)
+        previous_header = {**DEFAULT_HEADER_VALUES, **(previous.get("header") or {})}
+        previous_lines = [
+            {"values": line.get("values") or {}, "sources": line.get("sources") or {}}
+            for line in previous.get("lines") or []
+        ]
+        _replace_backup(
+            conn,
+            template_id=template_id,
+            header=previous_header,
+            lines=previous_lines,
+            employee_id=employee_id,
+            saved_at=now,
+        )
+        conn.execute("UPDATE order_entry_templates SET header_json=?,current_version=?,updated_at=? WHERE id=?", (json.dumps(header, ensure_ascii=False), 1, now, template_id))
         conn.execute("DELETE FROM order_entry_template_lines WHERE template_id=?", (template_id,))
         for entry in lines:
             values = entry["values"]
@@ -751,10 +1070,6 @@ def save_template(case_id: int, employee_id: str, payload: dict[str, Any]) -> di
                 "INSERT INTO order_entry_template_lines(template_id,line_no,values_json,sources_json,created_at,updated_at) VALUES (?,?,?,?,?,?)",
                 (template_id, int(values["line_no"]), json.dumps(values, ensure_ascii=False), json.dumps(entry["sources"], ensure_ascii=False), now, now),
             )
-        conn.execute(
-            "INSERT INTO order_entry_template_versions(template_id,version_number,header_json,lines_json,saved_by,saved_at) VALUES (?,?,?,?,?,?)",
-            (template_id, next_version, json.dumps(header, ensure_ascii=False), json.dumps(lines, ensure_ascii=False), employee_id, now),
-        )
         return _serialize_template(conn, template_id)
 
 
@@ -788,7 +1103,7 @@ def build_domestic_export(case_id: int, employee_id: str) -> tuple[BytesIO, str]
     style_source_row = 4
     while sheet.max_row < required_rows:
         target = sheet.max_row + 1
-        for col in range(1, 15):
+        for col in range(1, 16):
             source, cell = sheet.cell(style_source_row, col), sheet.cell(target, col)
             cell._style = copy(source._style)
             cell.number_format = source.number_format

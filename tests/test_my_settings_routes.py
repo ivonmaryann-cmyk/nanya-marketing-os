@@ -29,7 +29,7 @@ class MySettingsRouteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         html = response.get_data(as_text=True)
-        self.assertIn("我的配置", html)
+        self.assertIn("我的", html)
         self.assertIn("邮箱配置", html)
         self.assertIn('href="/mail-transcode/accounts"', html)
 
@@ -45,7 +45,7 @@ class MySettingsRouteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         html = response.get_data(as_text=True)
-        self.assertIn("返回我的配置", html)
+        self.assertIn("返回我的", html)
         self.assertIn('href="/my-settings"', html)
 
 

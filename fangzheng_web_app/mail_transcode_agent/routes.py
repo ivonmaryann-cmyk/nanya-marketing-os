@@ -91,7 +91,6 @@ def accounts_page():
     return render_template(
         "mail_transcode_agent/accounts.html",
         accounts=mail_store.list_accounts(owner_employee_id=owner_employee_id),
-        logs=mail_store.list_fetch_logs(limit=20, owner_employee_id=owner_employee_id),
         edit_account=edit_account,
     )
 

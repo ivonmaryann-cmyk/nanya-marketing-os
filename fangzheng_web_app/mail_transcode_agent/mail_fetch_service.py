@@ -5,6 +5,8 @@ import hashlib
 import imaplib
 import re
 import ssl
+import subprocess
+import sys
 from datetime import date, datetime, timedelta
 from email.header import decode_header
 from pathlib import Path
@@ -173,6 +175,7 @@ def fetch_latest_order_mails(
     created_by: str = "",
     owner_employee_id: str | None = None,
     lookback_days: int = 2,
+    fetch_task_id: int | None = None,
 ) -> dict[str, Any]:
     account = mail_store.get_account(account_id, owner_employee_id=owner_employee_id)
     if not account:
@@ -182,13 +185,12 @@ def fetch_latest_order_mails(
 
     started_at = datetime.now().isoformat(timespec="seconds")
     log_id = mail_store.create_fetch_log(account_id, started_at, "running", "开始抓取")
-    fetch_task_id = mail_store.create_fetch_task(
-        account_id,
-        created_by=created_by,
-        status="running",
-        message="开始抓取",
-        started_at=started_at,
-    )
+    if fetch_task_id is None:
+        fetch_task_id = mail_store.create_fetch_task(
+            account_id, created_by=created_by, status="running", message="开始抓取", started_at=started_at,
+        )
+    else:
+        mail_store.start_fetch_task(fetch_task_id)
     client = None
     try:
         client = _connect(account)
@@ -264,6 +266,12 @@ def fetch_latest_order_mails(
                     )
                 if specs and specs != [""]:
                     mail_store.prune_empty_order_items(mail_id)
+        # Attachment parsing is deliberately performed in this background
+        # fetch worker.  Rule saves and ordinary page loads only consume the
+        # cached text and therefore cannot be held up by PDF/Excel parsing.
+        from ..order_intake_service import bootstrap_cases, prepare_attachment_texts
+        prepare_attachment_texts(mail_ids)
+        bootstrap_cases(str(account["owner_employee_id"]), account_id)
         scope_label = "今天与昨天" if lookback_days == 2 else f"近 {lookback_days} 天"
         message = f"{scope_label}同步完成，本次新增 {new_count} 封邮件"
         order_count = mail_store.count_order_tasks_for_mail_ids(mail_ids)
@@ -303,3 +311,38 @@ def fetch_latest_order_mails(
                 client.logout()
         except Exception:
             pass
+
+
+def queue_latest_order_mails(
+    account_id: int,
+    *,
+    created_by: str,
+    owner_employee_id: str,
+    lookback_days: int = 2,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    """Queue an IMAP fetch in a separate Python process and return at once."""
+    account = mail_store.get_account(account_id, owner_employee_id=owner_employee_id)
+    if not account:
+        raise ValueError("邮箱账号不存在")
+    if not account.get("auth_code_ciphertext"):
+        raise ValueError("邮箱账号未配置授权码")
+    if mail_store.has_active_fetch_task(account_id):
+        raise ValueError("该邮箱已有抓取任务正在运行，请稍后刷新任务状态")
+    task_id = mail_store.create_fetch_task(
+        account_id, created_by=created_by, status="queued", message="等待后台抓取",
+    )
+    command = [
+        sys.executable, "-m", "fangzheng_web_app.mail_transcode_agent.mail_fetch_worker",
+        "--task-id", str(task_id), "--account-id", str(account_id),
+        "--owner-employee-id", owner_employee_id, "--created-by", created_by,
+        "--lookback-days", str(max(1, min(int(lookback_days), 30))),
+    ]
+    if limit is not None:
+        command.extend(("--limit", str(max(1, int(limit)))))
+    try:
+        subprocess.Popen(command, cwd=str(STORAGE_DIR.parent), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    except Exception as exc:
+        mail_store.complete_fetch_task(task_id, status="error", email_count=0, order_count=0, message=f"无法启动后台抓取：{exc}")
+        raise
+    return {"fetch_task_id": task_id, "message": "已创建后台抓取任务，可刷新页面查看结果。"}

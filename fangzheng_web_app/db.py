@@ -623,10 +623,27 @@ def init_db() -> None:
                 FOREIGN KEY(template_id) REFERENCES order_entry_templates(id)
             );
 
+            CREATE TABLE IF NOT EXISTS order_entry_template_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id INTEGER NOT NULL,
+                employee_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                message TEXT NOT NULL DEFAULT '',
+                template_id INTEGER,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                FOREIGN KEY(case_id) REFERENCES order_intake_cases(id),
+                FOREIGN KEY(template_id) REFERENCES order_entry_templates(id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_order_entry_templates_case
                 ON order_entry_templates(case_id, employee_id);
             CREATE INDEX IF NOT EXISTS idx_order_entry_lines_template
                 ON order_entry_template_lines(template_id, line_no);
+            CREATE INDEX IF NOT EXISTS idx_order_entry_template_tasks_case
+                ON order_entry_template_tasks(case_id, employee_id, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_order_entry_template_tasks_status
+                ON order_entry_template_tasks(status, started_at DESC);
             """
         )
 

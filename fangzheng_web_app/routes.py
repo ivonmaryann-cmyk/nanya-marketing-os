@@ -118,6 +118,7 @@ from .order_entry_service import (
     LINE_LABELS as ORDER_ENTRY_LINE_LABELS,
     build_domestic_export as build_order_entry_domestic_export,
     get_or_create_template as get_order_entry_template,
+    queue_template_extraction as queue_order_entry_template_extraction,
     reextract_template as reextract_order_entry_template,
     save_template as save_order_entry_template,
     template_progress as order_entry_template_progress,
@@ -858,11 +859,11 @@ def order_automation():
         selected_date = selected_date_value.isoformat()
     from .mail_transcode_agent import mail_store
 
-    accounts = [
-        item for item in mail_store.list_accounts(owner_employee_id=employee_id)
-        if item["enabled"] and ("qiye.163.com" in item["imap_host"] or "@nouyatec.com" in item["email"])
-    ]
-    selected_account = accounts[0] if accounts else None
+    accounts = _order_business_accounts(employee_id)
+    requested_account_id = request.args.get("account_id", type=int)
+    selected_account = next((item for item in accounts if item["id"] == requested_account_id), None)
+    if selected_account is None:
+        selected_account = accounts[0] if accounts else None
     selected_account_id = int(selected_account["id"]) if selected_account else None
     fetch_tasks = mail_store.list_fetch_tasks(
         limit=10, owner_employee_id=employee_id, account_id=selected_account_id
@@ -907,6 +908,7 @@ def order_automation():
         mail_accounts=accounts,
         selected_account=selected_account,
         fetch_tasks=fetch_tasks,
+        latest_fetch_task=fetch_tasks[0] if fetch_tasks else None,
         selected_batch=None,
         selected_batch_id=None,
         total_cases=total_cases,
@@ -925,25 +927,33 @@ def order_automation_sync():
         return redirect_resp
     employee_id = current_employee() or ""
     account_id = request.form.get("account_id", type=int)
+    lookback_days = request.form.get("lookback_days", 2, type=int) or 2
     result: dict = {}
     try:
-        from .mail_transcode_agent import mail_store
-        from .mail_transcode_agent.mail_fetch_service import fetch_latest_order_mails
+        from .mail_transcode_agent.mail_fetch_service import queue_latest_order_mails
 
-        accounts = [
-            item for item in mail_store.list_accounts(owner_employee_id=employee_id)
-            if item["enabled"] and ("qiye.163.com" in item["imap_host"] or "@nouyatec.com" in item["email"])
-        ]
-        if not accounts:
-            raise ValueError("请先在“我的配置”中启用业务邮箱")
-        account = next((item for item in accounts if item["id"] == account_id), None)
+        if lookback_days not in {2, 7, 30}:
+            raise ValueError("同步范围仅支持今天与昨天、近 7 天或近 30 天")
+        account = _order_business_account(employee_id, account_id)
         if not account:
-            raise ValueError("请选择要同步的业务邮箱")
-        result = fetch_latest_order_mails(account["id"], created_by=employee_id, owner_employee_id=employee_id)
+            raise ValueError("请先在“我的”中启用业务邮箱")
+        result = queue_latest_order_mails(
+            int(account["id"]),
+            created_by=employee_id,
+            owner_employee_id=employee_id,
+            lookback_days=lookback_days,
+        )
         flash(result["message"], "success")
     except Exception as exc:
-        flash("邮件同步失败，请检查业务邮箱连接、客户端授权码和网络后重试。", "error")
-    return redirect(url_for("main.order_automation", date=order_intake_business_today().isoformat()))
+        flash(f"邮件同步失败：{exc}", "error")
+    return redirect(url_for(
+        "main.order_automation",
+        date=request.form.get("return_date") or order_intake_business_today().isoformat(),
+        category=request.form.get("return_category") or "all",
+        per_page=request.form.get("return_per_page", 20, type=int) or 20,
+        page=request.form.get("return_page", 1, type=int) or 1,
+        account_id=account_id,
+    ))
 
 
 @bp.post("/order-automation/history-sync")
@@ -952,27 +962,41 @@ def order_automation_history_sync():
     if redirect_resp:
         return redirect_resp
     employee_id = current_employee() or ""
-    result: dict = {}
+    account_id = request.form.get("account_id", type=int)
     try:
-        account = _order_business_account(employee_id)
+        from .mail_transcode_agent.mail_fetch_service import queue_latest_order_mails
+
+        account = _order_business_account(employee_id, account_id)
         if not account:
-            raise ValueError("请先在“我的配置”中启用业务邮箱")
-        from .mail_transcode_agent.mail_fetch_service import fetch_latest_order_mails
-        result = fetch_latest_order_mails(
-            int(account["id"]), created_by=employee_id, owner_employee_id=employee_id, lookback_days=7
+            raise ValueError("请选择要补抓的业务邮箱")
+        result = queue_latest_order_mails(
+            int(account["id"]),
+            created_by=employee_id,
+            owner_employee_id=employee_id,
+            lookback_days=7,
         )
         flash(result["message"], "success")
     except Exception as exc:
-        flash("历史邮件同步失败，请检查业务邮箱连接、客户端授权码和网络后重试。", "error")
-    return redirect(url_for("main.order_automation", date=order_intake_business_today().isoformat()))
+        flash(f"历史邮件同步失败：{exc}", "error")
+    return redirect(url_for(
+        "main.order_automation",
+        date=request.form.get("return_date") or order_intake_business_today().isoformat(),
+        account_id=account_id,
+    ))
 
 
-def _order_business_account(employee_id: str):
+def _order_business_accounts(employee_id: str) -> list[dict]:
     from .mail_transcode_agent import mail_store
-    accounts = [
+    return [
         item for item in mail_store.list_accounts(owner_employee_id=employee_id)
         if item["enabled"] and ("qiye.163.com" in item["imap_host"] or "@nouyatec.com" in item["email"])
     ]
+
+
+def _order_business_account(employee_id: str, account_id: int | None = None) -> dict | None:
+    accounts = _order_business_accounts(employee_id)
+    if account_id:
+        return next((item for item in accounts if item["id"] == account_id), None)
     return accounts[0] if accounts else None
 
 
@@ -1084,12 +1108,15 @@ def _order_automation_return_context(case: dict[str, Any]) -> dict[str, Any]:
         per_page = 20
     page = max(1, request.args.get("return_page", 1, type=int) or 1)
     batch_id = request.args.get("return_batch", type=int)
+    account_id = request.args.get("return_account", type=int) or case.get("account_id")
     values: dict[str, Any] = {
         "date": selected_date,
         "category": selected_action,
         "per_page": per_page,
         "page": page,
     }
+    if account_id:
+        values["account_id"] = int(account_id)
     if batch_id:
         values["batch"] = batch_id
     return {
@@ -1101,6 +1128,7 @@ def _order_automation_return_context(case: dict[str, Any]) -> dict[str, Any]:
             "return_per_page": per_page,
             "return_page": page,
             "return_batch": batch_id,
+            "return_account": account_id,
         },
     }
 
@@ -1137,6 +1165,23 @@ def order_automation_case(case_id: int):
     )
 
 
+@bp.post("/order-automation/cases/<int:case_id>/entry-template/start")
+def order_automation_entry_template_start(case_id: int):
+    """Queue first-time document extraction and return to the mail at once."""
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    try:
+        result = queue_order_entry_template_extraction(case_id, employee_id)
+        flash(result["message"], "success" if result["status"] != "error" else "error")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return redirect(
+        url_for("main.order_automation_case", case_id=case_id, **request.args.to_dict())
+    )
+
+
 @bp.route("/order-automation/cases/<int:case_id>/entry-template", methods=["GET", "POST"])
 def order_automation_entry_template(case_id: int):
     redirect_resp = require_login()
@@ -1151,8 +1196,24 @@ def order_automation_entry_template(case_id: int):
         except (ValueError, json.JSONDecodeError) as exc:
             flash(str(exc) if isinstance(exc, ValueError) else "模板数据格式错误。", "error")
         return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))
+    case = get_order_intake_case(case_id, employee_id)
+    if not case:
+        abort(404)
+    progress = order_entry_template_progress(case_id, employee_id)
+    if not progress["created"]:
+        # Keep old bookmarks and direct URLs safe: they now enqueue work rather
+        # than synchronously running a potentially long PDF/OCR extraction.
+        if progress["stage"] == "pending_extraction":
+            try:
+                result = queue_order_entry_template_extraction(case_id, employee_id)
+                flash(result["message"], "success")
+            except ValueError as exc:
+                flash(str(exc), "error")
+        return redirect(
+            url_for("main.order_automation_case", case_id=case_id, **request.args.to_dict())
+        )
     try:
-        case, template = get_order_entry_template(case_id, employee_id)
+        _case, template = get_order_entry_template(case_id, employee_id)
     except ValueError:
         abort(404)
     return render_template(
@@ -1214,7 +1275,9 @@ def order_automation_attachment(attachment_id: int):
         abort(404)
     if not is_allowed_automation_path(file_path) or not file_path.is_file():
         abort(404)
-    return send_file(file_path, as_attachment=True, download_name=attachment["filename"])
+    previewable_suffixes = {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp"}
+    preview = request.args.get("preview") == "1" and file_path.suffix.lower() in previewable_suffixes
+    return send_file(file_path, as_attachment=not preview, download_name=attachment["filename"])
 
 
 @bp.get("/my-settings")
@@ -4249,8 +4312,48 @@ def history():
         return redirect_resp
     start_date = request.args.get("start_date") or None
     end_date = request.args.get("end_date") or None
-    jobs = _decorate_jobs(list_jobs(current_employee(), start_date=start_date, end_date=end_date, limit=100))
-    return render_template("history.html", jobs=jobs, start_date=start_date, end_date=end_date)
+    employee_id = current_employee() or ""
+    jobs = _decorate_jobs(
+        list_jobs(employee_id, start_date=start_date, end_date=end_date, limit=100)
+    )
+
+    # 邮箱抓取也是用户执行过的业务操作，和常规任务按时间汇总到同一份历史中。
+    # 日志表记录的是 ISO 时间；用日期前缀筛选可同时兼容 SQLite 与 PostgreSQL。
+    from .mail_transcode_agent import mail_store
+
+    fetch_logs = mail_store.list_fetch_logs(limit=100, owner_employee_id=employee_id)
+    if start_date:
+        fetch_logs = [
+            log for log in fetch_logs if str(log.get("started_at") or "")[:10] >= start_date
+        ]
+    if end_date:
+        fetch_logs = [
+            log for log in fetch_logs if str(log.get("started_at") or "")[:10] <= end_date
+        ]
+
+    history_items = [
+        {
+            "kind": "job",
+            "sort_at": str(job.get("created_at") or ""),
+            "job": job,
+        }
+        for job in jobs
+    ]
+    history_items.extend(
+        {
+            "kind": "mail_fetch",
+            "sort_at": str(log.get("finished_at") or log.get("started_at") or ""),
+            "log": log,
+        }
+        for log in fetch_logs
+    )
+    history_items.sort(key=lambda item: item["sort_at"], reverse=True)
+    return render_template(
+        "history.html",
+        history_items=history_items,
+        start_date=start_date,
+        end_date=end_date,
+    )
 
 
 @bp.post("/history/<int:job_id>/delete")

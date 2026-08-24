@@ -31,10 +31,10 @@
               <span class="nav-icon nav-icon-dashboard" aria-hidden="true"></span>
               <span class="nav-label">功能中心</span>
       </a>
-      <a href="{{ url_for('main.my_settings') }}" title="我的配置" class="{% if request.endpoint in ['main.my_settings', 'mail_transcode.accounts_page'] %}active{% endif %}">
-        <span class="nav-icon nav-icon-admin" aria-hidden="true"></span>
-        <span class="nav-label">我的配置</span>
-      </a>
+            <a href="{{ url_for('main.order_automation') }}" title="test01订单自动化" class="{% if request.endpoint and request.endpoint.startswith('main.order_automation') %}active{% endif %}">
+              <span class="nav-icon nav-icon-workplan" aria-hidden="true"></span>
+              <span class="nav-label">test01订单自动化</span>
+            </a>
             <a href="{{ url_for('main.customer_archive') }}" title="客户信息维护" class="{% if request.endpoint and request.endpoint.startswith('main.customer_archive') %}active{% endif %}">
               <span class="nav-icon nav-icon-workplan" aria-hidden="true"></span>
               <span class="nav-label">客户信息维护</span>
@@ -43,18 +43,10 @@
               <span class="nav-icon nav-icon-history" aria-hidden="true"></span>
               <span class="nav-label">历史记录</span>
             </a>
-            <a href="{{ url_for('main.work_planning') }}" title="工作规划" class="{% if request.endpoint in ['main.work_planning', 'main.create_personal_task_view', 'main.update_personal_task_view', 'main.archive_personal_task_view', 'main.restore_personal_task_view', 'main.delete_personal_task_view', 'main.create_task_category_view', 'main.update_task_category_view', 'main.delete_task_category_view'] %}active{% endif %}">
-              <span class="nav-icon nav-icon-workplan" aria-hidden="true"></span>
-              <span class="nav-label">工作规划</span>
-            </a>
-            <a href="{{ url_for('main.feedback_center') }}" title="反馈意见" class="{% if request.endpoint in ['main.feedback_center', 'main.feedback_form', 'main.admin_feedback'] %}active{% endif %}">
-              <span class="nav-icon nav-icon-feedback" aria-hidden="true"></span>
-              <span class="nav-label">反馈意见</span>
-            </a>
-            <a href="{{ url_for('main.admin_password') }}" title="管理员密码" class="{% if request.endpoint == 'main.admin_password' %}active{% endif %}">
-              <span class="nav-icon nav-icon-admin" aria-hidden="true"></span>
-              <span class="nav-label">管理员密码</span>
-            </a>
+      <a href="{{ url_for('main.my_settings') }}" title="我的" class="{% if request.endpoint in ['main.my_settings', 'mail_transcode.accounts_page', 'main.admin_password'] %}active{% endif %}">
+        <span class="nav-icon nav-icon-admin" aria-hidden="true"></span>
+        <span class="nav-label">我的</span>
+      </a>
           </nav>
         </div>
         <div class="sidebar-footer" aria-label="当前账户">
