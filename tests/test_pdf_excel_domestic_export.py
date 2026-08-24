@@ -171,6 +171,33 @@ class PdfExcelDomesticExportTests(unittest.TestCase):
         self.assertIsNone(sheet["E6"].value)
         book.close()
 
+    def test_customer_spec_combines_purchase_spec_and_material_name(self) -> None:
+        document = _document()
+        document["mapped_detail_rows"][0]["original"] = {
+            "规格": "526*626mm纬向",
+            "材料名称": "考试板 RTF铜箔 PP(半固化片) 1067 RC73%",
+            "单价": "13.30",
+        }
+
+        _header, rows = build_domestic_rows(document)
+
+        self.assertEqual(
+            rows[0]["客户规格（选填）"],
+            "526*626mm纬向 考试板 RTF铜箔 PP(半固化片) 1067 RC73%",
+        )
+
+    def test_customer_spec_does_not_repeat_spec_already_in_material_name(self) -> None:
+        document = _document()
+        document["mapped_detail_rows"][0]["original"] = {
+            "规格": "526*626mm纬向",
+            "材料名称": "考试板 PP 1067 526*626mm纬向",
+            "单价": "13.30",
+        }
+
+        _header, rows = build_domestic_rows(document)
+
+        self.assertEqual(rows[0]["客户规格（选填）"], "考试板 PP 1067 526*626mm纬向")
+
     def test_job_export_returns_xlsx_or_one_workbook_per_order_in_zip(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             job_dir = Path(temp_dir)

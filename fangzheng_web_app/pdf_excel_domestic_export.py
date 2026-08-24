@@ -58,20 +58,46 @@ def _original_value(detail: dict[str, Any], *aliases: str) -> str:
 
 def _customer_spec(detail: dict[str, Any]) -> str:
     standard = detail.get("standard") or {}
-    return (
-        _original_value(
-            detail,
-            "物料描述",
-            "Material Description",
-            "名称规格",
-            "客户规格",
-            "物料规格",
-            "规格",
-            "型号",
-        )
-        or clean_text(standard.get("说明"))
-        or clean_text(standard.get("物料名称"))
+    original_spec = _original_value(
+        detail,
+        "名称规格",
+        "客户规格",
+        "物料规格",
+        "规格",
+        "型号",
     )
+    original_name = _original_value(
+        detail,
+        "材料名称",
+        "物料名称",
+        "物料描述",
+        "Material Description",
+        "品名",
+    )
+    parts = [
+        original_spec or clean_text(standard.get("说明")),
+        original_name or clean_text(standard.get("物料名称")),
+    ]
+    combined: list[str] = []
+    for value in parts:
+        text = clean_text(value)
+        if not text:
+            continue
+        key = _header_key(text)
+        existing_index = next(
+            (index for index, existing in enumerate(combined) if key in _header_key(existing)),
+            None,
+        )
+        if existing_index is not None:
+            continue
+        contained_indexes = [
+            index for index, existing in enumerate(combined) if _header_key(existing) in key
+        ]
+        if contained_indexes:
+            combined[contained_indexes[0]] = text
+            continue
+        combined.append(text)
+    return " ".join(combined)
 
 
 def _product_type(detail: dict[str, Any], customer_spec: str) -> str:
