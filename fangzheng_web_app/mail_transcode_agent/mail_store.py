@@ -690,7 +690,7 @@ def list_fetch_logs(
         if owner_employee_id:
             rows = conn.execute(
                 """
-                SELECT l.* FROM mail_fetch_logs l
+                SELECT l.*, a.email FROM mail_fetch_logs l
                 JOIN mail_accounts a ON a.id = l.account_id
                 WHERE a.owner_employee_id = ? ORDER BY l.id DESC LIMIT ?
                 """,
@@ -707,7 +707,7 @@ def create_fetch_task(
     account_id: int,
     *,
     created_by: str = "",
-    status: str = "running",
+    status: str = "queued",
     message: str = "",
     started_at: str | None = None,
 ) -> int:
@@ -721,6 +721,23 @@ def create_fetch_task(
             (account_id, created_by, status, message, now),
         )
         return int(cursor.lastrowid)
+
+
+def start_fetch_task(fetch_task_id: int, *, message: str = "开始抓取") -> None:
+    with db_cursor() as conn:
+        conn.execute(
+            "UPDATE mail_fetch_tasks SET status=?, message=?, started_at=? WHERE id=?",
+            ("running", message, now_iso(), fetch_task_id),
+        )
+
+
+def has_active_fetch_task(account_id: int) -> bool:
+    with db_cursor() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM mail_fetch_tasks WHERE account_id=? AND status IN ('queued','running') LIMIT 1",
+            (account_id,),
+        ).fetchone()
+    return bool(row)
 
 
 def complete_fetch_task(

@@ -149,6 +149,22 @@ class MailTranscodeAccountIsolationTests(unittest.TestCase):
         self.assertTrue(client.logged_out)
         self.assertIn("未抓取或保存任何邮件", result["message"])
 
+    def test_queue_returns_immediately_and_prevents_duplicate_active_tasks(self) -> None:
+        account_id = mail_store.create_or_update_account(
+            "orders@example.com", owner_employee_id="employee-a", auth_code="owner-auth-code"
+        )
+        with patch("fangzheng_web_app.mail_transcode_agent.mail_fetch_service.subprocess.Popen") as popen:
+            result = mail_fetch_service.queue_latest_order_mails(
+                account_id, owner_employee_id="employee-a", created_by="employee-a"
+            )
+        self.assertTrue(popen.called)
+        task = mail_store.get_fetch_task(result["fetch_task_id"], owner_employee_id="employee-a")
+        self.assertEqual(task["status"], "queued")
+        with self.assertRaisesRegex(ValueError, "正在运行"):
+            mail_fetch_service.queue_latest_order_mails(
+                account_id, owner_employee_id="employee-a", created_by="employee-a"
+            )
+
     def test_repeated_uid_is_recorded_but_not_created_twice(self) -> None:
         account_id = mail_store.create_or_update_account(
             "orders@example.com",

@@ -8,7 +8,7 @@ from typing import Any
 STANDARD_HEADERS = ["序号", "物料编码", "物料名称", "说明", "数量", "单位", "含税单价", "金额", "交货日期", "备注"]
 
 DETAIL_ALIASES = {
-    "序号": ["序号", "项次", "项目", "行号", "item", "item no", "no.", "no"],
+    "序号": ["序号", "项次", "项目", "行号", "PO项目号", "PO项目", "Project No", "Project Number", "item", "item no", "no.", "no"],
     "物料编码": ["物料编码", "物料编号", "物料代码", "原料编码", "料件编号", "料号", "品号", "goods no", "goodsno", "part no", "part no.", "part", "p/n"],
     "物料名称": ["物料名称", "物料品名", "原料名称", "品名", "名称", "型号", "规格", "名称规格", "型号/规格", "description", "desc"],
     "说明": ["说明", "描述", "物料描述", "环保要求", "rohs", "remark", "comments", "comment"],
@@ -23,7 +23,7 @@ DETAIL_ALIASES = {
 HEADER_ALIASES = {
     "客户": ["客户", "采购方", "买方", "公司名称", "需方"],
     "供应商": ["供应商", "供方", "卖方", "vendor", "supplier"],
-    "订单号": ["订单号", "采购单号", "采购订单号", "p.o. no", "po no", "pono", "p.ono"],
+    "订单号": ["订单号", "采购单号", "采购订单号", "PO单号", "PO编号", "p.o. no", "po no", "po number", "pono", "p.ono"],
     "合同编号": ["合同编号", "合同号", "contract no", "contract"],
     "日期": ["日期", "订单日期", "采购日期", "p.o date", "date"],
     "币别": ["币别", "币种", "currency"],
@@ -51,6 +51,19 @@ def clean_text(value: Any) -> str:
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def order_field_rule_catalog() -> dict[str, object]:
+    """Return the serialisable field-rule catalogue used by every order source.
+
+    This is deliberately data-only so a future rule-maintenance page can show
+    the same aliases that the PDF/image and HTML-mail adapters currently use.
+    """
+    return {
+        "version": "purchase_order_fields_v1",
+        "detail_headers": {field: list(aliases) for field, aliases in DETAIL_ALIASES.items()},
+        "header_fields": {field: list(aliases) for field, aliases in HEADER_ALIASES.items()},
+    }
 
 
 def normalize_pdf_table_cell(value: Any) -> str:

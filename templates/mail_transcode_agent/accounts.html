@@ -2,14 +2,14 @@
 {% block title %}邮箱配置 | {{ platform_name }} {{ platform_version }}{% endblock %}
 {% block content %}
 <div class="page-backbar">
-  <a class="back-link" href="{{ url_for('main.my_settings') }}">返回我的配置</a>
-  <span>我的配置 / 邮箱配置</span>
+  <a class="back-link" href="{{ url_for('main.my_settings') }}">返回我的</a>
+  <span>我的 / 邮箱配置</span>
 </div>
 
 <section class="feature-hero">
   <div class="hero-watermark feature-mark">IMAP</div>
   <div class="feature-hero-copy">
-    <div class="panel-tag">我的配置</div>
+    <div class="panel-tag">我的</div>
     <h1>邮箱配置</h1>
     <p>仅当前登录用户可见和使用。后续邮件自动化会复用本配置；手动抓取昨天和今天邮件，不会修改邮箱的已读或未读状态。</p>
   </div>
@@ -72,7 +72,7 @@
     <article class="card task-card">
       <div class="step-tag">我的账号</div>
       <h2>已配置邮箱</h2>
-      <p class="mail-account-note">删除仅移除本系统中的邮箱配置，不会删除网易邮箱里的邮件或本地历史记录。</p>
+      <p class="mail-account-note">删除仅移除本系统中的邮箱配置，不会删除网易邮箱里的邮件；抓取记录已统一收录到<a href="{{ url_for('main.history') }}">历史记录</a>。</p>
       <div class="table-scroll">
         <table class="table">
           <thead><tr><th>邮箱</th><th>服务器</th><th>状态</th><th>上次抓取</th><th>操作</th></tr></thead>
@@ -94,23 +94,6 @@
             </tr>
             {% else %}
             <tr><td colspan="5">暂无邮箱配置</td></tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    </article>
-
-    <article class="card task-card">
-      <div class="step-tag">我的日志</div>
-      <h2>最近抓取记录</h2>
-      <div class="table-scroll">
-        <table class="table">
-          <thead><tr><th>时间</th><th>状态</th><th>说明</th></tr></thead>
-          <tbody>
-            {% for log in logs %}
-            <tr><td>{{ log.started_at }}</td><td><span class="status">{{ log.status }}</span></td><td>{{ log.message }}</td></tr>
-            {% else %}
-            <tr><td colspan="3">暂无抓取记录</td></tr>
             {% endfor %}
           </tbody>
         </table>

@@ -139,7 +139,8 @@ def _factory_import(document: dict[str, Any]) -> dict[str, Any]:
     return factory_import
 
 
-def build_domestic_rows(document: dict[str, Any]) -> tuple[list[Any], list[dict[str, Any]]]:
+def build_domestic_template_data(document: dict[str, Any]) -> dict[str, Any]:
+    """Build shared business data for PDF export and mail order entry."""
     factory_import = _factory_import(document)
     mapped_details = list(document.get("mapped_detail_rows") or [])
     factory_rows = list(factory_import.get("rows") or [])
@@ -148,45 +149,82 @@ def build_domestic_rows(document: dict[str, Any]) -> tuple[list[Any], list[dict[
 
     main_values = list(factory_import.get("main_values") or [])
     order_number = clean_text(main_values[7] if len(main_values) > 7 else "")
-    header_values = ["220", "1", "1", "", "", "", order_number, "KL01"]
+    header = {
+        "order_type": "220", "type_1": "1", "type_2": "1",
+        "bill_to_customer_code": "", "ship_to_customer_code": "",
+        "delivery_factory": "", "customer_order_number": order_number,
+        "ledger": "KL01",
+    }
 
     rows: list[dict[str, Any]] = []
     for index, (detail, factory_row) in enumerate(zip(mapped_details, factory_rows), start=1):
         customer_spec = _customer_spec(detail)
         rows.append(
             {
-                DOMESTIC_DETAIL_HEADERS[0]: str(index),
-                DOMESTIC_DETAIL_HEADERS[1]: "",
-                DOMESTIC_DETAIL_HEADERS[2]: "",
-                DOMESTIC_DETAIL_HEADERS[3]: clean_text(
+                "line_no": str(index),
+                "product_code": "",
+                "product_name": "",
+                "customer_product_code": clean_text(
                     factory_row.get(FACTORY_DETAIL_HEADERS[3])
                 ),
-                DOMESTIC_DETAIL_HEADERS[4]: customer_spec,
-                DOMESTIC_DETAIL_HEADERS[5]: "",
-                DOMESTIC_DETAIL_HEADERS[6]: _product_type(detail, customer_spec),
-                DOMESTIC_DETAIL_HEADERS[7]: clean_text(
+                "customer_spec": customer_spec,
+                "customer_spec_match": "",
+                "product_type": _product_type(detail, customer_spec),
+                "delivery_date": clean_text(
                     factory_row.get(FACTORY_DETAIL_HEADERS[4])
                 ),
-                DOMESTIC_DETAIL_HEADERS[8]: clean_text(
+                "quantity": clean_text(
                     factory_row.get(FACTORY_DETAIL_HEADERS[5])
                 ),
-                DOMESTIC_DETAIL_HEADERS[9]: clean_text(
+                "price_before_tax": clean_text(
                     factory_row.get(FACTORY_DETAIL_HEADERS[6])
                 ),
-                DOMESTIC_DETAIL_HEADERS[10]: clean_text(
+                "unit_price": clean_text(
                     factory_row.get(FACTORY_DETAIL_HEADERS[7])
                 ),
-                DOMESTIC_DETAIL_HEADERS[11]: "",
-                DOMESTIC_DETAIL_HEADERS[12]: clean_text(
+                "origin": "",
+                "customer_order_seq": clean_text(
                     factory_row.get(FACTORY_DETAIL_HEADERS[0])
                 )
                 or str(index),
-                DOMESTIC_DETAIL_HEADERS[13]: "",
-                DOMESTIC_DETAIL_HEADERS[14]: _clean_remark(
+                "customer_order_number": order_number,
+                "one_to_many": "",
+                "remark": _clean_remark(
                     factory_row.get(FACTORY_DETAIL_HEADERS[11])
                 ),
             }
         )
+    return {"header": header, "lines": rows}
+
+
+def build_domestic_rows(document: dict[str, Any]) -> tuple[list[Any], list[dict[str, Any]]]:
+    data = build_domestic_template_data(document)
+    header = data["header"]
+    header_values = [
+        header["order_type"], header["type_1"], header["type_2"],
+        header["bill_to_customer_code"], header["ship_to_customer_code"],
+        header["delivery_factory"], header["customer_order_number"], header["ledger"],
+    ]
+    rows = [
+        {
+            DOMESTIC_DETAIL_HEADERS[0]: line["line_no"],
+            DOMESTIC_DETAIL_HEADERS[1]: line["product_code"],
+            DOMESTIC_DETAIL_HEADERS[2]: line["product_name"],
+            DOMESTIC_DETAIL_HEADERS[3]: line["customer_product_code"],
+            DOMESTIC_DETAIL_HEADERS[4]: line["customer_spec"],
+            DOMESTIC_DETAIL_HEADERS[5]: line["customer_spec_match"],
+            DOMESTIC_DETAIL_HEADERS[6]: line["product_type"],
+            DOMESTIC_DETAIL_HEADERS[7]: line["delivery_date"],
+            DOMESTIC_DETAIL_HEADERS[8]: line["quantity"],
+            DOMESTIC_DETAIL_HEADERS[9]: line["price_before_tax"],
+            DOMESTIC_DETAIL_HEADERS[10]: line["unit_price"],
+            DOMESTIC_DETAIL_HEADERS[11]: line["origin"],
+            DOMESTIC_DETAIL_HEADERS[12]: line["customer_order_seq"],
+            DOMESTIC_DETAIL_HEADERS[13]: line["one_to_many"],
+            DOMESTIC_DETAIL_HEADERS[14]: line["remark"],
+        }
+        for line in data["lines"]
+    ]
     return header_values, rows
 
 

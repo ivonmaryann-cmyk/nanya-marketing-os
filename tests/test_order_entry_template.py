@@ -13,11 +13,14 @@ from fangzheng_web_app.order_entry_service import (
     _line_entry,
     _line_from_pipeline_row,
     _merge_initial_rows,
+    _initial_template_data,
+    _rows_from_pdf_or_image,
     build_domestic_export,
     get_or_create_template,
     reextract_all_templates,
     save_template,
 )
+from fangzheng_web_app.purchase_factory_mapper import FACTORY_DETAIL_HEADERS
 from fangzheng_web_app.order_intake_service import bootstrap_cases, list_cases
 
 
@@ -47,13 +50,17 @@ class OrderEntryTemplateTests(unittest.TestCase):
 
     def test_saved_template_reopens_and_exports_same_values(self) -> None:
         _case, template = get_or_create_template(self.case_id, "employee-a")
-        self.assertEqual(template["lines"][0]["values"]["customer_order_number"], "HJ20260818013")
+        self.assertEqual(template["header"]["customer_order_number"], "HJ20260818013")
+        self.assertEqual(template["header"]["order_type"], "220")
+        self.assertEqual(template["header"]["type_1"], "1")
+        self.assertEqual(template["header"]["type_2"], "1")
+        self.assertEqual(template["header"]["ledger"], "KL01")
         saved = save_template(self.case_id, "employee-a", {
             "header": {"order_type": "SO", "bill_to_customer_code": "C001", "ledger": "151"},
             "lines": [{"values": {
                 "line_no": "1", "product_code": "P001", "product_name": "南亚NY2150",
                 "customer_product_code": "A1A150224149YNNYZ002", "quantity": "300",
-                "customer_order_number": "HJ20260818013",
+                "customer_spec_match": "NY2150", "product_type": "基板",
             }}],
         })
         self.assertEqual(saved["current_version"], 1)
@@ -68,11 +75,13 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertEqual(sheet["D2"].value, "C001")
         self.assertEqual(sheet["H2"].value, "151")
         self.assertEqual(sheet["D4"].value, "A1A150224149YNNYZ002")
-        self.assertEqual(sheet["G4"].value, 300)
+        self.assertEqual(sheet["F4"].value, "NY2150")
+        self.assertEqual(sheet["G4"].value, "基板")
+        self.assertEqual(sheet["I4"].value, 300)
         # The business template is a populated example; exporting a different
         # mail must never carry its sample detail rows into the new file.
         self.assertIsNone(sheet["D5"].value)
-        self.assertIsNone(sheet["G6"].value)
+        self.assertIsNone(sheet["I6"].value)
         book.close()
 
     def test_excel_attachment_is_merged_into_the_same_email_template(self) -> None:
@@ -97,6 +106,29 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertEqual(matching[0]["values"]["quantity"], "500")
         self.assertEqual(matching[0]["values"]["unit_price"], "12.5")
         self.assertEqual(matching[0]["sources"]["quantity"]["label"], "附件：客户订单.xlsx")
+
+    def test_html_mail_table_uses_shared_domestic_template_mapping(self) -> None:
+        body_html = """
+        <table><tr><th>PO单号</th><th>PO项目号</th><th>物料编码</th><th>物料名称</th>
+        <th>物料规格</th><th>数量</th><th>单位</th><th>单价</th><th>交期</th></tr>
+        <tr><td>MZPOM12608190027</td><td>2713183</td><td>10101008248</td><td>FR-4</td>
+        <td>南亚新材料 NY6180L 0.127 mm</td><td>20</td><td>张</td><td>215.6814</td><td>2026-08-28</td></tr>
+        </table>
+        """
+        with patch("fangzheng_web_app.order_entry_service.get_enabled_extraction_maps", return_value=[]):
+            header, rows = _initial_template_data({
+                "id": 999,
+                "body_html": body_html,
+                "body_text": "",
+                "attachments": [],
+                "detected_fields": {},
+                "customer_id": None,
+            })
+        self.assertEqual(header["customer_order_number"], "MZPOM12608190027")
+        self.assertEqual(rows[0]["values"]["customer_product_code"], "10101008248")
+        self.assertEqual(rows[0]["values"]["quantity"], "20")
+        self.assertEqual(rows[0]["values"]["product_type"], "基板")
+        self.assertEqual(rows[0]["sources"]["quantity"]["label"], "邮件正文表格")
 
     def test_ccl_and_manual_only_fields_follow_conservative_extraction_policy(self) -> None:
         line = _line_entry(
@@ -176,6 +208,7 @@ class OrderEntryTemplateTests(unittest.TestCase):
             "MZPOM12608190027", "附件：采购订单.pdf", "识别明细第 3 行", 2,
         )
         self.assertEqual(first["values"]["customer_spec"], "南亚新材料 NY6180LP 106 RC=75% 经300.00 m 纬49.50 inch")
+        self.assertEqual(first["values"]["customer_product_code"], "10601001676")
         self.assertEqual(first["values"]["quantity"], "30")
         self.assertEqual(first["values"]["price_before_tax"], "10914.1593")
         self.assertEqual(first["values"]["unit_price"], "")
@@ -198,6 +231,34 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertEqual(line["values"]["price_before_tax"], "")
         self.assertEqual(line["values"]["unit_price"], "12.50")
 
+    def test_pdf_attachment_reuses_pdf_domestic_mapping(self) -> None:
+        document = {
+            "mapped_detail_rows": [{
+                "original": {"物料描述": "PP 1080 300M/卷"},
+                "standard": {"物料编码": "CUST-PP", "物料名称": "半固化片"},
+            }],
+            "factory_import": {
+                "main_values": ["", "", "", "", "", "", "", "PO-001"],
+                "rows": [{
+                    FACTORY_DETAIL_HEADERS[0]: "9",
+                    FACTORY_DETAIL_HEADERS[3]: "CUST-PP",
+                    FACTORY_DETAIL_HEADERS[4]: "2026-08-30",
+                    FACTORY_DETAIL_HEADERS[5]: "600",
+                    FACTORY_DETAIL_HEADERS[6]: "10",
+                    FACTORY_DETAIL_HEADERS[7]: "11.3",
+                    FACTORY_DETAIL_HEADERS[11]: "加急",
+                }],
+            },
+        }
+        with patch("fangzheng_web_app.order_entry_service.recognize_purchase_order_document", return_value=document), patch("fangzheng_web_app.order_entry_service.project_factory_document"):
+            rows = _rows_from_pdf_or_image(Path("/tmp/PO-001.pdf"), "PO-001.pdf")
+        self.assertEqual(rows[0]["values"]["customer_product_code"], "CUST-PP")
+        self.assertEqual(rows[0]["values"]["quantity"], "600")
+        self.assertEqual(rows[0]["values"]["price_before_tax"], "10")
+        self.assertEqual(rows[0]["extracted_header"]["customer_order_number"], "PO-001")
+        self.assertEqual(rows[0]["values"]["product_type"], "PP")
+        self.assertEqual(rows[0]["sources"]["customer_product_code"]["label"], "附件：PO-001.pdf")
+
     def test_batch_reextract_keeps_header_and_backs_up_before_replacing_lines(self) -> None:
         get_or_create_template(self.case_id, "employee-a")
         save_template(self.case_id, "employee-a", {
@@ -214,11 +275,11 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertGreaterEqual(summary["line_count"], 1)
         _case, template = get_or_create_template(self.case_id, "employee-a")
         self.assertEqual(template["header"]["ledger"], "151")
-        self.assertEqual(template["current_version"], 3)
+        self.assertEqual(template["current_version"], 1)
         self.assertTrue(all(line["values"]["product_name"] == "" for line in template["lines"]))
         with db.db_cursor() as conn:
             versions = conn.execute(
                 "SELECT version_number,lines_json FROM order_entry_template_versions ORDER BY version_number"
             ).fetchall()
-        self.assertEqual([row["version_number"] for row in versions], [1, 2, 3])
-        self.assertIn("历史错误品名", versions[1]["lines_json"])
+        self.assertEqual([row["version_number"] for row in versions], [1])
+        self.assertIn("历史错误品名", versions[0]["lines_json"])
