@@ -17,7 +17,7 @@ POSITION_FIELDS = (
     ("glue_system_position", "胶系位置", "TC_FEM04"),
     ("thickness_position", "厚度位置", "TC_FEM05"),
     ("core_thickness_position", "芯总厚位置", "TC_FEM06"),
-    ("dimension_position", "尺寸位置", "TC_FEM07"),
+    ("dimension_position", "基板尺寸", "TC_FEM07"),
     ("copper_foil_type_position", "铜箔类型", "TC_FEM08"),
     ("copper_thickness_position", "铜厚", "TC_FEM09"),
     ("structure_position", "结构", "TC_FEM10"),
@@ -25,7 +25,7 @@ POSITION_FIELDS = (
     ("halogen_position", "有卤无卤", "TC_FEM12"),
     ("rc_position", "RC", "TC_FEM13"),
     ("cloth_type_position", "布种", "TC_FEM14"),
-    ("size_position", "尺寸", "TC_FEM15"),
+    ("size_position", "PP尺寸", "TC_FEM15"),
 )
 POSITION_FIELD_LABELS = {field: label for field, label, _header in POSITION_FIELDS}
 FORM_FIELDS = (
@@ -38,6 +38,7 @@ _DIRECTIONAL_SIZE_PATTERN = re.compile(
     r"纬\s*(\d+(?:\.\d+)?)\s*(inch|mm|毫米|英寸|m|米)?",
     re.IGNORECASE,
 )
+_CORE_WATERMARK_PATTERN = re.compile(r"(不含铜|含铜)(无水印|有水印)")
 
 
 def _row_dict(row: Any) -> dict[str, Any]:
@@ -193,6 +194,10 @@ def _compact_directional_size(match: re.Match[str]) -> str:
 def _split_spec_parts(spec: str, delimiter: str) -> list[str]:
     # Normalize spacing first; field boundaries still come only from the configured delimiter.
     normalized = _DIRECTIONAL_SIZE_PATTERN.sub(_compact_directional_size, spec)
+    separator = delimiter or " "
+    normalized = _CORE_WATERMARK_PATTERN.sub(
+        lambda match: f"{match.group(1)}{separator}{match.group(2)}", normalized,
+    )
     if delimiter:
         return [part.strip() for part in normalized.split(delimiter)]
     return [part for part in re.split(r"\s+", normalized.strip()) if part]

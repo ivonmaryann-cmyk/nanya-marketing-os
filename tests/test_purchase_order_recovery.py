@@ -4,6 +4,7 @@ import unittest
 
 from fangzheng_web_app.purchase_order_pipeline import (
     _native_detail_rows_missing_from_docling,
+    _native_detail_rows_for_merged_docling,
     _native_grid_rows_from_page,
 )
 from fangzheng_web_app.purchase_field_rules import header_score
@@ -93,6 +94,41 @@ class NativeDetailRecoveryTests(unittest.TestCase):
         self.assertEqual(rows[0][1], "MAT-004")
         self.assertEqual(rows[0][2], "FR-4")
         self.assertEqual(rows[0][3], "NY2150H 1.1 mm 7628x5 TG150")
+
+    def test_native_columns_replace_docling_merged_material_fields(self) -> None:
+        native_rows = [
+            ["序号", "物料编码", "物料名称", "单位", "数量", "含税单价", "金额"],
+            ["1", "MAT-001-TAIL", "NY 3170M2 0.8mm", "张", "200", "355", "71000"],
+        ]
+        native = {
+            "pages": [
+                {"page_index": 0, "tables": [{"table_index": 0, "cells": self._cells(native_rows)}]}
+            ]
+        }
+        docling_rows = [
+            {
+                "standard": {
+                    "序号": "1",
+                    "物料编码": "MAT-001",
+                    "物料名称": "MAT-001-TAIL NY 3170M2 0.8mm",
+                    "单位": "张",
+                    "数量": "200",
+                    "含税单价": "355",
+                    "金额": "71000",
+                    "交货日期": "",
+                    "备注": "",
+                }
+            }
+        ]
+
+        tables, rows, issues = _native_detail_rows_for_merged_docling(native, docling_rows)
+
+        self.assertEqual(len(tables), 1)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["standard"]["物料编码"], "MAT-001-TAIL")
+        self.assertEqual(rows[0]["standard"]["物料名称"], "NY 3170M2 0.8mm")
+        self.assertEqual(rows[0]["method"], "pdf_native_table_reconciled")
+        self.assertEqual(issues, [])
 
 
 if __name__ == "__main__":

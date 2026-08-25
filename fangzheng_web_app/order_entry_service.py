@@ -16,7 +16,7 @@ from typing import Any
 from openpyxl import load_workbook
 
 from .database import automation_cursor as db_cursor
-from .customer_archive_service import get_enabled_extraction_maps
+from .customer_archive_service import get_customer, get_enabled_extraction_maps
 from .customer_spec_mapping_service import build_customer_spec_match
 from .db import utcnow
 from .excel_utils import load_workbook_compat
@@ -693,6 +693,25 @@ def _apply_customer_spec_matches(
     return result
 
 
+def _apply_matched_customer_code(
+    header: dict[str, str], case: dict[str, Any], *, overwrite: bool,
+) -> dict[str, str]:
+    customer_id = case.get("customer_id")
+    if not customer_id:
+        return header
+    customer = get_customer(int(customer_id))
+    customer_code = clean_text((customer or {}).get("customer_code"))
+    if not customer_code:
+        return header
+    bill_to_code = clean_text(header.get("bill_to_customer_code"))
+    if overwrite or not bill_to_code:
+        bill_to_code = customer_code
+        header["bill_to_customer_code"] = bill_to_code
+    if overwrite or not clean_text(header.get("ship_to_customer_code")):
+        header["ship_to_customer_code"] = bill_to_code
+    return header
+
+
 def _initial_template_data(case: dict[str, Any]) -> tuple[dict[str, str], list[dict[str, Any]]]:
     attachment_rows = _attachment_rows(case)
     # An order attachment remains authoritative.  When there is no supported
@@ -709,6 +728,7 @@ def _initial_template_data(case: dict[str, Any]) -> tuple[dict[str, str], list[d
         value = clean_text((extracted_header or {}).get(field))
         if value:
             header[field] = value
+    _apply_matched_customer_code(header, case, overwrite=True)
     if not header["customer_order_number"]:
         header["customer_order_number"] = clean_text(
             (case.get("detected_fields") or {}).get("order_number")
@@ -761,7 +781,17 @@ def get_or_create_template(case_id: int, employee_id: str) -> tuple[dict[str, An
             "SELECT id FROM order_entry_templates WHERE case_id=? AND employee_id=?", (case_id, employee_id)
         ).fetchone()
         if existing:
-            return case, _serialize_template(conn, int(existing["id"]))
+            template_id = int(existing["id"])
+            template = _serialize_template(conn, template_id)
+            previous_header = dict(template["header"])
+            _apply_matched_customer_code(template["header"], case, overwrite=False)
+            if template["header"] != previous_header:
+                conn.execute(
+                    "UPDATE order_entry_templates SET header_json=?,updated_at=? WHERE id=?",
+                    (json.dumps(template["header"], ensure_ascii=False), utcnow(), template_id),
+                )
+                template = _serialize_template(conn, template_id)
+            return case, template
         now = utcnow()
         initial_header, initial_lines = _initial_template_data(case)
         cursor = conn.execute(

@@ -821,19 +821,27 @@ def _native_purchase_document(file_item: dict[str, str], native: dict[str, Any])
     }
 
 
-def _native_table_has_required_fields(mapping: dict[int, str]) -> bool:
+def _native_table_has_required_fields(
+    mapping: dict[int, str], *, require_delivery_date: bool = True
+) -> bool:
     required_fields = {
         "\u7269\u6599\u7f16\u7801",
         "\u6570\u91cf",
         "\u5355\u4f4d",
         "\u542b\u7a0e\u5355\u4ef7",
         "\u91d1\u989d",
-        "\u4ea4\u8d27\u65e5\u671f",
     }
+    if require_delivery_date:
+        required_fields.add("\u4ea4\u8d27\u65e5\u671f")
     return required_fields.issubset(set(mapping.values()))
 
 
-def _native_table_rows_reliable(rows: list[dict[str, Any]], *, minimum_rows: int = 2) -> bool:
+def _native_table_rows_reliable(
+    rows: list[dict[str, Any]],
+    *,
+    minimum_rows: int = 2,
+    require_delivery_date: bool = True,
+) -> bool:
     if len(rows) < minimum_rows:
         return False
     for row in rows:
@@ -844,7 +852,14 @@ def _native_table_rows_reliable(rows: list[dict[str, Any]], *, minimum_rows: int
         price = _decimal_value(standard.get("\u542b\u7a0e\u5355\u4ef7"))
         amount = _decimal_value(standard.get("\u91d1\u989d"))
         delivery_date = clean_text(standard.get("\u4ea4\u8d27\u65e5\u671f"))
-        if not code or not description or quantity is None or price is None or amount is None or not delivery_date:
+        if (
+            not code
+            or not description
+            or quantity is None
+            or price is None
+            or amount is None
+            or (require_delivery_date and not delivery_date)
+        ):
             return False
         if quantity <= 0 or price < 0 or amount < 0 or abs(quantity * price - amount) > Decimal("0.05"):
             return False
@@ -1105,6 +1120,108 @@ def _native_detail_rows_missing_from_docling(
     return recovered_tables, recovered_rows, recovered_issues
 
 
+def _native_detail_rows_for_merged_docling(
+    native: dict[str, Any], mapped_rows: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Prefer native cells when Docling duplicates one merged cell across columns."""
+    native_tables: list[dict[str, Any]] = []
+    native_rows: list[dict[str, Any]] = []
+    native_issues: list[dict[str, Any]] = []
+    for page in native.get("pages") or []:
+        for table in page.get("tables") or []:
+            source_rows = _repair_split_native_headers(
+                _matrix_from_native_cells(table.get("cells") or [], drop_trailing_sparse=False)
+            )
+            header_index, mapping = find_detail_header_row(source_rows)
+            if header_index is None or not _native_table_has_required_fields(
+                mapping, require_delivery_date=False
+            ):
+                continue
+            source_rows = _compact_native_material_code_column(source_rows, header_index, mapping)
+            table_rows = [list(row) for row in source_rows[header_index:]]
+            table_document = {
+                "page_index": page.get("page_index", 0),
+                "table_index": table.get("table_index", 0),
+                "table_type": "detail_table",
+                "rows": table_rows,
+                "raw_rows": table_rows,
+                "method": "pdf_native_table_reconciled",
+                "confidence": 1.0,
+            }
+            candidates, candidate_issues = build_detail_rows_from_table(table_document)
+            if not _native_table_rows_reliable(
+                candidates, minimum_rows=1, require_delivery_date=False
+            ):
+                continue
+            native_tables.append(
+                {
+                    "page_index": page.get("page_index", 0),
+                    "table_index": len(native_tables),
+                    "bbox": [],
+                    "rows": table_rows,
+                    "method": "pdf_native_table_reconciled",
+                    "confidence": 1.0,
+                    "title": "原生表格分列校正",
+                }
+            )
+            native_rows.extend(candidates)
+            native_issues.extend(candidate_issues)
+
+    docling_detail_rows = [
+        row
+        for row in mapped_rows
+        if _native_table_rows_reliable(
+            [row], minimum_rows=1, require_delivery_date=False
+        )
+    ]
+    if not native_rows or len(native_rows) != len(docling_detail_rows):
+        return [], [], []
+
+    docling_by_sequence = {
+        clean_text((row.get("standard") or {}).get("序号")): row
+        for row in docling_detail_rows
+        if clean_text((row.get("standard") or {}).get("序号"))
+    }
+    reconciled: list[dict[str, Any]] = []
+    duplicate_merge_detected = False
+    for native_row in native_rows:
+        native_standard = native_row.get("standard") or {}
+        sequence = clean_text(native_standard.get("序号"))
+        docling_row = docling_by_sequence.get(sequence)
+        if docling_row is None:
+            return [], [], []
+        docling_standard = docling_row.get("standard") or {}
+        for field in ["数量", "含税单价", "金额"]:
+            if _decimal_value(native_standard.get(field)) != _decimal_value(docling_standard.get(field)):
+                return [], [], []
+
+        native_code = re.sub(r"\s+", "", clean_text(native_standard.get("物料编码"))).lower()
+        native_name = re.sub(r"\s+", "", clean_text(native_standard.get("物料名称"))).lower()
+        docling_code = re.sub(r"\s+", "", clean_text(docling_standard.get("物料编码"))).lower()
+        docling_name = re.sub(r"\s+", "", clean_text(docling_standard.get("物料名称"))).lower()
+        if (
+            docling_code
+            and docling_name
+            and native_code
+            and native_name
+            and native_code != native_name
+            and native_code.startswith(docling_code)
+            and native_name in docling_name
+            and (docling_code != native_code or docling_name != native_name)
+        ):
+            duplicate_merge_detected = True
+
+        for field in ["交货日期", "备注"]:
+            if not clean_text(native_standard.get(field)):
+                native_standard[field] = clean_text(docling_standard.get(field))
+        native_row["method"] = "pdf_native_table_reconciled"
+        reconciled.append(native_row)
+
+    if not duplicate_merge_detected:
+        return [], [], []
+    return native_tables, reconciled, native_issues
+
+
 def _docling_purchase_document(file_item: dict[str, str], native: dict[str, Any]) -> dict[str, Any] | None:
     input_path = Path(file_item["stored_path"])
     source_file = file_item.get("original_filename") or input_path.name
@@ -1167,6 +1284,14 @@ def _docling_purchase_document(file_item: dict[str, str], native: dict[str, Any]
         mapped_rows.extend(rows)
         issues.extend(table_issues)
 
+    reconciled_tables, reconciled_rows, reconciled_issues = _native_detail_rows_for_merged_docling(
+        native, mapped_rows
+    )
+    if reconciled_rows:
+        raw_detail_tables = reconciled_tables
+        mapped_rows = reconciled_rows
+        issues.extend(reconciled_issues)
+
     recovered_tables, recovered_rows, recovered_issues = _native_detail_rows_missing_from_docling(
         native, mapped_rows
     )
@@ -1179,6 +1304,8 @@ def _docling_purchase_document(file_item: dict[str, str], native: dict[str, Any]
     if docling_result.get("error"):
         warnings.append(f"Docling 解析提示：{docling_result.get('error')}")
     warnings.append("PDF 使用 Docling/Markdown 快速分层解析，未渲染页面图片，未调用 OCR。")
+    if reconciled_rows:
+        warnings.append("Docling 存在跨列重复合并，已用经数量和金额校验的原生 PDF 表格分列结果替换。")
     if recovered_rows:
         warnings.append(f"Docling 漏行时已从原生 PDF 表格安全补充 {len(recovered_rows)} 条明细。")
     return {

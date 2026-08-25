@@ -230,6 +230,36 @@ class CustomerSpecMappingServiceTests(unittest.TestCase):
             delimited_detail["customer_spec_match"],
         )
 
+    def test_compound_core_and_watermark_are_split_into_configured_fields(self) -> None:
+        service.save_spec_mapping({
+            "customer_code": "123036", "product_type": "base", "delimiter": "",
+            "core_thickness_position": "6", "watermark_position": "7", "enabled": "1",
+        })
+
+        detail = service.build_customer_spec_match_detail(
+            "123036",
+            "基板",
+            "82.3*49.3 南亚 NY2170H 0.15mm-1/1-TG170 CTI≥175 不含铜无水印 "
+            "82.3*49.3 A级 HTE (1080 2张) 有卤素 FR-4 耐CAF",
+        )
+        values = {field["field"]: field["value"] for field in detail["fields"]}
+        labels = {field["header"]: field["label"] for field in detail["fields"]}
+
+        self.assertEqual("不含铜", values["core_thickness_position"])
+        self.assertEqual("无水印", values["watermark_position"])
+        self.assertIn("不含铜 无水印", detail["customer_spec_match"])
+        self.assertEqual("基板尺寸", labels["TC_FEM07"])
+        self.assertEqual("PP尺寸", labels["TC_FEM15"])
+
+        positive_detail = service.build_customer_spec_match_detail(
+            "123036", "基板", "含铜有水印",
+        )
+        positive_values = {
+            field["field"]: field["value"] for field in positive_detail["fields"]
+        }
+        self.assertEqual("含铜", positive_values["core_thickness_position"])
+        self.assertEqual("有水印", positive_values["watermark_position"])
+
 
 class CustomerSpecMappingRouteTests(unittest.TestCase):
     def setUp(self) -> None:

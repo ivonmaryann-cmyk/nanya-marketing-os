@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -48,6 +49,20 @@ class OrderEntryTemplateTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.db_patch.stop()
         self.temp_dir.cleanup()
+
+    def test_empty_configured_spec_field_shows_its_position_as_placeholder(self) -> None:
+        template = (
+            Path(__file__).resolve().parents[1]
+            / "templates"
+            / "order_automation_entry_template.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("input.placeholder=`第${field.position}位`", template)
+        self.assertIn(".oe-match-field input::placeholder{color:#9aa8ba;opacity:1}", template)
+        self.assertIn(
+            "shipToCode.value=code.value.trim()",
+            template,
+        )
 
     def test_saved_template_reopens_and_exports_same_values(self) -> None:
         _case, template = get_or_create_template(self.case_id, "employee-a")
@@ -105,6 +120,81 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertEqual("NY2150_*_1.6MM", matched[0]["values"]["customer_spec_match"])
         self.assertEqual("客户规格对照表", matched[0]["sources"]["customer_spec_match"]["label"])
         matcher.assert_called_once_with("C001", "基板", "NY2150_TG150_1.6MM")
+
+    def test_matched_customer_code_populates_header_and_spec_match_on_generation(self) -> None:
+        with db.db_cursor() as conn:
+            conn.execute(
+                "UPDATE order_intake_cases SET customer_id=?,customer_match_status=? WHERE id=?",
+                (42, "matched", self.case_id),
+            )
+        with patch(
+            "fangzheng_web_app.order_entry_service.get_customer",
+            return_value={"id": 42, "customer_code": "123036"},
+        ), patch(
+            "fangzheng_web_app.order_entry_service.build_customer_spec_match",
+            return_value="自动客户规格匹配",
+        ) as matcher:
+            _case, template = get_or_create_template(self.case_id, "employee-a")
+
+        self.assertEqual("123036", template["header"]["bill_to_customer_code"])
+        self.assertEqual("123036", template["header"]["ship_to_customer_code"])
+        self.assertTrue(template["lines"])
+        self.assertTrue(all(
+            line["values"]["customer_spec_match"] == "自动客户规格匹配"
+            for line in template["lines"]
+        ))
+        self.assertTrue(all(
+            line["sources"]["customer_spec_match"]["label"] == "客户规格对照表"
+            for line in template["lines"]
+        ))
+        self.assertTrue(all(call.args[0] == "123036" for call in matcher.call_args_list))
+
+    def test_existing_blank_template_is_backfilled_after_customer_match(self) -> None:
+        _case, original = get_or_create_template(self.case_id, "employee-a")
+        self.assertEqual("", original["header"]["bill_to_customer_code"])
+        with db.db_cursor() as conn:
+            conn.execute(
+                "UPDATE order_intake_cases SET customer_id=?,customer_match_status=? WHERE id=?",
+                (43, "matched", self.case_id),
+            )
+        with patch(
+            "fangzheng_web_app.order_entry_service.get_customer",
+            return_value={"id": 43, "customer_code": "104253"},
+        ), patch(
+            "fangzheng_web_app.order_entry_service.build_customer_spec_match",
+            return_value="补齐后的规格匹配",
+        ):
+            _case, template = get_or_create_template(self.case_id, "employee-a")
+
+        self.assertEqual("104253", template["header"]["bill_to_customer_code"])
+        self.assertEqual("104253", template["header"]["ship_to_customer_code"])
+        self.assertTrue(all(
+            line["values"]["customer_spec_match"] == "补齐后的规格匹配"
+            for line in template["lines"]
+        ))
+
+    def test_existing_bill_to_code_backfills_only_blank_ship_to_code(self) -> None:
+        _case, original = get_or_create_template(self.case_id, "employee-a")
+        with db.db_cursor() as conn:
+            header = dict(original["header"])
+            header["bill_to_customer_code"] = "123036"
+            header["ship_to_customer_code"] = ""
+            conn.execute(
+                "UPDATE order_entry_templates SET header_json=? WHERE id=?",
+                (json.dumps(header, ensure_ascii=False), original["id"]),
+            )
+            conn.execute(
+                "UPDATE order_intake_cases SET customer_id=?,customer_match_status=? WHERE id=?",
+                (44, "matched", self.case_id),
+            )
+        with patch(
+            "fangzheng_web_app.order_entry_service.get_customer",
+            return_value={"id": 44, "customer_code": "123036"},
+        ):
+            _case, template = get_or_create_template(self.case_id, "employee-a")
+
+        self.assertEqual("123036", template["header"]["bill_to_customer_code"])
+        self.assertEqual("123036", template["header"]["ship_to_customer_code"])
 
     def test_empty_customer_code_clears_customer_spec_match(self) -> None:
         lines = [{
