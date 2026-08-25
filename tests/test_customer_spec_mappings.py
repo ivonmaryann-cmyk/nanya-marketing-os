@@ -185,7 +185,7 @@ class CustomerSpecMappingServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            "南亚新材料 NY6300SP 1080 RC=67% 经542mm纬620.00 mm 无卤 TG200",
+            "南亚新材料 NY6300SP 1080 RC=67% 经542mm纬620.00mm 无卤 TG200",
             result,
         )
 
@@ -198,8 +198,37 @@ class CustomerSpecMappingServiceTests(unittest.TestCase):
         self.assertEqual("NY6300SP", values["glue_system_position"])
         self.assertEqual("1080", values["cloth_type_position"])
         self.assertEqual("RC=67%", values["rc_position"])
-        self.assertEqual("经542mm纬620.00 mm", values["size_position"])
+        self.assertEqual("经542mm纬620.00mm", values["size_position"])
         self.assertTrue(detail["mapping_found"])
+
+        mixed_unit_detail = service.build_customer_spec_match_detail(
+            "104253",
+            "PP",
+            "南亚新材料 NY6300SP 1080 RC=69% 经300.00 m 纬49.50 inch 无卤 TG200(DMA)",
+        )
+        mixed_values = {
+            field["field"]: field["value"] for field in mixed_unit_detail["fields"]
+        }
+        self.assertEqual(
+            "南亚新材料 NY6300SP 1080 RC=69% 经300.00m纬49.50inch 无卤 TG200(DMA)",
+            mixed_unit_detail["customer_spec_match"],
+        )
+        self.assertEqual("经300.00m纬49.50inch", mixed_values["size_position"])
+
+        service.save_spec_mapping({
+            "customer_code": "104254", "product_type": "pp", "delimiter": "|",
+            "glue_system_position": "2", "cloth_type_position": "3",
+            "rc_position": "4", "size_position": "5", "enabled": "1",
+        })
+        delimited_detail = service.build_customer_spec_match_detail(
+            "104254",
+            "PP",
+            "南亚新材料|NY6300SP|1080|RC=69%|经300.00 m 纬49.50 inch|无卤|TG200(DMA)",
+        )
+        self.assertEqual(
+            "南亚新材料|NY6300SP|1080|RC=69%|经300.00m纬49.50inch|无卤|TG200(DMA)",
+            delimited_detail["customer_spec_match"],
+        )
 
 
 class CustomerSpecMappingRouteTests(unittest.TestCase):

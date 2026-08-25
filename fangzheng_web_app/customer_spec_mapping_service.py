@@ -34,8 +34,8 @@ FORM_FIELDS = (
     "note", "enabled",
 )
 _DIRECTIONAL_SIZE_PATTERN = re.compile(
-    r"经\s*(\d+(?:\.\d+)?)\s*(mm|毫米)?\s*(?:[xX*×]\s*)?"
-    r"纬\s*(\d+(?:\.\d+)?)\s*(mm|毫米)?",
+    r"经\s*(\d+(?:\.\d+)?)\s*(inch|mm|毫米|英寸|m|米)?\s*(?:[xX*×]\s*)?"
+    r"纬\s*(\d+(?:\.\d+)?)\s*(inch|mm|毫米|英寸|m|米)?",
     re.IGNORECASE,
 )
 
@@ -182,21 +182,20 @@ def _matching_position(token: str, mapping: dict[str, Any], next_position: int) 
     return min(candidates) if candidates else None
 
 
+def _compact_directional_size(match: re.Match[str]) -> str:
+    first_value, first_unit, second_value, second_unit = match.groups()
+    first_unit = first_unit.lower() if first_unit and first_unit.isascii() else first_unit
+    second_unit = second_unit.lower() if second_unit and second_unit.isascii() else second_unit
+    suffix = second_unit or ""
+    return f"经{first_value}{first_unit or ''}纬{second_value}{suffix}"
+
+
 def _split_spec_parts(spec: str, delimiter: str) -> list[str]:
+    # Normalize spacing first; field boundaries still come only from the configured delimiter.
+    normalized = _DIRECTIONAL_SIZE_PATTERN.sub(_compact_directional_size, spec)
     if delimiter:
-        return [part.strip() for part in spec.split(delimiter)]
-    parts: list[str] = []
-    cursor = 0
-    for match in _DIRECTIONAL_SIZE_PATTERN.finditer(spec):
-        parts.extend(part for part in re.split(r"\s+", spec[cursor:match.start()].strip()) if part)
-        first_value, first_unit, second_value, second_unit = match.groups()
-        size = f"经{first_value}{first_unit or ''}纬{second_value}"
-        if second_unit:
-            size += f" {second_unit}"
-        parts.append(size)
-        cursor = match.end()
-    parts.extend(part for part in re.split(r"\s+", spec[cursor:].strip()) if part)
-    return parts
+        return [part.strip() for part in normalized.split(delimiter)]
+    return [part for part in re.split(r"\s+", normalized.strip()) if part]
 
 
 def _formatted_spec_parts(
