@@ -37,6 +37,12 @@ DOMESTIC_DETAIL_HEADERS = [
     "一对多（选填）",
     "备注（选填）",
 ]
+DOMESTIC_HEADER_LABELS = [
+    "单别（必填）", "类型1（选填）", "类型2（选填）",
+    "账款客户编号（必填）", "送货客户编号（选填）", "送货厂别（选填）",
+    "客户订单号（选填）", "账套（必填）", "税种（选填）",
+    "客户发票号（选填）", "佣金比率（选填）",
+]
 
 
 def _header_key(value: Any) -> str:
@@ -162,7 +168,8 @@ def build_domestic_template_data(document: dict[str, Any]) -> dict[str, Any]:
         "order_type": "220", "type_1": "1", "type_2": "1",
         "bill_to_customer_code": "", "ship_to_customer_code": "",
         "delivery_factory": "", "customer_order_number": order_number,
-        "ledger": "KL01",
+        "ledger": "KL01", "tax_type": "", "customer_invoice_number": "",
+        "commission_rate": "",
     }
 
     rows: list[dict[str, Any]] = []
@@ -213,6 +220,7 @@ def build_domestic_rows(document: dict[str, Any]) -> tuple[list[Any], list[dict[
         header["order_type"], header["type_1"], header["type_2"],
         header["bill_to_customer_code"], header["ship_to_customer_code"],
         header["delivery_factory"], header["customer_order_number"], header["ledger"],
+        header["tax_type"], header["customer_invoice_number"], header["commission_rate"],
     ]
     rows = [
         {
@@ -264,6 +272,8 @@ def build_domestic_workbook(document: dict[str, Any]) -> BytesIO:
 
     for column in range(1, 16):
         sheet.cell(2, column).value = None
+    for column, label in enumerate(DOMESTIC_HEADER_LABELS, start=1):
+        sheet.cell(1, column).value = label
     for column, value in enumerate(header_values, start=1):
         sheet.cell(2, column).value = value or None
 

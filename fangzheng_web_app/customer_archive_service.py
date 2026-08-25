@@ -143,6 +143,17 @@ def list_clerks() -> list[str]:
     return [str(_row_dict(row).get("internal_clerk_name") or "") for row in rows]
 
 
+def list_customer_choices() -> list[dict[str, Any]]:
+    with db_cursor() as conn:
+        rows = conn.execute(
+            """SELECT customer_code,customer_short_name
+                 FROM automation_customers
+                WHERE status='active' AND TRIM(customer_code)<>''
+                ORDER BY customer_code"""
+        ).fetchall()
+    return [_row_dict(row) for row in rows]
+
+
 def get_customer(customer_id: int) -> dict[str, Any] | None:
     with db_cursor() as conn:
         row = conn.execute("SELECT * FROM automation_customers WHERE id=?", (customer_id,)).fetchone()

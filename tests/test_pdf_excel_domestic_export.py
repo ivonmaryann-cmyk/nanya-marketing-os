@@ -106,7 +106,7 @@ class PdfExcelDomesticExportTests(unittest.TestCase):
         sheet = book["内销"]
 
         self.assertEqual(
-            [sheet.cell(1, column).value for column in range(1, 9)],
+            [sheet.cell(1, column).value for column in range(1, 12)],
             [
                 "单别（必填）",
                 "类型1（选填）",
@@ -116,11 +116,14 @@ class PdfExcelDomesticExportTests(unittest.TestCase):
                 "送货厂别（选填）",
                 "客户订单号（选填）",
                 "账套（必填）",
+                "税种（选填）",
+                "客户发票号（选填）",
+                "佣金比率（选填）",
             ],
         )
         self.assertEqual(
-            [sheet.cell(2, column).value for column in range(1, 9)],
-            ["220", "1", "1", None, None, None, "PO20260821001", "KL01"],
+            [sheet.cell(2, column).value for column in range(1, 12)],
+            ["220", "1", "1", None, None, None, "PO20260821001", "KL01", None, None, None],
         )
         self.assertEqual(sheet["A4"].value, "1")
         self.assertIsNone(sheet["B4"].value)

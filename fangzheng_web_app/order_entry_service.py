@@ -39,6 +39,7 @@ DOMESTIC_TEMPLATE_PATH = PACKAGE_DIR / "default_rules" / "order_entry" / "PDF转
 HEADER_FIELDS = (
     "order_type", "type_1", "type_2", "bill_to_customer_code",
     "ship_to_customer_code", "delivery_factory", "customer_order_number", "ledger",
+    "tax_type", "customer_invoice_number", "commission_rate",
 )
 LINE_FIELDS = (
     "line_no", "product_code", "product_name", "customer_product_code",
@@ -50,6 +51,8 @@ HEADER_LABELS = {
     "order_type": "单别", "type_1": "类型1", "type_2": "类型2",
     "bill_to_customer_code": "账款客户编号", "ship_to_customer_code": "送货客户编号",
     "delivery_factory": "送货厂别", "customer_order_number": "客户订单号", "ledger": "账套",
+    "tax_type": "税种", "customer_invoice_number": "客户发票号",
+    "commission_rate": "佣金比率",
 }
 LINE_LABELS = {
     "line_no": "项次", "product_code": "产品编号", "product_name": "品名",
@@ -70,6 +73,9 @@ DEFAULT_HEADER_VALUES = {
     "delivery_factory": "",
     "customer_order_number": "",
     "ledger": "KL01",
+    "tax_type": "",
+    "customer_invoice_number": "",
+    "commission_rate": "",
 }
 MAX_ORDER_ATTACHMENT_BYTES = 20 * 1024 * 1024
 MAX_ORDER_ATTACHMENT_ROWS = 20_000
@@ -1266,6 +1272,8 @@ def build_domestic_export(case_id: int, employee_id: str) -> tuple[BytesIO, str]
     book = load_workbook(DOMESTIC_TEMPLATE_PATH)
     sheet = book["内销"]
     for index, field in enumerate(HEADER_FIELDS, start=1):
+        required_label = "（必填）" if field in REQUIRED_HEADER_FIELDS else "（选填）"
+        sheet.cell(1, index).value = f"{HEADER_LABELS[field]}{required_label}"
         sheet.cell(2, index).value = template["header"].get(field) or None
     required_rows = 3 + max(1, len(template["lines"]))
     style_source_row = 4

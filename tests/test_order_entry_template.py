@@ -63,6 +63,12 @@ class OrderEntryTemplateTests(unittest.TestCase):
             "shipToCode.value=code.value.trim()",
             template,
         )
+        self.assertIn("<datalist id=\"orderTypeOptions\">", template)
+        self.assertIn("<datalist id=\"customerCodeOptions\">", template)
+        self.assertNotIn("customer.customer_name", template)
+        self.assertIn("220:['1','1'],221:['3','2'],331:['3','1']", template)
+        self.assertIn("normalizeChoice(orderType,3)", template)
+        self.assertIn("normalizeCustomerCode();shipToCode.value=code.value.trim()", template)
 
     def test_saved_template_reopens_and_exports_same_values(self) -> None:
         _case, template = get_or_create_template(self.case_id, "employee-a")
@@ -72,7 +78,11 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertEqual(template["header"]["type_2"], "1")
         self.assertEqual(template["header"]["ledger"], "KL01")
         saved = save_template(self.case_id, "employee-a", {
-            "header": {"order_type": "SO", "bill_to_customer_code": "C001", "ledger": "151"},
+            "header": {
+                "order_type": "SO", "bill_to_customer_code": "C001", "ledger": "151",
+                "tax_type": "VAT", "customer_invoice_number": "INV-001",
+                "commission_rate": "2.5%",
+            },
             "lines": [{"values": {
                 "line_no": "1", "product_code": "P001", "product_name": "南亚NY2150",
                 "customer_product_code": "A1A150224149YNNYZ002", "quantity": "300",
@@ -90,6 +100,12 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertEqual(sheet["A2"].value, "SO")
         self.assertEqual(sheet["D2"].value, "C001")
         self.assertEqual(sheet["H2"].value, "151")
+        self.assertEqual(sheet["I2"].value, "VAT")
+        self.assertEqual(sheet["J2"].value, "INV-001")
+        self.assertEqual(sheet["K2"].value, "2.5%")
+        self.assertEqual(sheet["I1"].value, "税种（选填）")
+        self.assertEqual(sheet["J1"].value, "客户发票号（选填）")
+        self.assertEqual(sheet["K1"].value, "佣金比率（选填）")
         self.assertEqual(sheet["D4"].value, "A1A150224149YNNYZ002")
         self.assertIsNone(sheet["F4"].value)
         self.assertEqual(sheet["G4"].value, "基板")
