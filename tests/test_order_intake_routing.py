@@ -24,7 +24,11 @@ from fangzheng_web_app.order_intake_service import (
     update_routing,
     work_summary,
 )
-from fangzheng_web_app.customer_archive_service import save_contact, save_customer
+from fangzheng_web_app.customer_archive_service import (
+    save_contact,
+    save_customer,
+    save_routing_rule as save_customer_routing_rule,
+)
 
 
 class OrderIntakeRoutingTests(unittest.TestCase):
@@ -127,7 +131,8 @@ class OrderIntakeRoutingTests(unittest.TestCase):
 
         self.assertEqual([item["keyword"] for item in updated["keywords"] if item["scope"] == "subject"], before_subjects)
         self.assertEqual([item["keyword"] for item in updated["keywords"] if item["scope"] == "body"], ["订单明细", "下单通知"])
-        self.assertFalse(any(item["action_type"] == "unclassified" for item in list_universal_rules("employee-a")))
+        ignored = next(item for item in list_universal_rules("employee-a") if item["action_type"] == "unclassified")
+        self.assertEqual(ignored["employee_id"], GLOBAL_RULE_OWNER)
 
     def test_universal_rules_are_shared_between_employees(self) -> None:
         rule_a = next(rule for rule in list_universal_rules("employee-a") if rule["action_type"] == "new_order")
@@ -245,12 +250,53 @@ class OrderIntakeRoutingTests(unittest.TestCase):
         self.assertEqual(cases[0]["action_type"], "unclassified")
         self.assertEqual(cases[0]["change_tags"], [])
 
-    def test_temporary_unrouted_state_cannot_be_saved_as_a_rule(self) -> None:
-        with self.assertRaisesRegex(ValueError, "明确分流结果"):
-            save_universal_rule(
-                "employee-a",
-                {"name": "不应保存", "action_type": "unclassified", "keywords": [{"scope": "subject", "keyword": "测试"}]},
-            )
+    def test_ignore_rule_wins_over_order_keyword_and_matches_sender_email_exactly(self) -> None:
+        account_id = mail_store.create_or_update_account(
+            "orders@example.com", owner_employee_id="employee-a", auth_code="auth-code"
+        )
+        customer_id = save_customer({"customer_code": "C-IGNORE"})
+        save_contact(customer_id, contact_type="sender_email", contact_value="xinxi.zhuanyong@nouyatec.com")
+        save_customer_routing_rule(
+            customer_id,
+            name="客户采购订单",
+            action_type="new_order",
+            scope="subject",
+            keywords=["采购订单"],
+        )
+        mail_store.upsert_message(
+            account_id, folder="INBOX", uid="ignore-subject", message_id="<ignore-subject@example.com>",
+            subject="客户下单超量信息提醒：订单 20260818", sender="buyer@customer.com",
+            sent_at="2026-08-18 09:00:00", received_at="2026-08-18 09:00:00",
+            body_html="", body_text="", eml_path="", is_order=1,
+        )
+        mail_store.upsert_message(
+            account_id, folder="INBOX", uid="ignore-sender", message_id="<ignore-sender@example.com>",
+            subject="采购订单", sender="系统通知 <xinxi.zhuanyong@nouyatec.com>",
+            sent_at="2026-08-18 10:00:00", received_at="2026-08-18 10:00:00",
+            body_html="", body_text="", eml_path="", is_order=1,
+        )
+        mail_store.upsert_message(
+            account_id, folder="INBOX", uid="non-ignore-sender", message_id="<non-ignore-sender@example.com>",
+            subject="采购订单", sender="xinxi.zhuanyong+test@nouyatec.com",
+            sent_at="2026-08-18 11:00:00", received_at="2026-08-18 11:00:00",
+            body_html="", body_text="", eml_path="", is_order=1,
+        )
+
+        bootstrap_cases("employee-a", account_id)
+
+        ignored = list_cases("employee-a", "2026-08-18", "unclassified", account_id)
+        self.assertEqual({item["subject"] for item in ignored}, {"客户下单超量信息提醒：订单 20260818", "采购订单"})
+        self.assertTrue(all(item["routing_state"] == "unrouted" for item in ignored))
+        self.assertTrue(all(item["routing_reason"] == "暂不分流规则匹配" for item in ignored))
+        normal = list_cases("employee-a", "2026-08-18", "new_order", account_id)
+        self.assertEqual([item["sender"] for item in normal], ["xinxi.zhuanyong+test@nouyatec.com"])
+
+    def test_unclassified_universal_rule_can_be_saved(self) -> None:
+        saved = save_universal_rule(
+            "employee-a",
+            {"name": "系统通知", "action_type": "unclassified", "keywords": [{"scope": "subject", "keyword": "测试"}]},
+        )
+        self.assertEqual(saved["action_type"], "unclassified")
 
     def test_completed_task_is_counted_by_completion_day(self) -> None:
         today = business_today().isoformat()

@@ -6,10 +6,10 @@
 </style>
 <div class="or">
   <a class="or-back" href="{{ url_for('main.order_automation_entry_template', case_id=case.id, **return_context.query) }}">← 返回内销录单</a>
-  <section class="or-card or-head"><div><div class="or-kicker">订单邮件回复 · 邮件 #{{ case.id }}</div><h1>回复：{{ case.subject or '（无主题）' }}</h1><p>已带入订单邮件与当前内销录单数据；发送前仍可逐项编辑。</p></div><span class="or-mode">SMTP 待开通</span></section>
+  <section class="or-card or-head"><div><div class="or-kicker">订单邮件回复 · 邮件 #{{ case.id }}</div><h1>回复：{{ case.subject or '（无主题）' }}</h1><p>已带入订单邮件与当前内销录单数据；发送前仍可逐项编辑。</p></div><span class="or-mode" {% if smtp_ready %}style="border-color:#b9e7cb;background:#effbf3;color:#238a55;"{% endif %}>{{ 'SMTP 已启用' if smtp_ready else 'SMTP 未启用' }}</span></section>
   <div class="or-layout">
     <form class="or-card or-compose" method="post">
-      <h2>邮件内容</h2><p class="or-lead">当前为草稿模式。保存草稿不会发送邮件，也不会修改原订单数据。</p>
+      <h2>邮件内容</h2><p class="or-lead">保存草稿不会发送邮件，也不会修改原订单数据。发送前请核实收件人和订单内容。</p>
       <div class="or-field"><label for="replyTo">收件人</label><input id="replyTo" name="to" type="email" required value="{{ draft.to }}" placeholder="客户邮箱"></div>
       <div class="or-field"><label for="replyCc">抄送</label><input id="replyCc" name="cc" type="text" value="{{ draft.cc }}" placeholder="多个邮箱请用逗号分隔"></div>
       <div class="or-field"><label for="replySubject">主题</label><input id="replySubject" name="subject" required value="{{ draft.subject }}"></div>
@@ -18,13 +18,13 @@
 客户订单号：{{ order_template['header'].get('customer_order_number','未填写') if order_template else '未提取' }}
 订单明细：{{ line_count }} 项
 录单状态：{{ entry_progress.label }}</pre></details>
-      <div class="or-actions"><button class="or-button secondary" type="submit">保存草稿</button><button class="or-button" type="button" disabled title="需完成 SMTP 服务器和授权码配置后才能发送">发送邮件（待开通）</button></div>
-      <p class="or-smtp-note">真实发送功能将在完成 SMTP 服务器、端口、授权码及发件账号配置后启用；在此之前不会调用外部邮件服务。</p>
+      <div class="or-actions"><button class="or-button secondary" type="submit" name="action" value="save">保存草稿</button>{% if smtp_ready %}<button class="or-button" type="submit" name="action" value="send" onclick="return window.confirm('确认发送此订单回复邮件吗？')">发送邮件</button>{% else %}<a class="or-button secondary" href="{{ url_for('mail_transcode.accounts_page') }}">开通 SMTP 发信</a>{% endif %}</div>
+      <p class="or-smtp-note">{% if smtp_ready %}将通过本邮件所属业务邮箱发送，并记录发送时间、收发件人和发送结果。{% else %}请在“我的 → 邮箱配置”中填写 SMTP 服务器、用户名和客户端授权码，测试成功后启用真实发信。未启用前，本页只能保存草稿。{% endif %}</p>
     </form>
     <aside class="or-card or-side">
       <section><h2>原邮件</h2><div class="or-facts"><div class="or-fact"><span>原发件人</span><b>{{ case.sender or '未提供' }}</b></div><div class="or-fact"><span>邮件时间</span><b>{{ case.sent_at or case.received_at or '未提供' }}</b></div><div class="or-fact"><span>客户识别</span><b>{{ case.customer_name or '待确认客户' }}</b></div></div></section>
       <section><h2>订单数据摘要</h2><div class="or-facts"><div class="or-fact"><span>账款客户编号</span><b>{{ order_template['header'].get('bill_to_customer_code','未填写') if order_template else '未提取' }}</b></div><div class="or-fact"><span>客户订单号</span><b>{{ order_template['header'].get('customer_order_number','未填写') if order_template else '未提取' }}</b></div><div class="or-fact"><span>订单明细</span><b>{{ line_count }} 项</b></div></div><div class="or-order-list">{% for line in reply_lines %}<div class="or-order-row"><span>{{ line.line_no }}</span><div><b>{{ line['values'].get('product_code') or line['values'].get('customer_product_code') or '未填写料号' }}</b><small>{{ line['values'].get('product_name') or line['values'].get('customer_spec') or '无规格说明' }}</small></div></div>{% else %}<p class="or-more">订单明细尚未提取。</p>{% endfor %}</div>{% if line_count > reply_lines|length %}<p class="or-more">另有 {{ line_count - reply_lines|length }} 项明细未在此展开。</p>{% endif %}</section>
-      <section><h2>发送状态</h2><div class="or-reference">当前未发送。草稿可继续编辑；真实发信开通后会记录发件人、收件人、发送时间、请求编号与发送结果。</div></section>
+      <section><h2>发送状态</h2><div class="or-reference">{% if smtp_ready %}SMTP 已启用。发送后会记录发件人、收件人、发送时间、请求编号与发送结果。{% else %}SMTP 尚未启用。当前可编辑并保存草稿，不会调用外部邮件服务。{% endif %}</div></section>
     </aside>
   </div>
 </div>

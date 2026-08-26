@@ -260,6 +260,15 @@ def init_db() -> None:
                 imap_port INTEGER NOT NULL DEFAULT 993,
                 auth_code_ciphertext TEXT NOT NULL DEFAULT '',
                 enabled INTEGER NOT NULL DEFAULT 1,
+                smtp_host TEXT NOT NULL DEFAULT '',
+                smtp_port INTEGER NOT NULL DEFAULT 465,
+                smtp_security TEXT NOT NULL DEFAULT 'ssl',
+                smtp_username TEXT NOT NULL DEFAULT '',
+                smtp_auth_code_ciphertext TEXT NOT NULL DEFAULT '',
+                smtp_sender_name TEXT NOT NULL DEFAULT '',
+                smtp_enabled INTEGER NOT NULL DEFAULT 0,
+                smtp_last_test_at TEXT,
+                smtp_last_test_status TEXT NOT NULL DEFAULT '',
                 last_fetch_at TEXT,
                 last_fetch_status TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
@@ -397,6 +406,20 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE mail_accounts ADD COLUMN owner_employee_id TEXT NOT NULL DEFAULT ''"
             )
+        smtp_account_columns = {
+            "smtp_host": "TEXT NOT NULL DEFAULT ''",
+            "smtp_port": "INTEGER NOT NULL DEFAULT 465",
+            "smtp_security": "TEXT NOT NULL DEFAULT 'ssl'",
+            "smtp_username": "TEXT NOT NULL DEFAULT ''",
+            "smtp_auth_code_ciphertext": "TEXT NOT NULL DEFAULT ''",
+            "smtp_sender_name": "TEXT NOT NULL DEFAULT ''",
+            "smtp_enabled": "INTEGER NOT NULL DEFAULT 0",
+            "smtp_last_test_at": "TEXT",
+            "smtp_last_test_status": "TEXT NOT NULL DEFAULT ''",
+        }
+        for column, definition in smtp_account_columns.items():
+            if column not in mail_account_cols:
+                conn.execute(f"ALTER TABLE mail_accounts ADD COLUMN {column} {definition}")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_mail_accounts_owner "
             "ON mail_accounts(owner_employee_id, enabled, id DESC)"

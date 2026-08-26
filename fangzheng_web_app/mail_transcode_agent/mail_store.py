@@ -8,6 +8,9 @@ from ..transcode_customer_rule_admin import resolve_customer_code_by_name
 from .mail_crypto import decrypt_text, encrypt_text
 
 
+SMTP_SECURITY_OPTIONS = {"ssl", "starttls"}
+
+
 def now_iso() -> str:
     return datetime.now().replace(microsecond=0).isoformat()
 
@@ -48,6 +51,143 @@ def get_account_auth_code(account_id: int, *, owner_employee_id: str) -> str | N
     if not account:
         return None
     return decrypt_text(str(account.get("auth_code_ciphertext") or ""))
+
+
+def smtp_public_config(account: dict[str, Any] | None) -> dict[str, Any]:
+    """Return SMTP configuration safe to render in a browser.
+
+    The SMTP authorization code intentionally never leaves the server.  The
+    ``configured`` flag distinguishes an account that has merely been saved
+    from one that can actually be tested or used to send mail.
+    """
+    account = account or {}
+    security = str(account.get("smtp_security") or "ssl").lower()
+    if security not in SMTP_SECURITY_OPTIONS:
+        security = "ssl"
+    configured = bool(
+        str(account.get("smtp_host") or "").strip()
+        and str(account.get("smtp_username") or "").strip()
+        and str(account.get("smtp_auth_code_ciphertext") or "").strip()
+    )
+    return {
+        "host": str(account.get("smtp_host") or "").strip(),
+        "port": int(account.get("smtp_port") or 465),
+        "security": security,
+        "username": str(account.get("smtp_username") or "").strip(),
+        "sender_name": str(account.get("smtp_sender_name") or "").strip(),
+        "enabled": bool(account.get("smtp_enabled")) and configured
+        and str(account.get("smtp_last_test_status") or "") == "success",
+        "configured": configured,
+        "last_test_at": str(account.get("smtp_last_test_at") or ""),
+        "last_test_status": str(account.get("smtp_last_test_status") or ""),
+    }
+
+
+def get_smtp_config(account_id: int, *, owner_employee_id: str) -> dict[str, Any] | None:
+    """Return a server-only SMTP configuration including the decrypted secret."""
+    account = get_account(account_id, owner_employee_id=owner_employee_id)
+    if not account:
+        return None
+    public = smtp_public_config(account)
+    return {
+        **public,
+        "account_id": int(account["id"]),
+        "email": str(account.get("email") or "").strip(),
+        "auth_code": decrypt_text(str(account.get("smtp_auth_code_ciphertext") or "")),
+    }
+
+
+def save_smtp_config(
+    account_id: int,
+    *,
+    owner_employee_id: str,
+    host: str,
+    port: int,
+    security: str,
+    username: str,
+    auth_code: str,
+    sender_name: str,
+    enabled: int,
+) -> dict[str, Any]:
+    """Save the outgoing-mail configuration without exposing its secret."""
+    host = str(host or "").strip()
+    username = str(username or "").strip()
+    auth_code = str(auth_code or "").strip()
+    sender_name = str(sender_name or "").strip()
+    security = str(security or "ssl").strip().lower()
+    if security not in SMTP_SECURITY_OPTIONS:
+        raise ValueError("SMTP 加密方式仅支持 SSL/TLS 或 STARTTLS")
+    try:
+        port = int(port)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("SMTP 端口必须是 1 到 65535 之间的数字") from exc
+    if not 1 <= port <= 65535:
+        raise ValueError("SMTP 端口必须是 1 到 65535 之间的数字")
+
+    with db_cursor() as conn:
+        account = conn.execute(
+            "SELECT * FROM mail_accounts WHERE id = ? AND owner_employee_id = ?",
+            (int(account_id), owner_employee_id),
+        ).fetchone()
+        if not account:
+            raise ValueError("邮箱账号不存在或无权编辑")
+        ciphertext = (
+            encrypt_text(auth_code)
+            if auth_code
+            else str(account["smtp_auth_code_ciphertext"] or "")
+        )
+        configured = bool(host and username and ciphertext)
+        if int(enabled) and not configured:
+            raise ValueError("启用发信前，请填写 SMTP 服务器、用户名和客户端授权码")
+        connection_changed = any(
+            (
+                host != str(account["smtp_host"] or "").strip(),
+                port != int(account["smtp_port"] or 465),
+                security != str(account["smtp_security"] or "ssl").lower(),
+                username != str(account["smtp_username"] or "").strip(),
+                bool(auth_code),
+            )
+        )
+        previous_test_ok = str(account["smtp_last_test_status"] or "") == "success"
+        if int(enabled) and (connection_changed or not previous_test_ok):
+            raise ValueError("请先保存 SMTP 配置并测试连接成功，再启用真实发信")
+        now = now_iso()
+        conn.execute(
+            """
+            UPDATE mail_accounts
+            SET smtp_host = ?, smtp_port = ?, smtp_security = ?, smtp_username = ?,
+                smtp_auth_code_ciphertext = ?, smtp_sender_name = ?, smtp_enabled = ?,
+                smtp_last_test_at = ?, smtp_last_test_status = ?, updated_at = ?
+            WHERE id = ? AND owner_employee_id = ?
+            """,
+            (
+                host, port, security, username, ciphertext, sender_name, int(bool(enabled)),
+                None if connection_changed else account["smtp_last_test_at"],
+                "" if connection_changed else str(account["smtp_last_test_status"] or ""), now,
+                int(account_id), owner_employee_id,
+            ),
+        )
+        updated = conn.execute("SELECT * FROM mail_accounts WHERE id = ?", (int(account_id),)).fetchone()
+    return smtp_public_config(_one(updated))
+
+
+def set_smtp_test_status(
+    account_id: int,
+    status: str,
+    *,
+    owner_employee_id: str,
+    at: str | None = None,
+) -> None:
+    now = at or now_iso()
+    with db_cursor() as conn:
+        conn.execute(
+            """
+            UPDATE mail_accounts
+            SET smtp_last_test_at = ?, smtp_last_test_status = ?, updated_at = ?
+            WHERE id = ? AND owner_employee_id = ?
+            """,
+            (now, str(status or "")[:240], now, int(account_id), owner_employee_id),
+        )
 
 
 def create_or_update_account(

@@ -925,7 +925,7 @@ def run_template_extraction_task(task_id: int, case_id: int, employee_id: str) -
         _complete_template_extraction_task(
             task_id,
             status="completed",
-            message="订单信息已提取，请核对并保存内销模板。",
+            message="订单信息已提取，请核对并保存订单。",
             template_id=int(template["id"]),
         )
     except Exception as exc:
@@ -1120,13 +1120,13 @@ def template_progress(case_id: int, employee_id: str) -> dict[str, Any]:
     if version <= 0:
         return {
             "created": True, "saved": False, "completed": False, "version": 0,
-            "stage": "pending_template_save", "label": "待保存模板",
-            "next_action": "核对并保存内销模板", "step": 3,
+            "stage": "pending_template_save", "label": "待核对并保存订单",
+            "next_action": "核对并保存订单", "step": 3,
         }
     return {
         "created": True, "saved": True, "completed": False, "version": version,
-        "stage": "pending_interface_submit", "label": "订单信息确认",
-        "next_action": "订单信息确认", "step": 4,
+        "stage": "pending_interface_submit", "label": "待批量料号查询",
+        "next_action": "批量料号查询", "step": 4,
     }
 
 

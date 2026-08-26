@@ -7,6 +7,7 @@ from flask import Blueprint, abort, flash, jsonify, redirect, render_template, r
 from ..routes import require_login
 from . import mail_order_service, mail_store
 from .mail_fetch_service import fetch_latest_order_mails, test_imap_connection
+from .smtp_service import test_smtp_connection
 
 
 bp = Blueprint("mail_transcode", __name__)
@@ -92,6 +93,7 @@ def accounts_page():
         "mail_transcode_agent/accounts.html",
         accounts=mail_store.list_accounts(owner_employee_id=owner_employee_id),
         edit_account=edit_account,
+        smtp_config=mail_store.smtp_public_config(edit_account),
     )
 
 
@@ -99,20 +101,41 @@ def accounts_page():
 def save_account():
     owner_employee_id = _owner()
     email = str(request.form.get("email") or "").strip()
+    account_id = int(request.form.get("account_id") or 0)
     if not email:
         flash("请输入邮箱地址", "error")
         return redirect(url_for("mail_transcode.accounts_page"))
     try:
-        mail_store.create_or_update_account(
+        imap_auth_code = str(request.form.get("auth_code") or "")
+        saved_account_id = mail_store.create_or_update_account(
             email,
             owner_employee_id=owner_employee_id,
-            account_id=int(request.form.get("account_id") or 0),
+            account_id=account_id,
             imap_host=str(request.form.get("imap_host") or "imaphz.qiye.163.com"),
             imap_port=int(request.form.get("imap_port") or 993),
-            auth_code=str(request.form.get("auth_code") or ""),
+            auth_code=imap_auth_code,
             enabled=1 if request.form.get("enabled") else 0,
         )
+        if request.form.get("smtp_config_present"):
+            mail_store.save_smtp_config(
+                saved_account_id,
+                owner_employee_id=owner_employee_id,
+                host=str(request.form.get("smtp_host") or ""),
+                port=request.form.get("smtp_port") or 465,
+                security=str(request.form.get("smtp_security") or "ssl"),
+                username=str(request.form.get("smtp_username") or ""),
+                auth_code=(
+                    imap_auth_code
+                    if request.form.get("use_imap_auth_code")
+                    else str(request.form.get("smtp_auth_code") or "")
+                ),
+                sender_name=str(request.form.get("smtp_sender_name") or ""),
+                enabled=0,
+            )
         flash("邮箱账号已保存", "success")
+        if not account_id:
+            flash("可在编辑页测试 SMTP 连接；测试成功后才能启用真实发信。", "success")
+            return redirect(url_for("mail_transcode.accounts_page", edit=saved_account_id))
     except Exception as exc:
         flash(f"保存失败：{exc}", "error")
     return redirect(url_for("mail_transcode.accounts_page"))
@@ -136,6 +159,14 @@ def reveal_auth_code(account_id: int):
     return jsonify({"auth_code": auth_code})
 
 
+@bp.post("/accounts/<int:account_id>/reveal-smtp-auth-code")
+def reveal_smtp_auth_code(account_id: int):
+    config = mail_store.get_smtp_config(account_id, owner_employee_id=_owner())
+    if config is None:
+        abort(404)
+    return jsonify({"auth_code": str(config.get("auth_code") or "")})
+
+
 @bp.post("/accounts/<int:account_id>/test-connection")
 def test_account_connection(account_id: int):
     try:
@@ -145,6 +176,41 @@ def test_account_connection(account_id: int):
         return jsonify({"ok": False, "error": str(exc)}), 400
     except Exception:
         return jsonify({"ok": False, "error": "连接失败，请核对企业邮箱 IMAP 服务器、端口和客户端授权码。"}), 502
+
+
+@bp.post("/accounts/<int:account_id>/smtp")
+def save_account_smtp(account_id: int):
+    owner_employee_id = _owner()
+    try:
+        smtp_auth_code = str(request.form.get("smtp_auth_code") or "")
+        if request.form.get("use_imap_auth_code"):
+            smtp_auth_code = mail_store.get_account_auth_code(
+                account_id, owner_employee_id=owner_employee_id
+            ) or ""
+        mail_store.save_smtp_config(
+            account_id,
+            owner_employee_id=owner_employee_id,
+            host=str(request.form.get("smtp_host") or ""),
+            port=int(request.form.get("smtp_port") or 465),
+            security=str(request.form.get("smtp_security") or "ssl"),
+            username=str(request.form.get("smtp_username") or ""),
+            auth_code=smtp_auth_code,
+            sender_name=str(request.form.get("smtp_sender_name") or ""),
+            enabled=1 if request.form.get("smtp_enabled") else 0,
+        )
+        flash("SMTP 发信配置已保存。授权码不会在页面中回显。", "success")
+    except ValueError as exc:
+        flash(f"SMTP 保存失败：{exc}", "error")
+    return redirect(url_for("mail_transcode.accounts_page", edit=account_id))
+
+
+@bp.post("/accounts/<int:account_id>/test-smtp-connection")
+def test_account_smtp_connection(account_id: int):
+    try:
+        result = test_smtp_connection(account_id, owner_employee_id=_owner())
+        return jsonify({"ok": True, **result})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
 
 
 @bp.post("/fetch")

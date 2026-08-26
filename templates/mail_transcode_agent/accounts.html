@@ -7,19 +7,20 @@
 </div>
 
 <section class="feature-hero">
-  <div class="hero-watermark feature-mark">IMAP</div>
+  <div class="hero-watermark feature-mark">MAIL</div>
   <div class="feature-hero-copy">
     <div class="panel-tag">我的</div>
     <h1>邮箱配置</h1>
-    <p>仅当前登录用户可见和使用。后续邮件自动化会复用本配置；手动抓取昨天和今天邮件，不会修改邮箱的已读或未读状态。</p>
+    <p>仅当前登录用户可见和使用。收件使用 IMAP，订单回复使用 SMTP；手动抓取不会修改邮箱的已读或未读状态。</p>
   </div>
 </section>
 
 <section class="split-layout">
   <div class="work-column">
     <article class="card task-card">
-      <div class="step-tag">{{ '编辑' if edit_account else '新增' }}</div>
-      <h2>{{ '编辑我的邮箱' if edit_account else '配置我的邮箱' }}</h2>
+      <div class="step-tag">收信</div>
+      <h2>IMAP 收信配置</h2>
+      <p class="mail-account-note">用于只读抓取业务邮件。修改本配置不会改变原邮箱邮件的已读或未读状态。</p>
       <form method="post" action="{{ url_for('mail_transcode.save_account') }}" class="form-grid">
         <input type="hidden" name="account_id" value="{{ edit_account.id if edit_account else '' }}">
         <label>
@@ -50,9 +51,55 @@
             {% endif %}
           </div>
         </label>
+        {% if not edit_account %}
+        <input type="hidden" name="smtp_config_present" value="1">
+        <hr style="border:0;border-top:1px solid #e4ebf4;margin:8px 0 14px;">
+        <div class="step-tag">发信</div>
+        <h2 style="margin-top:8px;">SMTP 发信配置（可选）</h2>
+        <p class="mail-account-note">可与收件邮箱一并保存。保存后需在编辑页测试 SMTP 连接成功，才可启用真实订单回复发信。</p>
+        <div class="result-actions">
+          <label class="mail-field" style="flex:1;">
+            <span>SMTP 服务器</span>
+            <input type="text" name="smtp_host" value="smtphz.qiye.163.com" placeholder="smtphz.qiye.163.com">
+          </label>
+          <label class="mail-field" style="flex:0 0 130px;">
+            <span>端口</span>
+            <input type="number" name="smtp_port" min="1" max="65535" value="465">
+          </label>
+        </div>
+        <div class="result-actions" style="margin-top:-8px;">
+          <span class="muted-text">网易企业邮箱常用配置：smtphz.qiye.163.com:465（SSL/TLS）</span>
+        </div>
+        <label>
+          <span>加密方式</span>
+          <select name="smtp_security">
+            <option value="ssl" selected>SSL/TLS（推荐，465）</option>
+            <option value="starttls">STARTTLS</option>
+          </select>
+        </label>
+        <label>
+          <span>SMTP 用户名</span>
+          <input type="text" name="smtp_username" placeholder="通常填写完整邮箱地址">
+        </label>
+        <label>
+          <span>SMTP 客户端授权码</span>
+          <div class="result-actions">
+            <input id="smtp-auth-code" type="password" name="smtp_auth_code" autocomplete="new-password" placeholder="通常与 IMAP 使用同一个客户端授权码" style="flex:1;">
+            <button id="paste-smtp-auth-code" type="button" class="mail-outline-action">粘贴</button>
+          </div>
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; color:var(--muted); font-size:14px;">
+          <input type="checkbox" name="use_imap_auth_code" style="width:auto;">
+          <span>使用上方收信授权码</span>
+        </label>
+        <label>
+          <span>发件人显示名称（可选）</span>
+          <input type="text" name="smtp_sender_name" placeholder="例如：南亚营销自动化平台">
+        </label>
+        {% endif %}
         <label style="display:flex; align-items:center; gap:8px; color:var(--muted); font-size:14px;">
           <input type="checkbox" name="enabled" {% if not edit_account or edit_account.enabled %}checked{% endif %} style="width:auto;">
-          <span>启用该账号</span>
+          <span>启用收信账号</span>
         </label>
         <div class="result-actions">
           <button type="submit">{{ '保存更新' if edit_account else '保存配置' }}</button>
@@ -64,6 +111,63 @@
         <button id="test-mail-connection" type="button" class="mail-outline-action" data-url="{{ url_for('mail_transcode.test_account_connection', account_id=edit_account.id) }}">测试只读连接</button>
         <span id="mail-connection-result" class="muted-text" aria-live="polite">不抓取、不保存邮件，仅验证登录和收件箱只读访问。</span>
       </div>
+      <hr style="border:0;border-top:1px solid #e4ebf4;margin:24px 0;">
+      <div class="step-tag">发信</div>
+      <h2 style="margin-top:8px;">SMTP 发信配置</h2>
+      <p class="mail-account-note">用于从该业务邮箱向客户发送已确认的订单回复。SMTP 客户端授权码会加密保存，保存后不会在页面回显。</p>
+      <form method="post" action="{{ url_for('mail_transcode.save_account_smtp', account_id=edit_account.id) }}" class="form-grid">
+        <div class="result-actions">
+          <label class="mail-field" style="flex:1;">
+            <span>SMTP 服务器</span>
+            <input id="smtp-host" type="text" name="smtp_host" value="{{ smtp_config.host }}" placeholder="smtphz.qiye.163.com">
+          </label>
+          <label class="mail-field" style="flex:0 0 130px;">
+            <span>端口</span>
+            <input id="smtp-port" type="number" name="smtp_port" min="1" max="65535" value="{{ smtp_config.port or 465 }}">
+          </label>
+        </div>
+        <div class="result-actions" style="margin-top:-8px;">
+          <button id="use-enterprise-smtp" type="button" class="mail-outline-action">使用网易企业邮箱推荐配置</button>
+          <span class="muted-text">常用配置：smtphz.qiye.163.com:465（SSL/TLS）</span>
+        </div>
+        <label>
+          <span>加密方式</span>
+          <select name="smtp_security">
+            <option value="ssl" {% if smtp_config.security == 'ssl' %}selected{% endif %}>SSL/TLS（推荐，465）</option>
+            <option value="starttls" {% if smtp_config.security == 'starttls' %}selected{% endif %}>STARTTLS</option>
+          </select>
+        </label>
+        <label>
+          <span>SMTP 用户名</span>
+          <input type="text" name="smtp_username" value="{{ smtp_config.username or edit_account.email }}" placeholder="通常为完整邮箱地址">
+        </label>
+        <label>
+          <span>SMTP 客户端授权码</span>
+          <div class="result-actions">
+            <input id="smtp-auth-code" type="password" name="smtp_auth_code" autocomplete="new-password" placeholder="{{ '已配置，留空表示不修改' if smtp_config.configured else '请输入客户端授权码' }}" style="flex:1;">
+            <button id="paste-smtp-auth-code" type="button" class="mail-outline-action">粘贴</button>
+            <button id="reveal-smtp-auth-code" type="button" class="mail-outline-action" data-url="{{ url_for('mail_transcode.reveal_smtp_auth_code', account_id=edit_account.id) }}">显示</button>
+            <button id="copy-smtp-auth-code" type="button" class="mail-outline-action" hidden>复制</button>
+          </div>
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; color:var(--muted); font-size:14px;">
+          <input type="checkbox" name="use_imap_auth_code" style="width:auto;">
+          <span>使用收信授权码</span>
+        </label>
+        <label>
+          <span>发件人显示名称（可选）</span>
+          <input type="text" name="smtp_sender_name" value="{{ smtp_config.sender_name }}" placeholder="例如：南亚营销自动化平台">
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; color:var(--muted); font-size:14px;">
+          <input type="checkbox" name="smtp_enabled" {% if smtp_config.enabled %}checked{% endif %} style="width:auto;">
+          <span>启用真实邮件发送</span>
+        </label>
+        <div class="result-actions">
+          <button type="submit">保存 SMTP 配置</button>
+          <button id="test-smtp-connection" type="button" class="mail-outline-action" data-url="{{ url_for('mail_transcode.test_account_smtp_connection', account_id=edit_account.id) }}">测试 SMTP 连接</button>
+          <span id="smtp-connection-result" class="muted-text" aria-live="polite">{{ '上次测试成功：' ~ smtp_config.last_test_at if smtp_config.last_test_status == 'success' else '测试只验证登录，不会发送邮件。' }}</span>
+        </div>
+      </form>
       {% endif %}
     </article>
   </div>
@@ -75,13 +179,13 @@
       <p class="mail-account-note">删除仅移除本系统中的邮箱配置，不会删除网易邮箱里的邮件；抓取记录已统一收录到<a href="{{ url_for('main.history') }}">历史记录</a>。</p>
       <div class="table-scroll">
         <table class="table">
-          <thead><tr><th>邮箱</th><th>服务器</th><th>状态</th><th>上次抓取</th><th>操作</th></tr></thead>
+          <thead><tr><th>邮箱</th><th>收信状态</th><th>发信状态</th><th>上次抓取</th><th>操作</th></tr></thead>
           <tbody>
             {% for account in accounts %}
             <tr>
               <td>{{ account.email }}</td>
-              <td>{{ account.imap_host }}:{{ account.imap_port }}</td>
-              <td><span class="status">{{ '启用' if account.enabled else '停用' }}</span></td>
+              <td><span class="status">{{ '已启用' if account.enabled else '已停用' }}</span><br><small>{{ account.imap_host }}:{{ account.imap_port }}</small></td>
+              <td><span class="status">{{ '已启用' if account.smtp_enabled else ('已配置待启用' if account.smtp_auth_code_ciphertext else '未配置') }}</span></td>
               <td>{{ account.last_fetch_at or '从未抓取' }}</td>
               <td>
                 <div class="mail-account-actions">
@@ -102,71 +206,119 @@
   </div>
 </section>
 
-{% if edit_account %}
 <script>
   (function () {
-    const button = document.getElementById('reveal-auth-code');
-    const input = document.getElementById('auth-code');
-    const copyButton = document.getElementById('copy-auth-code');
     const testButton = document.getElementById('test-mail-connection');
     const testResult = document.getElementById('mail-connection-result');
     const imapHost = document.getElementById('imap-host');
     const imapPort = document.querySelector('input[name="imap_port"]');
     const enterpriseButton = document.getElementById('use-enterprise-imap');
-    enterpriseButton.addEventListener('click', function () {
-      imapHost.value = 'imaphz.qiye.163.com';
-      imapPort.value = '993';
-    });
-    if (!button || !input) return;
-    let loaded = false;
-    button.addEventListener('click', async function () {
-      if (loaded) {
-        input.type = input.type === 'password' ? 'text' : 'password';
-        button.textContent = input.type === 'password' ? '显示' : '隐藏';
-        return;
-      }
-      button.disabled = true;
-      try {
-        const response = await fetch(button.dataset.url, {method: 'POST', credentials: 'same-origin'});
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || '授权码读取失败');
-        input.value = data.auth_code || '';
-        input.type = 'text';
-        input.placeholder = '';
-        button.textContent = '隐藏';
-        copyButton.hidden = false;
-        loaded = true;
-      } catch (error) {
-        window.alert(error.message || '授权码读取失败');
-      } finally {
-        button.disabled = false;
-      }
-    });
-    copyButton.addEventListener('click', async function () {
-      if (!input.value) return;
-      try {
-        await navigator.clipboard.writeText(input.value);
-        copyButton.textContent = '已复制';
-        window.setTimeout(() => { copyButton.textContent = '复制'; }, 1500);
-      } catch (error) {
-        window.alert('复制失败，请手动复制。');
-      }
-    });
-    testButton.addEventListener('click', async function () {
-      testButton.disabled = true;
-      testResult.textContent = '正在验证只读连接…';
-      try {
-        const response = await fetch(testButton.dataset.url, {method: 'POST', credentials: 'same-origin'});
-        const data = await response.json();
-        if (!response.ok || !data.ok) throw new Error(data.error || '连接失败');
-        testResult.textContent = data.message;
-      } catch (error) {
-        testResult.textContent = error.message || '连接失败';
-      } finally {
-        testButton.disabled = false;
-      }
-    });
+    const smtpHost = document.getElementById('smtp-host');
+    const smtpPort = document.getElementById('smtp-port');
+    const smtpEnterpriseButton = document.getElementById('use-enterprise-smtp');
+    const smtpTestButton = document.getElementById('test-smtp-connection');
+    const smtpTestResult = document.getElementById('smtp-connection-result');
+    const smtpAuthInput = document.getElementById('smtp-auth-code');
+    const smtpPasteButton = document.getElementById('paste-smtp-auth-code');
+
+    if (enterpriseButton && imapHost && imapPort) {
+      enterpriseButton.addEventListener('click', function () {
+        imapHost.value = 'imaphz.qiye.163.com';
+        imapPort.value = '993';
+      });
+    }
+    if (smtpEnterpriseButton && smtpHost && smtpPort) {
+      smtpEnterpriseButton.addEventListener('click', function () {
+        smtpHost.value = 'smtphz.qiye.163.com';
+        smtpPort.value = '465';
+      });
+    }
+    if (smtpPasteButton && smtpAuthInput) {
+      smtpPasteButton.addEventListener('click', async function () {
+        try {
+          smtpAuthInput.value = await navigator.clipboard.readText();
+          smtpAuthInput.focus();
+        } catch (error) {
+          window.alert('浏览器未授予剪贴板权限，请直接点击输入框后按 Command + V 粘贴。');
+        }
+      });
+    }
+
+    function bindSecretControls(inputId, revealId, copyId) {
+      const input = document.getElementById(inputId);
+      const revealButton = document.getElementById(revealId);
+      const copyButton = document.getElementById(copyId);
+      if (!input || !revealButton || !copyButton) return;
+      let loaded = false;
+      revealButton.addEventListener('click', async function () {
+        if (loaded) {
+          input.type = input.type === 'password' ? 'text' : 'password';
+          revealButton.textContent = input.type === 'password' ? '显示' : '隐藏';
+          return;
+        }
+        revealButton.disabled = true;
+        try {
+          const response = await fetch(revealButton.dataset.url, {method: 'POST', credentials: 'same-origin'});
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || '授权码读取失败');
+          input.value = data.auth_code || '';
+          input.type = 'text';
+          input.placeholder = '';
+          revealButton.textContent = '隐藏';
+          copyButton.hidden = false;
+          loaded = true;
+        } catch (error) {
+          window.alert(error.message || '授权码读取失败');
+        } finally {
+          revealButton.disabled = false;
+        }
+      });
+      copyButton.addEventListener('click', async function () {
+        if (!input.value) return;
+        try {
+          await navigator.clipboard.writeText(input.value);
+          copyButton.textContent = '已复制';
+          window.setTimeout(() => { copyButton.textContent = '复制'; }, 1500);
+        } catch (error) {
+          window.alert('复制失败，请手动复制。');
+        }
+      });
+    }
+    bindSecretControls('auth-code', 'reveal-auth-code', 'copy-auth-code');
+    bindSecretControls('smtp-auth-code', 'reveal-smtp-auth-code', 'copy-smtp-auth-code');
+
+    if (testButton && testResult) {
+      testButton.addEventListener('click', async function () {
+        testButton.disabled = true;
+        testResult.textContent = '正在验证只读连接…';
+        try {
+          const response = await fetch(testButton.dataset.url, {method: 'POST', credentials: 'same-origin'});
+          const data = await response.json();
+          if (!response.ok || !data.ok) throw new Error(data.error || '连接失败');
+          testResult.textContent = data.message;
+        } catch (error) {
+          testResult.textContent = error.message || '连接失败';
+        } finally {
+          testButton.disabled = false;
+        }
+      });
+    }
+    if (smtpTestButton && smtpTestResult) {
+      smtpTestButton.addEventListener('click', async function () {
+        smtpTestButton.disabled = true;
+        smtpTestResult.textContent = '正在验证 SMTP 登录…';
+        try {
+          const response = await fetch(smtpTestButton.dataset.url, {method: 'POST', credentials: 'same-origin'});
+          const data = await response.json();
+          if (!response.ok || !data.ok) throw new Error(data.error || 'SMTP 连接失败');
+          smtpTestResult.textContent = data.message;
+        } catch (error) {
+          smtpTestResult.textContent = error.message || 'SMTP 连接失败';
+        } finally {
+          smtpTestButton.disabled = false;
+        }
+      });
+    }
   }());
 </script>
-{% endif %}
 {% endblock %}

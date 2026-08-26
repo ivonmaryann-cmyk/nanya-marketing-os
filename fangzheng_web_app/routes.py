@@ -110,6 +110,7 @@ from .order_intake_service import (
     save_change_tag as save_order_change_tag,
     save_universal_rule as save_order_universal_rule,
     save_universal_rule_scope as save_order_universal_rule_scope,
+    CHANGE_TAG_SCOPE_LABELS as ORDER_CHANGE_TAG_SCOPE_LABELS,
     SCOPE_LABELS as ORDER_SCOPE_LABELS,
     update_case as update_order_intake_case,
     update_routing as update_order_intake_routing,
@@ -1101,6 +1102,7 @@ def order_automation_rules():
         editing_change_tag=editing_change_tag,
         action_labels=ORDER_ACTION_LABELS,
         scope_labels=ORDER_SCOPE_LABELS,
+        change_scope_labels=ORDER_CHANGE_TAG_SCOPE_LABELS,
         selected_scope=selected_scope,
         selected_tab=selected_tab,
     )
@@ -1114,7 +1116,7 @@ def order_automation_change_tags():
     try:
         split_words = lambda values: [word.strip() for value in values for word in str(value).splitlines() if word.strip()]
         keywords = [{"scope": "all", "keyword": word} for word in split_words(request.form.getlist("all_keyword"))]
-        for scope in ORDER_SCOPE_LABELS:
+        for scope in ORDER_CHANGE_TAG_SCOPE_LABELS:
             keywords.extend(
                 {"scope": scope, "keyword": word}
                 for word in split_words(request.form.getlist(f"{scope}_keyword"))
@@ -1255,13 +1257,7 @@ def order_automation_case(case_id: int):
 
 @bp.route("/order-automation/cases/<int:case_id>/reply", methods=["GET", "POST"])
 def order_automation_reply(case_id: int):
-    """Prepare a customer reply without sending it through an unconfigured SMTP server.
-
-    The compose screen is deliberately useful before SMTP is available: it keeps a
-    per-session draft and always shows the exact order data that will be cited in
-    the reply.  A later SMTP integration can reuse this route and payload without
-    changing the business-facing page.
-    """
+    """Compose and, after SMTP setup, send a customer order reply."""
     redirect_resp = require_login()
     if redirect_resp:
         return redirect_resp
@@ -1269,6 +1265,9 @@ def order_automation_reply(case_id: int):
     case = get_order_intake_case(case_id, employee_id)
     if not case:
         abort(404)
+    # Import lazily: the mail blueprint itself imports ``require_login`` from
+    # this module during application startup.
+    from .mail_transcode_agent.smtp_service import send_order_reply, smtp_ready_for_case
 
     progress = order_entry_template_progress(case_id, employee_id)
     template = None
@@ -1294,6 +1293,7 @@ def order_automation_reply(case_id: int):
         "subject": str(saved_draft.get("subject") or subject),
         "body": str(saved_draft.get("body") or default_body),
     }
+    smtp_ready = smtp_ready_for_case(case_id, employee_id=employee_id)
     if request.method == "POST":
         draft = {
             "to": str(request.form.get("to") or "").strip(),
@@ -1306,7 +1306,24 @@ def order_automation_reply(case_id: int):
         else:
             session[draft_key] = draft
             session.modified = True
-            flash("回复草稿已保存；SMTP 尚未开通，本次不会发送邮件。", "success")
+            if request.form.get("action") == "send":
+                try:
+                    result = send_order_reply(
+                        case_id,
+                        employee_id=employee_id,
+                        to=draft["to"],
+                        cc=draft["cc"],
+                        subject=draft["subject"],
+                        body=draft["body"],
+                    )
+                    flash(
+                        f"订单回复已发送至 {', '.join(result['to'])}。发送记录已写入订单详情。",
+                        "success",
+                    )
+                except ValueError as exc:
+                    flash(str(exc), "error")
+            else:
+                flash("回复草稿已保存，尚未发送邮件。", "success")
 
     return render_template(
         "order_automation_reply.html",
@@ -1317,6 +1334,7 @@ def order_automation_reply(case_id: int):
         order_template=template,
         line_count=len(lines),
         reply_lines=lines[:6],
+        smtp_ready=smtp_ready,
         return_context=_order_automation_return_context(case),
     )
 

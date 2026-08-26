@@ -385,11 +385,24 @@ def simulate_routing_rule(rule: dict[str, Any], employee_id: str, account_id: in
     return {"count": len(matches), "samples": matches[:5]}
 
 
-SCOPE_LABELS = {"subject": "邮件主题", "body": "邮件正文", "attachment_name": "附件名称", "attachment_content": "附件内容"}
+SCOPE_LABELS = {
+    "subject": "邮件主题",
+    "sender_email": "发件人邮箱",
+    "body": "邮件正文",
+    "attachment_name": "附件名称",
+    "attachment_content": "附件内容",
+}
+# 发件人邮箱是“忽略 / 暂不分流”专用的精确匹配条件，不能作为订单变更
+# 事项的泛化搜索位置。
+CHANGE_TAG_SCOPE_LABELS = {key: label for key, label in SCOPE_LABELS.items() if key != "sender_email"}
 ROUTING_STATE_LABELS = {"routed": "已明确分流", "needs_business_routing": "待业务分流", "unrouted": "暂不分流", "business_routed": "业务已分流"}
-CLEAR_ROUTING_SCOPES = {"subject", "attachment_name"}
+CLEAR_ROUTING_SCOPES = {"subject", "sender_email", "attachment_name"}
 
 DEFAULT_GROUPS = (
+    ("暂不分流", "unclassified", (
+        ("subject", "客户下单超量信息提醒"),
+        ("sender_email", "xinxi.zhuanyong@nouyatec.com"),
+    )),
     ("录单", "new_order", (
         ("subject", "采购订单"), ("subject", "新增订单需求"), ("subject", "订单发布"), ("subject", "订单需求"),
         ("body", "采购订单"), ("body", "订单号"), ("body", "下单"),
@@ -443,7 +456,7 @@ def _migrate_rule_groups_to_global(conn, now: str) -> None:
     if _metadata_get(conn, marker):
         return
     legacy_groups = conn.execute(
-        "SELECT * FROM order_mail_rule_groups WHERE employee_id<>? AND action_type IN ('new_order','quotation','order_change') ORDER BY id",
+        "SELECT * FROM order_mail_rule_groups WHERE employee_id<>? AND action_type IN ('unclassified','new_order','quotation','order_change') ORDER BY id",
         (GLOBAL_RULE_OWNER,),
     ).fetchall()
     for raw_group in legacy_groups:
@@ -482,13 +495,6 @@ def ensure_universal_rules(employee_id: str) -> None:
     now = utcnow()
     with db_cursor() as conn:
         _migrate_rule_groups_to_global(conn, now)
-        obsolete_ids = [row["id"] for row in conn.execute(
-            "SELECT id FROM order_mail_rule_groups WHERE employee_id=? AND action_type='unclassified'", (GLOBAL_RULE_OWNER,)
-        ).fetchall()]
-        for group_id in obsolete_ids:
-            conn.execute("DELETE FROM order_mail_rule_keywords WHERE group_id=?", (group_id,))
-            conn.execute("DELETE FROM order_mail_rule_groups WHERE id=?", (group_id,))
-
         seed_key = "order_mail_rule_seed_v3:global"
         seeded = _metadata_get(conn, seed_key) is not None
         for name, action_type, keywords in DEFAULT_GROUPS:
@@ -512,6 +518,35 @@ def ensure_universal_rules(employee_id: str) -> None:
                         conn.execute("INSERT INTO order_mail_rule_keywords (group_id,scope,keyword,created_at) VALUES (?,?,?,?)", (group_id, scope, keyword, now))
         if not seeded:
             _metadata_set(conn, seed_key, now)
+
+        # “暂不分流”是业务确认的忽略规则，而不是“没有规则时的默认值”。
+        # 旧版本曾移除它；用独立的幂等种子补回，且不覆盖用户后续维护内容。
+        ignore_seed_key = "order_mail_rule_ignore_seed_v1:global"
+        if _metadata_get(conn, ignore_seed_key) is None:
+            ignore_group = conn.execute(
+                "SELECT id FROM order_mail_rule_groups WHERE employee_id=? AND action_type='unclassified' ORDER BY id LIMIT 1",
+                (GLOBAL_RULE_OWNER,),
+            ).fetchone()
+            if ignore_group is None:
+                ignore_group_id = int(conn.execute(
+                    "INSERT INTO order_mail_rule_groups (employee_id,name,action_type,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+                    (GLOBAL_RULE_OWNER, "暂不分流", "unclassified", 1, now, now),
+                ).lastrowid)
+            else:
+                ignore_group_id = int(ignore_group["id"])
+            existing_pairs = {(row["scope"], row["keyword"]) for row in conn.execute(
+                "SELECT scope,keyword FROM order_mail_rule_keywords WHERE group_id=?", (ignore_group_id,)
+            ).fetchall()}
+            for name, action_type, keywords in DEFAULT_GROUPS:
+                if action_type != "unclassified":
+                    continue
+                for scope, keyword in keywords:
+                    if (scope, keyword) not in existing_pairs:
+                        conn.execute(
+                            "INSERT INTO order_mail_rule_keywords (group_id,scope,keyword,created_at) VALUES (?,?,?,?)",
+                            (ignore_group_id, scope, keyword, now),
+                        )
+            _metadata_set(conn, ignore_seed_key, now)
 
         # Change tags remain backward-compatible and per employee pending C2.
         tags_exist = conn.execute("SELECT 1 FROM order_change_tags WHERE employee_id=?", (employee_id,)).fetchone()
@@ -614,7 +649,7 @@ def _changed_terms(*collections: list[tuple[str, str]]) -> dict[str, set[str]]:
 def save_universal_rule(employee_id: str, payload: dict[str, Any], group_id: int | None = None) -> dict[str, Any]:
     name, action_type = str(payload.get("name") or "").strip(), str(payload.get("action_type") or "").strip()
     keywords = [(str(x.get("scope") or "").strip(), str(x.get("keyword") or "").strip()) for x in payload.get("keywords", []) if str(x.get("keyword") or "").strip()]
-    if not name or action_type not in ROUTABLE_ACTION_TYPES or not keywords or any(scope not in SCOPE_LABELS for scope, _ in keywords):
+    if not name or action_type not in {*ROUTABLE_ACTION_TYPES, "unclassified"} or not keywords or any(scope not in SCOPE_LABELS for scope, _ in keywords):
         raise ValueError("请填写规则名称、明确分流结果和至少一个有效关键词")
     now = utcnow()
     with db_cursor() as conn:
@@ -642,12 +677,16 @@ def save_universal_rule_scope(employee_id: str, group_id: int, scope: str, keywo
     cleaned: list[str] = []
     for value in keywords:
         word = str(value or "").strip()
+        if word and scope == "sender_email":
+            word = _sender_email(word)
+            if "@" not in word:
+                raise ValueError("发件人邮箱必须填写完整邮箱地址")
         if word and word not in cleaned:
             cleaned.append(word)
     now = utcnow()
     with db_cursor() as conn:
         group = conn.execute(
-            "SELECT id FROM order_mail_rule_groups WHERE id=? AND employee_id=? AND action_type IN ('new_order','quotation','order_change')",
+            "SELECT id FROM order_mail_rule_groups WHERE id=? AND employee_id=? AND action_type IN ('unclassified','new_order','quotation','order_change')",
             (group_id, GLOBAL_RULE_OWNER),
         ).fetchone()
         if not group:
@@ -675,11 +714,11 @@ def save_change_tag(employee_id: str, name: str, keywords: list[dict[str, Any]],
         if not word:
             continue
         if scope == "all":
-            pairs.extend((source_scope, word) for source_scope in SCOPE_LABELS)
+            pairs.extend((source_scope, word) for source_scope in CHANGE_TAG_SCOPE_LABELS)
         else:
             pairs.append((scope, word))
     pairs = list(dict.fromkeys(pairs))
-    if not name.strip() or not pairs or any(scope not in SCOPE_LABELS for scope, _ in pairs):
+    if not name.strip() or not pairs or any(scope not in CHANGE_TAG_SCOPE_LABELS for scope, _ in pairs):
         raise ValueError("请填写变更类型名称和至少一个业务说法")
     now = utcnow()
     with db_cursor() as conn:
@@ -701,8 +740,21 @@ def save_change_tag(employee_id: str, name: str, keywords: list[dict[str, Any]],
     return saved_id
 
 
+def _sender_email(value: Any) -> str:
+    """Return the real sender address from either a bare email or display form."""
+    raw = str(value or "").strip()
+    _name, address = parseaddr(raw)
+    return (address or raw).strip().lower()
+
+
 def _mail_values(row: dict[str, Any]) -> dict[str, str]:
-    return {"subject": str(row.get("subject") or "").lower(), "body": str(row.get("body_text") or "").lower(), "attachment_name": str(row.get("attachment_names") or "").lower(), "attachment_content": str(row.get("attachment_content") or "").lower()}
+    return {
+        "subject": str(row.get("subject") or "").lower(),
+        "sender_email": _sender_email(row.get("sender")),
+        "body": str(row.get("body_text") or "").lower(),
+        "attachment_name": str(row.get("attachment_names") or "").lower(),
+        "attachment_content": str(row.get("attachment_content") or "").lower(),
+    }
 
 
 def _extract_attachment_text(path: str) -> tuple[str, str]:
@@ -774,6 +826,7 @@ def prepare_attachment_texts(mail_ids: list[int]) -> None:
 def _rule_decision(groups: list[dict[str, Any]], tags: list[dict[str, Any]], values: dict[str, str]) -> tuple[str, str, str, list[dict[str, Any]], list[str]]:
     """Pure keyword-rule decision shared by production reclassification/tests."""
     matches: list[dict[str, Any]] = []
+    ignore_matches: list[dict[str, Any]] = []
     clear_action_types: set[str] = set()
     assist_action_types: set[str] = set()
     tag_names: list[str] = []
@@ -781,10 +834,18 @@ def _rule_decision(groups: list[dict[str, Any]], tags: list[dict[str, Any]], val
         if not group["enabled"]:
             continue
         for keyword in group["keywords"]:
-            if keyword["keyword"].lower() in values[keyword["scope"]]:
+            scope = keyword["scope"]
+            expected = keyword["keyword"].strip().lower()
+            actual = values.get(scope, "")
+            matched = actual == expected if scope == "sender_email" else expected in actual
+            if matched:
                 strength = "clear" if keyword["scope"] in CLEAR_ROUTING_SCOPES else "assist"
-                matches.append({"scope": keyword["scope"], "keyword": keyword["keyword"], "group": group["name"], "action_type": group["action_type"], "strength": strength})
-                (clear_action_types if strength == "clear" else assist_action_types).add(group["action_type"])
+                hit = {"scope": scope, "keyword": keyword["keyword"], "group": group["name"], "action_type": group["action_type"], "strength": strength}
+                matches.append(hit)
+                if group["action_type"] == "unclassified":
+                    ignore_matches.append(hit)
+                else:
+                    (clear_action_types if strength == "clear" else assist_action_types).add(group["action_type"])
     for tag in tags:
         tag_hits = [k for k in tag["keywords"] if tag["enabled"] and k["keyword"].lower() in values[k["scope"]]]
         if tag_hits:
@@ -793,6 +854,11 @@ def _rule_decision(groups: list[dict[str, Any]], tags: list[dict[str, Any]], val
                 strength = "clear" if hit["scope"] in CLEAR_ROUTING_SCOPES else "assist"
                 matches.append({"scope": hit["scope"], "keyword": hit["keyword"], "group": f"订单变更事项：{tag['name']}", "action_type": "order_change", "source": "change_item", "strength": strength})
                 (clear_action_types if strength == "clear" else assist_action_types).add("order_change")
+    # The ignore category is a deliberate suppression decision.  It wins over
+    # every normal routing signal so notifications cannot become order tasks
+    # merely because their subject also contains a generic word such as “订单”.
+    if ignore_matches:
+        return "unclassified", "unrouted", "暂不分流规则匹配", ignore_matches, []
     if len(clear_action_types) == 1:
         return next(iter(clear_action_types)), "routed", "明确分流依据匹配", matches, tag_names
     if len(clear_action_types) > 1:
@@ -814,6 +880,10 @@ def _changed_terms_clause(changed_terms: dict[str, set[str]] | None) -> tuple[st
         return "", []
     column_by_scope = {
         "subject": "LOWER(m.subject)",
+        # Sender display values may include a name (for example, `系统 <a@b>`).
+        # A LIKE filter is only an incremental-recalculation candidate filter;
+        # `_rule_decision` performs the final exact normalized-email check.
+        "sender_email": "LOWER(m.sender)",
         "body": "LOWER(m.body_text)",
         "attachment_name": "EXISTS (SELECT 1 FROM mail_attachments a WHERE a.mail_id=m.id AND a.is_inline=0 AND LOWER(a.filename) LIKE ? ESCAPE '\\')",
         "attachment_content": "EXISTS (SELECT 1 FROM mail_attachments a JOIN mail_attachment_texts t ON t.attachment_id=a.id WHERE a.mail_id=m.id AND a.is_inline=0 AND LOWER(t.text_content) LIKE ? ESCAPE '\\')",
@@ -874,8 +944,18 @@ def reclassify_cases(
                 row["attachment_content"] = _attachment_content(conn, row["mail_id"])
                 values = _mail_values(row)
             customer_result = match_customer_routing_rules(int(customer["customer_id"]), values) if customer else None
+            rule_action, rule_state, rule_reason, rule_matches, rule_tag_names = _rule_decision(groups, tags, values)
+            # Ignore rules are operational safeguards (for example, system
+            # notifications).  They deliberately take precedence over a
+            # recognised customer and its routing rules as well as global
+            # order keywords.
+            is_ignore_match = rule_action == "unclassified" and rule_reason == "暂不分流规则匹配"
             matches=[]; tag_names=[]
-            if customer_result:
+            if is_ignore_match:
+                action_type, state, reason = rule_action, rule_state, rule_reason
+                matches = rule_matches
+                routing_source = "keyword_rule"
+            elif customer_result:
                 action_type = str(customer_result["action_type"])
                 state = str(customer_result["state"])
                 reason = str(customer_result["reason"])
@@ -886,8 +966,9 @@ def reclassify_cases(
                 routing_source = "customer_rule"
             else:
                 routing_source = "keyword_rule"
-
-                action_type, state, reason, matches, tag_names = _rule_decision(groups, tags, values)
+                action_type, state, reason, matches, tag_names = (
+                    rule_action, rule_state, rule_reason, rule_matches, rule_tag_names
+                )
             before = {
                 "action_type": row["action_type"], "routing_state": row["routing_state"],
                 "routing_source": row["routing_source"], "routing_reason": row["routing_reason"],
@@ -1038,7 +1119,9 @@ def bootstrap_cases(employee_id: str, account_id: int | None = None) -> None:
                 created_count += int(inserted.rowcount > 0)
             if max_mail_id != last_mail_id:
                 _metadata_set(conn, cursor_key, str(max_mail_id))
-        revision_key = f"order_intake_rule_engine_v7_customer_archive:{employee_id}"
+        # Bump once when the high-priority ignore rule is introduced so cases
+        # already imported before deployment are reconciled automatically.
+        revision_key = f"order_intake_rule_engine_v8_ignore_rules:{employee_id}"
         revision_needed = _metadata_get(conn, revision_key) is None
     if created_count or revision_needed:
         reclassify_cases(employee_id, account_id)

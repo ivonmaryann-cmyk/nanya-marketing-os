@@ -47,6 +47,52 @@ class MySettingsRouteTests(unittest.TestCase):
         html = response.get_data(as_text=True)
         self.assertIn("返回我的", html)
         self.assertIn('href="/my-settings"', html)
+        self.assertIn("IMAP 收信配置", html)
+        self.assertIn("SMTP 发信配置（可选）", html)
+        self.assertIn("使用上方收信授权码", html)
+
+    def test_existing_mailbox_exposes_matching_smtp_secret_controls(self) -> None:
+        account = {
+            "id": 7,
+            "email": "tester@example.com",
+            "imap_host": "imap.example.com",
+            "imap_port": 993,
+            "enabled": 1,
+            "smtp_host": "smtp.example.com",
+            "smtp_port": 465,
+            "smtp_security": "ssl",
+            "smtp_username": "tester@example.com",
+            "smtp_auth_code_ciphertext": "configured",
+            "smtp_enabled": 0,
+            "smtp_last_test_status": "",
+            "smtp_last_test_at": "",
+        }
+        with patch("fangzheng_web_app.routes.get_user", return_value=None), patch(
+            "fangzheng_web_app.mail_transcode_agent.routes.mail_store.list_accounts",
+            return_value=[account],
+        ), patch(
+            "fangzheng_web_app.mail_transcode_agent.routes.mail_store.get_account",
+            return_value=account,
+        ):
+            response = self.client.get("/mail-transcode/accounts?edit=7")
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn("IMAP 收信配置", html)
+        self.assertIn("SMTP 发信配置", html)
+        self.assertIn("reveal-smtp-auth-code", html)
+        self.assertIn("copy-smtp-auth-code", html)
+        self.assertIn("使用收信授权码", html)
+
+    def test_smtp_authorization_code_is_only_revealed_for_the_owner(self) -> None:
+        with patch(
+            "fangzheng_web_app.mail_transcode_agent.routes.mail_store.get_smtp_config",
+            return_value={"auth_code": "smtp-secret"},
+        ):
+            response = self.client.post("/mail-transcode/accounts/7/reveal-smtp-auth-code")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {"auth_code": "smtp-secret"})
 
 
 if __name__ == "__main__":

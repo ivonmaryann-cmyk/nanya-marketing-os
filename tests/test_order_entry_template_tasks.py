@@ -98,7 +98,7 @@ class OrderEntryTemplateTaskTests(unittest.TestCase):
         self.assertEqual(progress["stage"], "completed")
         self.assertEqual(progress["label"], "已完成")
 
-    def test_saved_template_enters_order_information_confirmation(self) -> None:
+    def test_saved_template_enters_material_lookup(self) -> None:
         get_or_create_template(self.case_id, "employee-a")
         save_template(self.case_id, "employee-a", {
             "header": {"order_type": "220", "bill_to_customer_code": "C001", "ledger": "KL01"},
@@ -110,5 +110,5 @@ class OrderEntryTemplateTaskTests(unittest.TestCase):
         progress = template_progress(self.case_id, "employee-a")
 
         self.assertEqual(progress["stage"], "pending_interface_submit")
-        self.assertEqual(progress["label"], "订单信息确认")
-        self.assertEqual(progress["next_action"], "订单信息确认")
+        self.assertEqual(progress["label"], "待批量料号查询")
+        self.assertEqual(progress["next_action"], "批量料号查询")
