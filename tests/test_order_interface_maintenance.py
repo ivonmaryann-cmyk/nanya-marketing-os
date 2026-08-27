@@ -65,6 +65,15 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         self.assertEqual(material["response_mapping"]["hitMaterialList[].peag01"],
                          "料号查询建议.产品编号")
         self.assertTrue(any("按运行模式执行" in note for note in material["maintenance_notes"]))
+        domestic = get_interface_config("domestic_order_entry")
+        self.assertEqual(
+            domestic["request_mapping"]["sctoDataList[].materialCode"],
+            "模板明细.客户产品编号（必填）",
+        )
+        self.assertEqual(
+            domestic["request_mapping"]["sctoDataList[].custOrderId"],
+            "模板表头.客户订单号（必填）",
+        )
         saved = save_interface_config("material_batch_query", {
             "display_name": material["display_name"],
             "description": material["description"],
@@ -268,7 +277,11 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         self.assertEqual(payload["customerCode"], "103814")
         self.assertEqual(payload["orderType"], "220")
         self.assertEqual(payload["operator"], "employee-a")
-        self.assertEqual(payload["materialCode"], "6900000008")
+        self.assertEqual(payload["materialCode"], "CUST-001")
+        self.assertEqual(payload["orderNumber"], "PO20260824002")
+        self.assertEqual(payload["custOrderId"], "PO20260824002")
+        self.assertEqual(payload["lineNumber"], "10")
+        self.assertEqual(payload["lineId"], "10")
         self.assertEqual(payload["demandDate"], "2026-09-01")
         self.assertEqual(payload["taxPrice"], "11.3")
         with db.db_cursor() as conn:

@@ -137,9 +137,21 @@ def _case_for_template(case_id: int, employee_id: str) -> dict[str, Any]:
 
 def _blank_line(line_no: int) -> dict[str, str]:
     return {
-        field: str(line_no) if field == "line_no" else "查询" if field == "material_status" else ""
+        field: str(line_no)
+        if field in {"line_no", "customer_order_seq"}
+        else "查询"
+        if field == "material_status"
+        else ""
         for field in LINE_FIELDS
     }
+
+
+def _line_sequence(values: dict[str, Any], fallback: int) -> str:
+    """Keep the internal line number aligned with the customer order sequence."""
+    sequence = clean_text(values.get("customer_order_seq"))
+    if re.fullmatch(r"\d+", sequence or "") and int(sequence) > 0:
+        return str(int(sequence))
+    return str(fallback)
 
 
 def _is_pp_spec(value: str) -> bool:
@@ -662,7 +674,9 @@ def _merge_initial_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         if any(signature):
             seen.add(signature)
-        entry["values"]["line_no"] = str(len(result) + 1)
+        sequence = _line_sequence(entry["values"], len(result) + 1)
+        entry["values"]["line_no"] = sequence
+        entry["values"]["customer_order_seq"] = sequence
         result.append(entry)
     return result
 
@@ -1200,7 +1214,9 @@ def save_template(case_id: int, employee_id: str, payload: dict[str, Any]) -> di
         values = _clean_values((raw or {}).get("values") or raw or {}, LINE_FIELDS)
         if not any(values[field] for field in LINE_FIELDS if field not in {"line_no", "material_status"}):
             continue
-        values["line_no"] = str(index)
+        sequence = _line_sequence(values, index)
+        values["line_no"] = sequence
+        values["customer_order_seq"] = sequence
         values["material_status"] = values["material_status"] or "查询"
         if values["material_status"] not in MATERIAL_STATUS_VALUES:
             raise ValueError(f"第 {index} 行料号状态只能选择“查询”或“新增”")

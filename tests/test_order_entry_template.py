@@ -143,6 +143,30 @@ class OrderEntryTemplateTests(unittest.TestCase):
                 }}],
             })
 
+    def test_line_number_tracks_customer_order_sequence_or_auto_increments(self) -> None:
+        get_or_create_template(self.case_id, "employee-a")
+        saved = save_template(self.case_id, "employee-a", {
+            "header": {"order_type": "220", "bill_to_customer_code": "C001", "ledger": "KL01"},
+            "lines": [
+                {"values": {
+                    "line_no": "1", "customer_order_seq": "10",
+                    "customer_product_code": "CUST-10", "quantity": "20",
+                }},
+                {"values": {
+                    "line_no": "2", "customer_order_seq": "",
+                    "customer_product_code": "CUST-AUTO", "quantity": "30",
+                }},
+            ],
+        })
+        values_by_code = {
+            line["values"]["customer_product_code"]: line["values"]
+            for line in saved["lines"]
+        }
+        self.assertEqual(values_by_code["CUST-10"]["line_no"], "10")
+        self.assertEqual(values_by_code["CUST-10"]["customer_order_seq"], "10")
+        self.assertEqual(values_by_code["CUST-AUTO"]["line_no"], "2")
+        self.assertEqual(values_by_code["CUST-AUTO"]["customer_order_seq"], "2")
+
     def test_customer_spec_match_recalculates_from_header_code_and_line_values(self) -> None:
         lines = [{
             "values": {

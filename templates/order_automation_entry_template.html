@@ -37,6 +37,24 @@
 <script>
 (()=>{const grid=document.querySelector('#entryGrid'),rows=document.querySelector('#lineRows'),form=document.querySelector('#entryTemplateForm'),payload=document.querySelector('#templatePayload'),add=document.querySelector('#addLine'),pop=document.querySelector('#sourcePop');const renumber=()=>rows.querySelectorAll('[data-line]').forEach((r,i)=>{r.querySelector('[data-row-number]').textContent=i+4;r.querySelector('[data-field="line_no"]').value=i+1});add.addEventListener('click',e=>{e.preventDefault();rows.append(document.querySelector('#lineTemplate').content.cloneNode(true));renumber()});form.addEventListener('submit',()=>{const header={};grid.querySelectorAll('[data-section="header"]').forEach(i=>header[i.dataset.field]=i.value.trim());const lines=[...rows.querySelectorAll('[data-line]')].map(r=>{const values={},sources={};r.querySelectorAll('[data-section="line"]').forEach(i=>{values[i.dataset.field]=i.value.trim();const s=i.parentElement.querySelector('.oe-source');if(s)sources[i.dataset.field]={label:s.dataset.sourceLabel,reference:s.dataset.sourceReference}});const m=r.querySelector('[data-field="customer_spec_match"]');if(m?.dataset.manualMatch==='1')sources.customer_spec_match={label:'人工修改',reference:'录单模板手工修改',context:m.dataset.matchContext||''};return {values,sources}});payload.value=JSON.stringify({header,lines})});document.addEventListener('click',e=>{const s=e.target.closest('.oe-source');if(!s){pop.style.display='none';return}pop.textContent=`来源：${s.dataset.sourceLabel} ${s.dataset.sourceReference}`;pop.style.left=`${e.clientX+10}px`;pop.style.top=`${e.clientY+10}px`;pop.style.display='block'});document.querySelector('#refreshTemplate').addEventListener('click',()=>document.querySelector('#entryTemplateRefresh').requestSubmit());renumber()})();
 (()=>{
+  const rows=document.querySelector('#lineRows');
+  const syncSequence=(row,index)=>{
+    const lineNo=row.querySelector('[data-field="line_no"]');
+    const customerSeq=row.querySelector('[data-field="customer_order_seq"]');
+    if(!lineNo||!customerSeq)return;
+    const captured=/^\d+$/.test(customerSeq.value.trim())&&Number(customerSeq.value)>0
+      ?String(Number(customerSeq.value.trim())):String(index+1);
+    customerSeq.value=captured;
+    lineNo.value=captured;
+  };
+  const syncAll=()=>[...rows.querySelectorAll('[data-line]')].forEach(syncSequence);
+  rows.addEventListener('input',event=>{
+    if(event.target.matches('[data-field="customer_order_seq"]'))syncAll();
+  });
+  new MutationObserver(syncAll).observe(rows,{childList:true});
+  syncAll();
+})();
+(()=>{
   const grid=document.querySelector('#entryGrid'),rows=document.querySelector('#lineRows'),dialog=document.querySelector('#specMatchDialog'),orderType=grid.querySelector('[data-field="order_type"]'),type1=grid.querySelector('[data-field="type_1"]'),type2=grid.querySelector('[data-field="type_2"]'),code=grid.querySelector('[data-field="bill_to_customer_code"]'),shipToCode=grid.querySelector('[data-field="ship_to_customer_code"]'),url={{ url_for('main.order_automation_entry_template_spec_match',case_id=case.id)|tojson }},fieldGrid=document.querySelector('#specMatchFields'),result=document.querySelector('#specMatchResult'),source=document.querySelector('#specMatchSource'),note=document.querySelector('#specMatchNote');
   let active=null,detail=null,sequence=0;
   const values=row=>({customer_code:code.value.trim(),customer_spec:row.querySelector('[data-field="customer_spec"]')?.value.trim()||'',product_type:row.querySelector('[data-field="product_type"]')?.value.trim()||''});

@@ -62,11 +62,12 @@ INTERFACE_DEFAULTS = {
             "sctoDataList[].quantity": "模板明细.数量（必填）",
             "sctoDataList[].taxPrice": "模板明细.单价（与税前单价至少一项必填）",
             "sctoDataList[].untaxedPrice": "模板明细.税前单价（与单价至少一项必填）",
-            "sctoDataList[].materialCode": "模板明细.产品编号（料号查询结果，必填）",
-            "sctoDataList[].lineNumber": "模板明细.项次（必填）",
+            "sctoDataList[].materialCode": "模板明细.客户产品编号（必填）",
+            "sctoDataList[].lineNumber": "模板明细.项次（与客户订单序号一致，必填）",
             "sctoDataList[].demandDate": "模板明细.出货日期（必填）",
             "sctoDataList[].orderNumber": "模板表头.客户订单号（必填）",
-            "sctoDataList[].lineId": "模板明细.客户订单序号（选填）",
+            "sctoDataList[].custOrderId": "模板表头.客户订单号（必填）",
+            "sctoDataList[].lineId": "模板明细.客户订单序号（与项次一致，必填）",
             "sctoDataList[].lineRemark": "模板明细.备注（选填）",
             "sctoDataList[].taxType": "模板表头.税种（选填）",
             "sctoDataList[].materialName": "模板明细.品名（选填）",
@@ -119,7 +120,8 @@ INTERFACE_MAINTENANCE_NOTES = {
     ],
     "domestic_order_entry": [
         "当前地址是 NYEOS 测试环境；正式环境地址确认后只需修改“请求地址”。",
-        "materialCode 使用料号查询后选定的产品编号，不发送原始客户产品编号。",
+        "materialCode 使用模板中的客户产品编号；产品编号仅用于页面展示和料号查询结果选择。",
+        "orderNumber 与 custOrderId 都使用客户订单号；lineNumber 与 lineId 都使用客户订单序号。",
         "保存后业务页会按运行模式执行：Mock 走模拟流程，真实接口会生成订单。",
     ],
 }
@@ -174,8 +176,13 @@ def ensure_interface_configs(operated_by: str = "system") -> None:
                     ).fetchone()
                 if interface_key == "material_batch_query":
                     _upgrade_material_customer_spec_source(conn, existing, operated_by, now)
-                elif interface_key == "domestic_order_entry" and _is_untouched_legacy_domestic_config(existing):
-                    _upgrade_legacy_domestic_config(conn, existing, operated_by, now)
+                elif interface_key == "domestic_order_entry":
+                    if _is_untouched_legacy_domestic_config(existing):
+                        _upgrade_legacy_domestic_config(conn, existing, operated_by, now)
+                        existing = conn.execute(
+                            "SELECT * FROM order_interface_configs WHERE interface_key=?", (interface_key,)
+                        ).fetchone()
+                    _upgrade_domestic_request_mapping(conn, existing, operated_by, now)
                 continue
             conn.execute(
                 """INSERT INTO order_interface_configs
@@ -243,6 +250,42 @@ def _upgrade_material_customer_spec_source(conn: Any, row: Any, operated_by: str
     conn.execute(
         """UPDATE order_interface_configs
            SET request_mapping_json=?,config_version=?,updated_at=? WHERE id=?""",
+        (json.dumps(mapping, ensure_ascii=False), next_version, now, int(before["id"])),
+    )
+    current = conn.execute("SELECT * FROM order_interface_configs WHERE id=?", (int(before["id"]),)).fetchone()
+    conn.execute(
+        """INSERT INTO order_interface_config_versions
+           (interface_config_id,config_version,before_json,after_json,operated_by,created_at)
+           VALUES (?,?,?,?,?,?)""",
+        (
+            int(before["id"]), next_version, json.dumps(before, ensure_ascii=False),
+            json.dumps(_row(current), ensure_ascii=False), operated_by, now,
+        ),
+    )
+
+
+def _upgrade_domestic_request_mapping(conn: Any, row: Any, operated_by: str, now: str) -> None:
+    before = _row(row)
+    mapping = _json(before.get("request_mapping_json"), {})
+    defaults = INTERFACE_DEFAULTS["domestic_order_entry"]["request_mapping"]
+    changed = False
+    legacy_values = {
+        "sctoDataList[].materialCode": "模板明细.产品编号（料号查询结果，必填）",
+        "sctoDataList[].lineNumber": "模板明细.项次（必填）",
+        "sctoDataList[].lineId": "模板明细.客户订单序号（选填）",
+    }
+    for key, legacy_value in legacy_values.items():
+        if mapping.get(key) == legacy_value:
+            mapping[key] = defaults[key]
+            changed = True
+    if "sctoDataList[].custOrderId" not in mapping:
+        mapping["sctoDataList[].custOrderId"] = defaults["sctoDataList[].custOrderId"]
+        changed = True
+    if not changed:
+        return
+    next_version = int(before.get("config_version") or 0) + 1
+    conn.execute(
+        "UPDATE order_interface_configs SET request_mapping_json=?,config_version=?,updated_at=? WHERE id=?",
         (json.dumps(mapping, ensure_ascii=False), next_version, now, int(before["id"])),
     )
     current = conn.execute("SELECT * FROM order_interface_configs WHERE id=?", (int(before["id"]),)).fetchone()
@@ -1107,8 +1150,8 @@ def validate_domestic_order_entry(case_id: int, employee_id: str) -> list[str]:
         line_no, values = int(row["line_no"]), _json(row["values_json"], {})
         if states.get(line_no) in {"waiting_callback", "requerying", "failed"}:
             issues.append(f"第 {line_no} 行料号{MATERIAL_STATUS_LABELS[states[line_no]]}")
-        elif not str(values.get("product_code") or "").strip():
-            issues.append(f"第 {line_no} 行未填写产品编号")
+        elif not str(values.get("customer_product_code") or "").strip():
+            issues.append(f"第 {line_no} 行未填写客户产品编号")
     return issues
 
 
@@ -1218,14 +1261,14 @@ def _domestic_order_request_payload(
         line_no = int(row["line_no"])
         values = _json(row["values_json"], {})
         quantity = str(values.get("quantity") or "").strip()
-        material_code = str(values.get("product_code") or "").strip()
+        material_code = str(values.get("customer_product_code") or "").strip()
         demand_date = str(values.get("delivery_date") or "").strip()
         tax_price = str(values.get("unit_price") or "").strip()
         untaxed_price = str(values.get("price_before_tax") or "").strip()
         if not quantity:
             line_issues.append(f"第 {line_no} 行未填写数量")
         if not material_code:
-            line_issues.append(f"第 {line_no} 行未填写产品编号")
+            line_issues.append(f"第 {line_no} 行未填写客户产品编号")
         if not demand_date:
             line_issues.append(f"第 {line_no} 行未填写出货日期")
         if not tax_price and not untaxed_price:
