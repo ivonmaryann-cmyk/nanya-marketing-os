@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from contextlib import closing
 from pathlib import Path
-from typing import Any
+from typing import Any, Collection, Mapping
 
 from .spec import IDENTITY_TABLES, PRIMARY_KEYS, TABLE_COLUMNS, TABLES
 
@@ -28,18 +28,51 @@ def _upsert_sql(table: str) -> str:
     return f"INSERT INTO {_quote(table)}({quoted}) VALUES ({placeholders}) ON CONFLICT ({conflict}) {action}"
 
 
-def copy_snapshot(snapshot: Path, target: Any) -> dict[str, int]:
+def _source_rows(
+    source: sqlite3.Connection,
+    table: str,
+    excluded_ids: Collection[int],
+) -> list[sqlite3.Row]:
+    """Read one scoped table, excluding only explicitly approved historic rows."""
+    actual = {row["name"] for row in source.execute(f'PRAGMA table_info("{table}")')}
+    if actual != set(TABLE_COLUMNS[table]):
+        raise RuntimeError(f"SQLite schema mismatch for scoped table: {table}")
+    if excluded_ids and "id" not in TABLE_COLUMNS[table]:
+        raise ValueError(f"cannot exclude rows by id from table without an id column: {table}")
+
+    selected_columns = ",".join(_quote(column) for column in TABLE_COLUMNS[table])
+    query = f'SELECT {selected_columns} FROM {_quote(table)}'
+    parameters: tuple[int, ...] = ()
+    if excluded_ids:
+        placeholders = ",".join("?" for _ in excluded_ids)
+        query += f' WHERE "id" NOT IN ({placeholders})'
+        parameters = tuple(sorted(set(excluded_ids)))
+    if "id" in TABLE_COLUMNS[table]:
+        query += ' ORDER BY "id"'
+    return source.execute(query, parameters).fetchall()
+
+
+def copy_snapshot(
+    snapshot: Path,
+    target: Any,
+    *,
+    excluded_ids: Mapping[str, Collection[int]] | None = None,
+) -> dict[str, int]:
+    """Copy the scoped snapshot in one caller-owned transaction.
+
+    ``excluded_ids`` is deliberately opt-in: it is only for source rows that
+    have been audited, recorded in the migration exception register, and
+    cannot satisfy a target foreign key.  The default is strict: copy every
+    audited row and let any integrity failure stop the transaction.
+    """
     counts: dict[str, int] = {}
+    exclusions = excluded_ids or {}
     with closing(sqlite3.connect(snapshot)) as source:
         source.row_factory = sqlite3.Row
         source.execute("PRAGMA query_only=ON")
         with target.cursor() as cursor:
             for table in TABLES:
-                actual = {row["name"] for row in source.execute(f'PRAGMA table_info("{table}")')}
-                if actual != set(TABLE_COLUMNS[table]):
-                    raise RuntimeError(f"SQLite schema mismatch for scoped table: {table}")
-                selected_columns = ",".join(_quote(column) for column in TABLE_COLUMNS[table])
-                rows = source.execute(f'SELECT {selected_columns} FROM "{table}"').fetchall()
+                rows = _source_rows(source, table, exclusions.get(table, ()))
                 if rows:
                     cursor.executemany(
                         _upsert_sql(table),

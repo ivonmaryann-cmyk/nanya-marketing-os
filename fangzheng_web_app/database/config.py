@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 
 _BACKENDS = {"sqlite", "postgresql"}
+_ENABLED_VALUES = {"1", "true", "yes"}
 
 
 def _positive_int(name: str, default: int) -> int:
@@ -18,6 +19,65 @@ def _positive_int(name: str, default: int) -> int:
     return value
 
 
+def _resolve_database_settings(
+    backend_name: str,
+    url_name: str,
+    read_write_name: str,
+) -> tuple[str, str | None, str, str]:
+    """Resolve one platform-wide database profile before legacy module settings.
+
+    ``PLATFORM_DATABASE_BACKEND`` is the explicit switch. When it is present,
+    every module must use the same URL and read/write approval flag; a partial
+    mix of platform and module connection settings is deliberately forbidden.
+    ``legacy`` is an emergency-only exception used by the documented rollback
+    command: it intentionally restores the pre-cutover module source profile.
+    Omitting the platform switch preserves the existing module-level behavior.
+    """
+    platform_backend = os.getenv("PLATFORM_DATABASE_BACKEND", "").strip()
+    if platform_backend:
+        if platform_backend.lower() == "legacy":
+            backend = os.getenv(backend_name, "sqlite").strip().lower()
+            database_url = os.getenv(url_name, "").strip() or None
+            read_write_enabled = os.getenv(read_write_name, "false").strip().lower()
+            return backend, database_url, read_write_enabled, backend_name.removesuffix("_BACKEND")
+        backend = platform_backend.lower()
+        database_url = os.getenv("PLATFORM_DATABASE_URL", "").strip() or None
+        read_write_enabled = os.getenv(
+            "PLATFORM_DATABASE_READ_WRITE_ENABLED", "false"
+        ).strip().lower()
+        return backend, database_url, read_write_enabled, "PLATFORM_DATABASE"
+
+    backend = os.getenv(backend_name, "sqlite").strip().lower()
+    database_url = os.getenv(url_name, "").strip() or None
+    read_write_enabled = os.getenv(read_write_name, "false").strip().lower()
+    return backend, database_url, read_write_enabled, backend_name.removesuffix("_BACKEND")
+
+
+def _validated_backend(value: str, setting_name: str) -> str:
+    backend = "postgresql" if value == "postgres" else value
+    if backend not in _BACKENDS:
+        raise ValueError(f"{setting_name} must be sqlite or postgresql")
+    return backend
+
+
+def _require_postgresql_access(
+    backend: str,
+    database_url: str | None,
+    read_write_enabled: str,
+    setting_prefix: str,
+    module_label: str,
+) -> None:
+    if backend != "postgresql":
+        return
+    url_name = f"{setting_prefix}_URL"
+    if not database_url:
+        raise ValueError(f"{url_name} is required for the postgresql backend")
+    if read_write_enabled not in _ENABLED_VALUES:
+        raise RuntimeError(
+            f"PostgreSQL {module_label} read/write is locked; formal switch approval is required"
+        )
+
+
 @dataclass(frozen=True)
 class AutomationDatabaseConfig:
     backend: str
@@ -29,19 +89,15 @@ class AutomationDatabaseConfig:
 
     @classmethod
     def from_env(cls) -> "AutomationDatabaseConfig":
-        backend = os.getenv("AUTOMATION_DATABASE_BACKEND", "sqlite").strip().lower()
-        if backend == "postgres":
-            backend = "postgresql"
-        if backend not in _BACKENDS:
-            raise ValueError("AUTOMATION_DATABASE_BACKEND must be sqlite or postgresql")
-        database_url = os.getenv("AUTOMATION_DATABASE_URL", "").strip() or None
-        if backend == "postgresql" and not database_url:
-            raise ValueError("AUTOMATION_DATABASE_URL is required for the postgresql backend")
-        read_write_enabled = os.getenv("AUTOMATION_POSTGRESQL_READ_WRITE_ENABLED", "false").strip().lower()
-        if backend == "postgresql" and read_write_enabled not in {"1", "true", "yes"}:
-            raise RuntimeError(
-                "PostgreSQL application read/write is locked; formal switch approval is required"
-            )
+        raw_backend, database_url, read_write_enabled, setting_prefix = _resolve_database_settings(
+            "AUTOMATION_DATABASE_BACKEND",
+            "AUTOMATION_DATABASE_URL",
+            "AUTOMATION_POSTGRESQL_READ_WRITE_ENABLED",
+        )
+        backend = _validated_backend(raw_backend, f"{setting_prefix}_BACKEND")
+        _require_postgresql_access(
+            backend, database_url, read_write_enabled, setting_prefix, "application"
+        )
         pool_min = _positive_int("AUTOMATION_DB_POOL_MIN_SIZE", 1)
         pool_max = _positive_int("AUTOMATION_DB_POOL_MAX_SIZE", 8)
         if pool_min > pool_max:
@@ -77,19 +133,15 @@ class IdentityDatabaseConfig:
 
     @classmethod
     def from_env(cls) -> "IdentityDatabaseConfig":
-        backend = os.getenv("IDENTITY_DATABASE_BACKEND", "sqlite").strip().lower()
-        if backend == "postgres":
-            backend = "postgresql"
-        if backend not in _BACKENDS:
-            raise ValueError("IDENTITY_DATABASE_BACKEND must be sqlite or postgresql")
-        database_url = os.getenv("IDENTITY_DATABASE_URL", "").strip() or None
-        if backend == "postgresql" and not database_url:
-            raise ValueError("IDENTITY_DATABASE_URL is required for the postgresql backend")
-        read_write_enabled = os.getenv("IDENTITY_POSTGRESQL_READ_WRITE_ENABLED", "false").strip().lower()
-        if backend == "postgresql" and read_write_enabled not in {"1", "true", "yes"}:
-            raise RuntimeError(
-                "PostgreSQL identity read/write is locked; formal switch approval is required"
-            )
+        raw_backend, database_url, read_write_enabled, setting_prefix = _resolve_database_settings(
+            "IDENTITY_DATABASE_BACKEND",
+            "IDENTITY_DATABASE_URL",
+            "IDENTITY_POSTGRESQL_READ_WRITE_ENABLED",
+        )
+        backend = _validated_backend(raw_backend, f"{setting_prefix}_BACKEND")
+        _require_postgresql_access(
+            backend, database_url, read_write_enabled, setting_prefix, "identity"
+        )
         pool_min = _positive_int("IDENTITY_DB_POOL_MIN_SIZE", 1)
         pool_max = _positive_int("IDENTITY_DB_POOL_MAX_SIZE", 4)
         if pool_min > pool_max:
@@ -125,19 +177,15 @@ class TranscodeDatabaseConfig:
 
     @classmethod
     def from_env(cls) -> "TranscodeDatabaseConfig":
-        backend = os.getenv("TRANSCODE_DATABASE_BACKEND", "sqlite").strip().lower()
-        if backend == "postgres":
-            backend = "postgresql"
-        if backend not in _BACKENDS:
-            raise ValueError("TRANSCODE_DATABASE_BACKEND must be sqlite or postgresql")
-        database_url = os.getenv("TRANSCODE_DATABASE_URL", "").strip() or None
-        if backend == "postgresql" and not database_url:
-            raise ValueError("TRANSCODE_DATABASE_URL is required for the postgresql backend")
-        read_write_enabled = os.getenv("TRANSCODE_POSTGRESQL_READ_WRITE_ENABLED", "false").strip().lower()
-        if backend == "postgresql" and read_write_enabled not in {"1", "true", "yes"}:
-            raise RuntimeError(
-                "PostgreSQL transcode read/write is locked; formal switch approval is required"
-            )
+        raw_backend, database_url, read_write_enabled, setting_prefix = _resolve_database_settings(
+            "TRANSCODE_DATABASE_BACKEND",
+            "TRANSCODE_DATABASE_URL",
+            "TRANSCODE_POSTGRESQL_READ_WRITE_ENABLED",
+        )
+        backend = _validated_backend(raw_backend, f"{setting_prefix}_BACKEND")
+        _require_postgresql_access(
+            backend, database_url, read_write_enabled, setting_prefix, "transcode"
+        )
         pool_min = _positive_int("TRANSCODE_DB_POOL_MIN_SIZE", 1)
         pool_max = _positive_int("TRANSCODE_DB_POOL_MAX_SIZE", 8)
         if pool_min > pool_max:
@@ -173,19 +221,15 @@ class ConfigurationDatabaseConfig:
 
     @classmethod
     def from_env(cls) -> "ConfigurationDatabaseConfig":
-        backend = os.getenv("CONFIG_DATABASE_BACKEND", "sqlite").strip().lower()
-        if backend == "postgres":
-            backend = "postgresql"
-        if backend not in _BACKENDS:
-            raise ValueError("CONFIG_DATABASE_BACKEND must be sqlite or postgresql")
-        database_url = os.getenv("CONFIG_DATABASE_URL", "").strip() or None
-        if backend == "postgresql" and not database_url:
-            raise ValueError("CONFIG_DATABASE_URL is required for the postgresql backend")
-        read_write_enabled = os.getenv("CONFIG_POSTGRESQL_READ_WRITE_ENABLED", "false").strip().lower()
-        if backend == "postgresql" and read_write_enabled not in {"1", "true", "yes"}:
-            raise RuntimeError(
-                "PostgreSQL configuration read/write is locked; formal switch approval is required"
-            )
+        raw_backend, database_url, read_write_enabled, setting_prefix = _resolve_database_settings(
+            "CONFIG_DATABASE_BACKEND",
+            "CONFIG_DATABASE_URL",
+            "CONFIG_POSTGRESQL_READ_WRITE_ENABLED",
+        )
+        backend = _validated_backend(raw_backend, f"{setting_prefix}_BACKEND")
+        _require_postgresql_access(
+            backend, database_url, read_write_enabled, setting_prefix, "configuration"
+        )
         pool_min = _positive_int("CONFIG_DB_POOL_MIN_SIZE", 1)
         pool_max = _positive_int("CONFIG_DB_POOL_MAX_SIZE", 4)
         if pool_min > pool_max:
@@ -221,19 +265,15 @@ class PlanningDatabaseConfig:
 
     @classmethod
     def from_env(cls) -> "PlanningDatabaseConfig":
-        backend = os.getenv("PLANNING_DATABASE_BACKEND", "sqlite").strip().lower()
-        if backend == "postgres":
-            backend = "postgresql"
-        if backend not in _BACKENDS:
-            raise ValueError("PLANNING_DATABASE_BACKEND must be sqlite or postgresql")
-        database_url = os.getenv("PLANNING_DATABASE_URL", "").strip() or None
-        if backend == "postgresql" and not database_url:
-            raise ValueError("PLANNING_DATABASE_URL is required for the postgresql backend")
-        read_write_enabled = os.getenv("PLANNING_POSTGRESQL_READ_WRITE_ENABLED", "false").strip().lower()
-        if backend == "postgresql" and read_write_enabled not in {"1", "true", "yes"}:
-            raise RuntimeError(
-                "PostgreSQL planning read/write is locked; formal switch approval is required"
-            )
+        raw_backend, database_url, read_write_enabled, setting_prefix = _resolve_database_settings(
+            "PLANNING_DATABASE_BACKEND",
+            "PLANNING_DATABASE_URL",
+            "PLANNING_POSTGRESQL_READ_WRITE_ENABLED",
+        )
+        backend = _validated_backend(raw_backend, f"{setting_prefix}_BACKEND")
+        _require_postgresql_access(
+            backend, database_url, read_write_enabled, setting_prefix, "planning"
+        )
         pool_min = _positive_int("PLANNING_DB_POOL_MIN_SIZE", 1)
         pool_max = _positive_int("PLANNING_DB_POOL_MAX_SIZE", 4)
         if pool_min > pool_max:

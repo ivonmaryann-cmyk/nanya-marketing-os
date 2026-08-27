@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
@@ -18,13 +19,14 @@ def utcnow() -> str:
 
 
 def get_connection() -> sqlite3.Connection:
+    """Return the legacy SQLite connection for migration/fallback internals only."""
     conn = sqlite3.connect(DATABASE_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 
 @contextmanager
-def db_cursor():
+def _sqlite_db_cursor():
     conn = get_connection()
     try:
         yield conn
@@ -33,7 +35,42 @@ def db_cursor():
         conn.close()
 
 
+def _platform_database_enabled() -> bool:
+    return os.getenv("PLATFORM_DATABASE_BACKEND", "").strip().lower() in {
+        "postgresql",
+        "postgres",
+    }
+
+
+@contextmanager
+def db_cursor():
+    """Route core services to PostgreSQL only after the formal platform switch."""
+    if not _platform_database_enabled():
+        with _sqlite_db_cursor() as connection:
+            yield connection
+        return
+
+    # Lazy import avoids a compatibility-adapter import cycle during startup.
+    from .database.automation import platform_cursor
+
+    with platform_cursor() as connection:
+        yield connection
+
+
 def init_db() -> None:
+    if _platform_database_enabled():
+        required_tables = ("users", "settings", "jobs", "mail_messages", "order_intake_cases")
+        with db_cursor() as conn:
+            missing = [
+                table for table in required_tables
+                if not conn.execute("SELECT to_regclass(?) AS table_name", (f"public.{table}",)).fetchone()["table_name"]
+            ]
+        if missing:
+            raise RuntimeError(
+                "PostgreSQL platform schema is incomplete; run the documented migration before cutover: "
+                + ", ".join(missing)
+            )
+        return
     with db_cursor() as conn:
         conn.executescript(
             """

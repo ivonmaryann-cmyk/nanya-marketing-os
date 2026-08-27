@@ -68,10 +68,13 @@ def qmark_to_pyformat(sql: str) -> str:
     return "".join(output)
 
 
-def sqlite_to_postgresql(sql: str) -> tuple[str, bool]:
+def sqlite_to_postgresql(sql: str, *, map_automation_metadata: bool = True) -> tuple[str, bool]:
     """Translate the small, audited SQLite dialect surface used by automation."""
     statement = qmark_to_pyformat(sql)
-    statement = re.sub(r"\bsettings\b", "automation_metadata", statement, flags=re.IGNORECASE)
+    if re.fullmatch(r"\s*BEGIN\s+IMMEDIATE\s*;?\s*", statement, re.IGNORECASE):
+        return "SELECT 1", False
+    if map_automation_metadata:
+        statement = re.sub(r"\bsettings\b", "automation_metadata", statement, flags=re.IGNORECASE)
     statement = re.sub(
         r"GROUP_CONCAT\(([^,()]+),\s*('(?:[^']|'')*')\)",
         r"STRING_AGG(\1, \2)", statement, flags=re.IGNORECASE,
