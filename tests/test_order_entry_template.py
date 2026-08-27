@@ -73,6 +73,7 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertIn('<option value="查询" selected>查询</option>', template)
         self.assertIn("materialCodeOptions", template)
         self.assertIn("syncPair", template)
+        self.assertIn("NYEOS订单号：{{ nyeos_order_number }}", template)
 
     def test_saved_template_reopens_and_exports_same_values(self) -> None:
         _case, template = get_or_create_template(self.case_id, "employee-a")

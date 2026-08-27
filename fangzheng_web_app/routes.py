@@ -50,6 +50,18 @@ def _filter_order_cases_by_status(
         if _order_mail_status_key(item, entry_progresses.get(int(item["id"]))) == selected_status
     ]
 
+
+def _filter_order_cases_by_nyeos_order_number(
+    cases: list[dict[str, Any]], order_numbers: dict[int, str], query: str,
+) -> list[dict[str, Any]]:
+    needle = str(query or "").strip().casefold()
+    if not needle:
+        return cases
+    return [
+        item for item in cases
+        if needle in order_numbers.get(int(item["id"]), "").casefold()
+    ]
+
 from .bomin_rules import (
     get_active_bomin_rule_version,
     get_bomin_rule_file_path,
@@ -168,6 +180,7 @@ from .order_interface_service import (
     is_domestic_order_entry_completed,
     get_order_detail_records,
     get_material_resolution_states,
+    list_nyeos_order_numbers,
     get_interface_config,
     list_interface_configs,
     process_material_created_callback,
@@ -930,6 +943,7 @@ def order_automation():
     employee_id = current_employee() or ""
     selected_action = request.args.get("category", "all")
     selected_mail_status = request.args.get("mail_status", "all")
+    selected_order_number = request.args.get("order_no", "").strip()
     if selected_mail_status not in ORDER_MAIL_STATUS_FILTER_LABELS:
         selected_mail_status = "all"
     selected_date = request.args.get("date", order_intake_business_today().isoformat())
@@ -960,6 +974,12 @@ def order_automation():
     )
     filtered_cases = overview_cases if selected_action == "all" else list_order_intake_cases(
         employee_id, selected_date, selected_action, selected_account_id, prepare=False
+    )
+    nyeos_order_numbers = list_nyeos_order_numbers(
+        [int(item["id"]) for item in filtered_cases], employee_id
+    )
+    filtered_cases = _filter_order_cases_by_nyeos_order_number(
+        filtered_cases, nyeos_order_numbers, selected_order_number
     )
     all_entry_progresses: dict[int, dict[str, Any]] = {}
     if selected_mail_status != "all":
@@ -995,6 +1015,7 @@ def order_automation():
         scope_labels=ORDER_SCOPE_LABELS,
         selected_action=selected_action,
         selected_mail_status=selected_mail_status,
+        selected_order_number=selected_order_number,
         selected_date=selected_date,
         previous_date=(selected_date_value - timedelta(days=1)).isoformat(),
         next_date=(selected_date_value + timedelta(days=1)).isoformat(),
@@ -1011,6 +1032,7 @@ def order_automation():
         total_pages=total_pages,
         page_start=page_start,
         entry_progresses=entry_progresses,
+        nyeos_order_numbers=nyeos_order_numbers,
     )
 
 
@@ -1231,6 +1253,7 @@ def _order_automation_return_context(case: dict[str, Any]) -> dict[str, Any]:
     if selected_action not in {*ORDER_ACTION_LABELS, "needs_business_routing", "all"}:
         selected_action = "all"
     selected_mail_status = request.args.get("return_mail_status", "all")
+    selected_order_number = request.args.get("return_order_no", "").strip()
     if selected_mail_status not in ORDER_MAIL_STATUS_FILTER_LABELS:
         selected_mail_status = "all"
     per_page = request.args.get("return_per_page", 20, type=int) or 20
@@ -1246,6 +1269,8 @@ def _order_automation_return_context(case: dict[str, Any]) -> dict[str, Any]:
         "page": page,
         "mail_status": selected_mail_status,
     }
+    if selected_order_number:
+        values["order_no"] = selected_order_number
     if account_id:
         values["account_id"] = int(account_id)
     if batch_id:
@@ -1259,6 +1284,7 @@ def _order_automation_return_context(case: dict[str, Any]) -> dict[str, Any]:
             "return_per_page": per_page,
             "return_page": page,
             "return_mail_status": selected_mail_status,
+            "return_order_no": selected_order_number,
             "return_batch": batch_id,
             "return_account": account_id,
         },
@@ -1313,6 +1339,7 @@ def order_automation_case(case_id: int):
         "order_automation_case.html",
         case=case,
         entry_progress=order_entry_template_progress(case_id, employee_id) if case["action_type"] == "new_order" else None,
+        nyeos_order_number=list_nyeos_order_numbers([case_id], employee_id).get(case_id, ""),
         return_context=return_context,
         status_labels=ORDER_INTAKE_STATUS_LABELS,
         action_labels=ORDER_ACTION_LABELS,
@@ -1462,6 +1489,7 @@ def order_automation_entry_template(case_id: int):
         _case, template = get_order_entry_template(case_id, employee_id)
     except ValueError:
         abort(404)
+    order_details = get_order_detail_records(case_id, employee_id)
     return render_template(
         "order_automation_entry_template.html",
         case=case,
@@ -1472,7 +1500,8 @@ def order_automation_entry_template(case_id: int):
         line_labels=ORDER_ENTRY_LINE_LABELS,
         customer_choices=list_customer_choices(),
         validation_issues=order_entry_validation_issues(template),
-        order_details=get_order_detail_records(case_id, employee_id),
+        order_details=order_details,
+        nyeos_order_number=list_nyeos_order_numbers([case_id], employee_id).get(case_id, ""),
         material_resolutions=get_material_resolution_states(case_id, employee_id),
         # Share the same workflow state as the mail list and mail detail.
         order_entry_completed=progress["completed"],

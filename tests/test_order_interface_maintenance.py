@@ -18,6 +18,7 @@ from fangzheng_web_app.order_interface_service import (
     is_domestic_order_entry_completed,
     get_order_detail_records,
     get_material_resolution_states,
+    list_nyeos_order_numbers,
     list_interface_configs,
     process_material_created_callback,
     save_interface_config,
@@ -302,6 +303,10 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         self.assertEqual(
             (case["status"], case["workflow_stage"], case["erp_prepare_status"]),
             ("archived", "completed", "submitted"),
+        )
+        self.assertEqual(
+            list_nyeos_order_numbers([self.case_id], "employee-a"),
+            {self.case_id: "SA2608250002"},
         )
 
     def test_real_domestic_entry_business_failure_is_logged_without_completing_case(self) -> None:

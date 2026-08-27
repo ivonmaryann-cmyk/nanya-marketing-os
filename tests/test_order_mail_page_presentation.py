@@ -10,7 +10,11 @@ from flask import Flask, render_template, session
 from fangzheng_web_app import db
 from fangzheng_web_app.mail_transcode_agent import mail_store
 from fangzheng_web_app.order_intake_service import bootstrap_cases, get_case, list_cases
-from fangzheng_web_app.routes import _filter_order_cases_by_status, _order_mail_status_key
+from fangzheng_web_app.routes import (
+    _filter_order_cases_by_nyeos_order_number,
+    _filter_order_cases_by_status,
+    _order_mail_status_key,
+)
 
 
 class OrderMailPagePresentationTests(unittest.TestCase):
@@ -95,6 +99,19 @@ class OrderMailPagePresentationTests(unittest.TestCase):
             [2],
         )
 
+    def test_nyeos_order_number_search_is_case_insensitive_and_partial(self) -> None:
+        cases = [{"id": 1}, {"id": 2}, {"id": 3}]
+        numbers = {1: "SA2608270003", 2: "SA2608270018"}
+
+        self.assertEqual(
+            [item["id"] for item in _filter_order_cases_by_nyeos_order_number(cases, numbers, "270003")],
+            [1],
+        )
+        self.assertEqual(
+            [item["id"] for item in _filter_order_cases_by_nyeos_order_number(cases, numbers, "sa260827")],
+            [1, 2],
+        )
+
     def test_optimized_templates_render_with_list_and_detail_data(self) -> None:
         app = Flask(__name__, template_folder=str(Path(__file__).parents[1] / "templates"))
         app.secret_key = "test-secret"
@@ -130,10 +147,12 @@ class OrderMailPagePresentationTests(unittest.TestCase):
                 selected_date="2026-08-18",
                 selected_action="all",
                 selected_mail_status="pending_interface_submit",
+                selected_order_number="SA2608270003",
                 previous_date="2026-08-17",
                 next_date="2026-08-19",
                 date_counts=[],
                 cases=[list_case],
+                nyeos_order_numbers={1: "SA2608270003"},
                 entry_progresses={1: {"next_action": "提取订单信息"}},
                 mail_status_filter_labels={
                     "pending_interface_submit": "订单信息确认",
@@ -164,6 +183,7 @@ class OrderMailPagePresentationTests(unittest.TestCase):
                     "attachments": [{"id": 1, "filename": "PO-3001.pdf", "content_type": "application/pdf", "size_bytes": 2048, "parse_status": "parsed", "is_inline": 0, "previewable": True}],
                 },
                 entry_progress={"step": 2, "next_action": "提取订单信息", "label": "待提取订单"},
+                nyeos_order_number="SA2608270003",
                 return_context={"url": "/test", "values": {"category": "all"}, "query": {}},
                 status_labels={"pending_triage": "待处理"},
                 action_labels={"unclassified": "暂不分流", "new_order": "录单", "order_change": "修改订单", "quotation": "报价"},
@@ -176,7 +196,11 @@ class OrderMailPagePresentationTests(unittest.TestCase):
         self.assertIn('<option value="pending_interface_submit" selected>订单信息确认</option>', list_html)
         self.assertIn('name="return_mail_status" value="pending_interface_submit"', list_html)
         self.assertIn("已匹配客户：测试客户", list_html)
+        self.assertIn("NYEOS订单号：SA2608270003", list_html)
+        self.assertIn('name="order_no" value="SA2608270003"', list_html)
         self.assertIn("业务分流与进度", detail_html)
+        self.assertIn("NYEOS订单号", detail_html)
+        self.assertIn("SA2608270003", detail_html)
         self.assertIn("查看清洗后的 HTML 正文", detail_html)
 
 

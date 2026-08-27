@@ -680,6 +680,28 @@ def get_order_detail_records(case_id: int, employee_id: str) -> dict[str, list[d
     return {"template_id": template_id, "events": event_rows, "changes": changes[:100], "calls": call_rows}
 
 
+def list_nyeos_order_numbers(case_ids: list[int], employee_id: str) -> dict[int, str]:
+    ids = sorted({int(case_id) for case_id in case_ids if int(case_id) > 0})
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    with db_cursor() as conn:
+        rows = conn.execute(
+            f"""SELECT case_id,detail_json FROM order_entry_detail_events
+                WHERE employee_id=? AND event_type='domestic_order_entry_real'
+                  AND case_id IN ({placeholders})
+                ORDER BY id DESC""",
+            (employee_id, *ids),
+        ).fetchall()
+    result: dict[int, str] = {}
+    for row in rows:
+        case_id = int(row["case_id"])
+        entry_no = str(_json(row["detail_json"], {}).get("entry_no") or "").strip()
+        if entry_no:
+            result.setdefault(case_id, entry_no)
+    return result
+
+
 MATERIAL_STATUS_LABELS = {
     "pending": "待查询", "waiting_callback": "创建料号中", "requerying": "正在获取新料号",
     "resolved": "已回填", "manual_resolved": "人工已填写", "failed": "查询异常",
