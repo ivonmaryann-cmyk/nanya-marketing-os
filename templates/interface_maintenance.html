@@ -6,12 +6,14 @@
 </style>
 <style>
 .im-test{padding:9px 13px;border:1px solid #9fc2f5;border-radius:8px;background:#fff;color:#2f6fd0;font:inherit;font-size:13px;font-weight:800;cursor:pointer}.im-test-result{margin-top:16px;padding:13px;border:1px solid #cfe0f8;border-radius:8px;background:#f7fbff;color:#456488;font-size:13px;line-height:1.55}.im-test-result.error{border-color:#f0c8c4;background:#fff8f7;color:#9b463e}.im-test-result b{color:#2c507f}.im-test-result pre{max-height:220px;overflow:auto;margin:8px 0 0;padding:10px;border-radius:6px;background:#173255;color:#e3efff;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap}.im-field small{display:block;margin-top:5px;color:#8094af;font-size:12px}
+.im-guide{margin-top:16px;padding:13px 15px;border-left:3px solid #4b88ea;background:#f3f7fd;color:#4d698e;font-size:13px;line-height:1.65}.im-guide strong{display:block;margin-bottom:4px;color:#2d527f}.im-guide ul{margin:0;padding-left:20px}
 </style>
 <section class="im-head"><div><div class="im-kicker">系统配置 / 订单自动化</div><h1>接口维护</h1><p>仅管理员可维护接口配置。业务员只能在订单详情查看接口交互记录。</p></div><span class="im-admin">🔒 管理员权限</span></section>
 <div class="im-layout">
   <aside class="im-list"><h2>接口列表</h2>{% for config in configs %}<a class="im-profile {% if config.interface_key == selected.interface_key %}active{% endif %}" href="{{ url_for('main.interface_maintenance', interface_key=config.interface_key) }}"><strong>{{ config.display_name }}</strong><span>{{ '已启用' if config.enabled else '已停用' }} · {{ 'Mock' if config.mode == 'mock' else '真实接口' }}</span></a>{% endfor %}</aside>
   <form class="im-editor" method="post"><input type="hidden" name="interface_key" value="{{ selected.interface_key }}">
     <div class="im-editor-top"><div><h2>{{ selected.display_name }}</h2><p class="im-note">{{ selected.description }}</p></div><span class="im-mode">{{ 'Mock 模式' if selected.mode == 'mock' else '真实接口模式' }}</span></div>
+    {% if selected.maintenance_notes %}<div class="im-guide"><strong>维护说明</strong><ul>{% for note in selected.maintenance_notes %}<li>{{ note }}</li>{% endfor %}</ul></div>{% endif %}
     <div class="im-fields">
       <div class="im-field"><label>接口名称</label><input name="display_name" value="{{ selected.display_name }}"></div>
       <div class="im-field"><label>运行模式</label><select name="mode"><option value="mock" {% if selected.mode == 'mock' %}selected{% endif %}>Mock</option><option value="real" {% if selected.mode == 'real' %}selected{% endif %}>真实接口</option></select></div>

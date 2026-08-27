@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+import time
 import uuid
 from datetime import datetime, timedelta
 from urllib.error import HTTPError, URLError
@@ -15,36 +17,111 @@ from .db import utcnow
 INTERFACE_DEFAULTS = {
     "material_batch_query": {
         "display_name": "批量料号查询",
-        "description": "按订单明细批量查询料号；返回结果仅作为建议，不覆盖人工填写内容。",
+        "description": "调用 NYEOS 料号查询/编制接口；先查客户料号，未命中时由对方系统解析客户规格。",
         "method": "POST",
-        "base_url": "https://mock.nouya.local/material/batch-query",
-        "port": 443,
+        "base_url": "http://nyeos2.nouyatec.com:7030/NY01-APP/nyeos/api/pe/queryMaterial",
+        "port": 7030,
         "path": "",
-        "timeout_seconds": 8,
+        "timeout_seconds": 15,
         "request_mapping": {
-            "items[].line_no": "模板明细.项次",
-            "items[].customer_part_no": "模板明细.客户产品编号",
-            "items[].customer_spec": "模板明细.客户规格",
+            "customerCode": "模板表头.账款客户编号（必填）",
+            "operatorCode": "当前登录账号（员工工号，必填）",
+            "materialInfoList[].categoryCode": "模板明细.产品类型（PP=698，基板=718，必填）",
+            "materialInfoList[].customerMaterialNo": "模板明细.客户产品编号（必填）",
+            "materialInfoList[].customerSpec": "模板明细.客户规格（必填）",
+            "materialInfoList[].newProductName": "暂不映射，发送空字符串（选填）",
+            "materialInfoList[].oldProductName": "模板明细.品名（选填）",
         },
         "response_mapping": {
-            "items[].factory_part_no": "料号查询建议.产品编号",
-            "items[].product_name": "料号查询建议.品名",
-            "items[].matched_spec": "料号查询建议.匹配规格",
-            "items[].status": "接口交互记录.状态",
-            "items[].message": "接口交互记录.提示",
+            "code": "接口交互记录.业务状态码（200=处理完成，999=失败）",
+            "msg": "接口交互记录.提示",
+            "pera01": "料号查询建议.客户料号编制作业单号",
+            "newFlag": "料号查询建议.是否新建（Y=新建，N=未新建）",
+            "source": "料号查询建议.来源（PARSE=规格解析）",
+            "errors[]": "接口交互记录.逐行失败信息",
+            "hitMaterialList[].peag01": "料号查询建议.产品编号",
+            "hitMaterialList[].peag08": "料号查询建议.品名",
+            "hitMaterialList[].peag06": "料号查询建议.销售品名规格",
+            "hitMaterialList[].peag09": "料号查询建议.旧品名",
+            "hitMaterialList[].scca05": "料号查询建议.客户规格",
+            "hitMaterialList[].scca03": "料号查询建议.客户产品编号",
         },
     },
     "domestic_order_entry": {
-        "display_name": "内销录单",
-        "description": "人工确认订单内容后提交内销录单；当前先维护 Mock 配置。",
+        "display_name": "生成订单",
+        "description": "将已确认的录单模板写入 SCTO 中间表并生成订单。",
         "method": "POST",
-        "base_url": "https://mock.nouya.local/sales/internal-entry",
-        "port": 443,
+        "base_url": "http://nyeos2.nouyatec.com:7030/NY01-APP/nyeos/api/sc/saveSctoAndGenerateOrder",
+        "port": 7030,
         "path": "",
-        "timeout_seconds": 10,
-        "request_mapping": {"header": "内销模板.表头", "items": "内销模板.明细行"},
-        "response_mapping": {"status": "接口交互记录.状态", "message": "接口交互记录.提示"},
+        "timeout_seconds": 15,
+        "request_mapping": {
+            "sctoDataList[].customerCode": "模板表头.账款客户编号（必填）",
+            "sctoDataList[].orderType": "模板表头.单别（必填）",
+            "sctoDataList[].operator": "当前登录账号（员工工号，必填）",
+            "sctoDataList[].quantity": "模板明细.数量（必填）",
+            "sctoDataList[].taxPrice": "模板明细.单价（与税前单价至少一项必填）",
+            "sctoDataList[].untaxedPrice": "模板明细.税前单价（与单价至少一项必填）",
+            "sctoDataList[].materialCode": "模板明细.产品编号（料号查询结果，必填）",
+            "sctoDataList[].lineNumber": "模板明细.项次（必填）",
+            "sctoDataList[].demandDate": "模板明细.出货日期（必填）",
+            "sctoDataList[].orderNumber": "模板表头.客户订单号（必填）",
+            "sctoDataList[].lineId": "模板明细.客户订单序号（选填）",
+            "sctoDataList[].lineRemark": "模板明细.备注（选填）",
+            "sctoDataList[].taxType": "模板表头.税种（选填）",
+            "sctoDataList[].materialName": "模板明细.品名（选填）",
+            "sctoDataList[].spec": "模板明细.客户规格匹配；为空时取客户规格（选填）",
+        },
+        "response_mapping": {
+            "code": "接口交互记录.业务状态码",
+            "msg": "接口交互记录.提示",
+            "data.successCount": "接口交互记录.成功数量",
+            "data.failCount": "接口交互记录.失败数量",
+            "data.data[].orderNumber": "接口交互记录.客户订单号",
+            "data.data[].sctaCode": "接口交互记录.生成订单号",
+            "data.data[].status": "接口交互记录.生成状态（success/fail）",
+            "data.data[].message": "接口交互记录.失败原因",
+        },
     },
+}
+
+LEGACY_MATERIAL_DEFAULT = {
+    "description": "按订单明细批量查询料号；返回结果仅作为建议，不覆盖人工填写内容。",
+    "base_url": "https://mock.nouya.local/material/batch-query",
+    "request_mapping": {
+        "items[].line_no": "模板明细.项次",
+        "items[].customer_part_no": "模板明细.客户产品编号",
+        "items[].customer_spec": "模板明细.客户规格",
+    },
+    "response_mapping": {
+        "items[].factory_part_no": "料号查询建议.产品编号",
+        "items[].product_name": "料号查询建议.品名",
+        "items[].matched_spec": "料号查询建议.匹配规格",
+        "items[].status": "接口交互记录.状态",
+        "items[].message": "接口交互记录.提示",
+    },
+}
+
+LEGACY_DOMESTIC_DEFAULT = {
+    "description": "人工确认订单内容后提交内销录单；当前先维护 Mock 配置。",
+    "base_url": "https://mock.nouya.local/sales/internal-entry",
+    "request_mapping": {"header": "内销模板.表头", "items": "内销模板.明细行"},
+    "response_mapping": {"status": "接口交互记录.状态", "message": "接口交互记录.提示"},
+}
+
+INTERFACE_MAINTENANCE_NOTES = {
+    "material_batch_query": [
+        "当前地址是 NYEOS 测试环境；正式环境地址确认后只需修改“请求地址”。",
+        "产品类型必须转换为接口编码：PP 使用 698，基板使用 718。",
+        "customerSpec 只发送模板中的“客户规格”，不发送“客户规格匹配”。",
+        "接口未命中料号时可能返回 pera01，并在对方系统创建客户料号编制作业，请勿用随意数据测试。",
+        "保存后业务页会按运行模式执行：Mock 走模拟流程，真实接口会请求当前地址。",
+    ],
+    "domestic_order_entry": [
+        "当前地址是 NYEOS 测试环境；正式环境地址确认后只需修改“请求地址”。",
+        "materialCode 使用料号查询后选定的产品编号，不发送原始客户产品编号。",
+        "保存后业务页会按运行模式执行：Mock 走模拟流程，真实接口会生成订单。",
+    ],
 }
 
 MOCK_SCENARIOS = {
@@ -86,10 +163,19 @@ def ensure_interface_configs(operated_by: str = "system") -> None:
     with db_cursor() as conn:
         for interface_key, defaults in INTERFACE_DEFAULTS.items():
             existing = conn.execute(
-                "SELECT id FROM order_interface_configs WHERE interface_key=?",
+                "SELECT * FROM order_interface_configs WHERE interface_key=?",
                 (interface_key,),
             ).fetchone()
             if existing:
+                if interface_key == "material_batch_query" and _is_untouched_legacy_material_config(existing):
+                    _upgrade_legacy_material_config(conn, existing, operated_by, now)
+                    existing = conn.execute(
+                        "SELECT * FROM order_interface_configs WHERE interface_key=?", (interface_key,)
+                    ).fetchone()
+                if interface_key == "material_batch_query":
+                    _upgrade_material_customer_spec_source(conn, existing, operated_by, now)
+                elif interface_key == "domestic_order_entry" and _is_untouched_legacy_domestic_config(existing):
+                    _upgrade_legacy_domestic_config(conn, existing, operated_by, now)
                 continue
             conn.execute(
                 """INSERT INTO order_interface_configs
@@ -107,6 +193,109 @@ def ensure_interface_configs(operated_by: str = "system") -> None:
             )
 
 
+def _is_untouched_legacy_material_config(row: Any) -> bool:
+    item = _row(row)
+    return (
+        str(item.get("description") or "") == LEGACY_MATERIAL_DEFAULT["description"]
+        and str(item.get("base_url") or "") == LEGACY_MATERIAL_DEFAULT["base_url"]
+        and _json(item.get("request_mapping_json"), {}) == LEGACY_MATERIAL_DEFAULT["request_mapping"]
+        and _json(item.get("response_mapping_json"), {}) == LEGACY_MATERIAL_DEFAULT["response_mapping"]
+    )
+
+
+def _upgrade_legacy_material_config(conn: Any, row: Any, operated_by: str, now: str) -> None:
+    before = _row(row)
+    defaults = INTERFACE_DEFAULTS["material_batch_query"]
+    next_version = int(before.get("config_version") or 0) + 1
+    conn.execute(
+        """UPDATE order_interface_configs
+           SET description=?,method=?,base_url=?,port=?,path=?,timeout_seconds=?,
+               request_mapping_json=?,response_mapping_json=?,config_version=?,updated_at=?
+           WHERE id=?""",
+        (
+            defaults["description"], defaults["method"], defaults["base_url"], defaults["port"],
+            defaults["path"], defaults["timeout_seconds"],
+            json.dumps(defaults["request_mapping"], ensure_ascii=False),
+            json.dumps(defaults["response_mapping"], ensure_ascii=False),
+            next_version, now, int(before["id"]),
+        ),
+    )
+    current = conn.execute("SELECT * FROM order_interface_configs WHERE id=?", (int(before["id"]),)).fetchone()
+    conn.execute(
+        """INSERT INTO order_interface_config_versions
+           (interface_config_id,config_version,before_json,after_json,operated_by,created_at)
+           VALUES (?,?,?,?,?,?)""",
+        (
+            int(before["id"]), next_version, json.dumps(before, ensure_ascii=False),
+            json.dumps(_row(current), ensure_ascii=False), operated_by, now,
+        ),
+    )
+
+
+def _upgrade_material_customer_spec_source(conn: Any, row: Any, operated_by: str, now: str) -> None:
+    before = _row(row)
+    mapping = _json(before.get("request_mapping_json"), {})
+    key = "materialInfoList[].customerSpec"
+    if mapping.get(key) != "模板明细.客户规格匹配；为空时取客户规格（必填）":
+        return
+    mapping[key] = INTERFACE_DEFAULTS["material_batch_query"]["request_mapping"][key]
+    next_version = int(before.get("config_version") or 0) + 1
+    conn.execute(
+        """UPDATE order_interface_configs
+           SET request_mapping_json=?,config_version=?,updated_at=? WHERE id=?""",
+        (json.dumps(mapping, ensure_ascii=False), next_version, now, int(before["id"])),
+    )
+    current = conn.execute("SELECT * FROM order_interface_configs WHERE id=?", (int(before["id"]),)).fetchone()
+    conn.execute(
+        """INSERT INTO order_interface_config_versions
+           (interface_config_id,config_version,before_json,after_json,operated_by,created_at)
+           VALUES (?,?,?,?,?,?)""",
+        (
+            int(before["id"]), next_version, json.dumps(before, ensure_ascii=False),
+            json.dumps(_row(current), ensure_ascii=False), operated_by, now,
+        ),
+    )
+
+
+def _is_untouched_legacy_domestic_config(row: Any) -> bool:
+    item = _row(row)
+    return (
+        str(item.get("description") or "") == LEGACY_DOMESTIC_DEFAULT["description"]
+        and str(item.get("base_url") or "") == LEGACY_DOMESTIC_DEFAULT["base_url"]
+        and _json(item.get("request_mapping_json"), {}) == LEGACY_DOMESTIC_DEFAULT["request_mapping"]
+        and _json(item.get("response_mapping_json"), {}) == LEGACY_DOMESTIC_DEFAULT["response_mapping"]
+    )
+
+
+def _upgrade_legacy_domestic_config(conn: Any, row: Any, operated_by: str, now: str) -> None:
+    before = _row(row)
+    defaults = INTERFACE_DEFAULTS["domestic_order_entry"]
+    next_version = int(before.get("config_version") or 0) + 1
+    conn.execute(
+        """UPDATE order_interface_configs
+           SET display_name=?,description=?,method=?,base_url=?,port=?,path=?,timeout_seconds=?,
+               request_mapping_json=?,response_mapping_json=?,config_version=?,updated_at=?
+           WHERE id=?""",
+        (
+            defaults["display_name"], defaults["description"], defaults["method"], defaults["base_url"],
+            defaults["port"], defaults["path"], defaults["timeout_seconds"],
+            json.dumps(defaults["request_mapping"], ensure_ascii=False),
+            json.dumps(defaults["response_mapping"], ensure_ascii=False),
+            next_version, now, int(before["id"]),
+        ),
+    )
+    current = conn.execute("SELECT * FROM order_interface_configs WHERE id=?", (int(before["id"]),)).fetchone()
+    conn.execute(
+        """INSERT INTO order_interface_config_versions
+           (interface_config_id,config_version,before_json,after_json,operated_by,created_at)
+           VALUES (?,?,?,?,?,?)""",
+        (
+            int(before["id"]), next_version, json.dumps(before, ensure_ascii=False),
+            json.dumps(_row(current), ensure_ascii=False), operated_by, now,
+        ),
+    )
+
+
 def list_interface_configs() -> list[dict[str, Any]]:
     ensure_interface_configs()
     with db_cursor() as conn:
@@ -120,6 +309,7 @@ def list_interface_configs() -> list[dict[str, Any]]:
         item["response_mapping"] = _json(item.pop("response_mapping_json", ""), {})
         item["mock_scenarios"] = _json(item.pop("mock_scenarios_json", ""), {})
         item["endpoint_url"] = _endpoint_url(item)
+        item["maintenance_notes"] = INTERFACE_MAINTENANCE_NOTES.get(item["interface_key"], [])
         result.append(item)
     return result
 
@@ -138,6 +328,7 @@ def get_interface_config(interface_key: str) -> dict[str, Any] | None:
     item["response_mapping"] = _json(item.pop("response_mapping_json", ""), {})
     item["mock_scenarios"] = _json(item.pop("mock_scenarios_json", ""), {})
     item["endpoint_url"] = _endpoint_url(item)
+    item["maintenance_notes"] = INTERFACE_MAINTENANCE_NOTES.get(item["interface_key"], [])
     return item
 
 
@@ -216,17 +407,33 @@ def test_interface_config(payload: dict[str, Any]) -> dict[str, Any]:
     if method not in {"GET", "POST", "PUT", "PATCH"}:
         raise ValueError("请求方法不支持")
     request_body = {
-        "items": [{"line_no": 1, "customer_part_no": "TEST-001", "customer_spec": "Mock 测试规格"}]
+        "customerCode": "",
+        "operatorCode": "",
+        "materialInfoList": [{
+            "categoryCode": "718",
+            "customerMaterialNo": "",
+            "customerSpec": "",
+            "newProductName": "",
+            "oldProductName": "",
+        }],
     } if interface_key == "material_batch_query" else {
-        "header": {"customer_order_number": "TEST-ORDER-001"},
-        "items": [{"line_no": 1, "customer_part_no": "TEST-001"}],
+        "sctoDataList": [{
+            "customerCode": "", "orderType": "", "operator": "", "quantity": "",
+            "taxPrice": "", "untaxedPrice": "", "materialCode": "", "lineNumber": "1",
+            "demandDate": "", "orderNumber": "",
+        }],
     }
     if mode == "mock":
+        mock_response = (
+            {"msg": "Mock 测试成功", "code": 200, "reqParams": request_body, "hitMaterialList": []}
+            if interface_key == "material_batch_query"
+            else {"msg": "Mock 测试成功", "code": 200, "data": {"data": [], "failCount": 0, "successCount": 0}}
+        )
         return {
             "ok": True, "mode": "mock", "status_code": 200, "duration_ms": 0,
             "endpoint_url": endpoint_url,
             "request": request_body,
-            "response": {"items": [{"line_no": 1, "status": "matched", "message": "Mock 测试成功"}]},
+            "response": mock_response,
         }
     body = json.dumps(request_body, ensure_ascii=False).encode("utf-8")
     request = Request(
@@ -298,7 +505,8 @@ _AUDIT_FIELD_LABELS = {
 _AUDIT_SOURCE_LABELS = {
     "template_saved": "人工保存", "template_extracted": "首次提取", "template_reextracted": "重新提取",
     "material_query_mock": "料号查询接口", "material_created_callback": "料号创建回调",
-    "domestic_order_entry_mock": "内销录单接口",
+    "material_query_real": "料号查询接口",
+    "domestic_order_entry_mock": "生成订单接口", "domestic_order_entry_real": "生成订单接口",
 }
 
 
@@ -413,7 +621,7 @@ def get_order_detail_records(case_id: int, employee_id: str) -> dict[str, list[d
             item[key[:-5]] = _json(item.pop(key, ""), {})
         item["trace_id"] = f"I-{item['id']}"
         item["occurred_at"] = _audit_time(item.get("created_at"))
-        item["interface_label"] = "批量料号查询" if item.get("interface_key") == "material_batch_query" else "内销录单"
+        item["interface_label"] = "批量料号查询" if item.get("interface_key") == "material_batch_query" else "生成订单"
         item["mode_label"] = "Mock" if item.get("is_mock") else "真实接口"
         item["outcome_label"] = "成功" if item.get("status") == "success" else "失败"
         item["summary"] = _call_summary(item)
@@ -435,9 +643,11 @@ MATERIAL_STATUS_LABELS = {
 
 
 def _material_request_item(line_no: int, values: dict[str, Any]) -> dict[str, Any]:
-    """The three approved keys are deliberately the only material-query input."""
     return {
         "line_no": line_no,
+        "material_status": str(values.get("material_status") or "查询"),
+        "product_type": str(values.get("product_type") or ""),
+        "product_name": str(values.get("product_name") or ""),
         "customer_product_code": str(values.get("customer_product_code") or ""),
         "customer_spec": str(values.get("customer_spec") or ""),
         "customer_spec_match": str(values.get("customer_spec_match") or ""),
@@ -446,14 +656,18 @@ def _material_request_item(line_no: int, values: dict[str, Any]) -> dict[str, An
 
 def _insert_call_log(conn: Any, *, case_id: int, template_id: int, employee_id: str,
                      config: dict[str, Any], status: str, request_payload: dict[str, Any],
-                     response_payload: dict[str, Any], triggered_by: str, error_message: str = "") -> int:
+                     response_payload: dict[str, Any], triggered_by: str, error_message: str = "",
+                     is_mock: bool = True, http_status: int | None = None,
+                     duration_ms: int | None = 1) -> int:
+    if is_mock and http_status is None:
+        http_status = 200 if status == "success" else 422
     cursor = conn.execute(
         """INSERT INTO order_interface_call_logs
            (case_id,template_id,employee_id,interface_config_id,interface_key,config_version,is_mock,
             status,http_status,duration_ms,request_json,response_json,error_message,triggered_by,created_at)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (case_id, template_id, employee_id, int(config["id"]), "material_batch_query",
-         int(config["config_version"]), 1, status, 200 if status == "success" else 422, 1,
+         int(config["config_version"]), int(is_mock), status, http_status, duration_ms,
          json.dumps(request_payload, ensure_ascii=False), json.dumps(response_payload, ensure_ascii=False),
          error_message, triggered_by, utcnow()),
     )
@@ -490,7 +704,8 @@ def _upsert_resolution_task(conn: Any, *, case_id: int, template_id: int, employ
 
 
 def _backfill_material_line(conn: Any, *, template_id: int, line_no: int, values: dict[str, Any],
-                            factory_part_no: str, product_name: str, correlation_id: str) -> list[dict[str, Any]]:
+                            factory_part_no: str, product_name: str, correlation_id: str,
+                            source_label: str = "料号查询接口（Mock）") -> list[dict[str, Any]]:
     """Fill blanks and replace the interface's temporary creation message."""
     before = dict(values)
     sources_row = conn.execute(
@@ -501,7 +716,7 @@ def _backfill_material_line(conn: Any, *, template_id: int, line_no: int, values
     for field, value in (("product_code", factory_part_no), ("product_name", product_name)):
         if value and str(values.get(field) or "").strip() in {"", "创建料号中"}:
             values[field] = value
-            sources[field] = {"label": "料号查询接口（Mock）", "reference": f"关联号 {correlation_id}"}
+            sources[field] = {"label": source_label, "reference": f"关联号 {correlation_id}"}
             changes.append({"field": field, "before": before.get(field, ""), "after": value, "line_no": line_no})
     if changes:
         conn.execute(
@@ -519,13 +734,226 @@ def _mock_material_response(item: dict[str, Any], *, callback_requery: bool = Fa
     if not code:
         return {"line_no": line_no, "status": "failed", "message": "缺少客户产品编号，无法查询料号。"}
     if callback_requery or line_no % 3 == 1:
-        return {"line_no": line_no, "status": "matched", "factory_part_no": f"MOCK-{code[-6:]}",
-                "product_name": f"Mock 品名 {code[-4:]}", "matched_spec": item["customer_spec_match"] or item["customer_spec"],
-                "message": "Mock 已命中并回填产品编号、品名。"}
+        candidates = [
+            {"factory_part_no": f"MOCK-{code[-6:]}", "product_name": f"Mock 品名 {code[-4:]}"},
+            {"factory_part_no": f"MOCK-{code[-6:]}-ALT", "product_name": f"Mock 品名 {code[-4:]} 备选"},
+        ]
+        return {"line_no": line_no, "status": "matched", **candidates[0], "candidates": candidates,
+                "matched_spec": item["customer_spec_match"] or item["customer_spec"],
+                "message": "Mock 已命中多个料号，可在产品编号或品名中联动选择。"}
     if line_no % 3 == 2:
         return {"line_no": line_no, "status": "creating", "factory_part_no": "创建料号中", "product_name": "创建料号中",
                 "external_task_id": f"MOCK-CREATE-{line_no}", "message": "Mock 未找到料号，已发起创建；等待对方回调。"}
     return {"line_no": line_no, "status": "failed", "message": "Mock 查询异常：请检查客户产品编号、客户规格和规格匹配。"}
+
+
+def build_material_query(case_id: int, employee_id: str, triggered_by: str) -> dict[str, Any]:
+    config = get_interface_config("material_batch_query")
+    if not config or not config.get("enabled"):
+        raise ValueError("批量料号查询接口未启用")
+    if str(config.get("mode") or "mock") == "real":
+        return build_material_query_real(case_id, employee_id, triggered_by, config=config)
+    return build_material_query_mock(case_id, employee_id, triggered_by)
+
+
+def _material_category_code(product_type: str) -> str:
+    value = str(product_type or "").strip()
+    normalized = value.upper()
+    if normalized in {"PP", "698", "1"}:
+        return "698"
+    if value == "基板" or normalized in {"718", "2"}:
+        return "718"
+    return value
+
+
+def _real_material_request_item(item: dict[str, Any]) -> dict[str, str]:
+    product_name = str(item.get("product_name") or "").strip()
+    if product_name in {"创建料号中", "创建品名中"}:
+        product_name = ""
+    is_new = str(item.get("material_status") or "查询").strip() == "新增"
+    return {
+        "categoryCode": _material_category_code(str(item.get("product_type") or "")),
+        "customerMaterialNo": str(item.get("customer_product_code") or "").strip(),
+        "customerSpec": str(item.get("customer_spec") or "").strip(),
+        "newProductName": product_name if is_new else "",
+        "oldProductName": "" if is_new else product_name,
+    }
+
+
+def _post_json_endpoint(
+    config: dict[str, Any], payload: dict[str, Any], interface_label: str,
+) -> tuple[int, dict[str, Any], int]:
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = Request(
+        _endpoint_url(config), data=body,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method=str(config.get("method") or "POST").upper(),
+    )
+    started = time.monotonic()
+    try:
+        with urlopen(request, timeout=int(config.get("timeout_seconds") or 15)) as response:
+            raw = response.read(1024 * 1024).decode("utf-8", errors="replace")
+            status_code = int(response.status)
+    except HTTPError as exc:
+        raw = exc.read(1024 * 1024).decode("utf-8", errors="replace")
+        status_code = int(exc.code)
+    except (URLError, TimeoutError, OSError) as exc:
+        raise ValueError(f"{interface_label}请求失败：{str(exc)[:160]}") from exc
+    try:
+        response_body = json.loads(raw) if raw else {}
+    except ValueError as exc:
+        raise ValueError(f"{interface_label}返回的不是合法 JSON") from exc
+    if not isinstance(response_body, dict):
+        raise ValueError(f"{interface_label}返回格式错误")
+    return status_code, response_body, int((time.monotonic() - started) * 1000)
+
+
+def _real_material_response_items(
+    request_items: list[dict[str, Any]], response_body: dict[str, Any], http_status: int,
+) -> list[dict[str, Any]]:
+    errors_by_line: dict[int, str] = {}
+    for message in response_body.get("errors") or []:
+        matched = re.search(r"第\s*(\d+)\s*行", str(message))
+        if matched:
+            errors_by_line[int(matched.group(1))] = str(message).strip()
+    hits = [item for item in (response_body.get("hitMaterialList") or []) if isinstance(item, dict)]
+    hits_by_customer_part: dict[str, list[dict[str, Any]]] = {}
+    for hit in hits:
+        hits_by_customer_part.setdefault(str(hit.get("scca03") or "").strip(), []).append(hit)
+    business_ok = http_status == 200 and int(response_body.get("code") or 0) == 200
+    results = []
+    for index, item in enumerate(request_items, start=1):
+        customer_part = str(item.get("customer_product_code") or "").strip()
+        matched_hits = hits_by_customer_part.get(customer_part, [])
+        if not matched_hits and len(request_items) == 1:
+            matched_hits = hits
+        candidates = [
+            {
+                "factory_part_no": str(hit.get("peag01") or "").strip(),
+                "product_name": str(hit.get("peag08") or "").strip(),
+            }
+            for hit in matched_hits
+            if str(hit.get("peag01") or hit.get("peag08") or "").strip()
+        ]
+        if candidates:
+            results.append({
+                "line_no": item["line_no"], "status": "matched", **candidates[0],
+                "candidates": candidates, "matched_spec": str(matched_hits[0].get("scca05") or ""),
+                "message": f"真实接口命中 {len(candidates)} 个候选料号。",
+            })
+        elif index in errors_by_line:
+            results.append({"line_no": item["line_no"], "status": "failed", "message": errors_by_line[index]})
+        elif business_ok and response_body.get("pera01"):
+            results.append({
+                "line_no": item["line_no"], "status": "creating",
+                "factory_part_no": "创建料号中", "product_name": "创建料号中",
+                "external_task_id": str(response_body.get("pera01") or ""),
+                "message": f"未命中现有料号，已返回编制作业单 {response_body['pera01']}。",
+            })
+        else:
+            results.append({
+                "line_no": item["line_no"], "status": "failed",
+                "message": str(response_body.get("msg") or f"接口返回 HTTP {http_status}"),
+            })
+    return results
+
+
+def build_material_query_real(
+    case_id: int, employee_id: str, triggered_by: str, *, config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if is_domestic_order_entry_completed(case_id, employee_id):
+        raise ValueError("内销录单已完成，不能再次请求料号查询接口")
+    config = config or get_interface_config("material_batch_query")
+    if not config or not config.get("enabled"):
+        raise ValueError("批量料号查询接口未启用")
+    template_id = _case_template_id(case_id, employee_id)
+    if not template_id:
+        raise ValueError("请先生成录单模板")
+    with db_cursor() as conn:
+        template = conn.execute("SELECT header_json FROM order_entry_templates WHERE id=?", (template_id,)).fetchone()
+        rows = conn.execute(
+            "SELECT line_no,values_json FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no",
+            (template_id,),
+        ).fetchall()
+    header = _json(template["header_json"] if template else "", {})
+    customer_code = str(header.get("bill_to_customer_code") or "").strip()
+    if not customer_code:
+        raise ValueError("请先填写并保存账款客户编号")
+    request_items = [_material_request_item(int(row["line_no"]), _json(row["values_json"], {})) for row in rows]
+    if not request_items:
+        raise ValueError("当前没有可查询的订单明细")
+    request_payload = {
+        "customerCode": customer_code,
+        "operatorCode": employee_id,
+        "materialInfoList": [_real_material_request_item(item) for item in request_items],
+    }
+    try:
+        http_status, response_body, duration_ms = _post_json_endpoint(config, request_payload, "真实料号查询")
+    except ValueError as exc:
+        with db_cursor() as conn:
+            call_id = _insert_call_log(
+                conn, case_id=case_id, template_id=template_id, employee_id=employee_id, config=config,
+                status="failed", request_payload=request_payload, response_payload={}, triggered_by=triggered_by,
+                error_message=str(exc), is_mock=False, http_status=None, duration_ms=None,
+            )
+            record_order_detail_event(
+                conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
+                event_type="material_query_real", title="批量料号查询（真实接口）失败",
+                detail={"call_id": call_id, "error_message": str(exc)}, operated_by=triggered_by,
+            )
+        raise
+    response_items = _real_material_response_items(request_items, response_body, http_status)
+    call_status = "success" if any(item["status"] in {"matched", "creating"} for item in response_items) else "failed"
+    all_changes: list[dict[str, Any]] = []
+    with db_cursor() as conn:
+        call_id = _insert_call_log(
+            conn, case_id=case_id, template_id=template_id, employee_id=employee_id, config=config,
+            status=call_status, request_payload=request_payload, response_payload=response_body,
+            triggered_by=triggered_by, error_message="" if call_status == "success" else str(response_body.get("msg") or "查询失败"),
+            is_mock=False, http_status=http_status, duration_ms=duration_ms,
+        )
+        rows_by_line = {int(row["line_no"]): row for row in rows}
+        for item, response in zip(request_items, response_items):
+            status = response["status"]
+            task_status = "resolved" if status == "matched" else ("waiting_callback" if status == "creating" else "failed")
+            task = _upsert_resolution_task(
+                conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
+                line_no=item["line_no"], status=task_status, input_item=item, call_id=call_id, result=response,
+            )
+            values = _json(rows_by_line[item["line_no"]]["values_json"], {})
+            if status in {"matched", "creating"}:
+                changes = _backfill_material_line(
+                    conn, template_id=template_id, line_no=item["line_no"], values=values,
+                    factory_part_no=str(response.get("factory_part_no") or ""),
+                    product_name=str(response.get("product_name") or ""), correlation_id=task["correlation_id"],
+                    source_label="料号查询接口（真实）",
+                )
+                all_changes.extend(changes)
+            if status == "matched":
+                conn.execute("UPDATE order_material_resolution_tasks SET resolved_at=?,updated_at=? WHERE id=?", (utcnow(), utcnow(), task["id"]))
+            elif status == "creating":
+                conn.execute(
+                    "UPDATE order_material_resolution_tasks SET external_task_id=?,updated_at=? WHERE id=?",
+                    (response.get("external_task_id", ""), utcnow(), task["id"]),
+                )
+            suggestions = response.get("candidates") or [response]
+            for suggestion in suggestions:
+                conn.execute(
+                    """INSERT INTO order_material_query_suggestions
+                       (call_log_id,template_id,line_no,factory_part_no,product_name,matched_spec,status,message,created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (
+                        call_id, template_id, item["line_no"], suggestion.get("factory_part_no", ""),
+                        suggestion.get("product_name", ""), response.get("matched_spec", ""), status,
+                        response.get("message", ""), utcnow(),
+                    ),
+                )
+        record_order_detail_event(
+            conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
+            event_type="material_query_real", title="批量料号查询（真实接口）完成",
+            detail={"call_id": call_id, "changes": all_changes, "items": response_items}, operated_by=triggered_by,
+        )
+    return {"call_id": call_id, "items": response_items, "status": call_status, "mode": "real"}
 
 
 def build_material_query_mock(case_id: int, employee_id: str, triggered_by: str, scenario: str = "success",
@@ -639,9 +1067,31 @@ def get_material_resolution_states(case_id: int, employee_id: str) -> dict[str, 
     for row in rows:
         item = _row(row)
         item["result"] = _json(item.pop("result_json", ""), {})
+        item["candidates"] = _material_candidates(item["result"])
         item["label"] = MATERIAL_STATUS_LABELS.get(item["status"], item["status"])
         items.append(item)
     return {"items": items, "pending": any(item["status"] in {"waiting_callback", "requerying"} for item in items)}
+
+
+def _material_candidates(result: dict[str, Any]) -> list[dict[str, str]]:
+    raw_candidates = result.get("candidates") or result.get("hitMaterialList") or []
+    if not raw_candidates and (result.get("factory_part_no") or result.get("product_name")):
+        raw_candidates = [result]
+    candidates: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw in raw_candidates:
+        if not isinstance(raw, dict):
+            continue
+        candidate = {
+            "product_code": str(raw.get("factory_part_no") or raw.get("peag01") or "").strip(),
+            "product_name": str(raw.get("product_name") or raw.get("peag08") or "").strip(),
+        }
+        key = (candidate["product_code"], candidate["product_name"])
+        if key == ("", "") or key in seen:
+            continue
+        seen.add(key)
+        candidates.append(candidate)
+    return candidates
 
 
 def validate_domestic_order_entry(case_id: int, employee_id: str) -> list[str]:
@@ -735,4 +1185,177 @@ def build_domestic_order_entry_mock(case_id: int, employee_id: str, triggered_by
             detail={"call_id": call_id, "line_count": len(lines), "entry_no": response_payload["entry_no"]},
             operated_by=triggered_by,
         )
-    return {"call_id": call_id, "entry_no": response_payload["entry_no"], "status": "success"}
+    return {"call_id": call_id, "entry_no": response_payload["entry_no"], "status": "success", "mode": "mock"}
+
+
+def build_domestic_order_entry(case_id: int, employee_id: str, triggered_by: str) -> dict[str, Any]:
+    config = get_interface_config("domestic_order_entry")
+    if not config or not config.get("enabled"):
+        raise ValueError("生成订单接口未启用")
+    if str(config.get("mode") or "mock") == "real":
+        return build_domestic_order_entry_real(case_id, employee_id, triggered_by, config=config)
+    return build_domestic_order_entry_mock(case_id, employee_id, triggered_by)
+
+
+def _domestic_order_request_payload(
+    header: dict[str, Any], rows: list[Any], employee_id: str,
+) -> dict[str, Any]:
+    customer_code = str(header.get("bill_to_customer_code") or "").strip()
+    order_type = str(header.get("order_type") or "").strip()
+    order_number = str(header.get("customer_order_number") or "").strip()
+    header_issues = []
+    if not customer_code:
+        header_issues.append("未填写账款客户编号")
+    if not order_type:
+        header_issues.append("未填写单别")
+    if not order_number:
+        header_issues.append("未填写客户订单号")
+    if header_issues:
+        raise ValueError("暂不能提交录单：" + "；".join(header_issues))
+    items = []
+    line_issues = []
+    for row in rows:
+        line_no = int(row["line_no"])
+        values = _json(row["values_json"], {})
+        quantity = str(values.get("quantity") or "").strip()
+        material_code = str(values.get("product_code") or "").strip()
+        demand_date = str(values.get("delivery_date") or "").strip()
+        tax_price = str(values.get("unit_price") or "").strip()
+        untaxed_price = str(values.get("price_before_tax") or "").strip()
+        if not quantity:
+            line_issues.append(f"第 {line_no} 行未填写数量")
+        if not material_code:
+            line_issues.append(f"第 {line_no} 行未填写产品编号")
+        if not demand_date:
+            line_issues.append(f"第 {line_no} 行未填写出货日期")
+        if not tax_price and not untaxed_price:
+            line_issues.append(f"第 {line_no} 行单价和税前单价至少填写一项")
+        items.append({
+            "customerCode": customer_code,
+            "orderType": order_type,
+            "operator": employee_id,
+            "quantity": quantity,
+            "taxPrice": tax_price,
+            "untaxedPrice": untaxed_price,
+            "materialCode": material_code,
+            "lineNumber": str(line_no),
+            "demandDate": demand_date,
+            "orderNumber": order_number,
+            "custOrderId": order_number,
+            "lineId": str(values.get("customer_order_seq") or "").strip(),
+            "lineRemark": str(values.get("remark") or "").strip(),
+            "taxType": str(header.get("tax_type") or "").strip(),
+            "materialName": str(values.get("product_name") or "").strip(),
+            "spec": str(values.get("customer_spec_match") or values.get("customer_spec") or "").strip(),
+        })
+    if line_issues:
+        raise ValueError("暂不能提交录单：" + "；".join(line_issues))
+    return {"sctoDataList": items}
+
+
+def _insert_domestic_call_log(
+    conn: Any, *, case_id: int, template_id: int, employee_id: str, config: dict[str, Any],
+    status: str, request_payload: dict[str, Any], response_payload: dict[str, Any],
+    triggered_by: str, http_status: int | None, duration_ms: int | None,
+    error_message: str = "",
+) -> int:
+    cursor = conn.execute(
+        """INSERT INTO order_interface_call_logs
+           (case_id,template_id,employee_id,interface_config_id,interface_key,config_version,is_mock,
+            status,http_status,duration_ms,request_json,response_json,error_message,triggered_by,created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            case_id, template_id, employee_id, int(config["id"]), "domestic_order_entry",
+            int(config["config_version"]), 0, status, http_status, duration_ms,
+            json.dumps(request_payload, ensure_ascii=False), json.dumps(response_payload, ensure_ascii=False),
+            error_message, triggered_by, utcnow(),
+        ),
+    )
+    return int(cursor.lastrowid)
+
+
+def _domestic_response_result(response_body: dict[str, Any], http_status: int) -> tuple[bool, str, str]:
+    data = response_body.get("data") if isinstance(response_body.get("data"), dict) else {}
+    records = [item for item in (data.get("data") or []) if isinstance(item, dict)]
+    try:
+        success_count = int(data.get("successCount") or 0)
+        fail_count = int(data.get("failCount") or 0)
+    except (TypeError, ValueError):
+        success_count, fail_count = 0, len(records)
+    record_failed = any(str(item.get("status") or "").lower() != "success" for item in records)
+    ok = (
+        http_status == 200
+        and int(response_body.get("code") or 0) == 200
+        and fail_count == 0
+        and not record_failed
+        and (success_count > 0 or bool(records))
+    )
+    entry_numbers = [str(item.get("sctaCode") or "").strip() for item in records if item.get("sctaCode")]
+    messages = [str(item.get("message") or "").strip() for item in records if item.get("message")]
+    message = "；".join(messages) or str(response_body.get("msg") or ("订单生成成功" if ok else "订单生成失败"))
+    return ok, "、".join(entry_numbers), message
+
+
+def build_domestic_order_entry_real(
+    case_id: int, employee_id: str, triggered_by: str, *, config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if is_domestic_order_entry_completed(case_id, employee_id):
+        raise ValueError("录单已完成，不能重复提交")
+    issues = validate_domestic_order_entry(case_id, employee_id)
+    if issues:
+        raise ValueError("暂不能提交录单：" + "；".join(issues))
+    config = config or get_interface_config("domestic_order_entry")
+    if not config or not config.get("enabled"):
+        raise ValueError("生成订单接口未启用")
+    template_id = _case_template_id(case_id, employee_id)
+    if not template_id:
+        raise ValueError("请先生成并保存录单模板")
+    with db_cursor() as conn:
+        template = conn.execute("SELECT header_json FROM order_entry_templates WHERE id=?", (template_id,)).fetchone()
+        rows = conn.execute(
+            "SELECT line_no,values_json FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no",
+            (template_id,),
+        ).fetchall()
+    header = _json(template["header_json"] if template else "", {})
+    request_payload = _domestic_order_request_payload(header, list(rows), employee_id)
+    try:
+        http_status, response_body, duration_ms = _post_json_endpoint(config, request_payload, "真实生成订单")
+    except ValueError as exc:
+        with db_cursor() as conn:
+            call_id = _insert_domestic_call_log(
+                conn, case_id=case_id, template_id=template_id, employee_id=employee_id, config=config,
+                status="failed", request_payload=request_payload, response_payload={}, triggered_by=triggered_by,
+                http_status=None, duration_ms=None, error_message=str(exc),
+            )
+            record_order_detail_event(
+                conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
+                event_type="domestic_order_entry_real", title="提交录单（真实接口）失败",
+                detail={"call_id": call_id, "error_message": str(exc)}, operated_by=triggered_by,
+            )
+        raise
+    ok, entry_no, message = _domestic_response_result(response_body, http_status)
+    now = utcnow()
+    with db_cursor() as conn:
+        call_id = _insert_domestic_call_log(
+            conn, case_id=case_id, template_id=template_id, employee_id=employee_id, config=config,
+            status="success" if ok else "failed", request_payload=request_payload,
+            response_payload=response_body, triggered_by=triggered_by, http_status=http_status,
+            duration_ms=duration_ms, error_message="" if ok else message,
+        )
+        if ok:
+            conn.execute(
+                """UPDATE order_intake_cases
+                   SET status='archived',workflow_stage='completed',erp_prepare_status='submitted',
+                       completed_at=?,updated_at=? WHERE id=? AND employee_id=?""",
+                (now, now, case_id, employee_id),
+            )
+        record_order_detail_event(
+            conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
+            event_type="domestic_order_entry_real",
+            title="提交录单（真实接口）完成" if ok else "提交录单（真实接口）失败",
+            detail={"call_id": call_id, "line_count": len(rows), "entry_no": entry_no, "error_message": "" if ok else message},
+            operated_by=triggered_by,
+        )
+    if not ok:
+        raise ValueError(message)
+    return {"call_id": call_id, "entry_no": entry_no, "status": "success", "mode": "real", "message": message}

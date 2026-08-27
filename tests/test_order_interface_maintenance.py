@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,7 +10,9 @@ from fangzheng_web_app import db
 from fangzheng_web_app.mail_transcode_agent import mail_store
 from fangzheng_web_app.order_entry_service import get_or_create_template, save_template
 from fangzheng_web_app.order_interface_service import (
+    build_domestic_order_entry,
     build_domestic_order_entry_mock,
+    build_material_query,
     build_material_query_mock,
     get_interface_config,
     is_domestic_order_entry_completed,
@@ -51,6 +54,17 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         self.assertEqual({item["interface_key"] for item in configs}, {"material_batch_query", "domestic_order_entry"})
         material = get_interface_config("material_batch_query")
         self.assertEqual(material["mode"], "mock")
+        self.assertEqual(
+            material["endpoint_url"],
+            "http://nyeos2.nouyatec.com:7030/NY01-APP/nyeos/api/pe/queryMaterial",
+        )
+        self.assertEqual(material["request_mapping"]["materialInfoList[].categoryCode"],
+                         "模板明细.产品类型（PP=698，基板=718，必填）")
+        self.assertEqual(material["request_mapping"]["materialInfoList[].customerSpec"],
+                         "模板明细.客户规格（必填）")
+        self.assertEqual(material["response_mapping"]["hitMaterialList[].peag01"],
+                         "料号查询建议.产品编号")
+        self.assertTrue(any("按运行模式执行" in note for note in material["maintenance_notes"]))
         saved = save_interface_config("material_batch_query", {
             "display_name": material["display_name"],
             "description": material["description"],
@@ -65,6 +79,55 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         self.assertEqual(saved["config_version"], 2)
         self.assertEqual(saved["endpoint_url"], material["endpoint_url"])
 
+    def test_untouched_legacy_material_config_is_upgraded_without_enabling_real_calls(self) -> None:
+        material = get_interface_config("material_batch_query")
+        with db.db_cursor() as conn:
+            conn.execute(
+                """UPDATE order_interface_configs
+                   SET description=?,base_url=?,port=?,timeout_seconds=?,request_mapping_json=?,
+                       response_mapping_json=?,config_version=1
+                   WHERE interface_key='material_batch_query'""",
+                (
+                    "按订单明细批量查询料号；返回结果仅作为建议，不覆盖人工填写内容。",
+                    "https://mock.nouya.local/material/batch-query", 443, 8,
+                    '{"items[].line_no":"模板明细.项次","items[].customer_part_no":"模板明细.客户产品编号","items[].customer_spec":"模板明细.客户规格"}',
+                    '{"items[].factory_part_no":"料号查询建议.产品编号","items[].product_name":"料号查询建议.品名","items[].matched_spec":"料号查询建议.匹配规格","items[].status":"接口交互记录.状态","items[].message":"接口交互记录.提示"}',
+                ),
+            )
+        upgraded = get_interface_config("material_batch_query")
+        self.assertEqual(upgraded["config_version"], 2)
+        self.assertEqual(upgraded["mode"], "mock")
+        self.assertEqual(upgraded["endpoint_url"], material["endpoint_url"])
+        with db.db_cursor() as conn:
+            versions = conn.execute(
+                "SELECT COUNT(*) AS count FROM order_interface_config_versions"
+            ).fetchone()["count"]
+        self.assertEqual(versions, 1)
+
+    def test_legacy_domestic_config_keeps_selected_real_mode_when_upgraded(self) -> None:
+        get_interface_config("domestic_order_entry")
+        with db.db_cursor() as conn:
+            conn.execute(
+                """UPDATE order_interface_configs
+                   SET display_name='内销录单',description=?,mode='real',base_url=?,port=443,
+                       timeout_seconds=10,request_mapping_json=?,response_mapping_json=?,config_version=1
+                   WHERE interface_key='domestic_order_entry'""",
+                (
+                    "人工确认订单内容后提交内销录单；当前先维护 Mock 配置。",
+                    "https://mock.nouya.local/sales/internal-entry",
+                    '{"header":"内销模板.表头","items":"内销模板.明细行"}',
+                    '{"status":"接口交互记录.状态","message":"接口交互记录.提示"}',
+                ),
+            )
+        upgraded = get_interface_config("domestic_order_entry")
+        self.assertEqual(upgraded["display_name"], "生成订单")
+        self.assertEqual(upgraded["mode"], "real")
+        self.assertEqual(
+            upgraded["endpoint_url"],
+            "http://nyeos2.nouyatec.com:7030/NY01-APP/nyeos/api/sc/saveSctoAndGenerateOrder",
+        )
+        self.assertEqual(upgraded["config_version"], 2)
+
     def test_mock_interface_test_uses_the_full_endpoint_url(self) -> None:
         result = test_interface_config({
             "interface_key": "material_batch_query",
@@ -74,7 +137,17 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         })
         self.assertTrue(result["ok"])
         self.assertEqual(result["status_code"], 200)
-        self.assertEqual(result["request"]["items"][0]["customer_part_no"], "TEST-001")
+        self.assertEqual(result["request"]["materialInfoList"][0]["categoryCode"], "718")
+        self.assertEqual(result["request"]["materialInfoList"][0]["customerMaterialNo"], "")
+        self.assertEqual(result["response"]["code"], 200)
+
+        domestic = test_interface_config({
+            "interface_key": "domestic_order_entry", "mode": "mock", "method": "POST",
+            "endpoint_url": "http://nyeos2.nouyatec.com:7030/NY01-APP/nyeos/api/sc/saveSctoAndGenerateOrder",
+        })
+        self.assertIn("sctoDataList", domestic["request"])
+        self.assertNotIn("header", domestic["request"])
+        self.assertEqual(domestic["response"]["code"], 200)
 
     def test_template_events_and_mock_query_do_not_overwrite_manual_fields(self) -> None:
         get_or_create_template(self.case_id, "employee-a")
@@ -97,7 +170,10 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         self.assertRegex(details["events"][0]["occurred_at"], r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
         self.assertTrue(details["calls"][0]["trace_id"].startswith("I-"))
         self.assertEqual(details["calls"][0]["interface_label"], "批量料号查询")
-        self.assertEqual(details["calls"][0]["endpoint_url"], "https://mock.nouya.local/material/batch-query")
+        self.assertEqual(
+            details["calls"][0]["endpoint_url"],
+            "http://nyeos2.nouyatec.com:7030/NY01-APP/nyeos/api/pe/queryMaterial",
+        )
         self.assertEqual(details["calls"][0]["method"], "POST")
         with db.db_cursor() as conn:
             value = conn.execute(
@@ -149,6 +225,108 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         self.assertEqual(details["calls"][0]["interface_key"], "domestic_order_entry")
         self.assertTrue(any(item["event_type"] == "domestic_order_entry_mock" for item in details["events"]))
 
+    def test_real_domestic_entry_posts_scto_payload_and_completes_only_on_success(self) -> None:
+        get_or_create_template(self.case_id, "employee-a")
+        save_template(self.case_id, "employee-a", {
+            "header": {
+                "order_type": "220", "bill_to_customer_code": "103814",
+                "customer_order_number": "PO20260824002", "ledger": "KL01", "tax_type": "1",
+            },
+            "lines": [{"values": {
+                "line_no": "1", "product_code": "6900000008", "product_name": "厂内品名",
+                "customer_product_code": "CUST-001", "customer_spec_match": "客户匹配规格",
+                "quantity": "100", "unit_price": "11.3", "delivery_date": "2026-09-01",
+                "customer_order_seq": "10", "remark": "测试行",
+            }}],
+        })
+        config = get_interface_config("domestic_order_entry")
+        save_interface_config("domestic_order_entry", {
+            "display_name": config["display_name"], "description": config["description"],
+            "mode": "real", "method": "POST", "endpoint_url": config["endpoint_url"],
+            "request_mapping": json.dumps(config["request_mapping"], ensure_ascii=False),
+            "response_mapping": json.dumps(config["response_mapping"], ensure_ascii=False),
+            "mock_scenarios": json.dumps(config["mock_scenarios"], ensure_ascii=False),
+        }, "employee-a")
+        response = {
+            "msg": "订单生成完成", "code": 200,
+            "data": {
+                "data": [{
+                    "orderNumber": "PO20260824002", "sctaCode": "SA2608250002",
+                    "message": "", "lineCount": 1, "status": "success",
+                }],
+                "failCount": 0, "successCount": 1,
+            },
+        }
+        with patch(
+            "fangzheng_web_app.order_interface_service._post_json_endpoint",
+            return_value=(200, response, 26),
+        ) as request_mock:
+            result = build_domestic_order_entry(self.case_id, "employee-a", "employee-a")
+        payload = request_mock.call_args.args[1]["sctoDataList"][0]
+        self.assertEqual(result["mode"], "real")
+        self.assertEqual(result["entry_no"], "SA2608250002")
+        self.assertEqual(payload["customerCode"], "103814")
+        self.assertEqual(payload["orderType"], "220")
+        self.assertEqual(payload["operator"], "employee-a")
+        self.assertEqual(payload["materialCode"], "6900000008")
+        self.assertEqual(payload["demandDate"], "2026-09-01")
+        self.assertEqual(payload["taxPrice"], "11.3")
+        with db.db_cursor() as conn:
+            call = conn.execute(
+                "SELECT is_mock,status,http_status FROM order_interface_call_logs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            case = conn.execute(
+                "SELECT status,workflow_stage,erp_prepare_status FROM order_intake_cases WHERE id=?",
+                (self.case_id,),
+            ).fetchone()
+        self.assertEqual((call["is_mock"], call["status"], call["http_status"]), (0, "success", 200))
+        self.assertEqual(
+            (case["status"], case["workflow_stage"], case["erp_prepare_status"]),
+            ("archived", "completed", "submitted"),
+        )
+
+    def test_real_domestic_entry_business_failure_is_logged_without_completing_case(self) -> None:
+        get_or_create_template(self.case_id, "employee-a")
+        save_template(self.case_id, "employee-a", {
+            "header": {
+                "order_type": "220", "bill_to_customer_code": "103814",
+                "customer_order_number": "PO-FAIL", "ledger": "KL01",
+            },
+            "lines": [{"values": {
+                "line_no": "1", "product_code": "6900000008", "customer_product_code": "CUST-001",
+                "quantity": "100", "price_before_tax": "10", "delivery_date": "2026-09-01",
+            }}],
+        })
+        config = get_interface_config("domestic_order_entry")
+        save_interface_config("domestic_order_entry", {
+            "display_name": config["display_name"], "description": config["description"],
+            "mode": "real", "method": "POST", "endpoint_url": config["endpoint_url"],
+            "request_mapping": json.dumps(config["request_mapping"], ensure_ascii=False),
+            "response_mapping": json.dumps(config["response_mapping"], ensure_ascii=False),
+            "mock_scenarios": json.dumps(config["mock_scenarios"], ensure_ascii=False),
+        }, "employee-a")
+        response = {
+            "msg": "订单生成完成", "code": 200,
+            "data": {
+                "data": [{"orderNumber": "PO-FAIL", "sctaCode": "", "message": "料号不存在", "lineCount": 0, "status": "fail"}],
+                "failCount": 1, "successCount": 0,
+            },
+        }
+        with patch(
+            "fangzheng_web_app.order_interface_service._post_json_endpoint",
+            return_value=(200, response, 20),
+        ):
+            with self.assertRaisesRegex(ValueError, "料号不存在"):
+                build_domestic_order_entry(self.case_id, "employee-a", "employee-a")
+        with db.db_cursor() as conn:
+            call = conn.execute(
+                "SELECT is_mock,status,error_message FROM order_interface_call_logs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            case = conn.execute("SELECT status FROM order_intake_cases WHERE id=?", (self.case_id,)).fetchone()
+        self.assertEqual((call["is_mock"], call["status"]), (0, "failed"))
+        self.assertIn("料号不存在", call["error_message"])
+        self.assertNotEqual(case["status"], "archived")
+
     def test_material_mock_backfills_then_callback_completes_creation(self) -> None:
         get_or_create_template(self.case_id, "employee-a")
         save_template(self.case_id, "employee-a", {
@@ -163,6 +341,9 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         self.assertEqual([item["status"] for item in result["items"]], ["matched", "creating", "failed"])
         states = get_material_resolution_states(self.case_id, "employee-a")["items"]
         self.assertEqual([item["status"] for item in states], ["resolved", "waiting_callback", "failed"])
+        self.assertEqual(len(states[0]["candidates"]), 2)
+        self.assertEqual(states[0]["candidates"][0]["product_code"], result["items"][0]["factory_part_no"])
+        self.assertEqual(states[0]["candidates"][1]["product_name"], result["items"][0]["candidates"][1]["product_name"])
         self.assertTrue(validate_domestic_order_entry(self.case_id, "employee-a"))
         waiting = next(item for item in states if item["status"] == "waiting_callback")
         process_material_created_callback(
@@ -175,3 +356,64 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
                 "SELECT values_json FROM order_entry_template_lines WHERE line_no=2"
             ).fetchone()["values_json"]
         self.assertIn("CALLBACK-002", values)
+
+    def test_real_mode_posts_official_payload_and_keeps_multiple_candidates_linked(self) -> None:
+        get_or_create_template(self.case_id, "employee-a")
+        save_template(self.case_id, "employee-a", {
+            "header": {"bill_to_customer_code": "103878"},
+            "lines": [{"values": {
+                "line_no": "1", "material_status": "查询",
+                "customer_product_code": "A021000550", "customer_spec": "客户原始规格",
+                "customer_spec_match": "客户匹配规格", "product_name": "创建料号中", "quantity": "20",
+            }}],
+        })
+        with db.db_cursor() as conn:
+            row = conn.execute(
+                "SELECT id,values_json FROM order_entry_template_lines ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            values = json.loads(row["values_json"])
+            values.update({"product_type": "PP", "customer_spec_match": "客户匹配规格"})
+            conn.execute(
+                "UPDATE order_entry_template_lines SET values_json=? WHERE id=?",
+                (json.dumps(values, ensure_ascii=False), row["id"]),
+            )
+        config = get_interface_config("material_batch_query")
+        save_interface_config("material_batch_query", {
+            "display_name": config["display_name"], "description": config["description"],
+            "mode": "real", "method": "POST", "endpoint_url": config["endpoint_url"],
+            "request_mapping": json.dumps(config["request_mapping"], ensure_ascii=False),
+            "response_mapping": json.dumps(config["response_mapping"], ensure_ascii=False),
+            "mock_scenarios": json.dumps(config["mock_scenarios"], ensure_ascii=False),
+        }, "employee-a")
+        response = {
+            "msg": "处理成功", "code": 200,
+            "hitMaterialList": [
+                {"scca03": "A021000550", "scca05": "客户匹配规格", "peag01": "6900013796", "peag08": "品名一"},
+                {"scca03": "A021000550", "scca05": "客户匹配规格", "peag01": "6900013797", "peag08": "品名二"},
+            ],
+        }
+        with patch(
+            "fangzheng_web_app.order_interface_service._post_json_endpoint",
+            return_value=(200, response, 18),
+        ) as request_mock:
+            result = build_material_query(self.case_id, "employee-a", "employee-a")
+        payload = request_mock.call_args.args[1]
+        self.assertEqual(result["mode"], "real")
+        self.assertEqual(payload["customerCode"], "103878")
+        self.assertEqual(payload["operatorCode"], "employee-a")
+        self.assertEqual(payload["materialInfoList"][0]["categoryCode"], "698")
+        self.assertEqual(payload["materialInfoList"][0]["customerSpec"], "客户原始规格")
+        self.assertEqual(payload["materialInfoList"][0]["oldProductName"], "")
+        states = get_material_resolution_states(self.case_id, "employee-a")["items"]
+        self.assertEqual(
+            states[0]["candidates"],
+            [
+                {"product_code": "6900013796", "product_name": "品名一"},
+                {"product_code": "6900013797", "product_name": "品名二"},
+            ],
+        )
+        with db.db_cursor() as conn:
+            call = conn.execute(
+                "SELECT is_mock,http_status,duration_ms FROM order_interface_call_logs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual((call["is_mock"], call["http_status"], call["duration_ms"]), (0, 200, 18))
