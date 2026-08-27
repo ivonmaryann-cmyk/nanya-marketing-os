@@ -69,6 +69,10 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertIn("220:['1','1'],221:['3','2'],331:['3','1']", template)
         self.assertIn("normalizeChoice(orderType,3)", template)
         self.assertIn("normalizeCustomerCode();shipToCode.value=code.value.trim()", template)
+        self.assertIn('data-field="material_status" aria-label="料号状态"', template)
+        self.assertIn('<option value="查询" selected>查询</option>', template)
+        self.assertIn("materialCodeOptions", template)
+        self.assertIn("syncPair", template)
 
     def test_saved_template_reopens_and_exports_same_values(self) -> None:
         _case, template = get_or_create_template(self.case_id, "employee-a")
@@ -77,6 +81,7 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertEqual(template["header"]["type_1"], "1")
         self.assertEqual(template["header"]["type_2"], "1")
         self.assertEqual(template["header"]["ledger"], "KL01")
+        self.assertTrue(all(line["values"]["material_status"] == "查询" for line in template["lines"]))
         saved = save_template(self.case_id, "employee-a", {
             "header": {
                 "order_type": "SO", "bill_to_customer_code": "C001", "ledger": "151",
@@ -84,7 +89,7 @@ class OrderEntryTemplateTests(unittest.TestCase):
                 "commission_rate": "2.5%",
             },
             "lines": [{"values": {
-                "line_no": "1", "product_code": "P001", "product_name": "南亚NY2150",
+                "line_no": "1", "material_status": "新增", "product_code": "P001", "product_name": "南亚NY2150",
                 "customer_product_code": "A1A150224149YNNYZ002", "quantity": "300",
                 "customer_spec_match": "NY2150", "product_type": "基板",
             }}],
@@ -92,6 +97,7 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertEqual(saved["current_version"], 1)
         _case, reopened = get_or_create_template(self.case_id, "employee-a")
         self.assertEqual(reopened["header"]["ledger"], "151")
+        self.assertEqual(reopened["lines"][0]["values"]["material_status"], "新增")
         output, _name = build_domestic_export(self.case_id, "employee-a")
         destination = Path(self.temp_dir.name) / "export.xlsx"
         destination.write_bytes(output.getvalue())
@@ -106,15 +112,60 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertEqual(sheet["I1"].value, "税种（选填）")
         self.assertEqual(sheet["J1"].value, "客户发票号（选填）")
         self.assertEqual(sheet["K1"].value, "佣金比率（选填）")
-        self.assertEqual(sheet["D4"].value, "A1A150224149YNNYZ002")
-        self.assertIsNone(sheet["F4"].value)
-        self.assertEqual(sheet["G4"].value, "基板")
-        self.assertEqual(sheet["I4"].value, 300)
+        self.assertEqual(sheet["B3"].value, "料号状态（选填）")
+        self.assertEqual(sheet["B4"].value, "新增")
+        self.assertEqual(sheet["E4"].value, "A1A150224149YNNYZ002")
+        self.assertIsNone(sheet["G4"].value)
+        self.assertEqual(sheet["H4"].value, "基板")
+        self.assertEqual(sheet["J4"].value, 300)
         # The business template is a populated example; exporting a different
         # mail must never carry its sample detail rows into the new file.
-        self.assertIsNone(sheet["D5"].value)
-        self.assertIsNone(sheet["I6"].value)
+        self.assertIsNone(sheet["E5"].value)
+        self.assertIsNone(sheet["J6"].value)
         book.close()
+
+    def test_material_status_defaults_to_query_and_rejects_unknown_values(self) -> None:
+        get_or_create_template(self.case_id, "employee-a")
+        saved = save_template(self.case_id, "employee-a", {
+            "header": {"order_type": "220", "bill_to_customer_code": "C001", "ledger": "KL01"},
+            "lines": [{"values": {
+                "line_no": "1", "customer_product_code": "CUST-1", "quantity": "20",
+            }}],
+        })
+        self.assertEqual(saved["lines"][0]["values"]["material_status"], "查询")
+
+        with self.assertRaisesRegex(ValueError, "料号状态只能选择"):
+            save_template(self.case_id, "employee-a", {
+                "header": {"order_type": "220", "bill_to_customer_code": "C001", "ledger": "KL01"},
+                "lines": [{"values": {
+                    "line_no": "1", "material_status": "删除",
+                    "customer_product_code": "CUST-1", "quantity": "20",
+                }}],
+            })
+
+    def test_line_number_tracks_customer_order_sequence_or_auto_increments(self) -> None:
+        get_or_create_template(self.case_id, "employee-a")
+        saved = save_template(self.case_id, "employee-a", {
+            "header": {"order_type": "220", "bill_to_customer_code": "C001", "ledger": "KL01"},
+            "lines": [
+                {"values": {
+                    "line_no": "1", "customer_order_seq": "10",
+                    "customer_product_code": "CUST-10", "quantity": "20",
+                }},
+                {"values": {
+                    "line_no": "2", "customer_order_seq": "",
+                    "customer_product_code": "CUST-AUTO", "quantity": "30",
+                }},
+            ],
+        })
+        values_by_code = {
+            line["values"]["customer_product_code"]: line["values"]
+            for line in saved["lines"]
+        }
+        self.assertEqual(values_by_code["CUST-10"]["line_no"], "10")
+        self.assertEqual(values_by_code["CUST-10"]["customer_order_seq"], "10")
+        self.assertEqual(values_by_code["CUST-AUTO"]["line_no"], "2")
+        self.assertEqual(values_by_code["CUST-AUTO"]["customer_order_seq"], "2")
 
     def test_customer_spec_match_recalculates_from_header_code_and_line_values(self) -> None:
         lines = [{
@@ -134,6 +185,7 @@ class OrderEntryTemplateTests(unittest.TestCase):
             )
 
         self.assertEqual("NY2150_*_1.6MM", matched[0]["values"]["customer_spec_match"])
+        self.assertEqual("查询", matched[0]["values"]["material_status"])
         self.assertEqual("客户规格对照表", matched[0]["sources"]["customer_spec_match"]["label"])
         matcher.assert_called_once_with("C001", "基板", "NY2150_TG150_1.6MM")
 

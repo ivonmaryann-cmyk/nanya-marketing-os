@@ -1,0 +1,214 @@
+{% extends "base.html" %}
+{% block title %}繁体转简体 | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+<style>
+  .ts-page{max-width:1120px;margin:0 auto}.ts-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;padding:20px 0 16px;border-bottom:1px solid #dce5ef}.ts-head h1{margin:4px 0 0;color:#233f61;font-size:26px}.ts-kicker{color:#247565;font-size:12px;font-weight:800}.ts-state{display:flex;align-items:center;gap:8px;color:#46627d;font-size:13px}.ts-state:before{content:"";width:8px;height:8px;border-radius:50%;background:#2b9a70}.ts-tabs{display:flex;gap:4px;margin-top:20px;padding:4px;width:max-content;max-width:100%;border:1px solid #d5e0eb;border-radius:8px;background:#eef3f7}.ts-tab{min-width:132px;padding:9px 14px;border:0;border-radius:6px;background:transparent;color:#57708a;font:inherit;font-size:13px;font-weight:800;cursor:pointer}.ts-tab.active{background:#fff;color:#245c80;box-shadow:0 1px 4px rgba(31,61,89,.12)}.ts-panel{margin-top:14px}.ts-panel[hidden]{display:none}.ts-tool{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:18px;padding:20px;border:1px solid #dbe4ed;border-radius:8px;background:#fff}.ts-main h2,.ts-aside h2{margin:0;color:#294867;font-size:17px}.ts-upload{display:flex;min-height:210px;margin-top:14px;padding:24px;align-items:center;justify-content:center;flex-direction:column;border:1px dashed #9db3c7;border-radius:8px;background:#f8fbfd;text-align:center;cursor:pointer}.ts-upload.is-dragover{border-color:#27846f;background:#f0faf6}.ts-upload.has-file{border-style:solid;border-color:#5ba88e;background:#f4fbf8}.ts-upload input{position:absolute;width:1px;height:1px;opacity:0}.ts-upload-mark{display:grid;width:48px;height:48px;place-items:center;border-radius:8px;background:#244e70;color:#fff;font-size:13px;font-weight:900}.ts-upload strong{margin-top:13px;color:#294867;font-size:15px}.ts-upload span{max-width:100%;margin-top:6px;color:#71869a;font-size:12px;overflow-wrap:anywhere}.ts-actions{display:flex;align-items:center;gap:12px;margin-top:14px}.ts-primary{min-height:40px;padding:9px 16px;border:0;border-radius:7px;background:#247565;color:#fff;font:inherit;font-size:13px;font-weight:800;cursor:pointer}.ts-primary:disabled{cursor:not-allowed;opacity:.55}.ts-message{color:#61798f;font-size:13px}.ts-message.error{color:#ae493f}.ts-message.success{color:#247358}.ts-aside{padding-left:18px;border-left:1px solid #e1e8ef}.ts-stats{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:14px}.ts-stat{min-width:0;padding:12px;border:1px solid #dfe7ef;border-radius:7px;background:#f8fafc}.ts-stat span{display:block;color:#75899c;font-size:11px}.ts-stat strong{display:block;margin-top:5px;color:#274964;font-size:20px}.ts-format{margin-top:16px;padding-top:14px;border-top:1px solid #e1e8ef;color:#61798f;font-size:12px;line-height:1.7}.ts-text-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.ts-editor label{display:block;margin-bottom:7px;color:#516d86;font-size:12px;font-weight:800}.ts-editor textarea{width:100%;min-height:300px;padding:13px;border:1px solid #cbd8e4;border-radius:7px;background:#fff;color:#253e58;font:14px/1.65 ui-monospace,SFMono-Regular,Consolas,monospace;resize:vertical}.ts-editor textarea:focus{outline:2px solid rgba(36,117,101,.16);border-color:#4b9a87}.ts-text-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:13px}.ts-text-buttons{display:flex;gap:8px}.ts-secondary{min-height:40px;padding:8px 14px;border:1px solid #9fb5c8;border-radius:7px;background:#fff;color:#365a78;font:inherit;font-size:13px;font-weight:800;cursor:pointer}.ts-counter{color:#71869a;font-size:12px}@media(max-width:820px){.ts-tool{grid-template-columns:1fr}.ts-aside{padding:16px 0 0;border-top:1px solid #e1e8ef;border-left:0}.ts-text-grid{grid-template-columns:1fr}.ts-head{align-items:flex-start;flex-direction:column}.ts-tab{min-width:0;flex:1}.ts-tabs{width:100%}}
+</style>
+
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('main.dashboard') }}">返回功能中心</a>
+  <span>功能中心 / 繁体转简体</span>
+</div>
+
+<div class="ts-page">
+  <header class="ts-head">
+    <div><div class="ts-kicker">TEXT CONVERSION</div><h1>繁体转简体</h1></div>
+    <div class="ts-state">简体中文（中国大陆）</div>
+  </header>
+
+  <div class="ts-tabs" role="tablist" aria-label="转换方式">
+    <button class="ts-tab active" id="excel-tab" type="button" role="tab" aria-selected="true" aria-controls="excel-panel">Excel 转换</button>
+    <button class="ts-tab" id="text-tab" type="button" role="tab" aria-selected="false" aria-controls="text-panel">文本转换</button>
+  </div>
+
+  <section class="ts-panel" id="excel-panel" role="tabpanel" aria-labelledby="excel-tab">
+    <div class="ts-tool">
+      <div class="ts-main">
+        <h2>上传工作簿</h2>
+        <form id="excel-form" action="{{ url_for('main.traditional_simplified_excel') }}" method="post" enctype="multipart/form-data">
+          <label class="ts-upload" id="excel-dropzone" for="excel-file">
+            <input id="excel-file" name="excel_file" type="file" accept=".xlsx,.xlsm" required>
+            <span class="ts-upload-mark" aria-hidden="true">XLSX</span>
+            <strong id="excel-title">选择 Excel 文件</strong>
+            <span id="excel-filename">支持 .xlsx / .xlsm</span>
+          </label>
+          <div class="ts-actions">
+            <button class="ts-primary" id="excel-submit" type="submit">转换并下载</button>
+            <span class="ts-message" id="excel-message" role="status"></span>
+          </div>
+        </form>
+      </div>
+      <aside class="ts-aside" aria-label="转换统计">
+        <h2>本次转换</h2>
+        <div class="ts-stats">
+          <div class="ts-stat"><span>工作表</span><strong id="stat-sheets">-</strong></div>
+          <div class="ts-stat"><span>文本单元格</span><strong id="stat-texts">-</strong></div>
+          <div class="ts-stat"><span>修改单元格</span><strong id="stat-cells">-</strong></div>
+          <div class="ts-stat"><span>修改字符</span><strong id="stat-characters">-</strong></div>
+        </div>
+        <div class="ts-format">公式、样式、图片、合并单元格、工作表名称与宏保持不变。</div>
+      </aside>
+    </div>
+  </section>
+
+  <section class="ts-panel" id="text-panel" role="tabpanel" aria-labelledby="text-tab" hidden>
+    <div class="ts-tool" style="display:block">
+      <div class="ts-text-grid">
+        <div class="ts-editor"><label for="source-text">繁体或混合文本</label><textarea id="source-text" maxlength="{{ max_text_length }}" placeholder="貼上需要轉換的文字"></textarea></div>
+        <div class="ts-editor"><label for="result-text">简体结果</label><textarea id="result-text" readonly placeholder="转换结果"></textarea></div>
+      </div>
+      <div class="ts-text-actions">
+        <span class="ts-counter"><span id="text-length">0</span> / {{ "{:,}".format(max_text_length) }}</span>
+        <div class="ts-text-buttons">
+          <button class="ts-secondary" id="copy-text" type="button" disabled>复制结果</button>
+          <button class="ts-primary" id="convert-text" type="button">开始转换</button>
+        </div>
+      </div>
+      <div class="ts-message" id="text-message" role="status"></div>
+    </div>
+  </section>
+</div>
+
+<script>
+  const tabs = [
+    {button: document.getElementById("excel-tab"), panel: document.getElementById("excel-panel")},
+    {button: document.getElementById("text-tab"), panel: document.getElementById("text-panel")}
+  ];
+  tabs.forEach(selected => selected.button.addEventListener("click", () => {
+    tabs.forEach(item => {
+      const active = item === selected;
+      item.button.classList.toggle("active", active);
+      item.button.setAttribute("aria-selected", String(active));
+      item.panel.hidden = !active;
+    });
+  }));
+
+  const excelForm = document.getElementById("excel-form");
+  const excelInput = document.getElementById("excel-file");
+  const excelDropzone = document.getElementById("excel-dropzone");
+  const excelTitle = document.getElementById("excel-title");
+  const excelFilename = document.getElementById("excel-filename");
+  const excelSubmit = document.getElementById("excel-submit");
+  const excelMessage = document.getElementById("excel-message");
+  const allowedExtensions = {{ allowed_extensions|tojson }};
+
+  function setExcelFile(file) {
+    if (!file) return;
+    const valid = allowedExtensions.some(ext => file.name.toLowerCase().endsWith(ext));
+    if (!valid) {
+      excelInput.value = "";
+      excelDropzone.classList.remove("has-file");
+      excelTitle.textContent = "文件类型不支持";
+      excelFilename.textContent = "请选择 .xlsx 或 .xlsm";
+      return;
+    }
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    excelInput.files = transfer.files;
+    excelDropzone.classList.add("has-file");
+    excelTitle.textContent = "文件已选择";
+    excelFilename.textContent = file.name;
+    excelMessage.textContent = "";
+  }
+
+  ["dragenter", "dragover"].forEach(name => excelDropzone.addEventListener(name, event => {
+    event.preventDefault();
+    excelDropzone.classList.add("is-dragover");
+  }));
+  ["dragleave", "drop"].forEach(name => excelDropzone.addEventListener(name, event => {
+    event.preventDefault();
+    excelDropzone.classList.remove("is-dragover");
+  }));
+  excelDropzone.addEventListener("drop", event => setExcelFile(event.dataTransfer.files[0]));
+  excelInput.addEventListener("change", () => setExcelFile(excelInput.files[0]));
+
+  function responseFilename(response, fallback) {
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const utf8 = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utf8) return decodeURIComponent(utf8[1]);
+    const plain = disposition.match(/filename="?([^";]+)"?/i);
+    return plain ? plain[1] : fallback;
+  }
+
+  excelForm.addEventListener("submit", async event => {
+    event.preventDefault();
+    if (!excelInput.files.length) {
+      excelMessage.className = "ts-message error";
+      excelMessage.textContent = "请先选择 Excel 文件。";
+      return;
+    }
+    excelSubmit.disabled = true;
+    excelMessage.className = "ts-message";
+    excelMessage.textContent = "正在转换...";
+    try {
+      const response = await fetch(excelForm.action, {method: "POST", body: new FormData(excelForm)});
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({error: "转换失败，请检查文件。"}));
+        throw new Error(error.error || "转换失败，请检查文件。");
+      }
+      const blob = await response.blob();
+      const sourceName = excelInput.files[0].name;
+      const dot = sourceName.lastIndexOf(".");
+      const fallback = `${dot > 0 ? sourceName.slice(0, dot) : sourceName}_简体版${dot > 0 ? sourceName.slice(dot) : ".xlsx"}`;
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = responseFilename(response, fallback);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(link.href);
+      document.getElementById("stat-sheets").textContent = response.headers.get("X-Conversion-Sheets") || "0";
+      document.getElementById("stat-texts").textContent = response.headers.get("X-Conversion-Text-Cells") || "0";
+      document.getElementById("stat-cells").textContent = response.headers.get("X-Conversion-Changed-Cells") || "0";
+      document.getElementById("stat-characters").textContent = response.headers.get("X-Conversion-Changed-Characters") || "0";
+      excelMessage.className = "ts-message success";
+      excelMessage.textContent = "转换完成，文件已下载。";
+    } catch (error) {
+      excelMessage.className = "ts-message error";
+      excelMessage.textContent = error.message;
+    } finally {
+      excelSubmit.disabled = false;
+    }
+  });
+
+  const sourceText = document.getElementById("source-text");
+  const resultText = document.getElementById("result-text");
+  const textLength = document.getElementById("text-length");
+  const textMessage = document.getElementById("text-message");
+  const copyButton = document.getElementById("copy-text");
+  sourceText.addEventListener("input", () => { textLength.textContent = sourceText.value.length; });
+  document.getElementById("convert-text").addEventListener("click", async () => {
+    textMessage.className = "ts-message";
+    textMessage.textContent = "";
+    try {
+      const response = await fetch("{{ url_for('main.traditional_simplified_text') }}", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({text: sourceText.value})
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "转换失败。");
+      resultText.value = data.converted_text;
+      copyButton.disabled = false;
+      textMessage.className = "ts-message success";
+      textMessage.textContent = data.changed
+        ? `转换完成，共修改 ${data.changed_character_count} 个字符。`
+        : "未检测到需要转换的繁体字。";
+    } catch (error) {
+      textMessage.className = "ts-message error";
+      textMessage.textContent = error.message;
+    }
+  });
+  copyButton.addEventListener("click", async () => {
+    if (!resultText.value) return;
+    try {
+      await navigator.clipboard.writeText(resultText.value);
+    } catch (_error) {
+      resultText.select();
+      document.execCommand("copy");
+    }
+    textMessage.className = "ts-message success";
+    textMessage.textContent = "简体结果已复制。";
+  });
+</script>
+{% endblock %}

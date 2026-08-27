@@ -17,6 +17,39 @@ from openpyxl import load_workbook
 
 PDF_EXCEL_FEATURE = "pdf_excel"
 
+ORDER_MAIL_STATUS_FILTER_LABELS = {
+    "pending_extraction": "待提取订单",
+    "extracting": "正在提取订单",
+    "extraction_error": "提取失败",
+    "pending_template_save": "待保存模板",
+    "pending_interface_submit": "订单信息确认",
+    "pending_triage": "待处理",
+    "pending_review": "处理中",
+    "ready_for_erp": "待确认",
+    "on_hold": "待补充",
+    "completed": "已完成",
+}
+
+
+def _order_mail_status_key(case: dict[str, Any], entry_progress: dict[str, Any] | None) -> str:
+    if entry_progress:
+        return str(entry_progress.get("stage") or "")
+    status = str(case.get("status") or "")
+    return "completed" if status == "archived" else status
+
+
+def _filter_order_cases_by_status(
+    cases: list[dict[str, Any]],
+    entry_progresses: dict[int, dict[str, Any]],
+    selected_status: str,
+) -> list[dict[str, Any]]:
+    if selected_status == "all":
+        return cases
+    return [
+        item for item in cases
+        if _order_mail_status_key(item, entry_progresses.get(int(item["id"]))) == selected_status
+    ]
+
 from .bomin_rules import (
     get_active_bomin_rule_version,
     get_bomin_rule_file_path,
@@ -130,8 +163,8 @@ from .order_entry_service import (
 )
 from .order_interface_service import (
     MOCK_SCENARIOS as ORDER_INTERFACE_MOCK_SCENARIOS,
-    build_domestic_order_entry_mock,
-    build_material_query_mock,
+    build_domestic_order_entry,
+    build_material_query,
     is_domestic_order_entry_completed,
     get_order_detail_records,
     get_material_resolution_states,
@@ -178,6 +211,13 @@ from .customer_spec_mapping_service import (
 )
 from .paths import STORAGE_DIR
 from .pdf_excel_domestic_export import build_job_domestic_export
+from .traditional_simplified_service import (
+    ALLOWED_EXTENSIONS as TRADITIONAL_SIMPLIFIED_EXTENSIONS,
+    MAX_TEXT_LENGTH as TRADITIONAL_SIMPLIFIED_MAX_TEXT_LENGTH,
+    WorkbookConversionError,
+    convert_text_to_simplified,
+    convert_workbook_to_simplified,
+)
 from .price_calculation_customers import (
     PRICE_CALCULATION_CUSTOMERS,
     default_price_customer_key,
@@ -435,6 +475,13 @@ FUNCTION_CARDS = [
         "title": "PDF/图片转Excel",
         "desc": "批量上传 PDF 或图片，通用识别采购单版式和明细表，输出采购单与明细数据 Excel。",
         "route": "main.pdf_excel",
+        "stage": "test",
+    },
+    {
+        "key": "traditional_simplified",
+        "title": "繁体转简体",
+        "desc": "转换 Excel 全部工作表或粘贴文本中的繁体字，保留工作簿结构并下载简体结果。",
+        "route": "main.traditional_simplified",
         "stage": "test",
     },
     {
@@ -882,6 +929,9 @@ def order_automation():
         return redirect_resp
     employee_id = current_employee() or ""
     selected_action = request.args.get("category", "all")
+    selected_mail_status = request.args.get("mail_status", "all")
+    if selected_mail_status not in ORDER_MAIL_STATUS_FILTER_LABELS:
+        selected_mail_status = "all"
     selected_date = request.args.get("date", order_intake_business_today().isoformat())
     try:
         selected_date_value = date.fromisoformat(selected_date)
@@ -911,13 +961,23 @@ def order_automation():
     filtered_cases = overview_cases if selected_action == "all" else list_order_intake_cases(
         employee_id, selected_date, selected_action, selected_account_id, prepare=False
     )
+    all_entry_progresses: dict[int, dict[str, Any]] = {}
+    if selected_mail_status != "all":
+        all_entry_progresses = {
+            int(item["id"]): order_entry_template_progress(int(item["id"]), employee_id)
+            for item in filtered_cases if item.get("action_type") == "new_order"
+        }
+        filtered_cases = _filter_order_cases_by_status(
+            filtered_cases, all_entry_progresses, selected_mail_status
+        )
     total_cases = len(filtered_cases)
     total_pages = max(1, (total_cases + per_page - 1) // per_page)
     page = min(page, total_pages)
     page_start = (page - 1) * per_page
     cases = filtered_cases[page_start:page_start + per_page]
     entry_progresses = {
-        int(item["id"]): order_entry_template_progress(int(item["id"]), employee_id)
+        int(item["id"]): all_entry_progresses.get(int(item["id"]))
+        or order_entry_template_progress(int(item["id"]), employee_id)
         for item in cases if item.get("action_type") == "new_order"
     }
     date_counts = list_order_intake_date_counts(employee_id, selected_account_id, prepare=False) if selected_account_id else []
@@ -931,8 +991,10 @@ def order_automation():
         ),
         action_labels=ORDER_ACTION_LABELS,
         status_labels=ORDER_INTAKE_STATUS_LABELS,
+        mail_status_filter_labels=ORDER_MAIL_STATUS_FILTER_LABELS,
         scope_labels=ORDER_SCOPE_LABELS,
         selected_action=selected_action,
+        selected_mail_status=selected_mail_status,
         selected_date=selected_date,
         previous_date=(selected_date_value - timedelta(days=1)).isoformat(),
         next_date=(selected_date_value + timedelta(days=1)).isoformat(),
@@ -984,6 +1046,7 @@ def order_automation_sync():
         category=request.form.get("return_category") or "all",
         per_page=request.form.get("return_per_page", 20, type=int) or 20,
         page=request.form.get("return_page", 1, type=int) or 1,
+        mail_status=request.form.get("return_mail_status") or "all",
         account_id=account_id,
     ))
 
@@ -1014,6 +1077,7 @@ def order_automation_refresh_customer_recognition():
         category=request.form.get("return_category") or "all",
         per_page=request.form.get("return_per_page", 20, type=int) or 20,
         page=request.form.get("return_page", 1, type=int) or 1,
+        mail_status=request.form.get("return_mail_status") or "all",
         account_id=account_id,
     ))
 
@@ -1166,6 +1230,9 @@ def _order_automation_return_context(case: dict[str, Any]) -> dict[str, Any]:
     selected_action = request.args.get("return_category", "all")
     if selected_action not in {*ORDER_ACTION_LABELS, "needs_business_routing", "all"}:
         selected_action = "all"
+    selected_mail_status = request.args.get("return_mail_status", "all")
+    if selected_mail_status not in ORDER_MAIL_STATUS_FILTER_LABELS:
+        selected_mail_status = "all"
     per_page = request.args.get("return_per_page", 20, type=int) or 20
     if per_page not in {10, 20, 50}:
         per_page = 20
@@ -1177,6 +1244,7 @@ def _order_automation_return_context(case: dict[str, Any]) -> dict[str, Any]:
         "category": selected_action,
         "per_page": per_page,
         "page": page,
+        "mail_status": selected_mail_status,
     }
     if account_id:
         values["account_id"] = int(account_id)
@@ -1190,6 +1258,7 @@ def _order_automation_return_context(case: dict[str, Any]) -> dict[str, Any]:
             "return_category": selected_action,
             "return_per_page": per_page,
             "return_page": page,
+            "return_mail_status": selected_mail_status,
             "return_batch": batch_id,
             "return_account": account_id,
         },
@@ -1429,9 +1498,9 @@ def order_automation_entry_template_spec_match(case_id: int):
     ))
 
 
-@bp.post("/order-automation/cases/<int:case_id>/material-query/mock")
-def order_automation_material_query_mock(case_id: int):
-    """Manual batch query; the Mock uses the same callback-shaped flow as production."""
+@bp.post("/order-automation/cases/<int:case_id>/material-query")
+def order_automation_material_query(case_id: int):
+    """Run the material query implementation selected in interface maintenance."""
     redirect_resp = require_login()
     if redirect_resp:
         return redirect_resp
@@ -1439,9 +1508,10 @@ def order_automation_material_query_mock(case_id: int):
     if not get_order_intake_case(case_id, employee_id):
         abort(404)
     try:
-        result = build_material_query_mock(case_id, employee_id, employee_id)
+        result = build_material_query(case_id, employee_id, employee_id)
+        mode_label = "真实接口" if result.get("mode") == "real" else "Mock"
         flash(
-            f"批量料号查询 Mock 已完成：{len(result['items'])} 条明细已处理；创建中的料号将等待外部回调。",
+            f"批量料号查询（{mode_label}）已完成：{len(result['items'])} 条明细已处理。",
             "success" if result["status"] == "success" else "error",
         )
     except ValueError as exc:
@@ -1485,8 +1555,8 @@ def material_number_callback():
     return jsonify({"ok": True, "result": result})
 
 
-@bp.post("/order-automation/cases/<int:case_id>/domestic-entry/mock")
-def order_automation_domestic_entry_mock(case_id: int):
+@bp.post("/order-automation/cases/<int:case_id>/domestic-entry")
+def order_automation_domestic_entry(case_id: int):
     redirect_resp = require_login()
     if redirect_resp:
         return redirect_resp
@@ -1494,8 +1564,9 @@ def order_automation_domestic_entry_mock(case_id: int):
     if not get_order_intake_case(case_id, employee_id):
         abort(404)
     try:
-        result = build_domestic_order_entry_mock(case_id, employee_id, employee_id)
-        flash(f"内销录单 Mock 已完成：模拟单号 {result['entry_no']}。", "success")
+        result = build_domestic_order_entry(case_id, employee_id, employee_id)
+        mode_label = "真实接口" if result.get("mode") == "real" else "Mock"
+        flash(f"提交录单（{mode_label}）已完成：订单号 {result['entry_no']}。", "success")
     except ValueError as exc:
         flash(str(exc), "error")
     return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))
@@ -2258,6 +2329,66 @@ def transcode():
     if redirect_resp:
         return redirect_resp
     return redirect(url_for("main.dashboard"))
+
+
+@bp.get("/features/traditional-to-simplified")
+def traditional_simplified():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    return render_template(
+        "traditional_simplified.html",
+        allowed_extensions=sorted(TRADITIONAL_SIMPLIFIED_EXTENSIONS),
+        max_text_length=TRADITIONAL_SIMPLIFIED_MAX_TEXT_LENGTH,
+    )
+
+
+@bp.post("/features/traditional-to-simplified/excel")
+def traditional_simplified_excel():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    upload = request.files.get("excel_file")
+    if not upload or not upload.filename:
+        return jsonify({"ok": False, "error": "请选择需要转换的 Excel 文件。"}), 400
+    try:
+        result = convert_workbook_to_simplified(upload.read(), upload.filename)
+    except (OSError, WorkbookConversionError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    response = send_file(
+        result.content,
+        as_attachment=True,
+        download_name=result.filename,
+        mimetype=result.mimetype,
+    )
+    response.headers["X-Conversion-Sheets"] = str(result.stats.sheet_count)
+    response.headers["X-Conversion-Text-Cells"] = str(result.stats.text_cell_count)
+    response.headers["X-Conversion-Changed-Cells"] = str(result.stats.changed_cell_count)
+    response.headers["X-Conversion-Changed-Characters"] = str(result.stats.changed_character_count)
+    return response
+
+
+@bp.post("/features/traditional-to-simplified/text")
+def traditional_simplified_text():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    payload = request.get_json(silent=True) or {}
+    text = payload.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return jsonify({"ok": False, "error": "请输入需要转换的文字。"}), 400
+    if len(text) > TRADITIONAL_SIMPLIFIED_MAX_TEXT_LENGTH:
+        return jsonify({
+            "ok": False,
+            "error": f"单次最多转换 {TRADITIONAL_SIMPLIFIED_MAX_TEXT_LENGTH:,} 个字符。",
+        }), 400
+    converted, changed = convert_text_to_simplified(text)
+    return jsonify({
+        "ok": True,
+        "converted_text": converted,
+        "changed": converted != text,
+        "changed_character_count": changed,
+    })
 
 
 @bp.get("/features/transcode-agent")

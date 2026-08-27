@@ -42,7 +42,7 @@ HEADER_FIELDS = (
     "tax_type", "customer_invoice_number", "commission_rate",
 )
 LINE_FIELDS = (
-    "line_no", "product_code", "product_name", "customer_product_code",
+    "line_no", "material_status", "product_code", "product_name", "customer_product_code",
     "customer_spec", "customer_spec_match", "product_type", "delivery_date",
     "quantity", "price_before_tax", "unit_price", "origin",
     "customer_order_seq", "one_to_many", "remark",
@@ -55,7 +55,7 @@ HEADER_LABELS = {
     "commission_rate": "佣金比率",
 }
 LINE_LABELS = {
-    "line_no": "项次", "product_code": "产品编号", "product_name": "品名",
+    "line_no": "项次", "material_status": "料号状态", "product_code": "产品编号", "product_name": "品名",
     "customer_product_code": "客户产品编号", "customer_spec": "客户规格",
     "customer_spec_match": "客户规格匹配", "product_type": "产品类型（PP、基板）",
     "delivery_date": "出货日期", "quantity": "数量", "price_before_tax": "税前单价",
@@ -64,6 +64,7 @@ LINE_LABELS = {
 }
 REQUIRED_HEADER_FIELDS = {"order_type", "bill_to_customer_code", "ledger"}
 REQUIRED_LINE_FIELDS = {"line_no", "customer_product_code", "quantity"}
+MATERIAL_STATUS_VALUES = {"查询", "新增"}
 DEFAULT_HEADER_VALUES = {
     "order_type": "220",
     "type_1": "1",
@@ -135,7 +136,22 @@ def _case_for_template(case_id: int, employee_id: str) -> dict[str, Any]:
 
 
 def _blank_line(line_no: int) -> dict[str, str]:
-    return {field: str(line_no) if field == "line_no" else "" for field in LINE_FIELDS}
+    return {
+        field: str(line_no)
+        if field in {"line_no", "customer_order_seq"}
+        else "查询"
+        if field == "material_status"
+        else ""
+        for field in LINE_FIELDS
+    }
+
+
+def _line_sequence(values: dict[str, Any], fallback: int) -> str:
+    """Keep the internal line number aligned with the customer order sequence."""
+    sequence = clean_text(values.get("customer_order_seq"))
+    if re.fullmatch(r"\d+", sequence or "") and int(sequence) > 0:
+        return str(int(sequence))
+    return str(fallback)
 
 
 def _is_pp_spec(value: str) -> bool:
@@ -248,7 +264,11 @@ def _split_body_order_rows(body_text: str) -> list[dict[str, Any]]:
 
 
 def _source(label: str, reference: str, values: dict[str, str]) -> dict[str, dict[str, str]]:
-    return {field: {"label": label, "reference": reference} for field, value in values.items() if value and field != "line_no"}
+    return {
+        field: {"label": label, "reference": reference}
+        for field, value in values.items()
+        if value and field not in {"line_no", "material_status"}
+    }
 
 
 def _line_entry(
@@ -654,7 +674,9 @@ def _merge_initial_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         if any(signature):
             seen.add(signature)
-        entry["values"]["line_no"] = str(len(result) + 1)
+        sequence = _line_sequence(entry["values"], len(result) + 1)
+        entry["values"]["line_no"] = sequence
+        entry["values"]["customer_order_seq"] = sequence
         result.append(entry)
     return result
 
@@ -666,6 +688,7 @@ def _apply_customer_spec_matches(
     result: list[dict[str, Any]] = []
     for entry in lines:
         values = dict(entry.get("values") or {})
+        values["material_status"] = clean_text(values.get("material_status")) or "查询"
         sources = dict(entry.get("sources") or {})
         match_context = json.dumps([
             customer_code,
@@ -772,7 +795,12 @@ def _serialize_template(conn, template_id: int) -> dict[str, Any]:
         **dict(template),
         "header": {**DEFAULT_HEADER_VALUES, **_json(template["header_json"], {})},
         "lines": [
-            {"id": row["id"], "line_no": row["line_no"], "values": _json(row["values_json"], {}), "sources": _json(row["sources_json"], {})}
+            {
+                "id": row["id"],
+                "line_no": row["line_no"],
+                "values": {**_blank_line(int(row["line_no"])), **_json(row["values_json"], {})},
+                "sources": _json(row["sources_json"], {}),
+            }
             for row in rows
         ],
     }
@@ -1184,9 +1212,14 @@ def save_template(case_id: int, employee_id: str, payload: dict[str, Any]) -> di
     lines: list[dict[str, Any]] = []
     for index, raw in enumerate(raw_lines, start=1):
         values = _clean_values((raw or {}).get("values") or raw or {}, LINE_FIELDS)
-        if not any(values[field] for field in LINE_FIELDS if field != "line_no"):
+        if not any(values[field] for field in LINE_FIELDS if field not in {"line_no", "material_status"}):
             continue
-        values["line_no"] = str(index)
+        sequence = _line_sequence(values, index)
+        values["line_no"] = sequence
+        values["customer_order_seq"] = sequence
+        values["material_status"] = values["material_status"] or "查询"
+        if values["material_status"] not in MATERIAL_STATUS_VALUES:
+            raise ValueError(f"第 {index} 行料号状态只能选择“查询”或“新增”")
         sources = (raw or {}).get("sources") or {}
         lines.append({"values": values, "sources": sources if isinstance(sources, dict) else {}})
     if not lines:
@@ -1275,11 +1308,14 @@ def build_domestic_export(case_id: int, employee_id: str) -> tuple[BytesIO, str]
         required_label = "（必填）" if field in REQUIRED_HEADER_FIELDS else "（选填）"
         sheet.cell(1, index).value = f"{HEADER_LABELS[field]}{required_label}"
         sheet.cell(2, index).value = template["header"].get(field) or None
+    for index, field in enumerate(LINE_FIELDS, start=1):
+        required_label = "（系统生成）" if field == "line_no" else "（必填）" if field in REQUIRED_LINE_FIELDS else "（选填）"
+        sheet.cell(3, index).value = f"{LINE_LABELS[field]}{required_label}"
     required_rows = 3 + max(1, len(template["lines"]))
     style_source_row = 4
     while sheet.max_row < required_rows:
         target = sheet.max_row + 1
-        for col in range(1, 16):
+        for col in range(1, len(LINE_FIELDS) + 1):
             source, cell = sheet.cell(style_source_row, col), sheet.cell(target, col)
             cell._style = copy(source._style)
             cell.number_format = source.number_format
