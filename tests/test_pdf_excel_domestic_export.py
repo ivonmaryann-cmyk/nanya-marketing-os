@@ -43,6 +43,10 @@ def _document() -> dict:
                     "说明": "PP NY2150 1080 300M/卷",
                     "数量": "2",
                     "单位": "卷",
+                    # The recognizer may expose the same source value through
+                    # this generic field; the explicit untaxed heading above
+                    # must still keep the tax-inclusive price blank.
+                    "含税单价": "3000",
                     "交货日期": "2026-08-30",
                     "备注": "加急",
                 },
@@ -99,6 +103,17 @@ def _document() -> dict:
 
 
 class PdfExcelDomesticExportTests(unittest.TestCase):
+    def test_explicit_untaxed_price_does_not_duplicate_into_unit_price(self) -> None:
+        document = _document()
+        factory_row = document["factory_import"]["rows"][0]
+        self.assertEqual(factory_row["税前单价（选填）"], "10")
+        self.assertEqual(factory_row["单价（选填）"], "")
+
+        _header, domestic_rows = build_domestic_rows(document)
+        domestic_row = domestic_rows[0]
+        self.assertEqual(domestic_row["税前单价（选填）"], "10")
+        self.assertEqual(domestic_row["单价（选填）"], "")
+
     def test_workbook_uses_new_template_without_changing_existing_result_shape(self) -> None:
         output = build_domestic_workbook(_document())
         book = load_workbook(output, data_only=True)
