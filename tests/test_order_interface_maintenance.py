@@ -363,8 +363,14 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
             "header": {"bill_to_customer_code": "103878"},
             "lines": [{"values": {
                 "line_no": "1", "material_status": "查询",
-                "customer_product_code": "A021000550", "customer_spec": "客户原始规格",
-                "customer_spec_match": "客户匹配规格", "product_name": "创建料号中", "quantity": "20",
+                "customer_product_code": "A021000550",
+                "customer_spec": "南亚新材料 NY6180L 原始客户规格",
+                "customer_spec_match": (
+                    "南亚新材料 NY6180L 0.127 mm 1/1 RTF2/RTF2 经41纬49inch "
+                    "* 不含铜 有卤 1080x2 TG210(DMA) 橙红色 无水印 高速材料 "
+                    "CTI≥175 公差±0.018mm"
+                ),
+                "product_name": "创建料号中", "quantity": "20",
             }}],
         })
         with db.db_cursor() as conn:
@@ -402,7 +408,10 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         self.assertEqual(payload["customerCode"], "103878")
         self.assertEqual(payload["operatorCode"], "employee-a")
         self.assertEqual(payload["materialInfoList"][0]["categoryCode"], "698")
-        self.assertEqual(payload["materialInfoList"][0]["customerSpec"], "客户原始规格")
+        self.assertEqual(
+            payload["materialInfoList"][0]["customerSpec"],
+            "南亚新材料 NY6180L 原始客户规格",
+        )
         self.assertEqual(payload["materialInfoList"][0]["oldProductName"], "")
         states = get_material_resolution_states(self.case_id, "employee-a")["items"]
         self.assertEqual(
