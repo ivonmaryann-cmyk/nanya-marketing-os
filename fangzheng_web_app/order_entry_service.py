@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from copy import copy
 from decimal import Decimal, InvalidOperation
 from datetime import datetime
@@ -42,7 +43,7 @@ HEADER_FIELDS = (
     "tax_type", "customer_invoice_number", "commission_rate",
 )
 LINE_FIELDS = (
-    "line_no", "material_status", "product_code", "product_name", "customer_product_code",
+    "line_no", "material_status", "product_code", "product_name", "adhesive_code", "customer_product_code",
     "customer_spec", "customer_spec_match", "product_type", "delivery_date",
     "quantity", "price_before_tax", "unit_price", "origin",
     "customer_order_seq", "one_to_many", "remark",
@@ -55,7 +56,7 @@ HEADER_LABELS = {
     "commission_rate": "佣金比率",
 }
 LINE_LABELS = {
-    "line_no": "项次", "material_status": "料号状态", "product_code": "产品编号", "product_name": "品名",
+    "line_no": "项次", "material_status": "料号状态", "product_code": "产品编号", "product_name": "品名", "adhesive_code": "胶系编码",
     "customer_product_code": "客户产品编号", "customer_spec": "客户规格",
     "customer_spec_match": "客户规格匹配", "product_type": "产品类型（PP、基板）",
     "delivery_date": "出货日期", "quantity": "数量", "price_before_tax": "税前单价",
@@ -762,11 +763,12 @@ def _initial_template_data(case: dict[str, Any]) -> tuple[dict[str, str], list[d
         header["customer_order_number"] = clean_text(
             (case.get("detected_fields") or {}).get("order_number")
         )
+    if not header["customer_order_number"]:
+        header["customer_order_number"] = f"暂无PO号-{uuid.uuid4()}"
     if rows:
         return header, _apply_customer_spec_matches(header, rows)
     fields = case.get("detected_fields") or {}
     specs = fields.get("specs") or []
-    header["customer_order_number"] = clean_text(fields.get("order_number"))
     lines = [
         {
             "values": {
@@ -1027,6 +1029,13 @@ def reextract_template(case_id: int, employee_id: str) -> dict[str, Any]:
     current_version = 1
 
     with db_cursor() as conn:
+        stale_resolution_tasks = conn.execute(
+            """SELECT line_no,status,correlation_id,external_task_id
+               FROM order_material_resolution_tasks
+               WHERE template_id=?
+               ORDER BY line_no""",
+            (template_id,),
+        ).fetchall()
         _replace_backup(
             conn,
             template_id=template_id,
@@ -1035,6 +1044,10 @@ def reextract_template(case_id: int, employee_id: str) -> dict[str, Any]:
             employee_id=employee_id,
             saved_at=now,
         )
+        # The regenerated detail rows no longer represent the material query
+        # input that produced these candidates. Keep the call/event history,
+        # but remove the active state so it cannot be selected or backfilled.
+        conn.execute("DELETE FROM order_material_resolution_tasks WHERE template_id=?", (template_id,))
         conn.execute(
             "UPDATE order_entry_templates SET header_json=?,current_version=?,updated_at=? WHERE id=?",
             (json.dumps(next_header, ensure_ascii=False), current_version, now, template_id),
@@ -1060,7 +1073,19 @@ def reextract_template(case_id: int, employee_id: str) -> dict[str, Any]:
             employee_id=employee_id,
             event_type="template_reextracted",
             title="已重新提取订单明细",
-            detail={"previous_line_count": len(previous_lines), "line_count": len(regenerated_lines)},
+            detail={
+                "previous_line_count": len(previous_lines),
+                "line_count": len(regenerated_lines),
+                "cleared_material_resolution_tasks": [
+                    {
+                        "line_no": int(task["line_no"]),
+                        "status": str(task["status"]),
+                        "correlation_id": str(task["correlation_id"]),
+                        "external_task_id": str(task["external_task_id"] or ""),
+                    }
+                    for task in stale_resolution_tasks
+                ],
+            },
             operated_by=employee_id,
         )
         template = _serialize_template(conn, template_id)
@@ -1248,6 +1273,29 @@ def save_template(case_id: int, employee_id: str, payload: dict[str, Any]) -> di
             employee_id=employee_id,
             saved_at=now,
         )
+        cleared_material_resolution_tasks = []
+        for entry in lines:
+            values = entry["values"]
+            if str(values.get("product_code") or "").strip() or str(values.get("product_name") or "").strip():
+                continue
+            task = conn.execute(
+                """SELECT line_no,status,correlation_id,external_task_id
+                   FROM order_material_resolution_tasks
+                   WHERE template_id=? AND line_no=?""",
+                (template_id, int(values["line_no"])),
+            ).fetchone()
+            if task:
+                cleared_material_resolution_tasks.append({
+                    "line_no": int(task["line_no"]),
+                    "status": str(task["status"]),
+                    "correlation_id": str(task["correlation_id"]),
+                    "external_task_id": str(task["external_task_id"] or ""),
+                })
+        if cleared_material_resolution_tasks:
+            conn.executemany(
+                "DELETE FROM order_material_resolution_tasks WHERE template_id=? AND line_no=?",
+                [(template_id, task["line_no"]) for task in cleared_material_resolution_tasks],
+            )
         conn.execute("UPDATE order_entry_templates SET header_json=?,current_version=?,updated_at=? WHERE id=?", (json.dumps(header, ensure_ascii=False), 1, now, template_id))
         conn.execute("DELETE FROM order_entry_template_lines WHERE template_id=?", (template_id,))
         for entry in lines:
@@ -1274,7 +1322,11 @@ def save_template(case_id: int, employee_id: str, payload: dict[str, Any]) -> di
             employee_id=employee_id,
             event_type="template_saved",
             title="保存内销录单模板",
-            detail={"changes": changes, "line_count": len(lines)},
+            detail={
+                "changes": changes,
+                "line_count": len(lines),
+                "cleared_material_resolution_tasks": cleared_material_resolution_tasks,
+            },
             operated_by=employee_id,
         )
         return _serialize_template(conn, template_id)

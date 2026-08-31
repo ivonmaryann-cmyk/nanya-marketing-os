@@ -176,10 +176,12 @@ from .order_entry_service import (
 from .order_interface_service import (
     MOCK_SCENARIOS as ORDER_INTERFACE_MOCK_SCENARIOS,
     build_domestic_order_entry,
+    build_material_creation,
     build_material_query,
     is_domestic_order_entry_completed,
     get_order_detail_records,
     get_material_resolution_states,
+    select_material_candidate,
     list_nyeos_order_numbers,
     get_interface_config,
     list_interface_configs,
@@ -216,11 +218,22 @@ from .customer_spec_mapping_service import (
     POSITION_FIELDS as CUSTOMER_SPEC_POSITION_FIELDS,
     PRODUCT_TYPE_LABELS as CUSTOMER_SPEC_PRODUCT_TYPE_LABELS,
     build_customer_spec_match_detail,
+    extract_glue_system_from_customer_spec_match,
     get_spec_mapping,
     import_spec_mapping_workbook,
     list_spec_mappings,
     save_spec_mapping,
     set_spec_mapping_enabled,
+)
+from .adhesive_code_service import (
+    FORM_FIELDS as ADHESIVE_CODE_FORM_FIELDS,
+    adhesive_code_filter_values,
+    find_adhesive_code_candidates,
+    get_adhesive_code,
+    import_adhesive_code_workbook,
+    list_adhesive_codes,
+    save_adhesive_code,
+    set_adhesive_code_enabled,
 )
 from .paths import STORAGE_DIR
 from .pdf_excel_domestic_export import build_job_domestic_export
@@ -1497,6 +1510,11 @@ def order_automation_entry_template(case_id: int):
         header_fields=ORDER_ENTRY_HEADER_FIELDS,
         header_labels=ORDER_ENTRY_HEADER_LABELS,
         line_fields=ORDER_ENTRY_LINE_FIELDS,
+        visible_line_fields=[
+            field for field in ORDER_ENTRY_LINE_FIELDS
+            if field not in {"material_status", "adhesive_code", "customer_spec_match"}
+        ],
+        hidden_line_fields=["material_status", "adhesive_code", "customer_spec_match"],
         line_labels=ORDER_ENTRY_LINE_LABELS,
         customer_choices=list_customer_choices(),
         validation_issues=order_entry_validation_issues(template),
@@ -1527,6 +1545,44 @@ def order_automation_entry_template_spec_match(case_id: int):
     ))
 
 
+@bp.post("/order-automation/cases/<int:case_id>/entry-template/adhesive-candidates")
+def order_automation_entry_template_adhesive_candidates(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    case = get_order_intake_case(case_id, employee_id)
+    if not case or case.get("action_type") != "new_order":
+        abort(404)
+    payload = request.get_json(silent=True) or {}
+    try:
+        line_no = int(payload.get("line_no"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": "缺少有效项次。"}), 400
+    _case, template = get_order_entry_template(case_id, employee_id)
+    line = next(
+        (
+            item for item in template["lines"]
+            if int((item.get("values") or {}).get("line_no") or 0) == line_no
+        ),
+        None,
+    )
+    if not line:
+        return jsonify({"ok": False, "message": "录单模板明细不存在。"}), 404
+    header = template.get("header") or {}
+    values = line.get("values") or {}
+    glue_system = extract_glue_system_from_customer_spec_match(
+        header.get("bill_to_customer_code"),
+        values.get("product_type"),
+        payload.get("customer_spec_match", values.get("customer_spec_match")),
+    )
+    return jsonify({
+        "ok": True,
+        "glue_system": glue_system,
+        "candidates": find_adhesive_code_candidates(glue_system),
+    })
+
+
 @bp.post("/order-automation/cases/<int:case_id>/material-query")
 def order_automation_material_query(case_id: int):
     """Run the material query implementation selected in interface maintenance."""
@@ -1536,8 +1592,20 @@ def order_automation_material_query(case_id: int):
     employee_id = current_employee() or ""
     if not get_order_intake_case(case_id, employee_id):
         abort(404)
+    selected_line_nos: set[int] = set()
+    for raw in request.form.getlist("selected_line_nos"):
+        for value in str(raw).split(","):
+            try:
+                line_no = int(value.strip())
+            except ValueError:
+                continue
+            if line_no > 0:
+                selected_line_nos.add(line_no)
     try:
-        result = build_material_query(case_id, employee_id, employee_id)
+        result = build_material_query(
+            case_id, employee_id, employee_id,
+            line_nos=selected_line_nos or None,
+        )
         mode_label = "真实接口" if result.get("mode") == "real" else "Mock"
         flash(
             f"批量料号查询（{mode_label}）已完成：{len(result['items'])} 条明细已处理。",
@@ -1546,6 +1614,28 @@ def order_automation_material_query(case_id: int):
     except ValueError as exc:
         flash(str(exc), "error")
     return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))
+
+
+@bp.post("/order-automation/cases/<int:case_id>/material-create")
+def order_automation_material_create(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    if not get_order_intake_case(case_id, employee_id):
+        abort(404)
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = build_material_creation(
+            case_id, employee_id, employee_id, payload.get("lines") or [],
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
+    return jsonify({
+        "ok": True,
+        "message": f"新建料号已提交：{len(result.get('items') or [])} 条明细。",
+        "result": result,
+    })
 
 
 @bp.get("/order-automation/cases/<int:case_id>/material-resolution-status")
@@ -1557,6 +1647,28 @@ def order_automation_material_resolution_status(case_id: int):
     if not get_order_intake_case(case_id, employee_id):
         abort(404)
     return jsonify(get_material_resolution_states(case_id, employee_id))
+
+
+@bp.post("/order-automation/cases/<int:case_id>/material-resolutions/<int:line_no>/selection")
+def order_automation_material_resolution_selection(case_id: int, line_no: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    if not get_order_intake_case(case_id, employee_id):
+        abort(404)
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = select_material_candidate(
+            case_id,
+            employee_id,
+            line_no,
+            product_code=str(payload.get("product_code") or ""),
+            product_name=str(payload.get("product_name") or ""),
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
+    return jsonify({"ok": True, **result})
 
 
 @bp.post("/integrations/material-number/callback")
@@ -1722,6 +1834,50 @@ def customer_archive():
     if redirect_resp:
         return redirect_resp
     dataset = request.args.get("dataset", "customers")
+    if dataset == "adhesives":
+        keyword = request.args.get("keyword", "").strip()
+        usage_category = request.args.get("usage_category", "all")
+        finance_category = request.args.get("finance_category", "all")
+        status = request.args.get("status", "all")
+        page_size = request.args.get("page_size", 20, type=int) or 20
+        if page_size not in {20, 50, 100}:
+            page_size = 20
+        page = max(request.args.get("page", 1, type=int) or 1, 1)
+        filter_values = adhesive_code_filter_values()
+        if usage_category not in {"all", *filter_values["usage_categories"]}:
+            usage_category = "all"
+        if finance_category not in {"all", *filter_values["finance_categories"]}:
+            finance_category = "all"
+        if status not in {"all", "active", "disabled"}:
+            status = "all"
+        records = list_adhesive_codes(
+            keyword=keyword,
+            usage_category=usage_category,
+            finance_category=finance_category,
+            status=status,
+        )
+        total_records = len(records)
+        total_pages = max(1, (total_records + page_size - 1) // page_size)
+        page = min(page, total_pages)
+        selected_id = request.args.get("adhesive_id", type=int)
+        new_mode = request.args.get("adhesive_new") == "1"
+        selected_record = get_adhesive_code(selected_id) if selected_id and not new_mode else None
+        return render_template(
+            "adhesive_code_master.html",
+            records=records[(page - 1) * page_size: page * page_size],
+            selected_record=selected_record,
+            new_mode=new_mode,
+            keyword=keyword,
+            selected_usage_category=usage_category,
+            selected_finance_category=finance_category,
+            selected_status=status,
+            usage_categories=filter_values["usage_categories"],
+            finance_categories=filter_values["finance_categories"],
+            page=page,
+            page_size=page_size,
+            total_pages=total_pages,
+            total_records=total_records,
+        )
     if dataset == "specs":
         keyword = request.args.get("keyword", "").strip()
         product_type = request.args.get("product_type", "all")
@@ -1886,6 +2042,77 @@ def _customer_spec_redirect(mapping_id: int | None = None):
     if mapping_id:
         params["spec_id"] = mapping_id
     return redirect(url_for("main.customer_archive", **params))
+
+
+def _adhesive_code_redirect(record_id: int | None = None):
+    params: dict[str, object] = {"dataset": "adhesives"}
+    if record_id:
+        params["adhesive_id"] = record_id
+    return redirect(url_for("main.customer_archive", **params))
+
+
+@bp.post("/customers/adhesive-codes/import")
+def adhesive_code_import():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    upload = request.files.get("workbook")
+    if not upload or not upload.filename:
+        flash("请选择胶系主表 Excel 文件。", "error")
+        return _adhesive_code_redirect()
+    suffix = Path(upload.filename).suffix.lower()
+    if suffix not in {".xlsx", ".xlsm"}:
+        flash("仅支持 .xlsx 或 .xlsm 格式的胶系主表。", "error")
+        return _adhesive_code_redirect()
+    temp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(prefix="adhesive_code_", suffix=suffix, delete=False) as handle:
+            upload.save(handle)
+            temp_path = handle.name
+        result = import_adhesive_code_workbook(temp_path, operated_by=current_employee() or "")
+        message = f"胶系主表导入完成：新增 {result['imported']} 条，更新 {result['updated']} 条，跳过 {result['skipped']} 条。"
+        if result["errors"]:
+            first = result["errors"][0]
+            message += f" 首个错误：第 {first['row']} 行，{first['error']}"
+        flash(message, "success" if not result["errors"] else "warning")
+    except Exception as exc:
+        current_app.logger.exception("adhesive code import failed")
+        flash(f"胶系主表导入失败：{exc}", "error")
+    finally:
+        if temp_path:
+            safe_unlink(temp_path)
+    return _adhesive_code_redirect()
+
+
+@bp.post("/customers/adhesive-codes/save")
+def adhesive_code_save():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    record_id = request.form.get("record_id", type=int)
+    values = {field: request.form.get(field, "") for field in ADHESIVE_CODE_FORM_FIELDS}
+    try:
+        saved_id = save_adhesive_code(values, record_id=record_id, operated_by=current_employee() or "")
+        flash("胶系代码已保存。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+        saved_id = record_id
+    return _adhesive_code_redirect(saved_id)
+
+
+@bp.post("/customers/adhesive-codes/<int:record_id>/status")
+def adhesive_code_status(record_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    try:
+        set_adhesive_code_enabled(
+            record_id, request.form.get("enabled") == "1", operated_by=current_employee() or ""
+        )
+        flash("胶系代码状态已更新。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return _adhesive_code_redirect(record_id)
 
 
 @bp.post("/customers/spec-mappings/import")

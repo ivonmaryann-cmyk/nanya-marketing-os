@@ -83,6 +83,35 @@ class MailTranscodeAccountIsolationTests(unittest.TestCase):
             "owner-auth-code",
         )
 
+    def test_admin_override_can_bind_an_email_owned_by_another_user(self) -> None:
+        first_account = mail_store.create_or_update_account(
+            "shared@example.com",
+            owner_employee_id="employee-a",
+            auth_code="first-auth-code",
+        )
+        admin_account = mail_store.create_or_update_account(
+            "shared@example.com",
+            owner_employee_id="admin-user",
+            auth_code="admin-auth-code",
+            allow_duplicate_email=True,
+        )
+
+        self.assertNotEqual(first_account, admin_account)
+        self.assertEqual(
+            [account["id"] for account in mail_store.list_accounts(owner_employee_id="employee-a")],
+            [first_account],
+        )
+        self.assertEqual(
+            [account["id"] for account in mail_store.list_accounts(owner_employee_id="admin-user")],
+            [admin_account],
+        )
+        with self.assertRaisesRegex(ValueError, "已由其他用户配置"):
+            mail_store.create_or_update_account(
+                "shared@example.com",
+                owner_employee_id="employee-b",
+                auth_code="other-auth-code",
+            )
+
     def test_edit_updates_email_and_delete_removes_only_owned_configuration(self) -> None:
         account_id = mail_store.create_or_update_account(
             "before@example.com",

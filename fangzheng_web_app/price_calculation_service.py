@@ -22,6 +22,7 @@ from .paths import JOBS_DIR
 from .price_calculation_extended import (
     ExtRules,
     calculate_extended_spec,
+    junya_spec_with_stack,
     load_extended_rules,
     run_extended_regression,
 )
@@ -297,6 +298,9 @@ def process_price_workbook(workbook, customer_key: str, rules: JingwangRules | P
             continue
         header_row, headers = find_header_row(ws)
         desc_col = next((headers[name] for name in DESC_HEADERS if name in headers), None)
+        if customer_key == "junya":
+            desc_col = headers.get("客户规格") or desc_col
+        junya_stack_col = (headers.get("排板结构") or headers.get("叠板结构")) if customer_key == "junya" else None
         auto_detect_spec = False
         if not desc_col:
             auto_detect_spec = True
@@ -306,7 +310,7 @@ def process_price_workbook(workbook, customer_key: str, rules: JingwangRules | P
         qty_col = headers.get("订单数量") or headers.get("数量")
         has_quantity = bool(qty_col)
         is_plin = customer_key == "plin"
-        simple_price_only = customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing", "kexiang"}
+        simple_price_only = customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing", "kexiang", "junya"}
         if customer_key == "mingyang" and "200M整卷价格" in headers:
             old_roll_col = headers.pop("200M整卷价格")
             if "整卷价格" in headers and headers["整卷价格"] != old_roll_col:
@@ -351,6 +355,8 @@ def process_price_workbook(workbook, customer_key: str, rules: JingwangRules | P
                     continue
                 if spec in DESC_HEADERS or spec in TABLE_HEADER_HINTS:
                     continue
+            if customer_key == "junya" and junya_stack_col:
+                spec = junya_spec_with_stack(spec, _text(ws.cell(row=row_idx, column=junya_stack_col).value))
             quantity = ws.cell(row=row_idx, column=qty_col).value if qty_col else None
             result = calculate_customer_spec(customer_key, spec, rules, quantity=quantity)
             if auto_detect_spec:
@@ -500,7 +506,7 @@ def process_price_workbook(workbook, customer_key: str, rules: JingwangRules | P
 def run_jingwang_regression(customer_key: str, version: str | None = None, quote_variant: str | None = None) -> dict:
     if customer_key == "plin":
         return run_plin_regression(customer_key, version)
-    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing", "kexiang"}:
+    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing", "kexiang", "junya"}:
         rule_version = version or get_active_price_rule_version(customer_key)
         rules = load_extended_rules(customer_key, get_price_rule_file_path(customer_key, rule_version))
         return run_extended_regression(customer_key, rules, get_price_test_data_file_path(customer_key, rule_version))
@@ -632,7 +638,7 @@ def run_plin_regression(customer_key: str, version: str | None = None) -> dict:
 def load_price_rules(customer_key: str, rule_path: str | Path) -> JingwangRules | PlinRules | ExtRules:
     if customer_key == "plin":
         return load_plin_rules(rule_path)
-    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing", "kexiang"}:
+    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing", "kexiang", "junya"}:
         return load_extended_rules(customer_key, rule_path)
     return load_jingwang_rules(rule_path)
 
@@ -640,7 +646,7 @@ def load_price_rules(customer_key: str, rule_path: str | Path) -> JingwangRules 
 def calculate_customer_spec(customer_key: str, spec: str, rules: JingwangRules | PlinRules | ExtRules, quantity: Any = None) -> CalcResult:
     if customer_key == "plin":
         return calculate_plin_spec(spec, rules)  # type: ignore[arg-type]
-    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing", "kexiang"}:
+    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing", "kexiang", "junya"}:
         result = calculate_extended_spec(customer_key, spec, rules, quantity=quantity)  # type: ignore[arg-type]
         return CalcResult(
             result.status,

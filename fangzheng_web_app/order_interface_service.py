@@ -28,9 +28,12 @@ INTERFACE_DEFAULTS = {
             "operatorCode": "当前登录账号（员工工号，必填）",
             "materialInfoList[].categoryCode": "模板明细.产品类型（PP=698，基板=718，必填）",
             "materialInfoList[].customerMaterialNo": "模板明细.客户产品编号（必填）",
-            "materialInfoList[].customerSpec": "模板明细.客户规格（必填）",
+            "materialInfoList[].adhesiveCode": "新建料号弹窗.胶系编码（仅点击新建料号时传）",
+            "materialInfoList[].customerSpec": "新建料号弹窗.客户规格匹配（仅点击新建料号时传）",
+            "materialInfoList[].customerSpecOld": "模板明细.客户规格（选填）",
             "materialInfoList[].newProductName": "暂不映射，发送空字符串（选填）",
             "materialInfoList[].oldProductName": "模板明细.品名（选填）",
+            "materialInfoList[].newFlag": "点击新建料号时固定发送 Y；批量查询不发送",
         },
         "response_mapping": {
             "code": "接口交互记录.业务状态码（200=处理完成，999=失败）",
@@ -114,7 +117,8 @@ INTERFACE_MAINTENANCE_NOTES = {
     "material_batch_query": [
         "当前地址是 NYEOS 测试环境；正式环境地址确认后只需修改“请求地址”。",
         "产品类型必须转换为接口编码：PP 使用 698，基板使用 718。",
-        "customerSpec 只发送模板中的“客户规格”，不发送“客户规格匹配”。",
+        "点击“新建料号”时，customerSpec 发送“客户规格匹配”，customerSpecOld 始终发送原“客户规格”。",
+        "点击“新建料号”时，adhesiveCode 发送“胶系编码”，newFlag 固定发送 Y；批量查询不发送这三项。",
         "接口未命中料号时可能返回 pera01，并在对方系统创建客户料号编制作业，请勿用随意数据测试。",
         "保存后业务页会按运行模式执行：Mock 走模拟流程，真实接口会请求当前地址。",
     ],
@@ -242,10 +246,25 @@ def _upgrade_legacy_material_config(conn: Any, row: Any, operated_by: str, now: 
 def _upgrade_material_customer_spec_source(conn: Any, row: Any, operated_by: str, now: str) -> None:
     before = _row(row)
     mapping = _json(before.get("request_mapping_json"), {})
+    defaults = INTERFACE_DEFAULTS["material_batch_query"]["request_mapping"]
     key = "materialInfoList[].customerSpec"
-    if mapping.get(key) != "模板明细.客户规格匹配；为空时取客户规格（必填）":
+    legacy_customer_specs = {
+        "模板明细.客户规格（必填）",
+        "模板明细.客户规格匹配；为空时取客户规格（必填）",
+    }
+    changed = False
+    if mapping.get(key) in legacy_customer_specs:
+        mapping[key] = defaults[key]
+        changed = True
+        for mapping_key in (
+            "materialInfoList[].adhesiveCode",
+            "materialInfoList[].customerSpecOld",
+            "materialInfoList[].newFlag",
+        ):
+            if mapping_key not in mapping:
+                mapping[mapping_key] = defaults[mapping_key]
+    if not changed:
         return
-    mapping[key] = INTERFACE_DEFAULTS["material_batch_query"]["request_mapping"][key]
     next_version = int(before.get("config_version") or 0) + 1
     conn.execute(
         """UPDATE order_interface_configs
@@ -456,7 +475,7 @@ def test_interface_config(payload: dict[str, Any]) -> dict[str, Any]:
         "materialInfoList": [{
             "categoryCode": "718",
             "customerMaterialNo": "",
-            "customerSpec": "",
+            "customerSpecOld": "",
             "newProductName": "",
             "oldProductName": "",
         }],
@@ -550,6 +569,7 @@ _AUDIT_SOURCE_LABELS = {
     "template_saved": "人工保存", "template_extracted": "首次提取", "template_reextracted": "重新提取",
     "material_query_mock": "料号查询接口", "material_created_callback": "料号创建回调",
     "material_query_real": "料号查询接口",
+    "material_candidate_selected": "人工选择候选料号",
     "domestic_order_entry_mock": "生成订单接口", "domestic_order_entry_real": "生成订单接口",
 }
 
@@ -714,6 +734,7 @@ def _material_request_item(line_no: int, values: dict[str, Any]) -> dict[str, An
         "material_status": str(values.get("material_status") or "查询"),
         "product_type": str(values.get("product_type") or ""),
         "product_name": str(values.get("product_name") or ""),
+        "adhesive_code": str(values.get("adhesive_code") or ""),
         "customer_product_code": str(values.get("customer_product_code") or ""),
         "customer_spec": str(values.get("customer_spec") or ""),
         "customer_spec_match": str(values.get("customer_spec_match") or ""),
@@ -813,13 +834,106 @@ def _mock_material_response(item: dict[str, Any], *, callback_requery: bool = Fa
     return {"line_no": line_no, "status": "failed", "message": "Mock 查询异常：请检查客户产品编号、客户规格和规格匹配。"}
 
 
-def build_material_query(case_id: int, employee_id: str, triggered_by: str) -> dict[str, Any]:
+def build_material_query(
+    case_id: int, employee_id: str, triggered_by: str, *, line_nos: set[int] | None = None,
+) -> dict[str, Any]:
     config = get_interface_config("material_batch_query")
     if not config or not config.get("enabled"):
         raise ValueError("批量料号查询接口未启用")
     if str(config.get("mode") or "mock") == "real":
-        return build_material_query_real(case_id, employee_id, triggered_by, config=config)
-    return build_material_query_mock(case_id, employee_id, triggered_by)
+        return build_material_query_real(case_id, employee_id, triggered_by, config=config, line_nos=line_nos)
+    return build_material_query_mock(case_id, employee_id, triggered_by, line_nos=line_nos)
+
+
+def _save_material_creation_lines(
+    case_id: int, employee_id: str, triggered_by: str, lines: list[dict[str, Any]],
+) -> tuple[int, set[int]]:
+    template_id = _case_template_id(case_id, employee_id)
+    if not template_id:
+        raise ValueError("请先生成录单模板")
+    if not isinstance(lines, list) or not lines:
+        raise ValueError("当前没有需要新建料号的明细")
+    submitted: dict[int, dict[str, Any]] = {}
+    for raw in lines:
+        try:
+            line_no = int(raw.get("line_no") or 0)
+        except (TypeError, ValueError):
+            line_no = 0
+        if line_no <= 0 or line_no in submitted:
+            raise ValueError("新建料号明细的项次无效或重复")
+        submitted[line_no] = raw
+    changes: list[dict[str, Any]] = []
+    now = utcnow()
+    with db_cursor() as conn:
+        rows = conn.execute(
+            "SELECT line_no,values_json,sources_json FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no",
+            (template_id,),
+        ).fetchall()
+        stored = {int(row["line_no"]): row for row in rows}
+        for line_no, raw in submitted.items():
+            row = stored.get(line_no)
+            if not row:
+                raise ValueError(f"第 {line_no} 项不存在")
+            values = _json(row["values_json"], {})
+            if str(values.get("product_code") or "").strip() or str(values.get("product_name") or "").strip():
+                raise ValueError(f"第 {line_no} 项已有产品编号或品名，不能提交新建料号")
+            task = conn.execute(
+                "SELECT result_json FROM order_material_resolution_tasks WHERE template_id=? AND line_no=?",
+                (template_id, line_no),
+            ).fetchone()
+            if task and _material_candidates(_json(task["result_json"], {})):
+                raise ValueError(f"第 {line_no} 项已有候选料号，请先选择候选，不能重复新建")
+            updates = {
+                "material_status": "新增",
+                "adhesive_code": str(raw.get("adhesive_code") or "").strip(),
+                "customer_product_code": str(raw.get("customer_product_code") or "").strip(),
+                "customer_spec": str(raw.get("customer_spec") or "").strip(),
+                "customer_spec_match": str(raw.get("customer_spec_match") or "").strip(),
+            }
+            if not updates["customer_product_code"]:
+                raise ValueError(f"第 {line_no} 项缺少客户产品编号")
+            if not updates["customer_spec"]:
+                raise ValueError(f"第 {line_no} 项缺少客户规格")
+            sources = _json(row["sources_json"], {})
+            for field, value in updates.items():
+                before = str(values.get(field) or "")
+                values[field] = value
+                if before != value:
+                    sources[field] = {"label": "人工修改", "reference": "新建料号弹窗"}
+                    changes.append({"field": field, "before": before, "after": value, "line_no": line_no})
+            conn.execute(
+                """UPDATE order_entry_template_lines SET values_json=?,sources_json=?,updated_at=?
+                   WHERE template_id=? AND line_no=?""",
+                (json.dumps(values, ensure_ascii=False), json.dumps(sources, ensure_ascii=False), now, template_id, line_no),
+            )
+        conn.execute("UPDATE order_entry_templates SET updated_at=? WHERE id=?", (now, template_id))
+        record_order_detail_event(
+            conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
+            event_type="material_create_prepare", title="确认新建料号数据",
+            detail={"changes": changes, "line_nos": sorted(submitted)}, operated_by=triggered_by,
+        )
+    return template_id, set(submitted)
+
+
+def build_material_creation(
+    case_id: int, employee_id: str, triggered_by: str, lines: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Persist the creation dialog and submit only blank material rows."""
+    if is_domestic_order_entry_completed(case_id, employee_id):
+        raise ValueError("内销录单已完成，不能再次提交新建料号")
+    config = get_interface_config("material_batch_query")
+    if not config or not config.get("enabled"):
+        raise ValueError("料号查询接口未启用")
+    _template_id, line_nos = _save_material_creation_lines(case_id, employee_id, triggered_by, lines)
+    if str(config.get("mode") or "mock") == "real":
+        return build_material_query_real(
+            case_id, employee_id, triggered_by, config=config, line_nos=line_nos, create_mode=True,
+        )
+    result = build_material_query_mock(
+        case_id, employee_id, triggered_by, line_nos=line_nos, force_create=True,
+    )
+    result["mode"] = "mock"
+    return result
 
 
 def _material_category_code(product_type: str) -> str:
@@ -832,18 +946,24 @@ def _material_category_code(product_type: str) -> str:
     return value
 
 
-def _real_material_request_item(item: dict[str, Any]) -> dict[str, str]:
+def _real_material_request_item(item: dict[str, Any], *, create: bool = False) -> dict[str, str]:
     product_name = str(item.get("product_name") or "").strip()
     if product_name in {"创建料号中", "创建品名中"}:
         product_name = ""
-    is_new = str(item.get("material_status") or "查询").strip() == "新增"
-    return {
+    result = {
         "categoryCode": _material_category_code(str(item.get("product_type") or "")),
         "customerMaterialNo": str(item.get("customer_product_code") or "").strip(),
-        "customerSpec": str(item.get("customer_spec") or "").strip(),
-        "newProductName": product_name if is_new else "",
-        "oldProductName": "" if is_new else product_name,
+        "customerSpecOld": str(item.get("customer_spec") or "").strip(),
+        "newProductName": product_name if create else "",
+        "oldProductName": "" if create else product_name,
     }
+    if create:
+        result.update({
+            "adhesiveCode": str(item.get("adhesive_code") or "").strip(),
+            "customerSpec": str(item.get("customer_spec_match") or "").strip(),
+            "newFlag": "Y",
+        })
+    return result
 
 
 def _post_json_endpoint(
@@ -909,12 +1029,13 @@ def _real_material_response_items(
             })
         elif index in errors_by_line:
             results.append({"line_no": item["line_no"], "status": "failed", "message": errors_by_line[index]})
-        elif business_ok and response_body.get("pera01"):
+        elif business_ok and (response_body.get("external_task_id") or response_body.get("pera01")):
+            external_task_id = str(response_body.get("external_task_id") or response_body.get("pera01") or "")
             results.append({
                 "line_no": item["line_no"], "status": "creating",
                 "factory_part_no": "创建料号中", "product_name": "创建料号中",
-                "external_task_id": str(response_body.get("pera01") or ""),
-                "message": f"未命中现有料号，已返回编制作业单 {response_body['pera01']}。",
+                "external_task_id": external_task_id,
+                "message": f"已提交新建料号，外部任务号 {external_task_id}。",
             })
         else:
             results.append({
@@ -926,6 +1047,7 @@ def _real_material_response_items(
 
 def build_material_query_real(
     case_id: int, employee_id: str, triggered_by: str, *, config: dict[str, Any] | None = None,
+    line_nos: set[int] | None = None, create_mode: bool = False,
 ) -> dict[str, Any]:
     if is_domestic_order_entry_completed(case_id, employee_id):
         raise ValueError("内销录单已完成，不能再次请求料号查询接口")
@@ -945,16 +1067,18 @@ def build_material_query_real(
     customer_code = str(header.get("bill_to_customer_code") or "").strip()
     if not customer_code:
         raise ValueError("请先填写并保存账款客户编号")
+    rows = [row for row in rows if line_nos is None or int(row["line_no"]) in line_nos]
     request_items = [_material_request_item(int(row["line_no"]), _json(row["values_json"], {})) for row in rows]
     if not request_items:
         raise ValueError("当前没有可查询的订单明细")
     request_payload = {
         "customerCode": customer_code,
         "operatorCode": employee_id,
-        "materialInfoList": [_real_material_request_item(item) for item in request_items],
+        "materialInfoList": [_real_material_request_item(item, create=create_mode) for item in request_items],
     }
+    operation_label = "新建料号" if create_mode else "批量料号查询"
     try:
-        http_status, response_body, duration_ms = _post_json_endpoint(config, request_payload, "真实料号查询")
+        http_status, response_body, duration_ms = _post_json_endpoint(config, request_payload, f"真实{operation_label}")
     except ValueError as exc:
         with db_cursor() as conn:
             call_id = _insert_call_log(
@@ -964,7 +1088,8 @@ def build_material_query_real(
             )
             record_order_detail_event(
                 conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
-                event_type="material_query_real", title="批量料号查询（真实接口）失败",
+                event_type="material_create_real" if create_mode else "material_query_real",
+                title=f"{operation_label}（真实接口）失败",
                 detail={"call_id": call_id, "error_message": str(exc)}, operated_by=triggered_by,
             )
         raise
@@ -988,10 +1113,12 @@ def build_material_query_real(
             )
             values = _json(rows_by_line[item["line_no"]]["values_json"], {})
             if status in {"matched", "creating"}:
+                candidates = _material_candidates(response)
                 changes = _backfill_material_line(
                     conn, template_id=template_id, line_no=item["line_no"], values=values,
                     factory_part_no=str(response.get("factory_part_no") or ""),
-                    product_name=str(response.get("product_name") or ""), correlation_id=task["correlation_id"],
+                    product_name=str(response.get("product_name") or ""),
+                    correlation_id=task["correlation_id"],
                     source_label="料号查询接口（真实）",
                 )
                 all_changes.extend(changes)
@@ -1016,7 +1143,8 @@ def build_material_query_real(
                 )
         record_order_detail_event(
             conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
-            event_type="material_query_real", title="批量料号查询（真实接口）完成",
+            event_type="material_create_real" if create_mode else "material_query_real",
+            title=f"{operation_label}（真实接口）完成",
             detail={"call_id": call_id, "changes": all_changes, "items": response_items}, operated_by=triggered_by,
         )
     return {"call_id": call_id, "items": response_items, "status": call_status, "mode": "real"}
@@ -1024,7 +1152,7 @@ def build_material_query_real(
 
 def build_material_query_mock(case_id: int, employee_id: str, triggered_by: str, scenario: str = "success",
                               *, line_nos: set[int] | None = None,
-                              callback_requery: bool = False) -> dict[str, Any]:
+                              callback_requery: bool = False, force_create: bool = False) -> dict[str, Any]:
     """Run the production-shaped Mock: hit, creation callback, then automatic backfill."""
     if is_domestic_order_entry_completed(case_id, employee_id):
         raise ValueError("内销录单已完成，不能再次请求料号查询接口")
@@ -1049,7 +1177,16 @@ def build_material_query_mock(case_id: int, employee_id: str, triggered_by: str,
                                       event_type="material_query_mock", title="批量料号查询（Mock）失败",
                                       detail={"call_id": call_id, "error_message": message}, operated_by=triggered_by)
             return {"call_id": call_id, "items": [], "status": "failed", "scheduled_task_ids": []}
-        response_items = [_mock_material_response(item, callback_requery=callback_requery) for item in request_items]
+        response_items = [
+            {
+                "line_no": item["line_no"], "status": "creating",
+                "factory_part_no": "创建料号中", "product_name": "创建料号中",
+                "external_task_id": f"MOCK-CREATE-{template_id}",
+                "message": "Mock 新建料号已提交；等待对方回调。",
+            }
+            if force_create else _mock_material_response(item, callback_requery=callback_requery)
+            for item in request_items
+        ]
         call_id = _insert_call_log(conn, case_id=case_id, template_id=template_id, employee_id=employee_id, config=config,
                                     status="success", request_payload={"items": request_items}, response_payload={"items": response_items}, triggered_by=triggered_by)
         all_changes: list[dict[str, Any]] = []
@@ -1061,8 +1198,10 @@ def build_material_query_mock(case_id: int, employee_id: str, triggered_by: str,
                                             line_no=item["line_no"], status=task_status, input_item=item,
                                             call_id=call_id, result=response)
             if status == "matched":
+                candidates = _material_candidates(response)
                 changes = _backfill_material_line(conn, template_id=template_id, line_no=item["line_no"], values=values,
-                                                   factory_part_no=response["factory_part_no"], product_name=response["product_name"],
+                                                   factory_part_no=response["factory_part_no"],
+                                                   product_name=response["product_name"],
                                                    correlation_id=task["correlation_id"])
                 all_changes.extend(changes)
                 conn.execute("UPDATE order_material_resolution_tasks SET resolved_at=?,updated_at=? WHERE id=?", (utcnow(), utcnow(), task["id"]))
@@ -1128,12 +1267,15 @@ def process_material_created_callback(correlation_id: str, *, product_code: str,
 
 def get_material_resolution_states(case_id: int, employee_id: str) -> dict[str, Any]:
     with db_cursor() as conn:
-        rows = conn.execute("SELECT line_no,status,correlation_id,result_json,updated_at FROM order_material_resolution_tasks WHERE case_id=? AND employee_id=? ORDER BY line_no", (case_id, employee_id)).fetchall()
+        rows = conn.execute("SELECT line_no,status,correlation_id,external_task_id,result_json,updated_at FROM order_material_resolution_tasks WHERE case_id=? AND employee_id=? ORDER BY line_no", (case_id, employee_id)).fetchall()
     items = []
     for row in rows:
         item = _row(row)
         item["result"] = _json(item.pop("result_json", ""), {})
         item["candidates"] = _material_candidates(item["result"])
+        item["candidate_count"] = len(item["candidates"])
+        item["selected_candidate"] = _selected_material_candidate(item["result"], item["candidates"])
+        item["selection_required"] = item["candidate_count"] > 1 and not item["selected_candidate"]
         item["label"] = MATERIAL_STATUS_LABELS.get(item["status"], item["status"])
         items.append(item)
     return {"items": items, "pending": any(item["status"] in {"waiting_callback", "requerying"} for item in items)}
@@ -1160,19 +1302,118 @@ def _material_candidates(result: dict[str, Any]) -> list[dict[str, str]]:
     return candidates
 
 
+def _selected_material_candidate(
+    result: dict[str, Any], candidates: list[dict[str, str]] | None = None,
+) -> dict[str, str] | None:
+    raw = result.get("selected_candidate")
+    if not isinstance(raw, dict):
+        return None
+    selected = {
+        "product_code": str(raw.get("product_code") or "").strip(),
+        "product_name": str(raw.get("product_name") or "").strip(),
+    }
+    if not selected["product_code"] and not selected["product_name"]:
+        return None
+    candidates = candidates if candidates is not None else _material_candidates(result)
+    return selected if selected in candidates else None
+
+
+def select_material_candidate(
+    case_id: int,
+    employee_id: str,
+    line_no: int,
+    *,
+    product_code: str,
+    product_name: str,
+) -> dict[str, Any]:
+    """Persist one user-confirmed material candidate and update its template line."""
+    template_id = _case_template_id(case_id, employee_id)
+    if not template_id:
+        raise ValueError("请先生成录单模板")
+    selected = {
+        "product_code": str(product_code or "").strip(),
+        "product_name": str(product_name or "").strip(),
+    }
+    with db_cursor() as conn:
+        task = conn.execute(
+            """SELECT * FROM order_material_resolution_tasks
+               WHERE case_id=? AND template_id=? AND employee_id=? AND line_no=?""",
+            (case_id, template_id, employee_id, int(line_no)),
+        ).fetchone()
+        if not task:
+            raise ValueError("未找到本行的料号查询结果")
+        task = _row(task)
+        result = _json(task.get("result_json"), {})
+        candidates = _material_candidates(result)
+        if len(candidates) < 2:
+            raise ValueError("本行没有需要确认的多个候选料号")
+        if selected not in candidates:
+            raise ValueError("所选料号不在本次接口返回的候选列表中")
+        line = conn.execute(
+            "SELECT values_json,sources_json FROM order_entry_template_lines WHERE template_id=? AND line_no=?",
+            (template_id, int(line_no)),
+        ).fetchone()
+        if not line:
+            raise ValueError("录单模板明细不存在")
+        values = _json(line["values_json"], {})
+        sources = _json(line["sources_json"], {})
+        changes = []
+        for field, value in selected.items():
+            before = str(values.get(field) or "")
+            values[field] = value
+            sources[field] = {
+                "label": "人工选择候选料号",
+                "reference": f"关联号 {task['correlation_id']}",
+            }
+            if before != value:
+                changes.append({"field": field, "before": before, "after": value, "line_no": int(line_no)})
+        result["selected_candidate"] = selected
+        now = utcnow()
+        conn.execute(
+            """UPDATE order_material_resolution_tasks
+               SET result_json=?,status='resolved',resolved_at=?,updated_at=? WHERE id=?""",
+            (json.dumps(result, ensure_ascii=False), now, now, int(task["id"])),
+        )
+        conn.execute(
+            """UPDATE order_entry_template_lines SET values_json=?,sources_json=?,updated_at=?
+               WHERE template_id=? AND line_no=?""",
+            (json.dumps(values, ensure_ascii=False), json.dumps(sources, ensure_ascii=False), now,
+             template_id, int(line_no)),
+        )
+        conn.execute("UPDATE order_entry_templates SET updated_at=? WHERE id=?", (now, template_id))
+        record_order_detail_event(
+            conn,
+            case_id=case_id,
+            template_id=template_id,
+            employee_id=employee_id,
+            event_type="material_candidate_selected",
+            title=f"第 {int(line_no)} 行已确认候选料号",
+            detail={"line_no": int(line_no), "selected_candidate": selected, "changes": changes},
+            operated_by=employee_id,
+        )
+    return {"line_no": int(line_no), "selected_candidate": selected, "changes": changes}
+
+
 def validate_domestic_order_entry(case_id: int, employee_id: str) -> list[str]:
     template_id = _case_template_id(case_id, employee_id)
     if not template_id:
         return ["请先生成并保存录单模板"]
     with db_cursor() as conn:
         lines = conn.execute("SELECT line_no,values_json FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no", (template_id,)).fetchall()
-        tasks = conn.execute("SELECT line_no,status FROM order_material_resolution_tasks WHERE template_id=?", (template_id,)).fetchall()
-    states = {int(row["line_no"]): str(row["status"]) for row in tasks}
+        tasks = conn.execute(
+            "SELECT line_no,status,result_json FROM order_material_resolution_tasks WHERE template_id=?",
+            (template_id,),
+        ).fetchall()
+    states = {int(row["line_no"]): _row(row) for row in tasks}
     issues = []
     for row in lines:
         line_no, values = int(row["line_no"]), _json(row["values_json"], {})
-        if states.get(line_no) in {"waiting_callback", "requerying", "failed"}:
-            issues.append(f"第 {line_no} 行料号{MATERIAL_STATUS_LABELS[states[line_no]]}")
+        task = states.get(line_no, {})
+        status = str(task.get("status") or "")
+        result = _json(task.get("result_json"), {})
+        candidates = _material_candidates(result)
+        if status in {"waiting_callback", "requerying", "failed"}:
+            issues.append(f"第 {line_no} 行料号{MATERIAL_STATUS_LABELS[status]}")
         elif not str(values.get("customer_product_code") or "").strip():
             issues.append(f"第 {line_no} 行未填写客户产品编号")
     return issues

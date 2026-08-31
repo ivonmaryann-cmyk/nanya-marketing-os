@@ -4,6 +4,7 @@ from datetime import date
 
 from flask import Blueprint, abort, flash, jsonify, redirect, render_template, request, session, url_for
 
+from ..db import is_admin_user
 from ..routes import require_login
 from . import mail_order_service, mail_store
 from .mail_fetch_service import fetch_latest_order_mails, test_imap_connection
@@ -115,6 +116,7 @@ def save_account():
             imap_port=int(request.form.get("imap_port") or 993),
             auth_code=imap_auth_code,
             enabled=1 if request.form.get("enabled") else 0,
+            allow_duplicate_email=is_admin_user(owner_employee_id),
         )
         if request.form.get("smtp_config_present"):
             mail_store.save_smtp_config(

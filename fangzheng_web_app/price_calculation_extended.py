@@ -105,6 +105,8 @@ def load_extended_rules(customer_key: str, rule_path: str | Path) -> ExtRules:
         rules = _load_zhongjing_rules(rule_path)
     elif customer_key == "kexiang":
         rules = _load_kexiang_rules(rule_path)
+    elif customer_key == "junya":
+        rules = _load_junya_rules(rule_path)
     else:
         raise ValueError(f"不支持的扩展价格计算客户：{customer_key}")
     if not rules.pp_rows and not rules.ccl_rows:
@@ -144,6 +146,8 @@ def calculate_extended_spec(customer_key: str, spec: str, rules: ExtRules, quant
         return _calculate_zhongjing_spec(desc, rules, quantity=quantity)
     if customer_key == "kexiang":
         return _calculate_kexiang_spec(desc, rules, quantity=quantity)
+    if customer_key == "junya":
+        return _calculate_junya_spec(desc, rules, quantity=quantity)
     if _looks_like_pp(desc):
         return _calculate_pp(customer_key, desc, rules)
     return _calculate_ccl(customer_key, desc, rules, quantity=quantity)
@@ -161,7 +165,12 @@ def run_extended_regression(customer_key: str, rules: ExtRules, test_data_path: 
         if not header_row:
             continue
         desc_col = _first_col(headers, {"客户规格", "物料长描述", "物料描述", "规格"})
+        if customer_key == "junya":
+            desc_col = headers.get("客户规格") or desc_col
         expected_col = _first_col(headers, {"新价", "新单价", "新含税价", "新价格", "单价"})
+        if customer_key == "junya":
+            expected_col = headers.get("单价") or expected_col
+        stack_col = (headers.get("排板结构") or headers.get("叠板结构")) if customer_key == "junya" else None
         if customer_key == "techuang":
             expected_col = None
         conflict_specs = _taixing_conflict_specs(ws, header_row, desc_col, expected_col) if customer_key in {"taixing", "aoshikang"} and desc_col and expected_col else {}
@@ -171,6 +180,8 @@ def run_extended_regression(customer_key: str, rules: ExtRules, test_data_path: 
             spec = _text(ws.cell(row_idx, desc_col).value)
             if not spec:
                 continue
+            if stack_col:
+                spec = junya_spec_with_stack(spec, _text(ws.cell(row_idx, stack_col).value))
             total += 1
             result = calculate_extended_spec(customer_key, spec, rules)
             expected = ws.cell(row_idx, expected_col).value if expected_col else None
@@ -686,6 +697,109 @@ def _load_zhongjing_pp_rows(ws, header_row: int, pp_rows: list[ExtPpRule]) -> No
         if not glass or rc_min is None or price is None:
             continue
         pp_rows.append(ExtPpRule(data_row, ws.title, product, glass, rc_min, rc_max, length, width, price, roll_price))
+
+
+def _load_junya_rules(rule_path: str | Path) -> ExtRules:
+    wb = load_workbook_compat(rule_path, data_only=True)
+    pp_rows: list[ExtPpRule] = []
+    ccl_rows: list[ExtCclRule] = []
+    for ws in wb.worksheets:
+        for row_idx in range(1, ws.max_row + 1):
+            headers = [_text(ws.cell(row_idx, col).value) for col in range(1, ws.max_column + 1)]
+            normalized = {_junya_header_key(value) for value in headers}
+            if {"TYPE", "THICKMM", "PLYUP"}.issubset(normalized):
+                _load_junya_ccl_rows(ws, row_idx, headers, ccl_rows)
+            if {"TYPE", "GLASSTYPE", "RESINCONTENT", "LENGTHM"}.issubset(normalized):
+                _load_junya_pp_rows(ws, row_idx, headers, pp_rows)
+    return ExtRules("junya", pp_rows, ccl_rows)
+
+
+def _junya_header_key(value: Any) -> str:
+    return re.sub(r"[^A-Z0-9]", "", _text(value).upper())
+
+
+def _junya_header_col(headers: list[str], key: str) -> int | None:
+    return next((idx for idx, value in enumerate(headers, start=1) if _junya_header_key(value) == key), None)
+
+
+def _junya_thicknesses(value: Any) -> list[float]:
+    values = [float(item) for item in re.findall(r"\d+(?:\.\d+)?", _text(value))]
+    if not values:
+        return []
+    unique: list[float] = []
+    for item in values:
+        if item not in unique:
+            unique.append(item)
+    return unique
+
+
+def _junya_core(value: Any) -> str:
+    text = _text(value)
+    if "不含铜" in text:
+        return "不含铜"
+    if "含铜" in text:
+        return "含铜"
+    return ""
+
+
+def _junya_copper(value: Any) -> str:
+    text = _text(value).upper()
+    if re.search(r"\bJ\s*/\s*J\b", text):
+        return "J/J"
+    return _norm_copper(text)
+
+
+def _load_junya_ccl_rows(ws, header_row: int, headers: list[str], ccl_rows: list[ExtCclRule]) -> None:
+    product_col = _junya_header_col(headers, "TYPE") or 1
+    thickness_col = _junya_header_col(headers, "THICKMM") or 2
+    core_col = _junya_header_col(headers, "CORE")
+    stack_col = _junya_header_col(headers, "PLYUP") or 5
+    price_cols = {
+        col_idx: _junya_copper(header)
+        for col_idx, header in enumerate(headers, start=1)
+        if _junya_copper(header)
+    }
+    product = ""
+    for data_row in range(header_row + 1, ws.max_row + 1):
+        row_product = _norm_product(ws.cell(data_row, product_col).value)
+        if row_product:
+            product = row_product
+        thicknesses = _junya_thicknesses(ws.cell(data_row, thickness_col).value)
+        core = _junya_core(ws.cell(data_row, core_col).value) if core_col else ""
+        stack = _norm_stack(ws.cell(data_row, stack_col).value)
+        prices = {
+            copper: _to_float(ws.cell(data_row, col_idx).value)
+            for col_idx, copper in price_cols.items()
+            if _to_float(ws.cell(data_row, col_idx).value) is not None
+        }
+        if not product or not thicknesses or not stack or not prices:
+            continue
+        for thickness_mm in thicknesses:
+            ccl_rows.append(
+                ExtCclRule(data_row, ws.title, product, thickness_mm, None, "", "", stack, prices, kind=core)
+            )
+
+
+def _load_junya_pp_rows(ws, header_row: int, headers: list[str], pp_rows: list[ExtPpRule]) -> None:
+    product_col = _junya_header_col(headers, "TYPE") or 1
+    glass_col = _junya_header_col(headers, "GLASSTYPE") or 2
+    rc_col = _junya_header_col(headers, "RESINCONTENT") or 3
+    length_col = _junya_header_col(headers, "LENGTHM") or 4
+    per_m_col = next((idx for idx, value in enumerate(headers, start=1) if "元/米" in _text(value)), None)
+    per_roll_col = next((idx for idx, value in enumerate(headers, start=1) if "元/卷" in _text(value)), None)
+    product = ""
+    for data_row in range(header_row + 1, ws.max_row + 1):
+        row_product = _norm_product(ws.cell(data_row, product_col).value)
+        if row_product:
+            product = row_product
+        glass = _norm_glass(ws.cell(data_row, glass_col).value)
+        rc_min, rc_max = _parse_rc_range(ws.cell(data_row, rc_col).value)
+        length = _length_int(ws.cell(data_row, length_col).value)
+        per_m = _to_float(ws.cell(data_row, per_m_col).value) if per_m_col else None
+        roll_price = _to_float(ws.cell(data_row, per_roll_col).value) if per_roll_col else None
+        if not product or not glass or rc_min is None or rc_max is None or length is None or roll_price is None:
+            continue
+        pp_rows.append(ExtPpRule(data_row, ws.title, product, glass, rc_min, rc_max, length, None, per_m, roll_price))
 
 
 def _load_kexiang_rules(rule_path: str | Path) -> ExtRules:
@@ -4907,6 +5021,158 @@ def _zhongjing_small_piece_parents(length_in: float, width_in: float) -> list[di
         if best_opens > 0:
             options.append({"source_key": source_key, "label": f"{parent_w}*{parent_h}", "opens": best_opens})
     return options
+
+
+def junya_spec_with_stack(spec: str, stack: str) -> str:
+    """Add the workbook layout only when the customer specification has no stack."""
+    return f"{spec} {stack}" if _text(stack) and not _extract_stack(spec) else spec
+
+
+def _calculate_junya_spec(desc: str, rules: ExtRules, quantity: Any = None) -> ExtCalcResult:
+    product = _extract_current_quote_pp_product(desc)
+    if "PP" in desc.upper() or product.endswith("P"):
+        return _calculate_junya_pp(desc, rules)
+    return _calculate_junya_ccl(desc, rules, quantity=quantity)
+
+
+def _junya_unmatched(material_type: str, reason: str, *, width: str = "", roll_length: str = "") -> ExtCalcResult:
+    return ExtCalcResult("失败", material_type, "未匹配", "", width, roll_length, f"未匹配骏亚{material_type}报价：{reason}")
+
+
+def _calculate_junya_pp(desc: str, rules: ExtRules) -> ExtCalcResult:
+    product = _extract_current_quote_pp_product(desc)
+    glass = _extract_glass(desc)
+    rc = _extract_current_quote_rc(desc)
+    length = _extract_length(desc)
+    if _is_current_quote_pp_small_piece(desc):
+        return _junya_unmatched("PP", "PP小片不参与报价")
+    if not product or not glass or rc is None:
+        return _junya_unmatched("PP", "规格缺少型号、玻布或含量", roll_length=_fmt_length(length))
+    product_norm = _norm_product(product)
+    base_product = product_norm[:-1] if product_norm.endswith("P") else product_norm
+    products = {product_norm, base_product, f"{base_product}P"}
+    if base_product in {"NY3150HF", "NY3150HC"}:
+        products.add("NY3150HFP")
+    matches = [
+        row
+        for row in rules.pp_rows
+        if row.product in products
+        and row.glass == glass
+        and row.rc_min is not None
+        and row.rc_max is not None
+        and row.rc_min - 0.001 <= rc <= row.rc_max + 0.001
+        and row.price is not None
+    ]
+    if not matches:
+        return _junya_unmatched("PP", "型号、玻布或含量范围不在报价单中", roll_length=_fmt_length(length))
+    best = sorted(
+        matches,
+        key=lambda row: (0 if row.product == product_norm else 1, 0 if length and row.length == length else 1, row.excel_row),
+    )[0]
+    price = _round_money(best.price)
+    note = (
+        f"命中骏亚PP报价 Sheet {best.sheet} 第 {best.excel_row} 行，"
+        f"型号={best.product}，玻布={glass}，含量={rc:g}%落在{best.rc_min:g}%~{best.rc_max:g}%范围，"
+        f"每米价格={price:.2f}"
+    )
+    if length and best.length != length:
+        note += f"；卷长{length}m不作为匹配条件"
+    return ExtCalcResult("成功", "PP", price, "", "", _fmt_length(length), note, best.excel_row, best.sheet)
+
+
+def _calculate_junya_ccl(desc: str, rules: ExtRules, quantity: Any = None) -> ExtCalcResult:
+    product = _extract_product(desc)
+    thickness_mm = _junya_extract_thickness_mm(desc)
+    copper = _junya_copper(desc)
+    core = _junya_core(desc)
+    stack = _extract_stack(desc)
+    if not product or thickness_mm is None or not copper or not core or not stack:
+        return _junya_unmatched("CCL", "规格缺少型号、厚度、含铜状态、铜厚或叠构")
+    size_factor = _junya_ccl_size_factor(desc)
+    if size_factor is None:
+        return _junya_unmatched("CCL", "尺寸未匹配骏亚41*49基准换算规则")
+    factor, size_label = size_factor
+    product_norm = _norm_product(product)
+    product_options = {product_norm}
+    if product_norm in {"NY3150HF", "NY3150HC"}:
+        product_options.update({"NY3150HF", "NY3150HC"})
+    candidates = [
+        row
+        for row in rules.ccl_rows
+        if row.product in product_options
+        and row.thickness_mm is not None
+        and abs(row.thickness_mm - thickness_mm) <= 0.006
+        and (not row.kind or row.kind == core)
+        and row.stack == stack
+        and (copper in row.prices or _reverse_copper(copper) in row.prices)
+    ]
+    if not candidates:
+        return _junya_unmatched("CCL", "型号、厚度、含铜状态、铜厚或叠构不在报价单中")
+    best = sorted(candidates, key=lambda row: (abs((row.thickness_mm or 0) - thickness_mm), row.excel_row))[0]
+    price = best.prices.get(copper)
+    matched_copper = copper
+    if price is None:
+        matched_copper = _reverse_copper(copper)
+        price = best.prices.get(matched_copper)
+    if price is None:
+        return _junya_unmatched("CCL", "找到报价行但对应铜厚价格为空")
+    result_price = _round_money(float(price) * factor)
+    total = _calc_total(quantity, result_price)
+    note = (
+        f"命中骏亚CCL报价 Sheet {best.sheet} 第 {best.excel_row} 行，"
+        f"厚度={best.thickness_mm:g}mm，{core}，叠构={stack}，铜厚={matched_copper}，"
+        f"尺寸={size_label}，41*49基准价={float(price):.2f}，倍率={factor:g}"
+    )
+    if product_norm != best.product:
+        note += f"；型号{product_norm}按{best.product}报价行取价"
+    return ExtCalcResult("成功", "CCL", result_price, total, "", "", note, best.excel_row, size_label)
+
+
+def _junya_ccl_size_factor(desc: str) -> tuple[float, str] | None:
+    length_in, width_in = _junya_extract_size(desc)
+    if length_in is None or width_in is None:
+        return 1.0, "41*49"
+    if abs(width_in - 49) <= 0.8:
+        major = length_in
+    elif abs(length_in - 49) <= 0.8:
+        major = width_in
+    else:
+        return None
+    for target, factor in ((37, 0.9), (41, 1.0), (43, 1.05), (74, 1.8), (82, 2.0), (86, 2.1)):
+        if abs(major - target) <= 0.8:
+            return factor, f"{target}*49"
+    return None
+
+
+def _junya_extract_size(desc: str) -> tuple[float | None, float | None]:
+    pairs: list[tuple[float, float]] = []
+    for match in re.finditer(
+        r"(\d+(?:\.\d+)?)\s*(MM|IN|INCH|英寸|\")?\s*[*xX×]\s*(\d+(?:\.\d+)?)\s*(MM|IN|INCH|英寸|\")?",
+        desc,
+        re.I,
+    ):
+        first, second = float(match.group(1)), float(match.group(3))
+        unit_first = (match.group(2) or "").upper()
+        unit_second = (match.group(4) or unit_first).upper()
+        if unit_first == "MM" or unit_second == "MM" or first > 120 or second > 120:
+            first, second = first / 25.4, second / 25.4
+        if first <= 120 and second <= 120:
+            pairs.append((first, second))
+    for first, second in reversed(pairs):
+        if abs(first - 49) <= 0.8 or abs(second - 49) <= 0.8:
+            return first, second
+    return _extract_size(desc, ignore_decimal=False)
+
+
+def _junya_extract_thickness_mm(desc: str) -> float | None:
+    thickness = _extract_thickness_mm(desc)
+    if thickness is not None:
+        return thickness
+    product = _extract_product(desc)
+    if not product:
+        return None
+    match = re.search(rf"{re.escape(product)}\s*(\d+(?:\.\d+)?)", _norm_product(desc), re.I)
+    return float(match.group(1)) if match else None
 
 
 def _calculate_kexiang_spec(desc: str, rules: ExtRules, quantity: Any = None) -> ExtCalcResult:

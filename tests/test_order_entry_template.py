@@ -69,11 +69,58 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertIn("220:['1','1'],221:['3','2'],331:['3','1']", template)
         self.assertIn("normalizeChoice(orderType,3)", template)
         self.assertIn("normalizeCustomerCode();shipToCode.value=code.value.trim()", template)
-        self.assertIn('data-field="material_status" aria-label="料号状态"', template)
-        self.assertIn('<option value="查询" selected>查询</option>', template)
+        self.assertNotIn('aria-label="料号状态"', template)
+        self.assertIn("{% for field in hidden_line_fields %}", template)
+        self.assertIn('id="materialCreateDialog"', template)
+        self.assertIn('id="createMaterialOpen"', template)
+        self.assertIn("!row.querySelector('[data-field=\"product_code\"]')?.value.trim()", template)
         self.assertIn("materialCodeOptions", template)
         self.assertIn("syncPair", template)
         self.assertIn("NYEOS订单号：{{ nyeos_order_number }}", template)
+
+    def test_material_create_dialog_reuses_customer_spec_match_editor(self) -> None:
+        template = (
+            Path(__file__).resolve().parents[1]
+            / "templates"
+            / "order_automation_entry_template.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('oe-create-match-editor', template)
+        self.assertIn('openCustomerSpecMatchEditor', template)
+        self.assertIn("control.dispatchEvent(new Event('input'))", template)
+
+    def test_multiple_material_candidates_use_compact_colored_count_badge(self) -> None:
+        template = (
+            Path(__file__).resolve().parents[1]
+            / "templates"
+            / "order_automation_entry_template.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(".oe-candidate-name-cell>.oe-candidate-open", template)
+        self.assertIn("width:20px!important", template)
+        self.assertIn("height:20px!important", template)
+        self.assertIn("button.textContent=String(count)", template)
+        self.assertIn(".oe-candidate-open.is-selected{background:#43a66d;color:#fff}", template)
+
+    def test_create_material_dialog_resolves_adhesive_codes_from_spec_match(self) -> None:
+        template = (
+            Path(__file__).resolve().parents[1]
+            / "templates"
+            / "order_automation_entry_template.html"
+        ).read_text(encoding="utf-8")
+        self.assertIn("order_automation_entry_template_adhesive_candidates", template)
+        self.assertIn("candidate.adhesive_code}｜${candidate.adhesive_name", template)
+        self.assertIn("customer_spec_match:match.value", template)
+
+    def test_creation_task_id_is_displayed_without_changing_saved_placeholder(self) -> None:
+        template = (
+            Path(__file__).resolve().parents[1]
+            / "templates"
+            / "order_automation_entry_template.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("创建料号中（${item.external_task_id}）", template)
+        self.assertIn("materialCreationPlaceholder", template)
 
     def test_saved_template_reopens_and_exports_same_values(self) -> None:
         _case, template = get_or_create_template(self.case_id, "employee-a")
@@ -99,6 +146,7 @@ class OrderEntryTemplateTests(unittest.TestCase):
         _case, reopened = get_or_create_template(self.case_id, "employee-a")
         self.assertEqual(reopened["header"]["ledger"], "151")
         self.assertEqual(reopened["lines"][0]["values"]["material_status"], "新增")
+        self.assertEqual(reopened["lines"][0]["values"]["adhesive_code"], "")
         output, _name = build_domestic_export(self.case_id, "employee-a")
         destination = Path(self.temp_dir.name) / "export.xlsx"
         destination.write_bytes(output.getvalue())
@@ -114,11 +162,13 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertEqual(sheet["J1"].value, "客户发票号（选填）")
         self.assertEqual(sheet["K1"].value, "佣金比率（选填）")
         self.assertEqual(sheet["B3"].value, "料号状态（选填）")
+        self.assertEqual(sheet["E3"].value, "胶系编码（选填）")
+        self.assertIsNone(sheet["E4"].value)
         self.assertEqual(sheet["B4"].value, "新增")
-        self.assertEqual(sheet["E4"].value, "A1A150224149YNNYZ002")
+        self.assertEqual(sheet["F4"].value, "A1A150224149YNNYZ002")
         self.assertIsNone(sheet["G4"].value)
-        self.assertEqual(sheet["H4"].value, "基板")
-        self.assertEqual(sheet["J4"].value, 300)
+        self.assertEqual(sheet["I4"].value, "基板")
+        self.assertEqual(sheet["K4"].value, 300)
         # The business template is a populated example; exporting a different
         # mail must never carry its sample detail rows into the new file.
         self.assertIsNone(sheet["E5"].value)
@@ -388,6 +438,22 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertEqual(rows[0]["values"]["quantity"], "20")
         self.assertEqual(rows[0]["values"]["product_type"], "基板")
         self.assertEqual(rows[0]["sources"]["quantity"]["label"], "邮件正文表格")
+
+    def test_missing_customer_order_number_receives_uuid_placeholder(self) -> None:
+        with patch("fangzheng_web_app.order_entry_service.uuid.uuid4", return_value="12345678-1234-5678-9abc-def012345678"):
+            header, _rows = _initial_template_data({
+                "id": 1000,
+                "body_html": "",
+                "body_text": "没有可识别的订单号",
+                "attachments": [],
+                "detected_fields": {},
+                "customer_id": None,
+            })
+
+        self.assertEqual(
+            "暂无PO号-12345678-1234-5678-9abc-def012345678",
+            header["customer_order_number"],
+        )
 
     def test_ccl_and_manual_only_fields_follow_conservative_extraction_policy(self) -> None:
         line = _line_entry(

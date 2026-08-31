@@ -170,6 +170,25 @@ class CustomerSpecMappingServiceTests(unittest.TestCase):
         self.assertEqual("", service.build_customer_spec_match("", "基板", "NY1140 0.8mm"))
         self.assertEqual("", service.build_customer_spec_match("200002", "PP", "NY1140"))
 
+    def test_extract_glue_system_uses_configured_position(self) -> None:
+        service.save_spec_mapping({
+            "customer_code": "200003", "product_type": "base", "delimiter": "_",
+            "glue_system_position": "2", "enabled": "1",
+        })
+
+        self.assertEqual(
+            "NY2170H",
+            service.extract_glue_system_from_customer_spec_match(
+                "200003", "基板", "82.3*49.3_NY2170H_0.15mm_1/1"
+            ),
+        )
+        self.assertEqual(
+            "",
+            service.extract_glue_system_from_customer_spec_match(
+                "200003", "基板", "82.3*49.3_*_0.15mm_1/1"
+            ),
+        )
+
     def test_pp_directional_dimensions_are_one_size_segment(self) -> None:
         service.save_spec_mapping({
             "customer_code": "104253", "customer_name": "江苏博敏",

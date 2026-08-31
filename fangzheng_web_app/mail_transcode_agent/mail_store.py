@@ -199,6 +199,7 @@ def create_or_update_account(
     imap_port: int = 993,
     auth_code: str = "",
     enabled: int = 1,
+    allow_duplicate_email: bool = False,
 ) -> int:
     owner_employee_id = str(owner_employee_id or "").strip()
     if not owner_employee_id:
@@ -214,15 +215,34 @@ def create_or_update_account(
             ).fetchone()
             if not existing:
                 raise ValueError("邮箱账号不存在或无权编辑")
-            duplicate = conn.execute(
-                "SELECT id FROM mail_accounts WHERE email = ? AND id != ?",
-                (email, int(existing["id"])),
+            duplicate_for_owner = conn.execute(
+                """
+                SELECT id FROM mail_accounts
+                WHERE email = ? AND owner_employee_id = ? AND id != ?
+                """,
+                (email, owner_employee_id, int(existing["id"])),
             ).fetchone()
-            if duplicate:
+            if duplicate_for_owner:
+                raise ValueError("当前用户已配置该邮箱")
+            duplicate_for_other_owner = conn.execute(
+                """
+                SELECT id FROM mail_accounts
+                WHERE email = ? AND owner_employee_id != ? AND id != ?
+                """,
+                (email, owner_employee_id, int(existing["id"])),
+            ).fetchone()
+            if duplicate_for_other_owner and not allow_duplicate_email:
                 raise ValueError("该邮箱已被其他账号配置")
         else:
-            existing = conn.execute("SELECT * FROM mail_accounts WHERE email = ?", (email,)).fetchone()
-            if existing and str(existing["owner_employee_id"] or "") != owner_employee_id:
+            existing = conn.execute(
+                "SELECT * FROM mail_accounts WHERE email = ? AND owner_employee_id = ?",
+                (email, owner_employee_id),
+            ).fetchone()
+            duplicate_for_other_owner = conn.execute(
+                "SELECT id FROM mail_accounts WHERE email = ? AND owner_employee_id != ?",
+                (email, owner_employee_id),
+            ).fetchone()
+            if duplicate_for_other_owner and not allow_duplicate_email:
                 raise ValueError("该邮箱已由其他用户配置")
         ciphertext = encrypt_text(auth_code) if auth_code else str(existing["auth_code_ciphertext"] or "") if existing else ""
         if not ciphertext:

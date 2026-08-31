@@ -282,6 +282,37 @@ def build_customer_spec_match_detail(
     return format_customer_spec_match_detail(customer_spec, _row_dict(row) if row else None)
 
 
+def extract_glue_system_from_customer_spec_match(
+    customer_code: Any, product_type: Any, customer_spec_match: Any,
+) -> str:
+    """Read the configured glue-system segment from an already matched specification."""
+    code = as_text(customer_code)
+    matched_spec = as_text(customer_spec_match)
+    if not code or not matched_spec:
+        return ""
+    try:
+        normalized_type = _product_type(product_type)
+    except ValueError:
+        return ""
+    with db_cursor() as conn:
+        row = conn.execute(
+            """SELECT glue_system_position,delimiter
+                 FROM automation_customer_spec_mappings
+                 WHERE customer_code=? AND product_type=? AND enabled=1""",
+            (code, normalized_type),
+        ).fetchone()
+    mapping = _row_dict(row)
+    position = mapping.get("glue_system_position")
+    if position in (None, ""):
+        return ""
+    parts = _split_spec_parts(matched_spec, as_text(mapping.get("delimiter")))
+    try:
+        value = parts[int(position) - 1]
+    except (IndexError, TypeError, ValueError):
+        return ""
+    return "" if value == "*" else value.strip()
+
+
 def save_spec_mapping(
     values: dict[str, Any], *, mapping_id: int | None = None, operated_by: str = "",
 ) -> int:

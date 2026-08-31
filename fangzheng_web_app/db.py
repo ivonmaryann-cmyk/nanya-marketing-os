@@ -291,7 +291,7 @@ def init_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS mail_accounts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                email TEXT NOT NULL UNIQUE,
+                email TEXT NOT NULL,
                 owner_employee_id TEXT NOT NULL DEFAULT '',
                 imap_host TEXT NOT NULL DEFAULT 'imap.163.com',
                 imap_port INTEGER NOT NULL DEFAULT 993,
@@ -460,6 +460,10 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_mail_accounts_owner "
             "ON mail_accounts(owner_employee_id, enabled, id DESC)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_mail_accounts_owner_email "
+            "ON mail_accounts(owner_employee_id, email)"
         )
         legacy_owner = conn.execute(
             "SELECT employee_id FROM users WHERE role = 'admin' ORDER BY employee_id LIMIT 1"
