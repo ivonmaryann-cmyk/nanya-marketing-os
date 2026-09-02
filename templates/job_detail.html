@@ -28,6 +28,9 @@
     {% for result in job.inventory_results %}
     <a class="primary-link" href="{{ url_for('main.download_inventory_detail', job_id=job.id, grade=result.key) }}">{{ result.label }}</a>
     {% endfor %}
+    {% elif job.feature == 'pdf_excel' %}
+    <a class="primary-link" href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载结果文件</a>
+    <a class="secondary-link" href="{{ url_for('main.download_pdf_excel_domestic', job_id=job.id) }}">下载内销模板</a>
     {% else %}
     <a class="primary-link" href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载结果文件</a>
     {% endif %}

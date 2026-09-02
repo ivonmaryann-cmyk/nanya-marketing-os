@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
@@ -9,19 +10,23 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from .paths import DATABASE_PATH
 
+SYSTEM_ADMIN_EMPLOYEE_IDS = {"23582"}
+SYSTEM_ADMIN_DISPLAY_NAMES = {"傅佳峰"}
+
 
 def utcnow() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat()
 
 
 def get_connection() -> sqlite3.Connection:
+    """Return the legacy SQLite connection for migration/fallback internals only."""
     conn = sqlite3.connect(DATABASE_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 
 @contextmanager
-def db_cursor():
+def _sqlite_db_cursor():
     conn = get_connection()
     try:
         yield conn
@@ -30,7 +35,42 @@ def db_cursor():
         conn.close()
 
 
+def _platform_database_enabled() -> bool:
+    return os.getenv("PLATFORM_DATABASE_BACKEND", "").strip().lower() in {
+        "postgresql",
+        "postgres",
+    }
+
+
+@contextmanager
+def db_cursor():
+    """Route core services to PostgreSQL only after the formal platform switch."""
+    if not _platform_database_enabled():
+        with _sqlite_db_cursor() as connection:
+            yield connection
+        return
+
+    # Lazy import avoids a compatibility-adapter import cycle during startup.
+    from .database.automation import platform_cursor
+
+    with platform_cursor() as connection:
+        yield connection
+
+
 def init_db() -> None:
+    if _platform_database_enabled():
+        required_tables = ("users", "settings", "jobs", "mail_messages", "order_intake_cases")
+        with db_cursor() as conn:
+            missing = [
+                table for table in required_tables
+                if not conn.execute("SELECT to_regclass(?) AS table_name", (f"public.{table}",)).fetchone()["table_name"]
+            ]
+        if missing:
+            raise RuntimeError(
+                "PostgreSQL platform schema is incomplete; run the documented migration before cutover: "
+                + ", ".join(missing)
+            )
+        return
     with db_cursor() as conn:
         conn.executescript(
             """
@@ -247,6 +287,572 @@ def init_db() -> None:
             """
         )
 
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS mail_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT NOT NULL,
+                owner_employee_id TEXT NOT NULL DEFAULT '',
+                imap_host TEXT NOT NULL DEFAULT 'imap.163.com',
+                imap_port INTEGER NOT NULL DEFAULT 993,
+                auth_code_ciphertext TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                smtp_host TEXT NOT NULL DEFAULT '',
+                smtp_port INTEGER NOT NULL DEFAULT 465,
+                smtp_security TEXT NOT NULL DEFAULT 'ssl',
+                smtp_username TEXT NOT NULL DEFAULT '',
+                smtp_auth_code_ciphertext TEXT NOT NULL DEFAULT '',
+                smtp_sender_name TEXT NOT NULL DEFAULT '',
+                smtp_enabled INTEGER NOT NULL DEFAULT 0,
+                smtp_last_test_at TEXT,
+                smtp_last_test_status TEXT NOT NULL DEFAULT '',
+                last_fetch_at TEXT,
+                last_fetch_status TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS mail_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL,
+                folder TEXT NOT NULL DEFAULT 'INBOX',
+                uid TEXT NOT NULL DEFAULT '',
+                message_id TEXT NOT NULL DEFAULT '',
+                subject TEXT NOT NULL DEFAULT '',
+                sender TEXT NOT NULL DEFAULT '',
+                sent_at TEXT NOT NULL DEFAULT '',
+                received_at TEXT NOT NULL DEFAULT '',
+                body_html TEXT,
+                body_text TEXT,
+                eml_path TEXT NOT NULL DEFAULT '',
+                is_order INTEGER NOT NULL DEFAULT 0,
+                fetch_task_id INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                UNIQUE(account_id, folder, uid)
+            );
+
+            CREATE TABLE IF NOT EXISTS mail_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mail_id INTEGER NOT NULL,
+                filename TEXT NOT NULL DEFAULT '',
+                content_type TEXT NOT NULL DEFAULT '',
+                size_bytes INTEGER NOT NULL DEFAULT 0,
+                sha256 TEXT NOT NULL DEFAULT '',
+                stored_path TEXT NOT NULL DEFAULT '',
+                is_inline INTEGER NOT NULL DEFAULT 0,
+                parse_status TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS mail_order_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mail_id INTEGER NOT NULL,
+                customer_code TEXT NOT NULL DEFAULT '',
+                customer_name TEXT NOT NULL DEFAULT '',
+                spec TEXT NOT NULL DEFAULT '',
+                remark TEXT NOT NULL DEFAULT '',
+                order_number TEXT NOT NULL DEFAULT '',
+                source_type TEXT NOT NULL DEFAULT '',
+                field_status TEXT NOT NULL DEFAULT 'missing',
+                review_status TEXT NOT NULL DEFAULT 'pending_review',
+                attachment_parse_status TEXT NOT NULL DEFAULT '',
+                transcode_status TEXT NOT NULL DEFAULT 'not_started',
+                transcode_code TEXT NOT NULL DEFAULT '',
+                transcode_note TEXT NOT NULL DEFAULT '',
+                transcode_confidence INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                reviewed_by TEXT NOT NULL DEFAULT '',
+                reviewed_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS mail_transcode_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_ids TEXT NOT NULL DEFAULT '',
+                input_path TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'running',
+                success_count INTEGER NOT NULL DEFAULT 0,
+                fail_count INTEGER NOT NULL DEFAULT 0,
+                created_by TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS mail_fetch_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                status TEXT NOT NULL,
+                message TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS mail_fetch_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL,
+                created_by TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'completed',
+                email_count INTEGER NOT NULL DEFAULT 0,
+                new_count INTEGER NOT NULL DEFAULT 0,
+                duplicate_count INTEGER NOT NULL DEFAULT 0,
+                order_count INTEGER NOT NULL DEFAULT 0,
+                message TEXT NOT NULL DEFAULT '',
+                started_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS mail_fetch_task_messages (
+                fetch_task_id INTEGER NOT NULL,
+                mail_id INTEGER NOT NULL,
+                is_new INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (fetch_task_id, mail_id),
+                FOREIGN KEY(fetch_task_id) REFERENCES mail_fetch_tasks(id),
+                FOREIGN KEY(mail_id) REFERENCES mail_messages(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_mail_messages_account_uid
+            ON mail_messages(account_id, folder, uid);
+
+            CREATE INDEX IF NOT EXISTS idx_mail_attachments_mail
+            ON mail_attachments(mail_id);
+
+            CREATE INDEX IF NOT EXISTS idx_mail_order_tasks_review
+            ON mail_order_tasks(review_status, transcode_status);
+            """
+        )
+
+        mail_message_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(mail_messages)").fetchall()
+        }
+        if "fetch_task_id" not in mail_message_cols:
+            conn.execute("ALTER TABLE mail_messages ADD COLUMN fetch_task_id INTEGER NOT NULL DEFAULT 0")
+
+        mail_fetch_task_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(mail_fetch_tasks)").fetchall()
+        }
+        if "new_count" not in mail_fetch_task_cols:
+            conn.execute("ALTER TABLE mail_fetch_tasks ADD COLUMN new_count INTEGER NOT NULL DEFAULT 0")
+        if "duplicate_count" not in mail_fetch_task_cols:
+            conn.execute("ALTER TABLE mail_fetch_tasks ADD COLUMN duplicate_count INTEGER NOT NULL DEFAULT 0")
+
+        mail_account_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(mail_accounts)").fetchall()
+        }
+        if "owner_employee_id" not in mail_account_cols:
+            conn.execute(
+                "ALTER TABLE mail_accounts ADD COLUMN owner_employee_id TEXT NOT NULL DEFAULT ''"
+            )
+        smtp_account_columns = {
+            "smtp_host": "TEXT NOT NULL DEFAULT ''",
+            "smtp_port": "INTEGER NOT NULL DEFAULT 465",
+            "smtp_security": "TEXT NOT NULL DEFAULT 'ssl'",
+            "smtp_username": "TEXT NOT NULL DEFAULT ''",
+            "smtp_auth_code_ciphertext": "TEXT NOT NULL DEFAULT ''",
+            "smtp_sender_name": "TEXT NOT NULL DEFAULT ''",
+            "smtp_enabled": "INTEGER NOT NULL DEFAULT 0",
+            "smtp_last_test_at": "TEXT",
+            "smtp_last_test_status": "TEXT NOT NULL DEFAULT ''",
+        }
+        for column, definition in smtp_account_columns.items():
+            if column not in mail_account_cols:
+                conn.execute(f"ALTER TABLE mail_accounts ADD COLUMN {column} {definition}")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_mail_accounts_owner "
+            "ON mail_accounts(owner_employee_id, enabled, id DESC)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_mail_accounts_owner_email "
+            "ON mail_accounts(owner_employee_id, email)"
+        )
+        legacy_owner = conn.execute(
+            "SELECT employee_id FROM users WHERE role = 'admin' ORDER BY employee_id LIMIT 1"
+        ).fetchone()
+        if not legacy_owner:
+            legacy_owner = conn.execute(
+                "SELECT employee_id FROM users ORDER BY employee_id LIMIT 1"
+            ).fetchone()
+        if legacy_owner:
+            conn.execute(
+                "UPDATE mail_accounts SET owner_employee_id = ? "
+                "WHERE TRIM(owner_employee_id) = ''",
+                (legacy_owner["employee_id"],),
+            )
+
+        # Order intake keeps the business decision separate from the source email.
+        # A case is one mail-side business event; later ERP order/version tables can
+        # extend it without rewriting the immutable source-mail evidence.
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS order_intake_cases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                employee_id TEXT NOT NULL,
+                mail_id INTEGER NOT NULL,
+                action_type TEXT NOT NULL DEFAULT 'unclassified',
+                status TEXT NOT NULL DEFAULT 'pending_triage',
+                customer_code TEXT NOT NULL DEFAULT '',
+                customer_name TEXT NOT NULL DEFAULT '',
+                order_number TEXT NOT NULL DEFAULT '',
+                order_version TEXT NOT NULL DEFAULT '',
+                parent_order_number TEXT NOT NULL DEFAULT '',
+                workflow_stage TEXT NOT NULL DEFAULT 'mail_triage',
+                customer_match_status TEXT NOT NULL DEFAULT 'unmatched',
+                source_document_status TEXT NOT NULL DEFAULT 'pending',
+                mapping_status TEXT NOT NULL DEFAULT 'not_started',
+                erp_prepare_status TEXT NOT NULL DEFAULT 'not_started',
+                routing_source TEXT NOT NULL DEFAULT 'system',
+                routing_reason TEXT NOT NULL DEFAULT '',
+                routed_by TEXT NOT NULL DEFAULT '',
+                routed_at TEXT,
+                handling_note TEXT NOT NULL DEFAULT '',
+                confirmed_by TEXT NOT NULL DEFAULT '',
+                confirmed_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(employee_id, mail_id),
+                FOREIGN KEY(mail_id) REFERENCES mail_messages(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS order_intake_case_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id INTEGER NOT NULL,
+                employee_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                before_json TEXT NOT NULL DEFAULT '{}',
+                after_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(case_id) REFERENCES order_intake_cases(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_order_intake_cases_employee_status
+                ON order_intake_cases(employee_id, status, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS order_mail_routing_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                employee_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                priority INTEGER NOT NULL DEFAULT 100,
+                sender_contains TEXT NOT NULL DEFAULT '',
+                subject_contains TEXT NOT NULL DEFAULT '',
+                attachment_contains TEXT NOT NULL DEFAULT '',
+                action_type TEXT NOT NULL,
+                customer_code TEXT NOT NULL DEFAULT '',
+                customer_name TEXT NOT NULL DEFAULT '',
+                note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS order_mail_routing_rule_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rule_id INTEGER NOT NULL,
+                employee_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                before_json TEXT NOT NULL DEFAULT '{}',
+                after_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(rule_id) REFERENCES order_mail_routing_rules(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_order_mail_routing_rules_owner
+                ON order_mail_routing_rules(employee_id, enabled, priority, id);
+
+            CREATE TABLE IF NOT EXISTS order_mail_rule_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                employee_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                action_type TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS order_mail_rule_keywords (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER NOT NULL,
+                scope TEXT NOT NULL,
+                keyword TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(group_id) REFERENCES order_mail_rule_groups(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS order_change_tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                employee_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(employee_id, name)
+            );
+
+            CREATE TABLE IF NOT EXISTS order_change_tag_keywords (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tag_id INTEGER NOT NULL,
+                scope TEXT NOT NULL,
+                keyword TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(tag_id) REFERENCES order_change_tags(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS mail_attachment_texts (
+                attachment_id INTEGER PRIMARY KEY,
+                text_content TEXT NOT NULL DEFAULT '',
+                parse_status TEXT NOT NULL DEFAULT 'pending',
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(attachment_id) REFERENCES mail_attachments(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS automation_customers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                customer_code TEXT NOT NULL UNIQUE,
+                customer_short_name TEXT NOT NULL DEFAULT '', quick_code TEXT NOT NULL DEFAULT '',
+                customer_name TEXT NOT NULL DEFAULT '', group_name TEXT NOT NULL DEFAULT '', customer_type TEXT NOT NULL DEFAULT '',
+                sales_name TEXT NOT NULL DEFAULT '', service_name TEXT NOT NULL DEFAULT '', internal_clerk_name TEXT NOT NULL DEFAULT '',
+                internal_clerk_employee_id TEXT NOT NULL DEFAULT '', technical_support_name TEXT NOT NULL DEFAULT '',
+                insurer_days TEXT NOT NULL DEFAULT '', credit_amount TEXT NOT NULL DEFAULT '', payment_terms TEXT NOT NULL DEFAULT '',
+                grace_days TEXT NOT NULL DEFAULT '', invoice_address TEXT NOT NULL DEFAULT '', delivery_address TEXT NOT NULL DEFAULT '',
+                contact_name TEXT NOT NULL DEFAULT '', contact_phone TEXT NOT NULL DEFAULT '', settlement_day TEXT NOT NULL DEFAULT '',
+                transit_days TEXT NOT NULL DEFAULT '', first_trade_at TEXT NOT NULL DEFAULT '', last_order_at TEXT NOT NULL DEFAULT '',
+                last_delivery_at TEXT NOT NULL DEFAULT '', last_payment_at TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active',
+                source_json TEXT NOT NULL DEFAULT '{}', note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS automation_customer_contacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id INTEGER NOT NULL, contact_type TEXT NOT NULL,
+                contact_value TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(customer_id, contact_type, contact_value),
+                FOREIGN KEY(customer_id) REFERENCES automation_customers(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS automation_customer_routing_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id INTEGER NOT NULL, name TEXT NOT NULL, action_type TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL DEFAULT 100, note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(customer_id) REFERENCES automation_customers(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS automation_customer_routing_conditions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, rule_id INTEGER NOT NULL, scope TEXT NOT NULL, keyword TEXT NOT NULL,
+                created_at TEXT NOT NULL, FOREIGN KEY(rule_id) REFERENCES automation_customer_routing_rules(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS automation_customer_extraction_maps (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id INTEGER NOT NULL, target_field TEXT NOT NULL,
+                source_kind TEXT NOT NULL DEFAULT 'attachment_table', source_label TEXT NOT NULL DEFAULT '',
+                transform_type TEXT NOT NULL DEFAULT 'direct', transform_config_json TEXT NOT NULL DEFAULT '{}',
+                enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 100, note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(customer_id) REFERENCES automation_customers(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS automation_customer_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id INTEGER NOT NULL, action TEXT NOT NULL,
+                before_json TEXT NOT NULL DEFAULT '{}', after_json TEXT NOT NULL DEFAULT '{}', operated_by TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL, FOREIGN KEY(customer_id) REFERENCES automation_customers(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_automation_customers_status ON automation_customers(status, customer_code);
+            CREATE INDEX IF NOT EXISTS idx_automation_customer_contacts_lookup ON automation_customer_contacts(contact_type, contact_value, enabled);
+            CREATE INDEX IF NOT EXISTS idx_automation_customer_rules_customer ON automation_customer_routing_rules(customer_id, enabled, priority, id);
+            CREATE INDEX IF NOT EXISTS idx_automation_customer_conditions_rule ON automation_customer_routing_conditions(rule_id, scope);
+            CREATE INDEX IF NOT EXISTS idx_automation_customer_maps_customer ON automation_customer_extraction_maps(customer_id, enabled, sort_order);
+
+            -- One domestic order-entry workbook belongs to exactly one routed
+            -- mail case. The current editable values live in the header/line
+            -- tables; every save also records an immutable snapshot version.
+            CREATE TABLE IF NOT EXISTS order_entry_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id INTEGER NOT NULL UNIQUE,
+                employee_id TEXT NOT NULL,
+                template_key TEXT NOT NULL DEFAULT '151_domestic_v1',
+                header_json TEXT NOT NULL DEFAULT '{}',
+                current_version INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(case_id) REFERENCES order_intake_cases(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS order_entry_template_lines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                template_id INTEGER NOT NULL,
+                line_no INTEGER NOT NULL,
+                values_json TEXT NOT NULL DEFAULT '{}',
+                sources_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(template_id, line_no),
+                FOREIGN KEY(template_id) REFERENCES order_entry_templates(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS order_entry_template_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                template_id INTEGER NOT NULL,
+                version_number INTEGER NOT NULL,
+                header_json TEXT NOT NULL DEFAULT '{}',
+                lines_json TEXT NOT NULL DEFAULT '[]',
+                saved_by TEXT NOT NULL,
+                saved_at TEXT NOT NULL,
+                UNIQUE(template_id, version_number),
+                FOREIGN KEY(template_id) REFERENCES order_entry_templates(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS order_entry_template_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id INTEGER NOT NULL,
+                employee_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                message TEXT NOT NULL DEFAULT '',
+                template_id INTEGER,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                FOREIGN KEY(case_id) REFERENCES order_intake_cases(id),
+                FOREIGN KEY(template_id) REFERENCES order_entry_templates(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS order_interface_configs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                interface_key TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                mode TEXT NOT NULL DEFAULT 'mock',
+                method TEXT NOT NULL DEFAULT 'POST',
+                base_url TEXT NOT NULL DEFAULT '',
+                port INTEGER NOT NULL DEFAULT 443,
+                path TEXT NOT NULL DEFAULT '',
+                timeout_seconds INTEGER NOT NULL DEFAULT 8,
+                request_mapping_json TEXT NOT NULL DEFAULT '{}',
+                response_mapping_json TEXT NOT NULL DEFAULT '{}',
+                mock_scenarios_json TEXT NOT NULL DEFAULT '{}',
+                config_version INTEGER NOT NULL DEFAULT 1,
+                created_by TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS order_interface_config_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                interface_config_id INTEGER NOT NULL,
+                config_version INTEGER NOT NULL,
+                before_json TEXT NOT NULL DEFAULT '{}',
+                after_json TEXT NOT NULL DEFAULT '{}',
+                operated_by TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(interface_config_id) REFERENCES order_interface_configs(id)
+            );
+            CREATE TABLE IF NOT EXISTS order_entry_detail_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id INTEGER NOT NULL,
+                template_id INTEGER,
+                employee_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                detail_json TEXT NOT NULL DEFAULT '{}',
+                operated_by TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(case_id) REFERENCES order_intake_cases(id),
+                FOREIGN KEY(template_id) REFERENCES order_entry_templates(id)
+            );
+            CREATE TABLE IF NOT EXISTS order_interface_call_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id INTEGER NOT NULL,
+                template_id INTEGER,
+                employee_id TEXT NOT NULL,
+                interface_config_id INTEGER,
+                interface_key TEXT NOT NULL,
+                config_version INTEGER NOT NULL DEFAULT 1,
+                is_mock INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL,
+                http_status INTEGER,
+                duration_ms INTEGER,
+                request_json TEXT NOT NULL DEFAULT '{}',
+                response_json TEXT NOT NULL DEFAULT '{}',
+                error_message TEXT NOT NULL DEFAULT '',
+                triggered_by TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(case_id) REFERENCES order_intake_cases(id),
+                FOREIGN KEY(template_id) REFERENCES order_entry_templates(id),
+                FOREIGN KEY(interface_config_id) REFERENCES order_interface_configs(id)
+            );
+            CREATE TABLE IF NOT EXISTS order_material_query_suggestions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                call_log_id INTEGER NOT NULL,
+                template_id INTEGER NOT NULL,
+                line_no INTEGER NOT NULL,
+                factory_part_no TEXT NOT NULL DEFAULT '',
+                product_name TEXT NOT NULL DEFAULT '',
+                matched_spec TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL,
+                message TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(call_log_id) REFERENCES order_interface_call_logs(id),
+                FOREIGN KEY(template_id) REFERENCES order_entry_templates(id)
+            );
+            CREATE TABLE IF NOT EXISTS order_material_resolution_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id INTEGER NOT NULL,
+                template_id INTEGER NOT NULL,
+                employee_id TEXT NOT NULL,
+                line_no INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                correlation_id TEXT NOT NULL UNIQUE,
+                external_task_id TEXT NOT NULL DEFAULT '',
+                input_json TEXT NOT NULL DEFAULT '{}',
+                result_json TEXT NOT NULL DEFAULT '{}',
+                last_call_log_id INTEGER,
+                callback_received_at TEXT,
+                resolved_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(template_id, line_no),
+                FOREIGN KEY(case_id) REFERENCES order_intake_cases(id),
+                FOREIGN KEY(template_id) REFERENCES order_entry_templates(id),
+                FOREIGN KEY(last_call_log_id) REFERENCES order_interface_call_logs(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_order_entry_templates_case
+                ON order_entry_templates(case_id, employee_id);
+            CREATE INDEX IF NOT EXISTS idx_order_entry_lines_template
+                ON order_entry_template_lines(template_id, line_no);
+            CREATE INDEX IF NOT EXISTS idx_order_entry_template_tasks_case
+                ON order_entry_template_tasks(case_id, employee_id, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_order_entry_template_tasks_status
+                ON order_entry_template_tasks(status, started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_order_interface_call_logs_case
+                ON order_interface_call_logs(case_id, employee_id, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_order_entry_detail_events_case
+                ON order_entry_detail_events(case_id, employee_id, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_order_material_resolution_callback
+                ON order_material_resolution_tasks(correlation_id, status);
+            """
+        )
+
+        order_intake_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(order_intake_cases)").fetchall()
+        }
+        order_intake_migrations = {
+            "order_version": "TEXT NOT NULL DEFAULT ''",
+            "parent_order_number": "TEXT NOT NULL DEFAULT ''",
+            "workflow_stage": "TEXT NOT NULL DEFAULT 'mail_triage'",
+            "customer_match_status": "TEXT NOT NULL DEFAULT 'unmatched'",
+            "source_document_status": "TEXT NOT NULL DEFAULT 'pending'",
+            "mapping_status": "TEXT NOT NULL DEFAULT 'not_started'",
+            "erp_prepare_status": "TEXT NOT NULL DEFAULT 'not_started'",
+            "routing_source": "TEXT NOT NULL DEFAULT 'system'",
+            "routing_reason": "TEXT NOT NULL DEFAULT ''",
+            "routed_by": "TEXT NOT NULL DEFAULT ''",
+            "routed_at": "TEXT",
+            "routing_rule_id": "INTEGER",
+            "routing_state": "TEXT NOT NULL DEFAULT 'unrouted'",
+            "routing_matches_json": "TEXT NOT NULL DEFAULT '[]'",
+            "change_tags_json": "TEXT NOT NULL DEFAULT '[]'",
+            "completed_at": "TEXT",
+            "customer_id": "INTEGER",
+            "customer_match_source": "TEXT NOT NULL DEFAULT ''",
+            "customer_match_detail": "TEXT NOT NULL DEFAULT ''",
+        }
+        for column, definition in order_intake_migrations.items():
+            if column not in order_intake_cols:
+                conn.execute(f"ALTER TABLE order_intake_cases ADD COLUMN {column} {definition}")
+        conn.execute("UPDATE order_intake_cases SET action_type = 'new_order' WHERE action_type = 'new'")
+        conn.execute("UPDATE order_intake_cases SET action_type = 'order_change' WHERE action_type IN ('modify', 'cancel')")
+        conn.execute("UPDATE order_intake_cases SET action_type = 'other' WHERE action_type = 'not_order'")
+        conn.execute("UPDATE order_intake_cases SET action_type = 'order_change' WHERE action_type = 'delivery'")
+        conn.execute("UPDATE order_intake_cases SET action_type = 'unclassified' WHERE action_type = 'other'")
+
         existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
         migrations = {
             "feature": "ALTER TABLE jobs ADD COLUMN feature TEXT NOT NULL DEFAULT 'fangzheng'",
@@ -333,6 +939,10 @@ def init_db() -> None:
             """
         )
 
+        from .automation_migration.outbox import ensure_sqlite_outbox
+
+        ensure_sqlite_outbox(conn)
+
         existing_users = conn.execute("SELECT COUNT(*) AS total FROM users").fetchone()["total"]
         if existing_users == 0:
             employee_rows = conn.execute(
@@ -360,13 +970,17 @@ def init_db() -> None:
 
 
 def get_setting(key: str, default: str | None = None) -> str | None:
-    with db_cursor() as conn:
+    from .database.configuration import configuration_cursor
+
+    with configuration_cursor() as conn:
         row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
     return row["value"] if row else default
 
 
 def set_setting(key: str, value: str) -> None:
-    with db_cursor() as conn:
+    from .database.configuration import configuration_cursor
+
+    with configuration_cursor() as conn:
         conn.execute(
             """
             INSERT INTO settings(key, value) VALUES (?, ?)
@@ -385,13 +999,29 @@ def update_admin_password(new_password: str) -> None:
     set_setting("admin_password_hash", generate_password_hash(new_password))
 
 
+@contextmanager
+def identity_db_cursor():
+    from .database.identity import identity_cursor
+
+    with identity_cursor() as conn:
+        yield conn
+
+
+@contextmanager
+def transcode_db_cursor():
+    from .database.transcode import transcode_cursor
+
+    with transcode_cursor() as conn:
+        yield conn
+
+
 def get_user(employee_id: str):
-    with db_cursor() as conn:
+    with identity_db_cursor() as conn:
         return conn.execute("SELECT * FROM users WHERE employee_id = ?", (employee_id,)).fetchone()
 
 
 def list_users():
-    with db_cursor() as conn:
+    with identity_db_cursor() as conn:
         return conn.execute("SELECT * FROM users ORDER BY employee_id").fetchall()
 
 
@@ -404,7 +1034,7 @@ def create_user(
     enabled: bool = True,
 ) -> None:
     now = utcnow()
-    with db_cursor() as conn:
+    with identity_db_cursor() as conn:
         conn.execute(
             """
             INSERT INTO users (
@@ -439,7 +1069,7 @@ def verify_user_password(employee_id: str, password: str) -> bool:
 
 
 def change_user_password(employee_id: str, new_password: str, *, must_change_password: bool = False) -> None:
-    with db_cursor() as conn:
+    with identity_db_cursor() as conn:
         conn.execute(
             """
             UPDATE users
@@ -458,11 +1088,17 @@ def is_admin_user(employee_id: str | None) -> bool:
     if not employee_id:
         return False
     user = get_user(employee_id)
-    return bool(user and user["enabled"] and user["role"] == "admin")
+    if not user or not user["enabled"]:
+        return False
+    return bool(
+        user["role"] == "admin"
+        or str(employee_id) in SYSTEM_ADMIN_EMPLOYEE_IDS
+        or str(user["display_name"] or "").strip() in SYSTEM_ADMIN_DISPLAY_NAMES
+    )
 
 
 def get_transcode_model_config(employee_id: str):
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return conn.execute(
             "SELECT * FROM transcode_model_configs WHERE employee_id = ?",
             (employee_id,),
@@ -483,7 +1119,7 @@ def save_transcode_model_config(
     stored_key = str(existing["api_key"] or "") if existing else ""
     if api_key is not None:
         stored_key = str(api_key).strip()
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         conn.execute(
             """
             INSERT INTO transcode_model_configs (
@@ -514,7 +1150,7 @@ def save_transcode_model_config(
 
 def ensure_bootstrap_user(employee_id: str, password: str) -> bool:
     """Allow first legacy login only when no users exist yet."""
-    with db_cursor() as conn:
+    with identity_db_cursor() as conn:
         total = conn.execute("SELECT COUNT(*) AS total FROM users").fetchone()["total"]
     if total != 0 or not employee_id or password != employee_id:
         return False
@@ -523,7 +1159,7 @@ def ensure_bootstrap_user(employee_id: str, password: str) -> bool:
 
 
 def create_job(employee_id: str, source_filename: str, stored_input_path: str, rule_version: str, feature: str = "fangzheng") -> int:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         cursor = conn.execute(
             """
             INSERT INTO jobs (
@@ -589,12 +1225,12 @@ def update_job_status(
         params.append(utcnow())
 
     params.append(job_id)
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         conn.execute(f"UPDATE jobs SET {', '.join(fields)} WHERE id = ?", params)
 
 
 def set_job_worker(job_id: int, worker_pid: int | None) -> None:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         conn.execute(
             """
             UPDATE jobs
@@ -617,7 +1253,7 @@ def append_job_log(
     current_row: int | None = None,
     total_rows: int | None = None,
 ) -> None:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         row = conn.execute("SELECT log_text FROM jobs WHERE id = ?", (job_id,)).fetchone()
         existing = row["log_text"] if row and row["log_text"] else ""
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -650,7 +1286,7 @@ def append_job_log(
 
 
 def get_job(job_id: int):
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
 
 
@@ -677,12 +1313,12 @@ def list_jobs(
     query += " ORDER BY id DESC LIMIT ?"
     params.append(limit)
 
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return conn.execute(query, params).fetchall()
 
 
 def get_active_job(employee_id: str, feature: str):
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return conn.execute(
             """
             SELECT * FROM jobs
@@ -701,7 +1337,7 @@ def replace_transcode_agent_confirmation_items(
 ) -> list[int]:
     now = utcnow()
     inserted_ids: list[int] = []
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         conn.execute(
             "DELETE FROM transcode_agent_confirmation_events WHERE job_id = ?",
             (job_id,),
@@ -760,12 +1396,12 @@ def list_transcode_agent_confirmation_items(
         query += " AND status = ?"
         params.append(status)
     query += " ORDER BY excel_row, id"
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return conn.execute(query, params).fetchall()
 
 
 def get_transcode_agent_confirmation_item(item_id: int) -> sqlite3.Row | None:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return conn.execute(
             "SELECT * FROM transcode_agent_confirmation_items WHERE id = ?",
             (item_id,),
@@ -784,7 +1420,7 @@ def update_transcode_agent_confirmation_item(
     pending_rule_id: str | None = None,
 ) -> sqlite3.Row | None:
     now = utcnow()
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         before = conn.execute(
             "SELECT * FROM transcode_agent_confirmation_items WHERE id = ?",
             (item_id,),
@@ -857,7 +1493,7 @@ def refresh_transcode_agent_confirmation_item(
     evidence: dict,
     analysis: dict,
 ) -> None:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         conn.execute(
             """
             UPDATE transcode_agent_confirmation_items
@@ -883,7 +1519,7 @@ def update_transcode_agent_row_analysis(
     excel_row: int,
     analysis: dict,
 ) -> None:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         conn.execute(
             """
             UPDATE transcode_agent_confirmation_items
@@ -901,7 +1537,7 @@ def update_transcode_agent_row_analysis(
 
 
 def transcode_agent_confirmation_counts(job_id: int) -> dict[str, int]:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         rows = conn.execute(
             """
             SELECT status, COUNT(*) AS total
@@ -919,7 +1555,7 @@ def transcode_agent_confirmation_counts(job_id: int) -> dict[str, int]:
 
 
 def list_transcode_agent_confirmation_events(job_id: int) -> list[sqlite3.Row]:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return conn.execute(
             """
             SELECT id, item_id, job_id, employee_id, action,
@@ -946,7 +1582,7 @@ def create_transcode_agent_pending_rule(
     source_excel_row: int | None,
 ) -> int:
     now = utcnow()
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         cursor = conn.execute(
             """
             INSERT INTO transcode_agent_pending_rules (
@@ -992,12 +1628,12 @@ def list_transcode_agent_pending_rules(
     if conditions:
         sql += " WHERE " + " AND ".join(conditions)
     sql += " ORDER BY created_at DESC, id DESC"
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return conn.execute(sql, params).fetchall()
 
 
 def get_transcode_agent_pending_rule(rule_id: int) -> sqlite3.Row | None:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return conn.execute(
             "SELECT * FROM transcode_agent_pending_rules WHERE id = ?",
             (rule_id,),
@@ -1015,7 +1651,7 @@ def update_transcode_agent_pending_rule(
     condition_summary: str,
     updated_by: str,
 ) -> None:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         conn.execute(
             """
             UPDATE transcode_agent_pending_rules
@@ -1044,7 +1680,7 @@ def set_transcode_agent_pending_rule_status(
     *,
     processed_by: str = "",
 ) -> None:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         conn.execute(
             """
             UPDATE transcode_agent_pending_rules
@@ -1066,7 +1702,7 @@ def upsert_transcode_agent_row_verification(
     after_code: str,
     basis: str = "",
 ) -> None:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         conn.execute(
             """
             INSERT INTO transcode_agent_row_verifications (
@@ -1098,7 +1734,7 @@ def get_transcode_agent_row_verification(
     job_id: int,
     excel_row: int,
 ) -> sqlite3.Row | None:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return conn.execute(
             """
             SELECT * FROM transcode_agent_row_verifications
@@ -1111,7 +1747,7 @@ def get_transcode_agent_row_verification(
 def list_transcode_agent_row_verifications(
     job_id: int,
 ) -> list[sqlite3.Row]:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return conn.execute(
             """
             SELECT * FROM transcode_agent_row_verifications
@@ -1123,7 +1759,7 @@ def list_transcode_agent_row_verifications(
 
 
 def prune_jobs_for_employee(employee_id: str, keep_limit: int = 500) -> list[sqlite3.Row]:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         rows = conn.execute(
             """
             SELECT * FROM jobs
@@ -1153,7 +1789,7 @@ def prune_jobs_for_employee(employee_id: str, keep_limit: int = 500) -> list[sql
 
 
 def delete_job(job_id: int) -> sqlite3.Row | None:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         if row:
             conn.execute(
@@ -1173,7 +1809,7 @@ def delete_job(job_id: int) -> sqlite3.Row | None:
 
 
 def list_expired_terminal_jobs(cutoff: str) -> list[sqlite3.Row]:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return conn.execute(
             """
             SELECT * FROM jobs
@@ -1189,7 +1825,7 @@ def delete_terminal_jobs(job_ids: list[int]) -> int:
     if not job_ids:
         return 0
     placeholders = ", ".join("?" for _ in job_ids)
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         cursor = conn.execute(
             f"""
             DELETE FROM jobs
@@ -1202,7 +1838,7 @@ def delete_terminal_jobs(job_ids: list[int]) -> int:
 
 
 def list_job_ids() -> set[int]:
-    with db_cursor() as conn:
+    with transcode_db_cursor() as conn:
         return {int(row["id"]) for row in conn.execute("SELECT id FROM jobs").fetchall()}
 
 
@@ -1220,7 +1856,9 @@ def create_feedback(
     urgency: str = "",
 ) -> int:
     now = utcnow()
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         cursor = conn.execute(
             """
             INSERT INTO feedback (
@@ -1259,17 +1897,23 @@ def list_feedback(employee_id: str | None = None, *, feedback_type: str | None =
         query += " AND status = ?"
         params.append(status)
     query += " ORDER BY id DESC"
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         return conn.execute(query, params).fetchall()
 
 
 def get_feedback(feedback_id: int):
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         return conn.execute("SELECT * FROM feedback WHERE id = ?", (feedback_id,)).fetchone()
 
 
 def update_feedback_status(feedback_id: int, status: str, admin_note: str = "") -> None:
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         conn.execute(
             """
             UPDATE feedback
@@ -1300,7 +1944,9 @@ DEFAULT_TASK_CATEGORIES = ["人力资源任务", "AI开发任务", "其它业务
 
 def ensure_default_task_categories(employee_id: str) -> None:
     now = utcnow()
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         existing_count = conn.execute(
             "SELECT COUNT(*) AS total FROM task_categories WHERE employee_id = ?",
             (employee_id,),
@@ -1329,7 +1975,9 @@ def ensure_default_task_categories(employee_id: str) -> None:
 
 def list_task_categories(employee_id: str):
     ensure_default_task_categories(employee_id)
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         return conn.execute(
             """
             SELECT
@@ -1347,7 +1995,9 @@ def list_task_categories(employee_id: str):
 
 
 def get_task_category(category_id: int, employee_id: str):
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         return conn.execute(
             "SELECT * FROM task_categories WHERE id = ? AND employee_id = ?",
             (category_id, employee_id),
@@ -1357,7 +2007,9 @@ def get_task_category(category_id: int, employee_id: str):
 def create_task_category(employee_id: str, name: str, short_label: str = "") -> int:
     now = utcnow()
     name = name.strip()
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         max_sort = conn.execute(
             "SELECT COALESCE(MAX(sort_order), 0) AS sort_order FROM task_categories WHERE employee_id = ?",
             (employee_id,),
@@ -1380,7 +2032,9 @@ def create_task_category(employee_id: str, name: str, short_label: str = "") -> 
 
 
 def update_task_category(category_id: int, employee_id: str, name: str, short_label: str = "") -> bool:
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         cursor = conn.execute(
             """
             UPDATE task_categories
@@ -1393,7 +2047,9 @@ def update_task_category(category_id: int, employee_id: str, name: str, short_la
 
 
 def delete_task_category(category_id: int, employee_id: str) -> bool:
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         category = conn.execute(
             "SELECT * FROM task_categories WHERE id = ? AND employee_id = ?",
             (category_id, employee_id),
@@ -1420,7 +2076,9 @@ def create_personal_task(
     due_date: str | None = None,
 ) -> int:
     now = utcnow()
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         max_sort = conn.execute(
             """
             SELECT COALESCE(MAX(sort_order), 0) AS sort_order
@@ -1501,12 +2159,16 @@ def list_personal_tasks(
             t.sort_order,
             t.id DESC
     """
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         return conn.execute(query, params).fetchall()
 
 
 def get_personal_task(task_id: int, employee_id: str):
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         return conn.execute(
             """
             SELECT t.*, c.name AS category_name, c.short_label AS category_label
@@ -1531,7 +2193,9 @@ def update_personal_task(
     due_date: str | None,
 ) -> bool:
     archived_at = utcnow() if progress == "completed" else None
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         cursor = conn.execute(
             """
             UPDATE personal_tasks
@@ -1564,7 +2228,9 @@ def update_personal_task(
 
 
 def archive_personal_task(task_id: int, employee_id: str) -> bool:
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         cursor = conn.execute(
             """
             UPDATE personal_tasks
@@ -1577,7 +2243,9 @@ def archive_personal_task(task_id: int, employee_id: str) -> bool:
 
 
 def restore_personal_task(task_id: int, employee_id: str) -> bool:
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         cursor = conn.execute(
             """
             UPDATE personal_tasks
@@ -1590,7 +2258,9 @@ def restore_personal_task(task_id: int, employee_id: str) -> bool:
 
 
 def delete_personal_task(task_id: int, employee_id: str) -> bool:
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         cursor = conn.execute(
             "DELETE FROM personal_tasks WHERE id = ? AND employee_id = ?",
             (task_id, employee_id),
@@ -1601,7 +2271,9 @@ def delete_personal_task(task_id: int, employee_id: str) -> bool:
 def reorder_personal_tasks(employee_id: str, ordered_ids: list[int], category_id: int | None) -> int:
     if not ordered_ids:
         return 0
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         valid_rows = conn.execute(
             f"""
             SELECT id
@@ -1629,7 +2301,9 @@ def reorder_personal_tasks(employee_id: str, ordered_ids: list[int], category_id
 def reorder_personal_tasks_by_priority(employee_id: str, ordered_ids: list[int], priority: str) -> int:
     if not ordered_ids:
         return 0
-    with db_cursor() as conn:
+    from .database.planning import planning_cursor
+
+    with planning_cursor() as conn:
         valid_rows = conn.execute(
             f"""
             SELECT id

@@ -1,0 +1,275 @@
+{% extends "base.html" %}
+{% block title %}PP转码Agent | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('main.dashboard') }}">返回功能中心</a>
+  <span>功能中心 / PP转码Agent</span>
+</div>
+
+<section class="hero">
+  <div>
+    <div class="panel-tag">PP 可信转码</div>
+    <h1>PP转码Agent</h1>
+    <p>单条与批量共用 27 位 PP 编码规则。首期只生成待人工确认码值，业务确认后方可使用。</p>
+  </div>
+</section>
+
+<section class="feature-tools">
+  <a class="feature-action" href="{{ url_for('main.admin_pp_transcode_rules') }}">PP规则配置</a>
+</section>
+
+<section class="agent-quote-panel" id="pp-quote-panel">
+  <form class="agent-quote-form" id="pp-quote-form" data-endpoint="{{ url_for('main.api_create_pp_transcode_agent_single_job') }}">
+    <div class="agent-form-row">
+      <label><span>客户代码</span><input name="customer_code" placeholder="例如：105007"></label>
+      <label><span>客户简称</span><input name="customer" placeholder="例如：湖奥士康"></label>
+    </div>
+    <label><span>单条 PP 客户规格</span><textarea name="spec" rows="3" required placeholder="例如：PP NY2150 1080 RC70% 300M/卷"></textarea></label>
+    <label><span>订单备注</span><textarea name="order_remark" rows="5" placeholder="可选；用于匹配已维护的 PP 客户特殊规则"></textarea></label>
+    <button type="submit" id="pp-quote-submit">开始单条PP转码</button>
+  </form>
+  <div class="agent-quote-result" id="pp-quote-result" aria-live="polite">
+    <div class="agent-result-codes">
+      <div class="agent-pending-code">
+        <div class="agent-result-code-head"><span>待人工确认码值</span><button type="button" id="pp-result-copy" class="agent-result-copy">复制</button></div>
+        <strong id="pp-result-code">-</strong>
+      </div>
+      <div><span>状态</span><strong id="pp-result-state">等待输入</strong></div>
+      <div><span>客户</span><strong id="pp-result-customer">-</strong></div>
+      <div><span>订单备注</span><strong id="pp-result-remark">-</strong></div>
+    </div>
+    <p id="pp-result-summary">PP 首期不自动生成正式码，完成解析后请进入确认中心。</p>
+    <a id="pp-result-confirm-link" class="primary-link hidden" href="#">进入确认中心</a>
+  </div>
+</section>
+
+<section class="split-layout">
+  <div class="work-column">
+    <article class="card">
+      <div class="step-tag">第一步</div>
+      <h2>上传 PP 转码需求 Excel</h2>
+      <form method="post" enctype="multipart/form-data" action="{{ url_for('main.queue_pp_transcode_agent_job') }}" class="form-grid" id="pp-upload-form">
+        <label class="upload-dropzone" id="pp-upload-dropzone" for="pp-excel-file">
+          <input id="pp-excel-file" type="file" name="pp_file" accept=".xlsx,.xls" required>
+          <span class="upload-icon">PP</span>
+          <strong id="pp-upload-title">拖拽 Excel 到这里，或点击选择文件</strong>
+          <em id="pp-upload-filename">需包含“PP客户规格”“客户规格”或“规格”列</em>
+        </label>
+        <button type="submit">开始PP转码</button>
+      </form>
+    </article>
+
+    <article class="card agent-history-card">
+      <div class="step-tag">第二步</div>
+      <div class="section-head"><h2>最近 PP 转码任务</h2><a href="{{ url_for('main.history') }}">查看全部</a></div>
+      <div class="agent-history-scroll">
+        <table class="table agent-history-table">
+          <colgroup><col class="agent-history-id"><col class="agent-history-file"><col class="agent-history-status"><col class="agent-history-time"><col class="agent-history-actions"></colgroup>
+          <thead><tr><th>ID</th><th>文件</th><th>状态</th><th>时间</th><th>结果</th></tr></thead>
+          <tbody>
+          {% for job in jobs %}
+            <tr>
+              <td class="agent-job-id">#{{ job.id }}</td>
+              <td class="agent-job-file"><a href="{{ url_for('main.job_detail', job_id=job.id) }}" title="{{ job.source_filename }}">{{ job.source_filename }}</a></td>
+              <td class="agent-job-status"><span class="status {{ job.status }}">{{ {'queued':'排队中','running':'转码中','awaiting_confirmation':'待人工确认','completed':'已完成','failed':'失败','canceled':'已取消'}.get(job.status, job.status) }}</span></td>
+              <td class="agent-job-time">{{ job.created_at }}</td>
+              <td class="agent-job-actions">
+                {% if job.status == 'awaiting_confirmation' %}
+                <div class="result-actions"><a class="task-action task-action-primary" href="{{ url_for('main.pp_transcode_agent_confirmations', job_id=job.id) }}">进入确认中心</a></div>
+                {% elif job.status == 'completed' %}
+                <div class="result-actions"><a class="task-action task-action-secondary" href="{{ url_for('main.pp_transcode_agent_confirmations', job_id=job.id) }}">查看记录</a>{% if job.stored_result_path %}<a class="task-action task-action-primary" href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载结果</a>{% endif %}</div>
+                {% else %}-{% endif %}
+              </td>
+            </tr>
+          {% else %}<tr><td colspan="5">还没有 PP 转码记录。</td></tr>{% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </article>
+  </div>
+
+  <aside class="log-column">
+    <article class="card card-dark">
+      <div class="section-head"><h2>处理日志</h2>{% if active_job %}<a href="{{ url_for('main.job_detail', job_id=active_job.id) }}">详情</a>{% endif %}</div>
+      {% if active_job %}
+      <div id="pp-live-panel" data-job-id="{{ active_job.id }}" data-confirmation-url="{{ url_for('main.pp_transcode_agent_confirmations', job_id=active_job.id) }}" data-auto-confirm="{{ '1' if auto_confirm else '0' }}" data-initial-status="{{ active_job.status }}">
+        <div class="progress-meta"><div><span>当前任务</span><strong>#{{ active_job.id }} {{ active_job.source_filename }}</strong></div><div><span>状态</span><strong id="pp-live-status">{{ active_job.status }}</strong></div></div>
+        <div class="progress-stats"><div><span>进度</span><strong id="pp-live-progress">{{ active_job.current_row }}/{{ active_job.total_rows }}</strong></div><div><span>待确认</span><strong id="pp-live-confirm">{{ active_job.confirm_count }}</strong></div><div><span>失败</span><strong id="pp-live-fail">{{ active_job.fail_count }}</strong></div><div><span>跳过</span><strong id="pp-live-skip">{{ active_job.skip_count }}</strong></div></div>
+        <div class="progress-bar"><div id="pp-live-bar"></div></div>
+        <pre id="pp-live-log" class="live-log">{{ active_job.log_text or '任务已创建，等待处理日志...' }}</pre>
+        {% if active_job.status in ['queued', 'running'] %}<form method="post" action="{{ url_for('main.cancel_job', job_id=active_job.id) }}" class="job-cancel-form"><button type="submit" class="danger-button">停止任务</button></form>{% endif %}
+        <div id="pp-live-actions" class="{% if active_job.status not in ['awaiting_confirmation', 'completed'] %}hidden{% endif %}"><div class="result-ready"><a class="primary-link" href="{{ url_for('main.pp_transcode_agent_confirmations', job_id=active_job.id) }}">{{ '进入确认中心' if active_job.status == 'awaiting_confirmation' else '查看转码记录' }}</a>{% if active_job.stored_result_path %}<a class="primary-link" href="{{ url_for('main.download', job_id=active_job.id, kind='result') }}">下载结果文件</a>{% endif %}</div></div>
+      </div>
+      {% else %}<div class="empty-log">还没有 PP 转码任务，上传 Excel 后这里会实时显示处理动态。</div>{% endif %}
+    </article>
+  </aside>
+</section>
+
+<script>
+  const ppForm = document.getElementById('pp-quote-form');
+  const ppSubmit = document.getElementById('pp-quote-submit');
+  const ppResult = document.getElementById('pp-quote-result');
+  const ppState = document.getElementById('pp-result-state');
+  const ppCode = document.getElementById('pp-result-code');
+  const ppCustomer = document.getElementById('pp-result-customer');
+  const ppRemark = document.getElementById('pp-result-remark');
+  const ppSummary = document.getElementById('pp-result-summary');
+  const ppConfirmLink = document.getElementById('pp-result-confirm-link');
+  const ppCacheKey = 'pp-transcode-agent-single-result';
+  const ppStateLabels = {queued:'排队中', running:'转码中', awaiting_confirmation:'待人工确认', completed:'已完成', failed:'失败', canceled:'已取消'};
+
+  function renderPpSingleResult(listing) {
+    const record = (listing.records || [])[0] || {};
+    ppCode.textContent = record.confirmed_pending_code || record.pending_code || '-';
+    ppState.textContent = record.confirmation_status === 'confirmed' ? '本次已确认' : record.confirmation_status === 'skipped' ? '暂不处理' : '待人工确认';
+    ppCustomer.textContent = record.customer_name || record.customer_code || '-';
+    ppRemark.textContent = record.order_remark || '-';
+    ppSummary.textContent = record.summary || 'PP 首期不自动生成正式码，请确认本次码值。';
+    if (listing.job_id) {
+      ppConfirmLink.href = `/features/pp-transcode-agent/confirmations/${listing.job_id}`;
+      ppConfirmLink.classList.remove('hidden');
+      sessionStorage.setItem(ppCacheKey, JSON.stringify({job_id: listing.job_id, listing}));
+    }
+  }
+
+  async function loadPpSingleResult(jobId) {
+    const response = await fetch(`/api/pp-transcode-agent/jobs/${jobId}/confirmations`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '结果查询失败');
+    return data;
+  }
+
+  function restorePpSingleResult() {
+    try {
+      const cached = JSON.parse(sessionStorage.getItem(ppCacheKey) || 'null');
+      if (!cached?.job_id) return;
+      renderPpSingleResult(cached.listing);
+      loadPpSingleResult(cached.job_id).then(renderPpSingleResult).catch(() => {});
+    } catch (error) {}
+  }
+
+  function pollPpSingleJob(jobId) {
+    const timer = window.setInterval(async () => {
+      try {
+        const response = await fetch(`/api/jobs/${jobId}`);
+        const job = await response.json();
+        if (!response.ok) throw new Error(job.error || '任务查询失败');
+        ppState.textContent = ppStateLabels[job.status] || job.status;
+        if (!['queued', 'running'].includes(job.status)) {
+          window.clearInterval(timer);
+          ppSubmit.disabled = false;
+          ppSubmit.textContent = '开始单条PP转码';
+          if (['awaiting_confirmation', 'completed'].includes(job.status)) {
+            renderPpSingleResult(await loadPpSingleResult(jobId));
+            ppResult.className = 'agent-quote-result is-success';
+          } else {
+            ppResult.className = 'agent-quote-result is-warning';
+          }
+        }
+      } catch (error) {
+        window.clearInterval(timer);
+        ppResult.className = 'agent-quote-result is-warning';
+        ppState.textContent = '单条结果获取失败';
+        ppSummary.textContent = error.message;
+        ppSubmit.disabled = false;
+        ppSubmit.textContent = '开始单条PP转码';
+      }
+    }, 1000);
+  }
+
+  ppForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    sessionStorage.removeItem(ppCacheKey);
+    const payload = Object.fromEntries(new FormData(ppForm).entries());
+    if (!payload.spec || !payload.spec.trim()) { ppState.textContent = '请输入 PP 客户规格'; return; }
+    ppSubmit.disabled = true;
+    ppSubmit.textContent = '诊断中...';
+    ppResult.className = 'agent-quote-result is-loading';
+    ppCode.textContent = '-';
+    ppState.textContent = '任务创建中';
+    ppCustomer.textContent = payload.customer || payload.customer_code || '-';
+    ppRemark.textContent = payload.order_remark || '-';
+    ppConfirmLink.classList.add('hidden');
+    try {
+      const response = await fetch(ppForm.dataset.endpoint, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'PP 单条任务创建失败');
+      ppState.textContent = '排队中';
+      pollPpSingleJob(data.job_id);
+    } catch (error) {
+      ppResult.className = 'agent-quote-result is-warning';
+      ppState.textContent = 'PP 单条任务创建失败';
+      ppSummary.textContent = error.message;
+      ppSubmit.disabled = false;
+      ppSubmit.textContent = '开始单条PP转码';
+    }
+  });
+
+  document.getElementById('pp-result-copy').addEventListener('click', async event => {
+    const code = ppCode.textContent.trim();
+    if (!code || code === '-') return;
+    try { await navigator.clipboard.writeText(code); } catch (error) {
+      const textarea = document.createElement('textarea'); textarea.value = code; document.body.appendChild(textarea); textarea.select(); document.execCommand('copy'); textarea.remove();
+    }
+    event.currentTarget.textContent = '已复制';
+    window.setTimeout(() => { event.currentTarget.textContent = '复制'; }, 1500);
+  });
+  restorePpSingleResult();
+
+  const ppUploadForm = document.getElementById('pp-upload-form');
+  const ppDropzone = document.getElementById('pp-upload-dropzone');
+  const ppFile = document.getElementById('pp-excel-file');
+  const ppUploadTitle = document.getElementById('pp-upload-title');
+  const ppUploadFilename = document.getElementById('pp-upload-filename');
+  const ppUploadSubmit = ppUploadForm.querySelector('button[type="submit"]');
+  function stopFileOpen(event) { event.preventDefault(); event.stopPropagation(); }
+  function setPpFile(file) {
+    if (!file) return;
+    if (!['.xlsx', '.xls'].some(ext => file.name.toLowerCase().endsWith(ext))) {
+      ppUploadTitle.textContent = '请选择 Excel 文件'; ppUploadFilename.textContent = '仅支持 .xlsx / .xls'; ppFile.value = ''; ppDropzone.classList.remove('has-file'); return;
+    }
+    const transfer = new DataTransfer(); transfer.items.add(file); ppFile.files = transfer.files;
+    ppUploadTitle.textContent = '文件已选择'; ppUploadFilename.textContent = file.name; ppDropzone.classList.add('has-file');
+  }
+  ['dragenter','dragover','dragleave','drop'].forEach(name => window.addEventListener(name, stopFileOpen));
+  ['dragenter','dragover'].forEach(name => ppDropzone.addEventListener(name, event => { stopFileOpen(event); ppDropzone.classList.add('is-dragover'); }));
+  ['dragleave','drop'].forEach(name => ppDropzone.addEventListener(name, event => { stopFileOpen(event); ppDropzone.classList.remove('is-dragover'); }));
+  ppDropzone.addEventListener('drop', event => setPpFile(event.dataTransfer.files[0]));
+  ppFile.addEventListener('change', () => setPpFile(ppFile.files[0]));
+  ppUploadForm.addEventListener('submit', event => {
+    if (!ppFile.files.length) { event.preventDefault(); ppUploadTitle.textContent = '请先选择一个 Excel 文件'; return; }
+    ppUploadSubmit.disabled = true; ppUploadSubmit.textContent = '正在提交...';
+  });
+</script>
+
+{% if active_job %}
+<script>
+  const ppLivePanel = document.getElementById('pp-live-panel');
+  const ppLiveStatus = document.getElementById('pp-live-status');
+  const ppInitialStatus = ppLivePanel.dataset.initialStatus;
+  let ppRedirected = false;
+  let ppRefreshScheduled = false;
+  function renderPpLive(job) {
+    ppLiveStatus.textContent = ppStateLabels[job.status] || job.status;
+    document.getElementById('pp-live-progress').textContent = `${job.current_row || 0}/${job.total_rows || 0}`;
+    document.getElementById('pp-live-confirm').textContent = job.confirm_count || 0;
+    document.getElementById('pp-live-fail').textContent = job.fail_count || 0;
+    document.getElementById('pp-live-skip').textContent = job.skip_count || 0;
+    const log = document.getElementById('pp-live-log'); log.textContent = job.log_text || '任务已创建，等待处理日志...'; log.scrollTop = log.scrollHeight;
+    document.getElementById('pp-live-bar').style.width = `${job.total_rows ? Math.min(100, Math.round((job.current_row || 0) * 100 / job.total_rows)) : 0}%`;
+    if (['awaiting_confirmation','completed'].includes(job.status)) document.getElementById('pp-live-actions').classList.remove('hidden');
+    if (job.status === 'awaiting_confirmation' && ppLivePanel.dataset.autoConfirm === '1' && !ppRedirected) {
+      ppRedirected = true; window.location.assign(ppLivePanel.dataset.confirmationUrl);
+    } else if (['awaiting_confirmation','completed'].includes(job.status) && ['queued','running'].includes(ppInitialStatus) && !ppRefreshScheduled) {
+      ppRefreshScheduled = true; window.setTimeout(() => window.location.reload(), 200);
+    }
+  }
+  function pollPpLive() {
+    fetch(`/api/jobs/${ppLivePanel.dataset.jobId}`).then(response => response.json()).then(job => {
+      if (job.error) return; renderPpLive(job); if (['queued','running'].includes(job.status)) window.setTimeout(pollPpLive, 1200);
+    });
+  }
+  pollPpLive();
+</script>
+{% endif %}
+{% endblock %}

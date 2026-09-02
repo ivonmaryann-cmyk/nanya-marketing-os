@@ -4,7 +4,8 @@ import json
 import os
 from pathlib import Path
 
-from .db import db_cursor, utcnow
+from .database.planning import planning_cursor
+from .db import utcnow
 
 
 BACKUP_ROOT = Path(os.environ.get("WORK_PLANNING_BACKUP_ROOT", r"D:\Carson\tmp\work_planning_backups"))
@@ -37,7 +38,7 @@ def get_task_backup_status(employee_id: str) -> dict:
 
 
 def save_task_backup(employee_id: str) -> dict:
-    with db_cursor() as conn:
+    with planning_cursor() as conn:
         categories = conn.execute(
             """
             SELECT id, name, short_label, sort_order, created_at, updated_at
@@ -119,7 +120,7 @@ def restore_task_backup(employee_id: str) -> dict:
     now = utcnow()
     category_id_by_name: dict[str, int] = {}
 
-    with db_cursor() as conn:
+    with planning_cursor() as conn:
         conn.execute("DELETE FROM personal_tasks WHERE employee_id = ?", (employee_id,))
         conn.execute("DELETE FROM task_categories WHERE employee_id = ?", (employee_id,))
 

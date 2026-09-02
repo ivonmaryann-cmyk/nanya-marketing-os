@@ -7,7 +7,8 @@ import sys
 import time
 from pathlib import Path
 
-from .db import append_job_log, db_cursor, get_job, set_job_worker, update_job_status
+from .database import transcode_cursor as db_cursor
+from .db import append_job_log, get_job, set_job_worker, update_job_status
 from .paths import JOBS_DIR, PROJECT_DIR
 
 

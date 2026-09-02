@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}转码任务详情 | 邮件自动化转码Agent{% endblock %}
+{% block content %}
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('mail_transcode.jobs_page') }}">返回转码任务</a>
+  <span>转码任务 #{{ job.id }}</span>
+</div>
+
+<section class="feature-hero">
+  <div class="hero-watermark feature-mark">RESULT</div>
+  <div class="feature-hero-copy">
+    <div class="panel-tag">转码结果核实</div>
+    <h1>转码任务 #{{ job.id }}</h1>
+    <p>转码结果必须人工核实，通过后才算有效；驳回后可修正字段重新执行。</p>
+  </div>
+  <div class="feature-metrics">
+    <div>
+      <span>状态</span>
+      <strong>{{ job.status }}</strong>
+    </div>
+    <div>
+      <span>成功</span>
+      <strong>{{ job.success_count }}</strong>
+    </div>
+    <div>
+      <span>失败</span>
+      <strong>{{ job.fail_count }}</strong>
+    </div>
+  </div>
+</section>
+
+<section class="card task-card">
+  <div class="step-tag">核实</div>
+  <div class="section-head">
+    <h2>结果核实</h2>
+  </div>
+  <div class="table-scroll">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>客户</th>
+          <th>规格</th>
+          <th>码值</th>
+          <th>置信度</th>
+          <th>状态</th>
+          <th>说明</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for task in tasks %}
+        <tr>
+          <td>{{ task.customer_name or '-' }}</td>
+          <td>{{ task.spec or '-' }}</td>
+          <td><strong>{{ task.transcode_code or '-' }}</strong></td>
+          <td>{{ task.transcode_confidence }}</td>
+          <td><span class="status">{{ task.transcode_status }}</span></td>
+          <td>{{ task.transcode_note or '-' }}</td>
+          <td>
+            {% if task.transcode_status == '待核实' %}
+            <div class="result-actions">
+              <form method="post" action="{{ url_for('mail_transcode.verify_job_task', job_id=job.id) }}">
+                <input type="hidden" name="task_id" value="{{ task.id }}">
+                <input type="hidden" name="action" value="approve">
+                <button type="submit">通过</button>
+              </form>
+              <form method="post" action="{{ url_for('mail_transcode.verify_job_task', job_id=job.id) }}">
+                <input type="hidden" name="task_id" value="{{ task.id }}">
+                <input type="hidden" name="action" value="reject">
+                <button type="submit">驳回</button>
+              </form>
+            </div>
+            {% else %}
+            <a href="{{ url_for('mail_transcode.order_detail', task_id=task.id) }}">查看</a>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7">暂无任务明细</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

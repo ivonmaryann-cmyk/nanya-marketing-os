@@ -3,15 +3,64 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import re
 import secrets
 import sqlite3
-from datetime import date
+import tempfile
+from datetime import date, timedelta
+from email.utils import parseaddr
 from pathlib import Path
+from typing import Any
 
-from flask import Blueprint, abort, flash, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask import Blueprint, abort, current_app, flash, jsonify, redirect, render_template, request, send_file, session, url_for
 from openpyxl import load_workbook
 
 PDF_EXCEL_FEATURE = "pdf_excel"
+
+ORDER_MAIL_STATUS_FILTER_LABELS = {
+    "pending_extraction": "待提取订单",
+    "extracting": "正在提取订单",
+    "extraction_error": "提取失败",
+    "pending_template_save": "待保存模板",
+    "pending_interface_submit": "订单信息确认",
+    "pending_triage": "待处理",
+    "pending_review": "处理中",
+    "ready_for_erp": "待确认",
+    "on_hold": "待补充",
+    "completed": "已完成",
+}
+
+
+def _order_mail_status_key(case: dict[str, Any], entry_progress: dict[str, Any] | None) -> str:
+    if entry_progress:
+        return str(entry_progress.get("stage") or "")
+    status = str(case.get("status") or "")
+    return "completed" if status == "archived" else status
+
+
+def _filter_order_cases_by_status(
+    cases: list[dict[str, Any]],
+    entry_progresses: dict[int, dict[str, Any]],
+    selected_status: str,
+) -> list[dict[str, Any]]:
+    if selected_status == "all":
+        return cases
+    return [
+        item for item in cases
+        if _order_mail_status_key(item, entry_progresses.get(int(item["id"]))) == selected_status
+    ]
+
+
+def _filter_order_cases_by_nyeos_order_number(
+    cases: list[dict[str, Any]], order_numbers: dict[int, str], query: str,
+) -> list[dict[str, Any]]:
+    needle = str(query or "").strip().casefold()
+    if not needle:
+        return cases
+    return [
+        item for item in cases
+        if needle in order_numbers.get(int(item["id"]), "").casefold()
+    ]
 
 from .bomin_rules import (
     get_active_bomin_rule_version,
@@ -57,6 +106,7 @@ from .db import (
     verify_user_password,
 )
 from .file_utils import safe_unlink
+from .file_storage import is_allowed_automation_path, resolve_attachment_path
 from .hushi_rules import (
     get_active_hushi_rule_version,
     get_hushi_rule_dir,
@@ -84,6 +134,116 @@ from .inventory_bid_service import (
 from .job_control import cancel_job_process, reconcile_interrupted_jobs
 from .order_reprice_service import MODE_LABELS as ORDER_REPRICE_MODE_LABELS
 from .order_reprice_service import queue_order_reprice_job
+from .order_intake_service import ACTION_LABELS as ORDER_ACTION_LABELS
+from .order_intake_service import DOCUMENT_STATUS_LABELS as ORDER_DOCUMENT_STATUS_LABELS
+from .order_intake_service import ERP_PREPARE_STATUS_LABELS as ORDER_ERP_PREPARE_STATUS_LABELS
+from .order_intake_service import MATCH_STATUS_LABELS as ORDER_MATCH_STATUS_LABELS
+from .order_intake_service import MAPPING_STATUS_LABELS as ORDER_MAPPING_STATUS_LABELS
+from .order_intake_service import STATUS_LABELS as ORDER_INTAKE_STATUS_LABELS
+from .order_intake_service import WORKFLOW_STAGE_LABELS as ORDER_WORKFLOW_STAGE_LABELS
+from .order_intake_service import (
+    business_today as order_intake_business_today,
+    case_summary,
+    get_attachment as get_order_intake_attachment,
+    get_case as get_order_intake_case,
+    list_cases as list_order_intake_cases,
+    list_date_counts as list_order_intake_date_counts,
+    refresh_customer_recognition as refresh_order_customer_recognition,
+    work_summary as order_intake_work_summary,
+    list_change_tags as list_order_change_tags,
+    list_universal_rules as list_order_universal_rules,
+    save_change_tag as save_order_change_tag,
+    save_universal_rule as save_order_universal_rule,
+    save_universal_rule_scope as save_order_universal_rule_scope,
+    CHANGE_TAG_SCOPE_LABELS as ORDER_CHANGE_TAG_SCOPE_LABELS,
+    SCOPE_LABELS as ORDER_SCOPE_LABELS,
+    update_case as update_order_intake_case,
+    update_routing as update_order_intake_routing,
+)
+from .order_entry_service import (
+    HEADER_FIELDS as ORDER_ENTRY_HEADER_FIELDS,
+    HEADER_LABELS as ORDER_ENTRY_HEADER_LABELS,
+    LINE_FIELDS as ORDER_ENTRY_LINE_FIELDS,
+    LINE_LABELS as ORDER_ENTRY_LINE_LABELS,
+    build_domestic_export as build_order_entry_domestic_export,
+    get_or_create_template as get_order_entry_template,
+    queue_template_extraction as queue_order_entry_template_extraction,
+    reextract_template as reextract_order_entry_template,
+    save_template as save_order_entry_template,
+    template_progress as order_entry_template_progress,
+    validation_issues as order_entry_validation_issues,
+)
+from .order_interface_service import (
+    MOCK_SCENARIOS as ORDER_INTERFACE_MOCK_SCENARIOS,
+    build_domestic_order_entry,
+    build_material_creation,
+    build_material_query,
+    is_domestic_order_entry_completed,
+    get_order_detail_records,
+    get_material_resolution_states,
+    select_material_candidate,
+    list_nyeos_order_numbers,
+    get_interface_config,
+    list_interface_configs,
+    process_material_created_callback,
+    save_interface_config,
+    test_interface_config,
+)
+from .customer_archive_service import (
+    CONTACT_TYPE_LABELS,
+    CUSTOMER_FIELDS,
+    CUSTOMER_FIELD_LABELS,
+    EXTRACTION_SOURCE_KIND_LABELS,
+    EXTRACTION_TARGET_LABELS,
+    ROUTING_SCOPE_LABELS,
+    TRANSFORM_LABELS,
+    customer_summary,
+    delete_contact,
+    delete_extraction_map,
+    delete_routing_rule,
+    get_customer_workspace,
+    import_customer_workbook,
+    list_customer_choices,
+    list_customers,
+    save_contact,
+    save_customer,
+    save_extraction_map,
+    save_routing_rule,
+    set_customer_status,
+    set_routing_rule_enabled,
+)
+from .customer_spec_mapping_service import (
+    FORM_FIELDS as CUSTOMER_SPEC_FORM_FIELDS,
+    MATCH_STATUS_LABELS as CUSTOMER_SPEC_MATCH_STATUS_LABELS,
+    POSITION_FIELDS as CUSTOMER_SPEC_POSITION_FIELDS,
+    PRODUCT_TYPE_LABELS as CUSTOMER_SPEC_PRODUCT_TYPE_LABELS,
+    build_customer_spec_match_detail,
+    extract_glue_system_from_customer_spec_match,
+    get_spec_mapping,
+    import_spec_mapping_workbook,
+    list_spec_mappings,
+    save_spec_mapping,
+    set_spec_mapping_enabled,
+)
+from .adhesive_code_service import (
+    FORM_FIELDS as ADHESIVE_CODE_FORM_FIELDS,
+    adhesive_code_filter_values,
+    find_adhesive_code_candidates,
+    get_adhesive_code,
+    import_adhesive_code_workbook,
+    list_adhesive_codes,
+    save_adhesive_code,
+    set_adhesive_code_enabled,
+)
+from .paths import STORAGE_DIR
+from .pdf_excel_domestic_export import build_job_domestic_export
+from .traditional_simplified_service import (
+    ALLOWED_EXTENSIONS as TRADITIONAL_SIMPLIFIED_EXTENSIONS,
+    MAX_TEXT_LENGTH as TRADITIONAL_SIMPLIFIED_MAX_TEXT_LENGTH,
+    WorkbookConversionError,
+    convert_text_to_simplified,
+    convert_workbook_to_simplified,
+)
 from .price_calculation_customers import (
     PRICE_CALCULATION_CUSTOMERS,
     default_price_customer_key,
@@ -242,8 +402,32 @@ from .transcode_special_rules import (
     set_structured_special_rules_enabled,
     save_structured_special_rules,
 )
-
-
+from .pp_transcode_rules import (
+    BASE_FIELDS as PP_BASE_FIELDS,
+    CUSTOMER_FIELDS as PP_CUSTOMER_FIELDS,
+    FIELD_META as PP_FIELD_META,
+    PP_FIELDS as PP_RULE_FIELDS,
+    SHARED_FIELDS as PP_SHARED_FIELDS,
+    get_base_rule as get_pp_base_rule,
+    get_customer_rule as get_pp_customer_rule,
+    list_pp_confirmation_items,
+    list_base_rules as list_pp_base_rules,
+    list_customer_rules as list_pp_customer_rules,
+    count_base_rules as count_pp_base_rules,
+    count_customer_rules as count_pp_customer_rules,
+    list_rule_changes as list_pp_rule_changes,
+    pp_confirmation_counts,
+    save_base_rule as save_pp_base_rule,
+    save_customer_rule as save_pp_customer_rule,
+    set_customer_rule_enabled as set_pp_customer_rule_enabled,
+    update_pp_confirmation_item,
+)
+from .pp_transcode_service import (
+    calculate_pp_transcode_quote,
+    queue_pp_transcode_job,
+    queue_pp_transcode_single_job,
+    refresh_pp_result_file,
+)
 bp = Blueprint("main", __name__)
 PLATFORM_NAME = "南亚营销自动化平台"
 PLATFORM_VERSION = "v1.10.0"
@@ -257,10 +441,10 @@ STAGE_META = {
 
 FUNCTION_CARDS = [
     {
-        "key": "transcode",
-        "title": "营销自动化转码",
-        "desc": "上传转码需求 Excel，按当前规则自动生成内部编码并输出结果文件。",
-        "route": "main.transcode",
+        "key": "order_automation",
+        "title": "订单自动化",
+        "desc": "从业务邮箱接入订单，按日期、客户和订单事件完成分流、人工确认与后续 ERP 处理。",
+        "route": "main.order_automation",
         "stage": "test",
     },
     {
@@ -268,6 +452,13 @@ FUNCTION_CARDS = [
         "title": "营销转码Agent",
         "desc": "按字段证据链和置信度评分进行可信转码，低置信结果自动拦截待确认。",
         "route": "main.transcode_agent",
+        "stage": "test",
+    },
+    {
+        "key": "pp_transcode_agent",
+        "title": "PP转码Agent",
+        "desc": "按 PP 27 位编码规范生成待人工确认码值；基础规则和客户特殊规则均由页面维护。",
+        "route": "main.pp_transcode_agent",
         "stage": "test",
     },
     {
@@ -313,6 +504,13 @@ FUNCTION_CARDS = [
         "stage": "test",
     },
     {
+        "key": "traditional_simplified",
+        "title": "繁体转简体",
+        "desc": "转换 Excel 全部工作表或粘贴文本中的繁体字，保留工作簿结构并下载简体结果。",
+        "route": "main.traditional_simplified",
+        "stage": "test",
+    },
+    {
         "key": "work_planning",
         "title": "工作规划",
         "desc": "按自定义任务类型管理个人私有待办，支持优先级、进展、截止日期和任务描述。",
@@ -329,10 +527,13 @@ FUNCTION_CARDS = [
 ]
 
 FEATURE_LABELS = {
+    "order_automation": "订单自动化",
     "pdf_excel": "PDF/图片转Excel",
     "fangzheng": "方正价格计算",
     "transcode": "营销自动化转码",
     "transcode_agent": "营销转码Agent",
+    "pp_transcode_agent": "PP转码Agent",
+    "mail_transcode_agent": "邮件自动化转码Agent",
     "shennan": "深南价格计算",
     "bomin": "博敏价格计算",
     "hushi": "沪士价格计算",
@@ -670,6 +871,10 @@ def inject_platform_meta():
         "platform_version": PLATFORM_VERSION,
         "stage_meta": STAGE_META,
         "feature_labels": FEATURE_LABELS,
+        # Some focused route tests register only the main blueprint. Keep optional
+        # navigation links from requiring feature blueprints in those app instances.
+        "mail_config_available": "mail_transcode.accounts_page" in current_app.view_functions,
+        "is_interface_admin": is_admin_user(current_employee()),
     }
 
 
@@ -741,6 +946,1354 @@ def dashboard():
     if redirect_resp:
         return redirect_resp
     return render_template("dashboard.html", cards=FUNCTION_CARDS)
+
+
+@bp.get("/order-automation")
+def order_automation():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    selected_action = request.args.get("category", "all")
+    selected_mail_status = request.args.get("mail_status", "all")
+    selected_order_number = request.args.get("order_no", "").strip()
+    if selected_mail_status not in ORDER_MAIL_STATUS_FILTER_LABELS:
+        selected_mail_status = "all"
+    selected_date = request.args.get("date", order_intake_business_today().isoformat())
+    try:
+        selected_date_value = date.fromisoformat(selected_date)
+    except ValueError:
+        selected_date_value = order_intake_business_today()
+        selected_date = selected_date_value.isoformat()
+    from .mail_transcode_agent import mail_store
+
+    accounts = _order_business_accounts(employee_id)
+    requested_account_id = request.args.get("account_id", type=int)
+    selected_account = next((item for item in accounts if item["id"] == requested_account_id), None)
+    if selected_account is None:
+        selected_account = accounts[0] if accounts else None
+    selected_account_id = int(selected_account["id"]) if selected_account else None
+    fetch_tasks = mail_store.list_fetch_tasks(
+        limit=10, owner_employee_id=employee_id, account_id=selected_account_id
+    ) if selected_account_id else []
+    if selected_action not in {*ORDER_ACTION_LABELS, "needs_business_routing"} and selected_action != "all":
+        selected_action = "all"
+    per_page = request.args.get("per_page", 20, type=int) or 20
+    if per_page not in {10, 20, 50}:
+        per_page = 20
+    page = max(1, request.args.get("page", 1, type=int) or 1)
+    overview_cases = list_order_intake_cases(
+        employee_id, selected_date, "all", selected_account_id
+    )
+    filtered_cases = overview_cases if selected_action == "all" else list_order_intake_cases(
+        employee_id, selected_date, selected_action, selected_account_id, prepare=False
+    )
+    nyeos_order_numbers = list_nyeos_order_numbers(
+        [int(item["id"]) for item in filtered_cases], employee_id
+    )
+    filtered_cases = _filter_order_cases_by_nyeos_order_number(
+        filtered_cases, nyeos_order_numbers, selected_order_number
+    )
+    all_entry_progresses: dict[int, dict[str, Any]] = {}
+    if selected_mail_status != "all":
+        all_entry_progresses = {
+            int(item["id"]): order_entry_template_progress(int(item["id"]), employee_id)
+            for item in filtered_cases if item.get("action_type") == "new_order"
+        }
+        filtered_cases = _filter_order_cases_by_status(
+            filtered_cases, all_entry_progresses, selected_mail_status
+        )
+    total_cases = len(filtered_cases)
+    total_pages = max(1, (total_cases + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    page_start = (page - 1) * per_page
+    cases = filtered_cases[page_start:page_start + per_page]
+    entry_progresses = {
+        int(item["id"]): all_entry_progresses.get(int(item["id"]))
+        or order_entry_template_progress(int(item["id"]), employee_id)
+        for item in cases if item.get("action_type") == "new_order"
+    }
+    date_counts = list_order_intake_date_counts(employee_id, selected_account_id, prepare=False) if selected_account_id else []
+    return render_template(
+        "order_automation.html",
+        cases=cases,
+        overview_cases=overview_cases,
+        counts=case_summary(overview_cases),
+        work_summary=order_intake_work_summary(
+            employee_id, selected_account_id, target_date=selected_date
+        ),
+        action_labels=ORDER_ACTION_LABELS,
+        status_labels=ORDER_INTAKE_STATUS_LABELS,
+        mail_status_filter_labels=ORDER_MAIL_STATUS_FILTER_LABELS,
+        scope_labels=ORDER_SCOPE_LABELS,
+        selected_action=selected_action,
+        selected_mail_status=selected_mail_status,
+        selected_order_number=selected_order_number,
+        selected_date=selected_date,
+        previous_date=(selected_date_value - timedelta(days=1)).isoformat(),
+        next_date=(selected_date_value + timedelta(days=1)).isoformat(),
+        date_counts=date_counts,
+        mail_accounts=accounts,
+        selected_account=selected_account,
+        fetch_tasks=fetch_tasks,
+        latest_fetch_task=fetch_tasks[0] if fetch_tasks else None,
+        selected_batch=None,
+        selected_batch_id=None,
+        total_cases=total_cases,
+        page=page,
+        per_page=per_page,
+        total_pages=total_pages,
+        page_start=page_start,
+        entry_progresses=entry_progresses,
+        nyeos_order_numbers=nyeos_order_numbers,
+    )
+
+
+@bp.post("/order-automation/sync")
+def order_automation_sync():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    account_id = request.form.get("account_id", type=int)
+    lookback_days = request.form.get("lookback_days", 2, type=int) or 2
+    result: dict = {}
+    try:
+        from .mail_transcode_agent.mail_fetch_service import queue_latest_order_mails
+
+        if lookback_days not in {2, 7, 30}:
+            raise ValueError("同步范围仅支持今天与昨天、近 7 天或近 30 天")
+        account = _order_business_account(employee_id, account_id)
+        if not account:
+            raise ValueError("请先在“我的”中启用业务邮箱")
+        result = queue_latest_order_mails(
+            int(account["id"]),
+            created_by=employee_id,
+            owner_employee_id=employee_id,
+            lookback_days=lookback_days,
+        )
+        flash(result["message"], "success")
+    except Exception as exc:
+        flash(f"邮件同步失败：{exc}", "error")
+    return redirect(url_for(
+        "main.order_automation",
+        date=request.form.get("return_date") or order_intake_business_today().isoformat(),
+        category=request.form.get("return_category") or "all",
+        per_page=request.form.get("return_per_page", 20, type=int) or 20,
+        page=request.form.get("return_page", 1, type=int) or 1,
+        mail_status=request.form.get("return_mail_status") or "all",
+        account_id=account_id,
+    ))
+
+
+@bp.post("/order-automation/customer-recognition/refresh")
+def order_automation_refresh_customer_recognition():
+    """Re-evaluate the selected day's active emails against current customer identities."""
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    account_id = request.form.get("account_id", type=int)
+    selected_date = str(request.form.get("return_date") or "").strip()
+    try:
+        date.fromisoformat(selected_date)
+        account = _order_business_account(employee_id, account_id)
+        if not account:
+            raise ValueError("请选择已启用的业务邮箱。")
+        refreshed = refresh_order_customer_recognition(
+            employee_id, int(account["id"]), selected_date
+        )
+        flash(f"已刷新 {refreshed} 封邮件的客户识别结果。不会改写人工确认过的业务分类或处理状态。", "success")
+    except ValueError as exc:
+        flash(str(exc) or "邮件日期无效。", "error")
+    return redirect(url_for(
+        "main.order_automation",
+        date=selected_date or order_intake_business_today().isoformat(),
+        category=request.form.get("return_category") or "all",
+        per_page=request.form.get("return_per_page", 20, type=int) or 20,
+        page=request.form.get("return_page", 1, type=int) or 1,
+        mail_status=request.form.get("return_mail_status") or "all",
+        account_id=account_id,
+    ))
+
+
+@bp.post("/order-automation/history-sync")
+def order_automation_history_sync():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    account_id = request.form.get("account_id", type=int)
+    try:
+        from .mail_transcode_agent.mail_fetch_service import queue_latest_order_mails
+
+        account = _order_business_account(employee_id, account_id)
+        if not account:
+            raise ValueError("请选择要补抓的业务邮箱")
+        result = queue_latest_order_mails(
+            int(account["id"]),
+            created_by=employee_id,
+            owner_employee_id=employee_id,
+            lookback_days=7,
+        )
+        flash(result["message"], "success")
+    except Exception as exc:
+        flash(f"历史邮件同步失败：{exc}", "error")
+    return redirect(url_for(
+        "main.order_automation",
+        date=request.form.get("return_date") or order_intake_business_today().isoformat(),
+        account_id=account_id,
+    ))
+
+
+def _order_business_accounts(employee_id: str) -> list[dict]:
+    from .mail_transcode_agent import mail_store
+    return [
+        item for item in mail_store.list_accounts(owner_employee_id=employee_id)
+        if item["enabled"] and ("qiye.163.com" in item["imap_host"] or "@nouyatec.com" in item["email"])
+    ]
+
+
+def _order_business_account(employee_id: str, account_id: int | None = None) -> dict | None:
+    accounts = _order_business_accounts(employee_id)
+    if account_id:
+        return next((item for item in accounts if item["id"] == account_id), None)
+    return accounts[0] if accounts else None
+
+
+@bp.route("/order-automation/rules", methods=["GET", "POST"])
+def order_automation_rules():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    if request.method == "POST":
+        try:
+            rule_id = request.form.get("rule_id", type=int)
+            scope = request.form.get("scope", "subject")
+            if not rule_id:
+                raise ValueError("请先选择要维护的业务分类")
+            save_order_universal_rule_scope(employee_id, rule_id, scope, request.form.getlist("keyword"))
+            flash("通用规则已保存，并已重新计算邮件分流结果。", "success")
+            return redirect(url_for("main.order_automation_rules", edit=rule_id, scope=scope))
+        except (ValueError, TypeError) as exc:
+            flash(str(exc), "error")
+    edit_id = request.args.get("edit", type=int)
+    rules = list_order_universal_rules(employee_id)
+    editing_rule = next((rule for rule in rules if rule["id"] == edit_id), rules[0] if rules else None)
+    selected_scope = request.args.get("scope", "subject")
+    if selected_scope not in ORDER_SCOPE_LABELS:
+        selected_scope = "subject"
+    selected_tab = request.args.get("tab", "keywords")
+    if selected_tab == "change_tags" and (not editing_rule or editing_rule["action_type"] != "order_change"):
+        selected_tab = "keywords"
+    change_tags = list_order_change_tags(employee_id)
+    selected_change_tag_id = request.args.get("change_tag", type=int)
+    editing_change_tag = next(
+        (item for item in change_tags if item["id"] == selected_change_tag_id),
+        change_tags[0] if change_tags else None,
+    )
+    return render_template(
+        "order_automation_rules.html",
+        rules=rules,
+        editing_rule=editing_rule,
+        change_tags=change_tags,
+        editing_change_tag=editing_change_tag,
+        action_labels=ORDER_ACTION_LABELS,
+        scope_labels=ORDER_SCOPE_LABELS,
+        change_scope_labels=ORDER_CHANGE_TAG_SCOPE_LABELS,
+        selected_scope=selected_scope,
+        selected_tab=selected_tab,
+    )
+
+
+@bp.post("/order-automation/change-tags")
+def order_automation_change_tags():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    try:
+        split_words = lambda values: [word.strip() for value in values for word in str(value).splitlines() if word.strip()]
+        keywords = [{"scope": "all", "keyword": word} for word in split_words(request.form.getlist("all_keyword"))]
+        for scope in ORDER_CHANGE_TAG_SCOPE_LABELS:
+            keywords.extend(
+                {"scope": scope, "keyword": word}
+                for word in split_words(request.form.getlist(f"{scope}_keyword"))
+            )
+        tag_id = request.form.get("tag_id", type=int)
+        saved_id = save_order_change_tag(
+            current_employee() or "", request.form.get("name", ""), keywords, tag_id=tag_id
+        )
+        flash("变更类型已保存，并已重新计算邮件标签。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+        saved_id = request.form.get("tag_id", type=int)
+    edit_id = request.form.get("edit", type=int)
+    return redirect(
+        url_for("main.order_automation_rules", edit=edit_id, tab="change_tags", change_tag=saved_id)
+        if edit_id else url_for("main.order_automation_rules")
+    )
+
+
+
+
+@bp.post("/order-automation/cases/<int:case_id>/routing")
+def order_automation_case_routing(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    try:
+        update_order_intake_routing(case_id, employee_id, request.form.get("action_type", ""))
+        flash("邮件分流已调整。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return_to = request.form.get("return_to", "")
+    if not return_to.startswith("/order-automation"):
+        return_to = url_for("main.order_automation")
+    return redirect(return_to)
+
+
+def _order_automation_return_context(case: dict[str, Any]) -> dict[str, Any]:
+    """Keep a mail detail page anchored to the exact list the user came from."""
+    fallback_date = str(case.get("sent_at") or case.get("received_at") or "")[:10]
+    selected_date = request.args.get("return_date", fallback_date)
+    try:
+        selected_date = date.fromisoformat(selected_date).isoformat()
+    except (TypeError, ValueError):
+        selected_date = fallback_date or order_intake_business_today().isoformat()
+    selected_action = request.args.get("return_category", "all")
+    if selected_action not in {*ORDER_ACTION_LABELS, "needs_business_routing", "all"}:
+        selected_action = "all"
+    selected_mail_status = request.args.get("return_mail_status", "all")
+    selected_order_number = request.args.get("return_order_no", "").strip()
+    if selected_mail_status not in ORDER_MAIL_STATUS_FILTER_LABELS:
+        selected_mail_status = "all"
+    per_page = request.args.get("return_per_page", 20, type=int) or 20
+    if per_page not in {10, 20, 50}:
+        per_page = 20
+    page = max(1, request.args.get("return_page", 1, type=int) or 1)
+    batch_id = request.args.get("return_batch", type=int)
+    account_id = request.args.get("return_account", type=int) or case.get("account_id")
+    values: dict[str, Any] = {
+        "date": selected_date,
+        "category": selected_action,
+        "per_page": per_page,
+        "page": page,
+        "mail_status": selected_mail_status,
+    }
+    if selected_order_number:
+        values["order_no"] = selected_order_number
+    if account_id:
+        values["account_id"] = int(account_id)
+    if batch_id:
+        values["batch"] = batch_id
+    return {
+        "values": values,
+        "url": url_for("main.order_automation", **values),
+        "query": {
+            "return_date": selected_date,
+            "return_category": selected_action,
+            "return_per_page": per_page,
+            "return_page": page,
+            "return_mail_status": selected_mail_status,
+            "return_order_no": selected_order_number,
+            "return_batch": batch_id,
+            "return_account": account_id,
+        },
+    }
+
+
+def _order_reply_default_body(
+    case: dict[str, Any], header: dict[str, Any], lines: list[dict[str, Any]],
+) -> str:
+    """Build a restrained, editable reply draft from the current order template."""
+    customer_name = str(case.get("customer_name") or "客户").strip()
+    order_no = str(header.get("customer_order_number") or "").strip()
+    line_count = len(lines)
+    parts = [
+        f"尊敬的{customer_name}：",
+        "",
+        "您好！",
+        "您的订单我司已收到并完成内部处理。",
+    ]
+    if order_no:
+        parts.append(f"客户订单号：{order_no}")
+    if line_count:
+        parts.append(f"订单明细：共 {line_count} 项")
+    parts.extend([
+        "",
+        "如需补充交期或其他信息，请直接回复本邮件。",
+        "",
+        "此致",
+        "南亚营销自动化平台",
+    ])
+    return "\n".join(parts)
+
+
+@bp.route("/order-automation/cases/<int:case_id>", methods=["GET", "POST"])
+def order_automation_case(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    if request.method == "POST":
+        try:
+            update_order_intake_case(case_id, employee_id, request.form)
+            flash("邮件分流与业务信息已保存。", "success")
+        except ValueError as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("main.order_automation_case", case_id=case_id, **request.args.to_dict()))
+    case = get_order_intake_case(case_id, employee_id)
+    if not case:
+        abort(404)
+    return_context = _order_automation_return_context(case)
+    return render_template(
+        "order_automation_case.html",
+        case=case,
+        entry_progress=order_entry_template_progress(case_id, employee_id) if case["action_type"] == "new_order" else None,
+        nyeos_order_number=list_nyeos_order_numbers([case_id], employee_id).get(case_id, ""),
+        return_context=return_context,
+        status_labels=ORDER_INTAKE_STATUS_LABELS,
+        action_labels=ORDER_ACTION_LABELS,
+        workflow_stage_labels=ORDER_WORKFLOW_STAGE_LABELS,
+        match_status_labels=ORDER_MATCH_STATUS_LABELS,
+        document_status_labels=ORDER_DOCUMENT_STATUS_LABELS,
+        mapping_status_labels=ORDER_MAPPING_STATUS_LABELS,
+        erp_prepare_status_labels=ORDER_ERP_PREPARE_STATUS_LABELS,
+    )
+
+
+@bp.route("/order-automation/cases/<int:case_id>/reply", methods=["GET", "POST"])
+def order_automation_reply(case_id: int):
+    """Compose and, after SMTP setup, send a customer order reply."""
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    case = get_order_intake_case(case_id, employee_id)
+    if not case:
+        abort(404)
+    # Import lazily: the mail blueprint itself imports ``require_login`` from
+    # this module during application startup.
+    from .mail_transcode_agent.smtp_service import send_order_reply, smtp_ready_for_case
+
+    progress = order_entry_template_progress(case_id, employee_id)
+    template = None
+    if progress.get("created"):
+        try:
+            _case, template = get_order_entry_template(case_id, employee_id)
+        except ValueError:
+            template = None
+
+    sender_name, sender_email = parseaddr(str(case.get("sender") or ""))
+    recipient = sender_email or str(case.get("sender") or "").strip()
+    subject = str(case.get("subject") or "订单回复").strip()
+    if not subject.lower().startswith("re:"):
+        subject = f"Re: {subject}"
+    header = (template or {}).get("header") or {}
+    lines = (template or {}).get("lines") or []
+    draft_key = f"order_reply_draft:{case_id}"
+    saved_draft = session.get(draft_key) or {}
+    default_body = _order_reply_default_body(case, header, lines)
+    draft = {
+        "to": str(saved_draft.get("to") or recipient),
+        "cc": str(saved_draft.get("cc") or ""),
+        "subject": str(saved_draft.get("subject") or subject),
+        "body": str(saved_draft.get("body") or default_body),
+    }
+    smtp_ready = smtp_ready_for_case(case_id, employee_id=employee_id)
+    if request.method == "POST":
+        draft = {
+            "to": str(request.form.get("to") or "").strip(),
+            "cc": str(request.form.get("cc") or "").strip(),
+            "subject": str(request.form.get("subject") or "").strip(),
+            "body": str(request.form.get("body") or "").strip(),
+        }
+        if not draft["to"] or not draft["subject"] or not draft["body"]:
+            flash("请填写收件人、主题和邮件正文后再保存草稿。", "error")
+        else:
+            session[draft_key] = draft
+            session.modified = True
+            if request.form.get("action") == "send":
+                try:
+                    result = send_order_reply(
+                        case_id,
+                        employee_id=employee_id,
+                        to=draft["to"],
+                        cc=draft["cc"],
+                        subject=draft["subject"],
+                        body=draft["body"],
+                    )
+                    flash(
+                        f"订单回复已发送至 {', '.join(result['to'])}。发送记录已写入订单详情。",
+                        "success",
+                    )
+                except ValueError as exc:
+                    flash(str(exc), "error")
+            else:
+                flash("回复草稿已保存，尚未发送邮件。", "success")
+
+    return render_template(
+        "order_automation_reply.html",
+        case=case,
+        draft=draft,
+        sender_name=sender_name,
+        entry_progress=progress,
+        order_template=template,
+        line_count=len(lines),
+        reply_lines=lines[:6],
+        smtp_ready=smtp_ready,
+        return_context=_order_automation_return_context(case),
+    )
+
+
+@bp.post("/order-automation/cases/<int:case_id>/entry-template/start")
+def order_automation_entry_template_start(case_id: int):
+    """Queue first-time document extraction and return to the mail at once."""
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    try:
+        result = queue_order_entry_template_extraction(case_id, employee_id)
+        flash(result["message"], "success" if result["status"] != "error" else "error")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return redirect(
+        url_for("main.order_automation_case", case_id=case_id, **request.args.to_dict())
+    )
+
+
+@bp.route("/order-automation/cases/<int:case_id>/entry-template", methods=["GET", "POST"])
+def order_automation_entry_template(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    if request.method == "POST":
+        if is_domestic_order_entry_completed(case_id, employee_id):
+            flash("内销录单已完成，不能再保存或覆盖模板。", "error")
+        else:
+            try:
+                payload = json.loads(request.form.get("template_payload") or "{}")
+                save_order_entry_template(case_id, employee_id, payload)
+                flash("内销录单模板已保存。", "success")
+            except (ValueError, json.JSONDecodeError) as exc:
+                flash(str(exc) if isinstance(exc, ValueError) else "模板数据格式错误。", "error")
+        return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))
+    case = get_order_intake_case(case_id, employee_id)
+    if not case:
+        abort(404)
+    progress = order_entry_template_progress(case_id, employee_id)
+    if not progress["created"]:
+        # Keep old bookmarks and direct URLs safe: they now enqueue work rather
+        # than synchronously running a potentially long PDF/OCR extraction.
+        if progress["stage"] == "pending_extraction":
+            try:
+                result = queue_order_entry_template_extraction(case_id, employee_id)
+                flash(result["message"], "success")
+            except ValueError as exc:
+                flash(str(exc), "error")
+        return redirect(
+            url_for("main.order_automation_case", case_id=case_id, **request.args.to_dict())
+        )
+    try:
+        _case, template = get_order_entry_template(case_id, employee_id)
+    except ValueError:
+        abort(404)
+    order_details = get_order_detail_records(case_id, employee_id)
+    return render_template(
+        "order_automation_entry_template.html",
+        case=case,
+        template=template,
+        header_fields=ORDER_ENTRY_HEADER_FIELDS,
+        header_labels=ORDER_ENTRY_HEADER_LABELS,
+        line_fields=ORDER_ENTRY_LINE_FIELDS,
+        visible_line_fields=[
+            field for field in ORDER_ENTRY_LINE_FIELDS
+            if field not in {"material_status", "adhesive_code", "customer_spec_match"}
+        ],
+        hidden_line_fields=["material_status", "adhesive_code", "customer_spec_match"],
+        line_labels=ORDER_ENTRY_LINE_LABELS,
+        customer_choices=list_customer_choices(),
+        validation_issues=order_entry_validation_issues(template),
+        order_details=order_details,
+        nyeos_order_number=list_nyeos_order_numbers([case_id], employee_id).get(case_id, ""),
+        material_resolutions=get_material_resolution_states(case_id, employee_id),
+        # Share the same workflow state as the mail list and mail detail.
+        order_entry_completed=progress["completed"],
+        entry_progress=progress,
+        return_context=_order_automation_return_context(case),
+    )
+
+
+@bp.post("/order-automation/cases/<int:case_id>/entry-template/spec-match")
+def order_automation_entry_template_spec_match(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    case = get_order_intake_case(case_id, employee_id)
+    if not case or case.get("action_type") != "new_order":
+        abort(404)
+    payload = request.get_json(silent=True) or {}
+    return jsonify(build_customer_spec_match_detail(
+        payload.get("customer_code"),
+        payload.get("product_type"),
+        payload.get("customer_spec"),
+    ))
+
+
+@bp.post("/order-automation/cases/<int:case_id>/entry-template/adhesive-candidates")
+def order_automation_entry_template_adhesive_candidates(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    case = get_order_intake_case(case_id, employee_id)
+    if not case or case.get("action_type") != "new_order":
+        abort(404)
+    payload = request.get_json(silent=True) or {}
+    try:
+        line_no = int(payload.get("line_no"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": "缺少有效项次。"}), 400
+    _case, template = get_order_entry_template(case_id, employee_id)
+    line = next(
+        (
+            item for item in template["lines"]
+            if int((item.get("values") or {}).get("line_no") or 0) == line_no
+        ),
+        None,
+    )
+    if not line:
+        return jsonify({"ok": False, "message": "录单模板明细不存在。"}), 404
+    header = template.get("header") or {}
+    values = line.get("values") or {}
+    glue_system = extract_glue_system_from_customer_spec_match(
+        header.get("bill_to_customer_code"),
+        values.get("product_type"),
+        payload.get("customer_spec_match", values.get("customer_spec_match")),
+    )
+    return jsonify({
+        "ok": True,
+        "glue_system": glue_system,
+        "candidates": find_adhesive_code_candidates(glue_system),
+    })
+
+
+@bp.post("/order-automation/cases/<int:case_id>/material-query")
+def order_automation_material_query(case_id: int):
+    """Run the material query implementation selected in interface maintenance."""
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    if not get_order_intake_case(case_id, employee_id):
+        abort(404)
+    selected_line_nos: set[int] = set()
+    for raw in request.form.getlist("selected_line_nos"):
+        for value in str(raw).split(","):
+            try:
+                line_no = int(value.strip())
+            except ValueError:
+                continue
+            if line_no > 0:
+                selected_line_nos.add(line_no)
+    try:
+        result = build_material_query(
+            case_id, employee_id, employee_id,
+            line_nos=selected_line_nos or None,
+        )
+        mode_label = "真实接口" if result.get("mode") == "real" else "Mock"
+        flash(
+            f"批量料号查询（{mode_label}）已完成：{len(result['items'])} 条明细已处理。",
+            "success" if result["status"] == "success" else "error",
+        )
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))
+
+
+@bp.post("/order-automation/cases/<int:case_id>/material-create")
+def order_automation_material_create(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    if not get_order_intake_case(case_id, employee_id):
+        abort(404)
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = build_material_creation(
+            case_id, employee_id, employee_id, payload.get("lines") or [],
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
+    return jsonify({
+        "ok": True,
+        "message": f"新建料号已提交：{len(result.get('items') or [])} 条明细。",
+        "result": result,
+    })
+
+
+@bp.get("/order-automation/cases/<int:case_id>/material-resolution-status")
+def order_automation_material_resolution_status(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    if not get_order_intake_case(case_id, employee_id):
+        abort(404)
+    return jsonify(get_material_resolution_states(case_id, employee_id))
+
+
+@bp.post("/order-automation/cases/<int:case_id>/material-resolutions/<int:line_no>/selection")
+def order_automation_material_resolution_selection(case_id: int, line_no: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    if not get_order_intake_case(case_id, employee_id):
+        abort(404)
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = select_material_candidate(
+            case_id,
+            employee_id,
+            line_no,
+            product_code=str(payload.get("product_code") or ""),
+            product_name=str(payload.get("product_name") or ""),
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
+    return jsonify({"ok": True, **result})
+
+
+@bp.post("/integrations/material-number/callback")
+def material_number_callback():
+    """Partner callback endpoint; until a token is configured only explicit Mock calls are accepted."""
+    payload = request.get_json(silent=True) or {}
+    correlation_id = str(payload.get("correlation_id") or "").strip()
+    if not correlation_id:
+        return jsonify({"ok": False, "message": "缺少 correlation_id"}), 400
+    expected_token = os.getenv("MATERIAL_CALLBACK_TOKEN", "").strip()
+    incoming_token = request.headers.get("X-Material-Callback-Token", "")
+    if expected_token:
+        if not hmac.compare_digest(incoming_token, expected_token):
+            return jsonify({"ok": False, "message": "回调鉴权失败"}), 403
+    elif not payload.get("mock"):
+        return jsonify({"ok": False, "message": "回调令牌尚未配置"}), 503
+    product_code = str(payload.get("product_code") or payload.get("factory_part_no") or "").strip()
+    product_name = str(payload.get("product_name") or "").strip()
+    if not product_code or not product_name:
+        return jsonify({"ok": False, "message": "回调需包含 product_code 和 product_name"}), 400
+    try:
+        result = process_material_created_callback(correlation_id, product_code=product_code, product_name=product_name, source="partner-callback")
+    except ValueError as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 404
+    return jsonify({"ok": True, "result": result})
+
+
+@bp.post("/order-automation/cases/<int:case_id>/domestic-entry")
+def order_automation_domestic_entry(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    if not get_order_intake_case(case_id, employee_id):
+        abort(404)
+    try:
+        result = build_domestic_order_entry(case_id, employee_id, employee_id)
+        mode_label = "真实接口" if result.get("mode") == "real" else "Mock"
+        flash(f"提交录单（{mode_label}）已完成：订单号 {result['entry_no']}。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))
+
+
+@bp.route("/interface-maintenance", methods=["GET", "POST"])
+def interface_maintenance():
+    access_response = require_admin_role()
+    if access_response:
+        return access_response
+    selected_key = request.values.get("interface_key", "material_batch_query")
+    if request.method == "POST":
+        if request.form.get("action") == "test":
+            selected = get_interface_config(selected_key)
+            if not selected:
+                abort(404)
+            try:
+                test_result = test_interface_config(request.form)
+            except ValueError as exc:
+                test_result = {"ok": False, "error": str(exc)}
+            selected = {
+                **selected,
+                "display_name": request.form.get("display_name", selected["display_name"]),
+                "description": request.form.get("description", selected["description"]),
+                "mode": request.form.get("mode", selected["mode"]),
+                "method": request.form.get("method", selected["method"]),
+                "endpoint_url": request.form.get("endpoint_url", selected["endpoint_url"]),
+            }
+            return render_template(
+                "interface_maintenance.html",
+                configs=list_interface_configs(),
+                selected=selected,
+                mock_scenarios=ORDER_INTERFACE_MOCK_SCENARIOS,
+                test_result=test_result,
+            )
+        try:
+            save_interface_config(selected_key, request.form, current_employee() or "")
+            flash("接口配置已保存，并已生成新的配置版本。", "success")
+        except ValueError as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("main.interface_maintenance", interface_key=selected_key))
+    configs = list_interface_configs()
+    selected = get_interface_config(selected_key) or (configs[0] if configs else None)
+    if not selected:
+        abort(404)
+    return render_template(
+        "interface_maintenance.html",
+        configs=configs,
+        selected=selected,
+        mock_scenarios=ORDER_INTERFACE_MOCK_SCENARIOS,
+        test_result=None,
+    )
+
+
+@bp.post("/order-automation/cases/<int:case_id>/entry-template/refresh")
+def order_automation_entry_template_refresh(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    if is_domestic_order_entry_completed(case_id, employee_id):
+        flash("内销录单已完成，不能重新提取或覆盖模板。", "error")
+        return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))
+    try:
+        result = reextract_order_entry_template(case_id, employee_id)
+        flash(f"已重新抓取邮件订单内容，共生成 {result['line_count']} 条明细；原明细已保留在历史版本中。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))
+
+
+@bp.get("/order-automation/cases/<int:case_id>/entry-template/download")
+def order_automation_entry_template_download(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    try:
+        output, filename = build_order_entry_domestic_export(case_id, current_employee() or "")
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@bp.get("/order-automation/attachments/<int:attachment_id>")
+def order_automation_attachment(attachment_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    attachment = get_order_intake_attachment(attachment_id, current_employee() or "")
+    if not attachment:
+        abort(404)
+    try:
+        file_path = resolve_attachment_path(str(attachment["stored_path"] or "")).resolve()
+    except FileNotFoundError:
+        abort(404)
+    if not is_allowed_automation_path(file_path) or not file_path.is_file():
+        abort(404)
+    previewable_suffixes = {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp"}
+    preview = request.args.get("preview") == "1" and file_path.suffix.lower() in previewable_suffixes
+    return send_file(file_path, as_attachment=not preview, download_name=attachment["filename"])
+
+
+@bp.get("/my-settings")
+def my_settings():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    return render_template(
+        "my_settings.html",
+        mail_config_available="mail_transcode.accounts_page" in current_app.view_functions,
+    )
+
+
+@bp.get("/customers")
+def customer_archive():
+    """Customer master data and customer-level automation configurations."""
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    dataset = request.args.get("dataset", "customers")
+    if dataset == "adhesives":
+        keyword = request.args.get("keyword", "").strip()
+        usage_category = request.args.get("usage_category", "all")
+        finance_category = request.args.get("finance_category", "all")
+        status = request.args.get("status", "all")
+        page_size = request.args.get("page_size", 20, type=int) or 20
+        if page_size not in {20, 50, 100}:
+            page_size = 20
+        page = max(request.args.get("page", 1, type=int) or 1, 1)
+        filter_values = adhesive_code_filter_values()
+        if usage_category not in {"all", *filter_values["usage_categories"]}:
+            usage_category = "all"
+        if finance_category not in {"all", *filter_values["finance_categories"]}:
+            finance_category = "all"
+        if status not in {"all", "active", "disabled"}:
+            status = "all"
+        records = list_adhesive_codes(
+            keyword=keyword,
+            usage_category=usage_category,
+            finance_category=finance_category,
+            status=status,
+        )
+        total_records = len(records)
+        total_pages = max(1, (total_records + page_size - 1) // page_size)
+        page = min(page, total_pages)
+        selected_id = request.args.get("adhesive_id", type=int)
+        new_mode = request.args.get("adhesive_new") == "1"
+        selected_record = get_adhesive_code(selected_id) if selected_id and not new_mode else None
+        return render_template(
+            "adhesive_code_master.html",
+            records=records[(page - 1) * page_size: page * page_size],
+            selected_record=selected_record,
+            new_mode=new_mode,
+            keyword=keyword,
+            selected_usage_category=usage_category,
+            selected_finance_category=finance_category,
+            selected_status=status,
+            usage_categories=filter_values["usage_categories"],
+            finance_categories=filter_values["finance_categories"],
+            page=page,
+            page_size=page_size,
+            total_pages=total_pages,
+            total_records=total_records,
+        )
+    if dataset == "specs":
+        keyword = request.args.get("keyword", "").strip()
+        product_type = request.args.get("product_type", "all")
+        status = request.args.get("status", "all")
+        match_status = request.args.get("match_status", "all")
+        if product_type not in {"all", *CUSTOMER_SPEC_PRODUCT_TYPE_LABELS}:
+            product_type = "all"
+        if status not in {"all", "active", "disabled"}:
+            status = "all"
+        if match_status not in {"all", *CUSTOMER_SPEC_MATCH_STATUS_LABELS}:
+            match_status = "all"
+        page_size = request.args.get("page_size", 20, type=int) or 20
+        if page_size not in {20, 50, 100}:
+            page_size = 20
+        page = max(request.args.get("page", 1, type=int) or 1, 1)
+        mappings = list_spec_mappings(
+            keyword=keyword,
+            product_type=product_type,
+            status=status,
+            match_status=match_status,
+        )
+        total_mappings = len(mappings)
+        total_pages = max(1, (total_mappings + page_size - 1) // page_size)
+        page = min(page, total_pages)
+        selected_id = request.args.get("spec_id", type=int)
+        new_mode = request.args.get("spec_new") == "1"
+        selected_mapping = get_spec_mapping(selected_id) if selected_id and not new_mode else None
+        return render_template(
+            "customer_spec_mappings.html",
+            mappings=mappings[(page - 1) * page_size: page * page_size],
+            selected_mapping=selected_mapping,
+            new_mode=new_mode,
+            keyword=keyword,
+            selected_product_type=product_type,
+            selected_status=status,
+            selected_match_status=match_status,
+            product_type_labels=CUSTOMER_SPEC_PRODUCT_TYPE_LABELS,
+            match_status_labels=CUSTOMER_SPEC_MATCH_STATUS_LABELS,
+            position_fields=CUSTOMER_SPEC_POSITION_FIELDS,
+            page=page,
+            page_size=page_size,
+            total_pages=total_pages,
+            total_mappings=total_mappings,
+        )
+    keyword = request.args.get("keyword", "").strip()
+    # 客户数据维护不向业务展示“启用/停用”等技术状态；历史数据仍保留
+    # status 字段以兼容既有自动化逻辑，列表默认展示全部客户。
+    status = request.args.get("status", "all")
+    clerk_name = request.args.get("clerk", "").strip()
+    page_size = request.args.get("page_size", 20, type=int) or 20
+    if page_size not in {20, 50, 100}:
+        page_size = 20
+    page = max(request.args.get("page", 1, type=int) or 1, 1)
+    new_mode = request.args.get("new") == "1"
+    selected_id = None if new_mode else request.args.get("customer_id", type=int)
+    tab = request.args.get("tab", "base")
+    if tab not in {"base", "contacts", "routing", "mapping"}:
+        tab = "base"
+    all_customers = list_customers(
+        keyword=keyword,
+        status=status,
+        clerk_name=clerk_name,
+    )
+    total_customers = len(all_customers)
+    total_pages = max(1, (total_customers + page_size - 1) // page_size)
+    page = min(page, total_pages)
+    customers = all_customers[(page - 1) * page_size: page * page_size]
+    workspace = get_customer_workspace(selected_id) if selected_id else None
+    return render_template(
+        "customer_archive.html",
+        customers=customers,
+        workspace=workspace,
+        selected_id=selected_id,
+        new_mode=new_mode,
+        selected_tab=tab,
+        keyword=keyword,
+        selected_status=status,
+        selected_clerk=clerk_name,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+        total_customers=total_customers,
+        summary=customer_summary(),
+        customer_fields=CUSTOMER_FIELDS,
+        customer_field_labels=CUSTOMER_FIELD_LABELS,
+        contact_type_labels=CONTACT_TYPE_LABELS,
+        routing_scope_labels=ROUTING_SCOPE_LABELS,
+        extraction_source_kind_labels=EXTRACTION_SOURCE_KIND_LABELS,
+        extraction_target_labels=EXTRACTION_TARGET_LABELS,
+        transform_labels=TRANSFORM_LABELS,
+        action_labels=ORDER_ACTION_LABELS,
+    )
+
+
+def _customer_redirect(customer_id: int | None = None, tab: str = "base"):
+    params: dict[str, object] = {"tab": tab}
+    if customer_id:
+        params["customer_id"] = customer_id
+    return redirect(url_for("main.customer_archive", **params))
+
+
+@bp.post("/customers/save")
+def customer_archive_save():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    customer_id = request.form.get("customer_id", type=int)
+    values = {field: request.form.get(field, "") for field in CUSTOMER_FIELDS}
+    try:
+        saved_id = save_customer(values, customer_id=customer_id, operated_by=current_employee() or "")
+        flash("客户信息已保存。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+        saved_id = customer_id
+    return _customer_redirect(saved_id, "base")
+
+
+@bp.post("/customers/<int:customer_id>/status")
+def customer_archive_status(customer_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    try:
+        set_customer_status(customer_id, request.form.get("status", ""), operated_by=current_employee() or "")
+        flash("客户状态已更新。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return _customer_redirect(customer_id, "base")
+
+
+@bp.post("/customers/import")
+def customer_archive_import():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    upload = request.files.get("workbook")
+    if not upload or not upload.filename:
+        flash("请选择客户基础信息 Excel 文件。", "error")
+        return _customer_redirect()
+    suffix = Path(upload.filename).suffix.lower()
+    if suffix not in {".xlsx", ".xlsm"}:
+        flash("仅支持 .xlsx 或 .xlsm 格式的客户基础信息表。", "error")
+        return _customer_redirect()
+    temp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(prefix="customer_archive_", suffix=suffix, delete=False) as handle:
+            upload.save(handle)
+            temp_path = handle.name
+        result = import_customer_workbook(temp_path, operated_by=current_employee() or "")
+        flash(f"客户信息导入完成：新增 {result['imported']} 条，更新 {result['updated']} 条，跳过 {result['skipped']} 条。", "success")
+    except Exception as exc:
+        current_app.logger.exception("customer archive import failed")
+        flash(f"客户档案导入失败：{exc}", "error")
+    finally:
+        if temp_path:
+            safe_unlink(temp_path)
+    return _customer_redirect()
+
+
+def _customer_spec_redirect(mapping_id: int | None = None):
+    params: dict[str, object] = {"dataset": "specs"}
+    if mapping_id:
+        params["spec_id"] = mapping_id
+    return redirect(url_for("main.customer_archive", **params))
+
+
+def _adhesive_code_redirect(record_id: int | None = None):
+    params: dict[str, object] = {"dataset": "adhesives"}
+    if record_id:
+        params["adhesive_id"] = record_id
+    return redirect(url_for("main.customer_archive", **params))
+
+
+@bp.post("/customers/adhesive-codes/import")
+def adhesive_code_import():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    upload = request.files.get("workbook")
+    if not upload or not upload.filename:
+        flash("请选择胶系主表 Excel 文件。", "error")
+        return _adhesive_code_redirect()
+    suffix = Path(upload.filename).suffix.lower()
+    if suffix not in {".xlsx", ".xlsm"}:
+        flash("仅支持 .xlsx 或 .xlsm 格式的胶系主表。", "error")
+        return _adhesive_code_redirect()
+    temp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(prefix="adhesive_code_", suffix=suffix, delete=False) as handle:
+            upload.save(handle)
+            temp_path = handle.name
+        result = import_adhesive_code_workbook(temp_path, operated_by=current_employee() or "")
+        message = f"胶系主表导入完成：新增 {result['imported']} 条，更新 {result['updated']} 条，跳过 {result['skipped']} 条。"
+        if result["errors"]:
+            first = result["errors"][0]
+            message += f" 首个错误：第 {first['row']} 行，{first['error']}"
+        flash(message, "success" if not result["errors"] else "warning")
+    except Exception as exc:
+        current_app.logger.exception("adhesive code import failed")
+        flash(f"胶系主表导入失败：{exc}", "error")
+    finally:
+        if temp_path:
+            safe_unlink(temp_path)
+    return _adhesive_code_redirect()
+
+
+@bp.post("/customers/adhesive-codes/save")
+def adhesive_code_save():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    record_id = request.form.get("record_id", type=int)
+    values = {field: request.form.get(field, "") for field in ADHESIVE_CODE_FORM_FIELDS}
+    try:
+        saved_id = save_adhesive_code(values, record_id=record_id, operated_by=current_employee() or "")
+        flash("胶系代码已保存。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+        saved_id = record_id
+    return _adhesive_code_redirect(saved_id)
+
+
+@bp.post("/customers/adhesive-codes/<int:record_id>/status")
+def adhesive_code_status(record_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    try:
+        set_adhesive_code_enabled(
+            record_id, request.form.get("enabled") == "1", operated_by=current_employee() or ""
+        )
+        flash("胶系代码状态已更新。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return _adhesive_code_redirect(record_id)
+
+
+@bp.post("/customers/spec-mappings/import")
+def customer_spec_mapping_import():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    upload = request.files.get("workbook")
+    if not upload or not upload.filename:
+        flash("请选择客户规格与厂内规格对照表 Excel 文件。", "error")
+        return _customer_spec_redirect()
+    suffix = Path(upload.filename).suffix.lower()
+    if suffix not in {".xlsx", ".xlsm"}:
+        flash("仅支持 .xlsx 或 .xlsm 格式的规格对照表。", "error")
+        return _customer_spec_redirect()
+    temp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(prefix="customer_spec_mapping_", suffix=suffix, delete=False) as handle:
+            upload.save(handle)
+            temp_path = handle.name
+        result = import_spec_mapping_workbook(temp_path, operated_by=current_employee() or "")
+        message = (
+            f"规格对照导入完成：新增 {result['imported']} 条，更新 {result['updated']} 条，"
+            f"跳过 {result['skipped']} 条。"
+        )
+        if result["errors"]:
+            first = result["errors"][0]
+            message += f" 首个错误：第 {first['row']} 行，{first['error']}"
+        flash(message, "success" if not result["errors"] else "warning")
+    except Exception as exc:
+        current_app.logger.exception("customer spec mapping import failed")
+        flash(f"规格对照导入失败：{exc}", "error")
+    finally:
+        if temp_path:
+            safe_unlink(temp_path)
+    return _customer_spec_redirect()
+
+
+@bp.post("/customers/spec-mappings/save")
+def customer_spec_mapping_save():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    mapping_id = request.form.get("mapping_id", type=int)
+    values = {field: request.form.get(field, "") for field in CUSTOMER_SPEC_FORM_FIELDS}
+    try:
+        saved_id = save_spec_mapping(
+            values, mapping_id=mapping_id, operated_by=current_employee() or ""
+        )
+        flash("客户规格与厂内规格对照已保存。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+        saved_id = mapping_id
+    return _customer_spec_redirect(saved_id)
+
+
+@bp.post("/customers/spec-mappings/<int:mapping_id>/status")
+def customer_spec_mapping_status(mapping_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    try:
+        set_spec_mapping_enabled(
+            mapping_id,
+            request.form.get("enabled") == "1",
+            operated_by=current_employee() or "",
+        )
+        flash("规格对照状态已更新。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return _customer_spec_redirect()
+
+
+@bp.post("/customers/<int:customer_id>/contacts/save")
+def customer_archive_contact_save(customer_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    try:
+        save_contact(
+            customer_id,
+            contact_id=request.form.get("contact_id", type=int),
+            contact_type=request.form.get("contact_type", ""),
+            contact_value=request.form.get("contact_value", ""),
+            note=request.form.get("note", ""),
+            enabled=request.form.get("enabled", "1") == "1",
+            operated_by=current_employee() or "",
+        )
+        flash("客户邮件身份已保存。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return _customer_redirect(customer_id, "contacts")
+
+
+@bp.post("/customers/<int:customer_id>/contacts/<int:contact_id>/delete")
+def customer_archive_contact_delete(customer_id: int, contact_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    delete_contact(customer_id, contact_id, operated_by=current_employee() or "")
+    flash("客户邮件身份已删除。", "success")
+    return _customer_redirect(customer_id, "contacts")
+
+
+@bp.post("/customers/<int:customer_id>/routing-rules/save")
+def customer_archive_routing_rule_save(customer_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    try:
+        save_routing_rule(
+            customer_id,
+            rule_id=request.form.get("rule_id", type=int),
+            name=request.form.get("name", ""),
+            action_type=request.form.get("action_type", ""),
+            scope=request.form.get("scope", ""),
+            keywords=request.form.get("keywords", "").replace("，", ",").replace("\n", ",").split(","),
+            note=request.form.get("note", ""),
+            priority=request.form.get("priority", 100, type=int) or 100,
+            operated_by=current_employee() or "",
+        )
+        flash("客户分流规则已保存。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return _customer_redirect(customer_id, "routing")
+
+
+@bp.post("/customers/<int:customer_id>/routing-rules/<int:rule_id>/toggle")
+def customer_archive_routing_rule_toggle(customer_id: int, rule_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    try:
+        set_routing_rule_enabled(customer_id, rule_id, request.form.get("enabled") == "1", operated_by=current_employee() or "")
+        flash("客户分流规则状态已更新。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return _customer_redirect(customer_id, "routing")
+
+
+@bp.post("/customers/<int:customer_id>/routing-rules/<int:rule_id>/delete")
+def customer_archive_routing_rule_delete(customer_id: int, rule_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    delete_routing_rule(customer_id, rule_id, operated_by=current_employee() or "")
+    flash("客户分流规则已删除。", "success")
+    return _customer_redirect(customer_id, "routing")
+
+
+@bp.post("/customers/<int:customer_id>/extraction-maps/save")
+def customer_archive_extraction_map_save(customer_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    try:
+        save_extraction_map(
+            customer_id,
+            map_id=request.form.get("map_id", type=int),
+            target_field=request.form.get("target_field", ""),
+            source_kind=request.form.get("source_kind", ""),
+            source_label=request.form.get("source_label", ""),
+            transform_type=request.form.get("transform_type", ""),
+            note=request.form.get("note", ""),
+            sort_order=request.form.get("sort_order", 100, type=int) or 100,
+            operated_by=current_employee() or "",
+        )
+        flash("客户订单提取映射已保存。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return _customer_redirect(customer_id, "mapping")
+
+
+@bp.post("/customers/<int:customer_id>/extraction-maps/<int:map_id>/delete")
+def customer_archive_extraction_map_delete(customer_id: int, map_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    delete_extraction_map(customer_id, map_id, operated_by=current_employee() or "")
+    flash("客户订单提取映射已删除。", "success")
+    return _customer_redirect(customer_id, "mapping")
 
 
 def _active_job_for(feature: str, jobs):
@@ -1031,13 +2584,67 @@ def transcode():
     redirect_resp = require_login()
     if redirect_resp:
         return redirect_resp
-    jobs = list_jobs(current_employee(), limit=20, feature="transcode")
+    return redirect(url_for("main.dashboard"))
+
+
+@bp.get("/features/traditional-to-simplified")
+def traditional_simplified():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
     return render_template(
-        "transcode.html",
-        jobs=jobs,
-        active_rule_version=get_active_transcode_rule_version(),
-        active_job=_active_job_for("transcode", jobs),
+        "traditional_simplified.html",
+        allowed_extensions=sorted(TRADITIONAL_SIMPLIFIED_EXTENSIONS),
+        max_text_length=TRADITIONAL_SIMPLIFIED_MAX_TEXT_LENGTH,
     )
+
+
+@bp.post("/features/traditional-to-simplified/excel")
+def traditional_simplified_excel():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    upload = request.files.get("excel_file")
+    if not upload or not upload.filename:
+        return jsonify({"ok": False, "error": "请选择需要转换的 Excel 文件。"}), 400
+    try:
+        result = convert_workbook_to_simplified(upload.read(), upload.filename)
+    except (OSError, WorkbookConversionError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    response = send_file(
+        result.content,
+        as_attachment=True,
+        download_name=result.filename,
+        mimetype=result.mimetype,
+    )
+    response.headers["X-Conversion-Sheets"] = str(result.stats.sheet_count)
+    response.headers["X-Conversion-Text-Cells"] = str(result.stats.text_cell_count)
+    response.headers["X-Conversion-Changed-Cells"] = str(result.stats.changed_cell_count)
+    response.headers["X-Conversion-Changed-Characters"] = str(result.stats.changed_character_count)
+    return response
+
+
+@bp.post("/features/traditional-to-simplified/text")
+def traditional_simplified_text():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    payload = request.get_json(silent=True) or {}
+    text = payload.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return jsonify({"ok": False, "error": "请输入需要转换的文字。"}), 400
+    if len(text) > TRADITIONAL_SIMPLIFIED_MAX_TEXT_LENGTH:
+        return jsonify({
+            "ok": False,
+            "error": f"单次最多转换 {TRADITIONAL_SIMPLIFIED_MAX_TEXT_LENGTH:,} 个字符。",
+        }), 400
+    converted, changed = convert_text_to_simplified(text)
+    return jsonify({
+        "ok": True,
+        "converted_text": converted,
+        "changed": converted != text,
+        "changed_character_count": changed,
+    })
 
 
 @bp.get("/features/transcode-agent")
@@ -1053,6 +2660,344 @@ def transcode_agent():
         model_config=model_config,
         active_job=_active_job_for(TRANSCODE_AGENT_FEATURE, jobs),
         auto_confirm=request.args.get("auto_confirm") == "1",
+    )
+
+
+@bp.get("/features/pp-transcode-agent")
+def pp_transcode_agent():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    jobs = list_jobs(current_employee(), limit=20, feature="pp_transcode_agent")
+    return render_template(
+        "pp_transcode_agent.html",
+        jobs=jobs,
+        active_job=_active_job_for("pp_transcode_agent", jobs),
+        auto_confirm=request.args.get("auto_confirm") == "1",
+    )
+
+
+@bp.post("/features/pp-transcode-agent/jobs")
+def queue_pp_transcode_agent_job():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    upload = request.files.get("pp_file")
+    if not upload or not upload.filename:
+        flash("请选择包含 PP 客户规格列的 Excel 文件。", "error")
+        return redirect(url_for("main.pp_transcode_agent"))
+    try:
+        job_id = queue_pp_transcode_job(current_employee() or "", upload, upload.filename)
+        flash(f"PP 批量转码任务 #{job_id} 已创建，首期结果均进入人工确认。", "success")
+        return redirect(url_for("main.pp_transcode_agent", job_id=job_id))
+    except (OSError, ValueError) as exc:
+        flash(f"PP 批量任务创建失败：{exc}", "error")
+        return redirect(url_for("main.pp_transcode_agent"))
+
+
+@bp.route("/features/pp-transcode-agent/confirmations/<int:job_id>", methods=["GET", "POST"])
+def pp_transcode_agent_confirmations(job_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    job = get_job(job_id)
+    if not job or job["employee_id"] != employee_id or job["feature"] != "pp_transcode_agent":
+        flash("未找到该 PP 转码任务。", "error")
+        return redirect(url_for("main.pp_transcode_agent"))
+    if request.method == "POST":
+        item_id = request.form.get("item_id", type=int)
+        action = request.form.get("action", "").strip()
+        try:
+            status = "confirmed" if action == "confirm" else "skipped" if action == "skip" else ""
+            if not item_id or not status:
+                raise ValueError("未识别确认操作。")
+            items_by_id = {item["id"]: item for item in list_pp_confirmation_items(job_id, employee_id)}
+            source_item = items_by_id.get(item_id)
+            if not source_item:
+                raise ValueError("未找到该确认记录。")
+
+            basis = ""
+            confirmed_pending_code = ""
+            if status == "confirmed":
+                confirmed_pending_code = re.sub(
+                    r"\s+", "", request.form.get("confirmed_pending_code", "")
+                ).upper()
+                if not re.fullmatch(r"[A-Z0-9*]{27}", confirmed_pending_code):
+                    raise ValueError("本次确认码值必须为 27 位，仅可包含字母、数字和 *。")
+            if request.form.get("save_as_rule") == "1":
+                if status != "confirmed":
+                    raise ValueError("请先确认本次码值，才可保存为长期客户规则。")
+                if not (source_item.get("customer_code") or source_item.get("customer_name")):
+                    raise ValueError("该行缺少客户代码和客户简称，不能保存为客户长期规则。")
+                target_field = request.form.get("rule_target_field", "").strip()
+                output_value = request.form.get("rule_output_value", "").strip()
+                condition_field = request.form.get("rule_condition_field", "").strip()
+                condition_operator = request.form.get("rule_condition_operator", "contains").strip()
+                condition_value = request.form.get("rule_condition_value", "").strip()
+                if target_field not in PP_CUSTOMER_FIELDS:
+                    raise ValueError("请选择需要长期维护的 PP 客户字段。")
+                if not output_value or set(output_value) == {"*"}:
+                    raise ValueError("请填写有效的长期规则结果，不能只保存占位符。")
+                if not condition_field or not condition_value:
+                    raise ValueError("请填写长期规则的触发条件。")
+                basis = f"PP任务 #{job_id} Excel第{source_item.get('excel_row', '-')}行业务确认"
+                rule_id = save_pp_customer_rule(
+                    {
+                        "customer_code": source_item.get("customer_code", ""),
+                        "customer_name": source_item.get("customer_name", ""),
+                        "target_field": target_field,
+                        "conditions": [{"field": condition_field, "operator": condition_operator, "value": condition_value}],
+                        "output_value": output_value,
+                        "business_note": basis,
+                        "enabled": True,
+                    },
+                    employee_id,
+                )
+                basis = f"{basis}（已保存为客户长期规则 #{rule_id}）"
+            item = update_pp_confirmation_item(
+                item_id,
+                employee_id,
+                status=status,
+                basis=basis,
+                confirmed_pending_code=confirmed_pending_code,
+            )
+            if not item:
+                raise ValueError("未找到该确认记录。")
+            counts = pp_confirmation_counts(job_id, employee_id)
+            from .db import update_job_status
+
+            update_job_status(
+                job_id,
+                status="completed" if counts["pending"] == 0 else "awaiting_confirmation",
+                confirm_count=counts["pending"],
+                success_count=0,
+                skip_count=counts["skipped"],
+                completed=counts["pending"] == 0,
+            )
+            refresh_pp_result_file(job_id, employee_id)
+            flash("PP 本次确认状态已保存；不会因此生成正式码。", "success")
+        except (ValueError, OSError) as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("main.pp_transcode_agent_confirmations", job_id=job_id))
+    items = list_pp_confirmation_items(job_id, employee_id)
+    return render_template(
+        "pp_transcode_confirmations.html",
+        job=job,
+        items=items,
+        counts=pp_confirmation_counts(job_id, employee_id),
+        customer_fields=[
+            {"key": key, **PP_FIELD_META[key]}
+            for key, _, _ in PP_RULE_FIELDS
+            if key in PP_CUSTOMER_FIELDS
+        ],
+    )
+
+
+@bp.post("/api/pp-transcode-agent/quote")
+def api_pp_transcode_agent_quote():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return jsonify({"error": "unauthorized"}), 401
+    payload = request.get_json(silent=True) or {}
+    spec = str(payload.get("spec") or request.form.get("spec") or "").strip()
+    if not spec:
+        return jsonify({"status": "失败", "error": "请输入 PP 客户规格"}), 400
+    try:
+        return jsonify(
+            calculate_pp_transcode_quote(
+                spec,
+                customer=payload.get("customer") or request.form.get("customer") or "",
+                customer_code=payload.get("customer_code") or request.form.get("customer_code") or "",
+                order_remark=payload.get("order_remark") or request.form.get("order_remark") or "",
+            )
+        )
+    except Exception as exc:
+        return jsonify({"status": "失败", "error": str(exc)}), 500
+
+
+@bp.post("/api/pp-transcode-agent/single-jobs")
+def api_create_pp_transcode_agent_single_job():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return jsonify({"error": "unauthorized"}), 401
+    payload = request.get_json(silent=True) or {}
+    spec = str(payload.get("spec") or "").strip()
+    if not spec:
+        return jsonify({"status": "失败", "error": "请输入 PP 客户规格"}), 400
+    employee_id = current_employee() or ""
+    active_job = get_active_job(employee_id, "pp_transcode_agent")
+    if active_job:
+        return jsonify(
+            {
+                "status": "失败",
+                "error": "当前已有 PP 转码任务正在处理，请先等待完成或停止。",
+                "job_id": active_job["id"],
+            }
+        ), 409
+    try:
+        job_id = queue_pp_transcode_single_job(
+            employee_id,
+            spec=spec,
+            customer=payload.get("customer") or "",
+            customer_code=payload.get("customer_code") or "",
+            order_remark=payload.get("order_remark") or "",
+        )
+        return jsonify(
+            {
+                "status": "已创建",
+                "job_id": job_id,
+                "task_url": url_for("main.pp_transcode_agent", job_id=job_id, auto_confirm=1),
+            }
+        ), 202
+    except Exception as exc:
+        return jsonify({"status": "失败", "error": str(exc)}), 500
+
+
+@bp.get("/api/pp-transcode-agent/jobs/<int:job_id>/confirmations")
+def api_pp_transcode_agent_confirmations(job_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return jsonify({"error": "unauthorized"}), 401
+    employee_id = current_employee() or ""
+    job = get_job(job_id)
+    if not job or job["employee_id"] != employee_id or job["feature"] != "pp_transcode_agent":
+        return jsonify({"error": "未找到该 PP 转码任务"}), 404
+    items = list_pp_confirmation_items(job_id, employee_id)
+    return jsonify(
+        {
+            "job_id": job_id,
+            "job_status": job["status"],
+            "counts": pp_confirmation_counts(job_id, employee_id),
+            "records": [
+                {
+                    "id": item["id"],
+                    "excel_row": item["excel_row"],
+                    "customer_code": item.get("customer_code") or "",
+                    "customer_name": item.get("customer_name") or "",
+                    "spec": item.get("spec") or "",
+                    "order_remark": item.get("order_remark") or "",
+                    "pending_code": item.get("pending_code") or "",
+                    "confirmed_pending_code": item.get("confirmed_pending_code") or "",
+                    "confidence": item.get("confidence") or 0,
+                    "summary": item.get("summary") or "",
+                    "field_evidence": item.get("field_evidence") or [],
+                    "confirmation_status": item.get("confirmation_status") or "pending",
+                }
+                for item in items
+            ],
+        }
+    )
+
+
+@bp.route("/admin/pp-transcode-rules", methods=["GET", "POST"])
+def admin_pp_transcode_rules():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    section = request.values.get("section", "base").strip()
+    if section not in {"base", "customer", "history"}:
+        section = "base"
+    if request.method == "POST":
+        action = request.form.get("action", "").strip()
+        try:
+            if action == "save_base":
+                save_pp_base_rule(
+                    {
+                        "id": request.form.get("rule_id"),
+                        "field_key": request.form.get("field_key"),
+                        "input_value": request.form.get("input_value"),
+                        "output_value": request.form.get("output_value"),
+                        "business_note": request.form.get("business_note"),
+                        "enabled": request.form.get("enabled") == "1",
+                    },
+                    current_employee() or "",
+                )
+                flash("PP 基础规则已保存并立即生效。", "success")
+                section = "base"
+            elif action == "save_customer":
+                conditions = []
+                for field, operator, value in zip(
+                    request.form.getlist("condition_field"),
+                    request.form.getlist("condition_operator"),
+                    request.form.getlist("condition_value"),
+                ):
+                    conditions.append({"field": field, "operator": operator, "value": value})
+                save_pp_customer_rule(
+                    {
+                        "id": request.form.get("rule_id"),
+                        "customer_code": request.form.get("customer_code"),
+                        "customer_name": request.form.get("customer_name"),
+                        "target_field": request.form.get("target_field"),
+                        "conditions": conditions,
+                        "output_value": request.form.get("output_value"),
+                        "business_note": request.form.get("business_note"),
+                        "enabled": request.form.get("enabled") == "1",
+                    },
+                    current_employee() or "",
+                )
+                flash("PP 客户特殊规则已保存并立即生效。", "success")
+                section = "customer"
+            elif action in {"enable_customer", "disable_customer"}:
+                set_pp_customer_rule_enabled(
+                    int(request.form.get("rule_id") or 0), action == "enable_customer", current_employee() or ""
+                )
+                flash("PP 客户特殊规则状态已更新。", "success")
+                section = "customer"
+            else:
+                flash("未识别的 PP 规则维护操作。", "error")
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("main.admin_pp_transcode_rules", section=section))
+
+    base_field = request.args.get("field_key", "glue_code")
+    if base_field not in PP_BASE_FIELDS | PP_SHARED_FIELDS:
+        base_field = "glue_code"
+    base_page = max(1, request.args.get("base_page", 1, type=int) or 1)
+    base_page_size = request.args.get("base_page_size", 20, type=int) or 20
+    base_page_size = min(max(base_page_size, 10), 100)
+    customer_page = max(1, request.args.get("customer_page", 1, type=int) or 1)
+    customer_page_size = request.args.get("customer_page_size", 20, type=int) or 20
+    customer_page_size = min(max(customer_page_size, 10), 100)
+    selected_base_id = request.args.get("base_rule_id", type=int)
+    selected_customer_id = request.args.get("customer_rule_id", type=int)
+    return render_template(
+        "pp_transcode_rules.html",
+        section=section,
+        field_meta=PP_FIELD_META,
+        base_fields=[{"key": key, **PP_FIELD_META[key]} for key, _, _ in PP_RULE_FIELDS if key in PP_BASE_FIELDS | PP_SHARED_FIELDS],
+        shared_base_fields=PP_SHARED_FIELDS,
+        customer_fields=[{"key": key, **PP_FIELD_META[key]} for key, _, _ in PP_RULE_FIELDS if key in PP_CUSTOMER_FIELDS],
+        selected_field=base_field,
+        base_rules=list_pp_base_rules(
+            base_field,
+            request.args.get("keyword", ""),
+            request.args.get("enabled", "all"),
+            page=base_page,
+            page_size=base_page_size,
+        ),
+        base_total=count_pp_base_rules(base_field, request.args.get("keyword", ""), request.args.get("enabled", "all")),
+        base_page=base_page,
+        base_page_size=base_page_size,
+        customer_rules=list_pp_customer_rules(
+            request.args.get("customer_code", ""),
+            request.args.get("customer", ""),
+            request.args.get("customer_field", ""),
+            request.args.get("customer_enabled", "all"),
+            page=customer_page,
+            page_size=customer_page_size,
+        ),
+        customer_total=count_pp_customer_rules(
+            request.args.get("customer_code", ""),
+            request.args.get("customer", ""),
+            request.args.get("customer_field", ""),
+            request.args.get("customer_enabled", "all"),
+        ),
+        customer_page=customer_page,
+        customer_page_size=customer_page_size,
+        selected_base_rule=get_pp_base_rule(selected_base_id) if selected_base_id else None,
+        selected_customer_rule=get_pp_customer_rule(selected_customer_id) if selected_customer_id else None,
+        rule_changes=list_pp_rule_changes(),
     )
 
 
@@ -2022,7 +3967,7 @@ def admin_pdf_excel_ai():
 
 
 def _today_iso() -> str:
-    return date.today().isoformat()
+    return order_intake_business_today().isoformat()
 
 
 def _task_category_id_from_form(employee_id: str) -> int | None:
@@ -2393,18 +4338,18 @@ def create_transcode_job_view():
     uploaded_file = request.files.get("excel_file")
     if not uploaded_file or not uploaded_file.filename:
         flash("请先上传 Excel 文件。", "error")
-        return redirect(url_for("main.transcode"))
+        return redirect(url_for("main.history"))
     original_filename = (uploaded_file.filename or "").strip()
     if not original_filename.lower().endswith((".xlsx", ".xlsm", ".xls")):
         flash("转码功能仅支持 .xlsx / .xlsm / .xls 文件。", "error")
-        return redirect(url_for("main.transcode"))
+        return redirect(url_for("main.history"))
     active_job = get_active_job(current_employee(), "transcode")
     if active_job:
         flash("当前已有转码任务正在处理，请先等待完成或停止后再上传。", "error")
-        return redirect(url_for("main.transcode", job_id=active_job["id"]))
+        return redirect(url_for("main.history"))
     job_id = queue_transcode_job(current_employee(), uploaded_file, original_filename)
     flash("转码任务已创建，系统正在处理。", "success")
-    return redirect(url_for("main.transcode", job_id=job_id))
+    return redirect(url_for("main.history"))
 
 
 @bp.post("/transcode-agent/jobs")
@@ -3169,6 +5114,7 @@ def _job_feature_return_url(job, job_id: int) -> str:
     feature_route = {
         "transcode": "main.transcode",
         "transcode_agent": "main.transcode_agent",
+        "pp_transcode_agent": "main.pp_transcode_agent",
         "in_transit": "main.in_transit",
         "inventory_detail": "main.inventory_detail",
         "inventory_bid": "main.inventory_bid",
@@ -3200,8 +5146,48 @@ def history():
         return redirect_resp
     start_date = request.args.get("start_date") or None
     end_date = request.args.get("end_date") or None
-    jobs = _decorate_jobs(list_jobs(current_employee(), start_date=start_date, end_date=end_date, limit=100))
-    return render_template("history.html", jobs=jobs, start_date=start_date, end_date=end_date)
+    employee_id = current_employee() or ""
+    jobs = _decorate_jobs(
+        list_jobs(employee_id, start_date=start_date, end_date=end_date, limit=100)
+    )
+
+    # 邮箱抓取也是用户执行过的业务操作，和常规任务按时间汇总到同一份历史中。
+    # 日志表记录的是 ISO 时间；用日期前缀筛选可同时兼容 SQLite 与 PostgreSQL。
+    from .mail_transcode_agent import mail_store
+
+    fetch_logs = mail_store.list_fetch_logs(limit=100, owner_employee_id=employee_id)
+    if start_date:
+        fetch_logs = [
+            log for log in fetch_logs if str(log.get("started_at") or "")[:10] >= start_date
+        ]
+    if end_date:
+        fetch_logs = [
+            log for log in fetch_logs if str(log.get("started_at") or "")[:10] <= end_date
+        ]
+
+    history_items = [
+        {
+            "kind": "job",
+            "sort_at": str(job.get("created_at") or ""),
+            "job": job,
+        }
+        for job in jobs
+    ]
+    history_items.extend(
+        {
+            "kind": "mail_fetch",
+            "sort_at": str(log.get("finished_at") or log.get("started_at") or ""),
+            "log": log,
+        }
+        for log in fetch_logs
+    )
+    history_items.sort(key=lambda item: item["sort_at"], reverse=True)
+    return render_template(
+        "history.html",
+        history_items=history_items,
+        start_date=start_date,
+        end_date=end_date,
+    )
 
 
 @bp.post("/history/<int:job_id>/delete")
@@ -3242,6 +5228,35 @@ def download_inventory_detail(job_id: int, grade: str):
     return send_file(file_path, as_attachment=True, download_name=file_path.name)
 
 
+@bp.get("/pdf-excel/jobs/<int:job_id>/domestic-export")
+def download_pdf_excel_domestic(job_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    job = get_job(job_id)
+    if (
+        not job
+        or job["employee_id"] != current_employee()
+        or job["feature"] != PDF_EXCEL_FEATURE
+    ):
+        flash("未找到该 PDF/图片转Excel 任务。", "error")
+        return redirect(url_for("main.history"))
+    if job["status"] != "completed":
+        flash("任务尚未完成，暂时不能下载内销模板。", "error")
+        return redirect(url_for("main.job_detail", job_id=job_id))
+    try:
+        output, filename, mimetype = build_job_domestic_export(job)
+    except (OSError, ValueError) as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("main.job_detail", job_id=job_id))
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name=filename,
+        mimetype=mimetype,
+    )
+
+
 @bp.get("/download/<int:job_id>/<kind>")
 def download(job_id: int, kind: str):
     redirect_resp = require_login()
@@ -3262,6 +5277,11 @@ def download(job_id: int, kind: str):
     if kind == "result" and job["feature"] == TRANSCODE_AGENT_FEATURE:
         try:
             refresh_transcode_agent_audit_sheet(job_id)
+        except (OSError, ValueError):
+            pass
+    if kind == "result" and job["feature"] == "pp_transcode_agent":
+        try:
+            refresh_pp_result_file(job_id, current_employee() or "")
         except (OSError, ValueError):
             pass
     return send_file(file_path, as_attachment=True)

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}我的 | {{ platform_name }} {{ platform_version }}{% endblock %}
+{% block content %}
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('main.dashboard') }}">返回功能中心</a>
+  <span>我的</span>
+</div>
+
+<section class="feature-hero settings-hero">
+  <div class="feature-hero-copy">
+    <div class="panel-tag">个人工作台</div>
+    <h1>我的</h1>
+    <p>统一管理当前登录账号的个人配置、账号安全与管理员维护入口。</p>
+  </div>
+</section>
+
+<section class="settings-entry-grid" aria-label="个人配置项目">
+  {% if mail_config_available %}
+  <a class="settings-entry" href="{{ url_for('mail_transcode.accounts_page') }}">
+    <span class="settings-entry-icon" aria-hidden="true">@</span>
+    <div>
+      <h2>邮箱配置</h2>
+      <p>配置邮件自动化的 IMAP 收件与 SMTP 发信账号。手动抓取不改变邮件已读状态，真实发信需单独测试并启用。</p>
+    </div>
+    <span class="settings-entry-action">进入配置</span>
+  </a>
+  {% else %}
+  <div class="settings-empty-state">邮箱配置模块暂未加载。</div>
+  {% endif %}
+</section>
+
+<section class="settings-entry-grid" aria-label="账号与安全">
+  <a class="settings-entry" href="{{ url_for('main.admin_password') }}">
+    <span class="settings-entry-icon" aria-hidden="true">⌘</span>
+    <div>
+      <h2>账号与密码</h2>
+      <p>修改个人登录密码；完成管理员验证后，可维护管理员密码、员工账号和密码重置。</p>
+    </div>
+    <span class="settings-entry-action">进入管理</span>
+  </a>
+</section>
+
+<p class="settings-future-note">后续新增的个人设置和安全管理功能会统一显示在此处。</p>
+{% endblock %}

@@ -18,7 +18,7 @@ from .paths import PDF_EXCEL_CACHE_DIR
 
 
 PARSER_CACHE_VERSION = "purchase_parser_cache_v1"
-PIPELINE_CODE_VERSION = "purchase_order_speed_v5"
+PIPELINE_CODE_VERSION = "purchase_order_speed_v11"
 PARSER_CACHE_DIR = PDF_EXCEL_CACHE_DIR / "parsed_documents"
 _CURRENT_SUMMARY: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
     "purchase_performance_summary",

@@ -1,0 +1,22 @@
+{
+  "code_review_complete": false,
+  "automation_tests_passed": false,
+  "full_data_verification_passed": false,
+  "postgres_backup_restore_rehearsed": false,
+  "sqlite_rollback_rehearsed": false,
+  "file_downloads_verified": false,
+  "business_acceptance_passed": false,
+  "monitoring_alerts_configured": false,
+  "switch_owner_assigned": false,
+  "review_owner_assigned": false,
+  "rollback_owner_assigned": false,
+  "switch_owner": "",
+  "review_owner": "",
+  "rollback_owner": "",
+  "maintenance_window": "",
+  "shadow_observation_days": 0,
+  "unexplained_shadow_differences": -1,
+  "outbox_pending": -1,
+  "performance_thresholds_approved": false,
+  "performance_test_passed": false
+}

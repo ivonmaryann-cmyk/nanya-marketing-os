@@ -32,7 +32,9 @@
       </tr>
     </thead>
     <tbody>
-      {% for job in jobs %}
+      {% for item in history_items %}
+      {% if item.kind == 'job' %}
+      {% set job = item.job %}
       <tr>
         <td>{{ job.created_at }}</td>
         <td>{{ job.customer_label or '-' }}</td>
@@ -50,6 +52,9 @@
           {% for result in job.inventory_results %}
           <a href="{{ url_for('main.download_inventory_detail', job_id=job.id, grade=result.key) }}">{{ result.label }}</a>
           {% endfor %}
+          {% elif job.feature == 'pdf_excel' %}
+          <a href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载文件</a>
+          <a href="{{ url_for('main.download_pdf_excel_domestic', job_id=job.id) }}">下载内销模板</a>
           {% else %}
           <a href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载文件</a>
           {% endif %}
@@ -59,6 +64,21 @@
           </form>
         </td>
       </tr>
+      {% else %}
+      {% set log = item.log %}
+      <tr>
+        <td>{{ log.finished_at or log.started_at }}</td>
+        <td>{{ log.email or '已删除的邮箱配置' }}</td>
+        <td>
+          <strong>邮箱抓取</strong>
+          <div class="muted-small">#{{ log.id }} 邮箱自动化</div>
+        </td>
+        <td><span class="status {{ log.status }}">{{ log.status }}</span></td>
+        <td>-</td>
+        <td>{{ log.message or '-' }}</td>
+        <td class="actions"><span class="muted-small">记录已归档</span></td>
+      </tr>
+      {% endif %}
       {% else %}
       <tr><td colspan="7">没有符合条件的记录。</td></tr>
       {% endfor %}

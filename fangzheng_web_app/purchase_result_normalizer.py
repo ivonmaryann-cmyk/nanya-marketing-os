@@ -91,6 +91,17 @@ def normalize_pp_spec_spacing(value: Any) -> str:
     return " ".join(match.group(name) for name in ["product", "glass", "rc", "length"])
 
 
+def normalize_order_spec_spacing(value: Any) -> str:
+    """Repair only high-confidence spacing artifacts found in order tables."""
+    text = normalize_pp_spec_spacing(value)
+    text = re.sub(r"(?i)(/卷)(?=(?:耐|无卤|有卤|CAF))", r"\1 ", text)
+    text = re.sub(r"([纬经])\s+向", r"\1向", text)
+    text = re.sub(r"(?i)(?<=\d)m\s+m(?=(?:纬|经)向)", "mm", text)
+    text = re.sub(r"(?i)\bFR\s*-\s*4\b", "FR-4", text)
+    text = re.sub(r"高\s+速(?=材料)", "高速", text)
+    return clean_text(text)
+
+
 def _split_header_body_text(source_text: str) -> tuple[list[str], list[str]]:
     lines = [clean_text(line) for line in str(source_text or "").splitlines() if clean_text(line)]
     if not lines:
@@ -684,7 +695,7 @@ def _normalize_spec_columns(rows: list[list[str]], header_index: int) -> tuple[l
     spec_columns = [
         index
         for index, header in enumerate(headers)
-        if any(keyword in _compact(header) for keyword in ["型号/规格", "型号规格", "规格型号", "型号及规格"])
+        if "规格" in _compact(header)
     ]
     if not spec_columns:
         return normalized, []
@@ -694,7 +705,7 @@ def _normalize_spec_columns(rows: list[list[str]], header_index: int) -> tuple[l
             if column >= len(row):
                 continue
             original = clean_text(row[column])
-            formatted = normalize_pp_spec_spacing(original)
+            formatted = normalize_order_spec_spacing(original)
             if formatted and formatted != original:
                 row[column] = formatted
                 changed = True
@@ -706,17 +717,22 @@ def _normalize_mapped_detail_specs(rows: list[dict[str, Any]]) -> bool:
     for row in rows:
         standard = row.get("standard") or {}
         description = clean_text(standard.get(DESC))
-        formatted_description = normalize_pp_spec_spacing(description)
+        formatted_description = normalize_order_spec_spacing(description)
         if formatted_description and formatted_description != description:
             standard[DESC] = formatted_description
             changed = True
         for header, value in (row.get("original") or {}).items():
-            if not any(keyword in _compact(header) for keyword in ["型号/规格", "型号规格", "规格型号", "型号及规格"]):
+            if "规格" not in _compact(header) and "备注" not in _compact(header):
                 continue
-            formatted_value = normalize_pp_spec_spacing(value)
+            formatted_value = normalize_order_spec_spacing(value)
             if formatted_value and formatted_value != clean_text(value):
                 row["original"][header] = formatted_value
                 changed = True
+        remark = clean_text(standard.get(REMARK))
+        formatted_remark = normalize_order_spec_spacing(remark)
+        if formatted_remark and formatted_remark != remark:
+            standard[REMARK] = formatted_remark
+            changed = True
     return changed
 
 

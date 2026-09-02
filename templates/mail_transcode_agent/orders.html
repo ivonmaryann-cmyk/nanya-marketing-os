@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}抓取任务 | 邮件自动化转码Agent{% endblock %}
+{% block content %}
+<div class="page-backbar">
+  <a class="back-link" href="{{ url_for('mail_transcode.index') }}">返回邮件自动化转码Agent</a>
+  <span>抓取任务</span>
+</div>
+
+<section class="feature-hero">
+  <div class="hero-watermark feature-mark">FETCH</div>
+  <div class="feature-hero-copy">
+    <div class="panel-tag">抓取任务</div>
+    <h1>抓取任务列表</h1>
+    <p>一次邮件抓取为一个任务，点击进入可查看本次抓到的订单邮件列表。</p>
+  </div>
+</section>
+
+<section class="card task-card">
+  <div class="step-tag">抓取记录</div>
+  <div class="section-head">
+    <h2>抓取任务</h2>
+  </div>
+  <div class="table-scroll">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>抓取时间</th>
+          <th>抓取人</th>
+          <th>邮件数</th>
+          <th>订单数</th>
+          <th>状态</th>
+          <th>说明</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for task in fetch_tasks %}
+        <tr>
+          <td>{{ task.started_at }}</td>
+          <td>{{ task.created_by or '-' }}</td>
+          <td>{{ task.email_count }}</td>
+          <td>{{ task.order_count }}</td>
+          <td><span class="status">{{ task.status }}</span></td>
+          <td>{{ task.message }}</td>
+          <td><a href="{{ url_for('mail_transcode.fetch_task_detail', fetch_task_id=task.id) }}">查看邮件</a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7">暂无抓取任务</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if total_pages > 1 %}
+  <div class="result-actions" style="margin-top:14px;">
+    {% if page > 1 %}
+    <a class="feature-action" href="{{ url_for('mail_transcode.orders_page', page=page-1) }}">上一页</a>
+    {% endif %}
+    <span style="align-self:center;">第 {{ page }} / {{ total_pages }} 页</span>
+    {% if page < total_pages %}
+    <a class="feature-action" href="{{ url_for('mail_transcode.orders_page', page=page+1) }}">下一页</a>
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

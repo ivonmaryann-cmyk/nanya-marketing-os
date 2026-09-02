@@ -82,6 +82,7 @@
             <td>
               {% if job.status == 'completed' %}
               <a class="primary-link compact" href="{{ url_for('main.download', job_id=job.id, kind='result') }}">下载结果</a>
+              <a class="primary-link compact" href="{{ url_for('main.download_pdf_excel_domestic', job_id=job.id) }}">下载内销模板</a>
               {% else %}
               -
               {% endif %}
@@ -136,6 +137,7 @@
         <div id="live-download" class="{% if active_job.status != 'completed' %}hidden{% endif %}">
           <div class="result-ready">
             <a class="primary-link" href="{{ url_for('main.download', job_id=active_job.id, kind='result') }}">下载结果文件</a>
+            <a class="primary-link" href="{{ url_for('main.download_pdf_excel_domestic', job_id=active_job.id) }}">下载内销模板</a>
           </div>
         </div>
       </div>

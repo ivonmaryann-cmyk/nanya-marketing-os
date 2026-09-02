@@ -725,7 +725,17 @@ def project_factory_document(
             item.get("role") == ROLE_TAX_PRICE and item.get("status") == "rejected"
             for item in price_evidence
         )
-        if tax_price is None and not tax_price_conflict:
+        # Some recognizers also project an explicitly untaxed source column to
+        # the generic standard ``含税单价`` field. Once the original heading has
+        # established an untaxed price, that derived value must not populate the
+        # tax-inclusive column as well.
+        has_explicit_pre_tax = any(
+            item.get("role") == ROLE_PRE_TAX_PRICE
+            and item.get("status") == "accepted"
+            and item.get("method") == "explicit_pre_tax"
+            for item in price_evidence
+        )
+        if tax_price is None and not tax_price_conflict and not has_explicit_pre_tax:
             tax_price = decimal_or_none(source_standard.get("含税单价"))
             if tax_price is not None:
                 price_evidence.append({"role": ROLE_TAX_PRICE, "status": "accepted", "method": "standard_tax_price"})
