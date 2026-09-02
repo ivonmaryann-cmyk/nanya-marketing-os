@@ -12,6 +12,8 @@ from typing import Any
 
 from .database import automation_cursor as db_cursor
 from .db import utcnow
+from .pp_transcode_service import calculate_pp_transcode_quote
+from .transcode_agent_service import calculate_transcode_agent_quote
 
 
 INTERFACE_DEFAULTS = {
@@ -32,7 +34,6 @@ INTERFACE_DEFAULTS = {
             "materialInfoList[].customerSpec": "新建料号弹窗.客户规格匹配（仅点击新建料号时传）",
             "materialInfoList[].customerSpecOld": "模板明细.客户规格（选填）",
             "materialInfoList[].newProductName": "暂不映射，发送空字符串（选填）",
-            "materialInfoList[].oldProductName": "模板明细.品名（选填）",
             "materialInfoList[].newFlag": "点击新建料号时固定发送 Y；批量查询不发送",
         },
         "response_mapping": {
@@ -43,9 +44,9 @@ INTERFACE_DEFAULTS = {
             "source": "料号查询建议.来源（PARSE=规格解析）",
             "errors[]": "接口交互记录.逐行失败信息",
             "hitMaterialList[].peag01": "料号查询建议.产品编号",
-            "hitMaterialList[].peag08": "料号查询建议.品名",
+            "hitMaterialList[].peag09": "料号查询建议.品名",
+            "hitMaterialList[].peag08": "料号查询建议.接口品名（不回填模板）",
             "hitMaterialList[].peag06": "料号查询建议.销售品名规格",
-            "hitMaterialList[].peag09": "料号查询建议.旧品名",
             "hitMaterialList[].scca05": "料号查询建议.客户规格",
             "hitMaterialList[].scca03": "料号查询建议.客户产品编号",
         },
@@ -477,7 +478,6 @@ def test_interface_config(payload: dict[str, Any]) -> dict[str, Any]:
             "customerMaterialNo": "",
             "customerSpecOld": "",
             "newProductName": "",
-            "oldProductName": "",
         }],
     } if interface_key == "material_batch_query" else {
         "sctoDataList": [{
@@ -875,8 +875,8 @@ def _save_material_creation_lines(
             if not row:
                 raise ValueError(f"第 {line_no} 项不存在")
             values = _json(row["values_json"], {})
-            if str(values.get("product_code") or "").strip() or str(values.get("product_name") or "").strip():
-                raise ValueError(f"第 {line_no} 项已有产品编号或品名，不能提交新建料号")
+            if str(values.get("product_code") or "").strip():
+                raise ValueError(f"第 {line_no} 项已有产品编号，不能提交新建料号")
             task = conn.execute(
                 "SELECT result_json FROM order_material_resolution_tasks WHERE template_id=? AND line_no=?",
                 (template_id, line_no),
@@ -885,6 +885,11 @@ def _save_material_creation_lines(
                 raise ValueError(f"第 {line_no} 项已有候选料号，请先选择候选，不能重复新建")
             updates = {
                 "material_status": "新增",
+                "product_name": (
+                    str(raw.get("product_name") or "").strip()
+                    if "product_name" in raw
+                    else str(values.get("product_name") or "").strip()
+                ),
                 "adhesive_code": str(raw.get("adhesive_code") or "").strip(),
                 "customer_product_code": str(raw.get("customer_product_code") or "").strip(),
                 "customer_spec": str(raw.get("customer_spec") or "").strip(),
@@ -947,15 +952,11 @@ def _material_category_code(product_type: str) -> str:
 
 
 def _real_material_request_item(item: dict[str, Any], *, create: bool = False) -> dict[str, str]:
-    product_name = str(item.get("product_name") or "").strip()
-    if product_name in {"创建料号中", "创建品名中"}:
-        product_name = ""
     result = {
         "categoryCode": _material_category_code(str(item.get("product_type") or "")),
         "customerMaterialNo": str(item.get("customer_product_code") or "").strip(),
         "customerSpecOld": str(item.get("customer_spec") or "").strip(),
-        "newProductName": product_name if create else "",
-        "oldProductName": "" if create else product_name,
+        "newProductName": "",
     }
     if create:
         result.update({
@@ -1016,10 +1017,10 @@ def _real_material_response_items(
         candidates = [
             {
                 "factory_part_no": str(hit.get("peag01") or "").strip(),
-                "product_name": str(hit.get("peag08") or "").strip(),
+                "product_name": str(hit.get("peag09") or "").strip(),
             }
             for hit in matched_hits
-            if str(hit.get("peag01") or hit.get("peag08") or "").strip()
+            if str(hit.get("peag01") or "").strip()
         ]
         if candidates:
             results.append({
@@ -1043,6 +1044,77 @@ def _real_material_response_items(
                 "message": str(response_body.get("msg") or f"接口返回 HTTP {http_status}"),
             })
     return results
+
+
+def _customer_short_name(customer_code: str) -> str:
+    with db_cursor() as conn:
+        row = conn.execute(
+            """SELECT customer_short_name FROM automation_customers
+                 WHERE customer_code=? AND status='active'""",
+            (customer_code,),
+        ).fetchone()
+    return str(row["customer_short_name"] if row else "").strip()
+
+
+def _transcode_product_name(item: dict[str, Any], customer_code: str, customer_name: str, employee_id: str) -> dict[str, str]:
+    """Return a display-only product name for an unmatched material query row."""
+    customer_spec = str(item.get("customer_spec") or "").strip()
+    if not customer_spec:
+        return {"product_name": "", "source_label": "", "message": "未填写客户规格，无法调用转码。"}
+    order_remark = str(item.get("remark") or "").strip()
+    if _material_category_code(str(item.get("product_type") or "")) == "698":
+        quote = calculate_pp_transcode_quote(
+            customer_spec,
+            customer=customer_name,
+            customer_code=customer_code,
+            order_remark=order_remark,
+        )
+        product_name = str(quote.get("pending_code") or quote.get("candidate_code") or "").strip()
+        message = str(quote.get("note") or quote.get("error") or "PP 转码未返回码值。")
+        if product_name and not product_name.replace("*", "").strip():
+            product_name = ""
+            message = f"{message} 转码结果全为占位符，未回填品名。"
+        return {
+            "product_name": product_name,
+            "source_label": "PP转码",
+            "message": message,
+        }
+    quote = calculate_transcode_agent_quote(
+        customer_spec,
+        customer=customer_name,
+        customer_code=customer_code,
+        order_remark=order_remark,
+        employee_id=employee_id,
+    )
+    product_name = str(
+        quote.get("result") or quote.get("formal_code") or quote.get("pending_code") or quote.get("candidate_code") or ""
+    ).strip()
+    return {
+        "product_name": product_name,
+        "source_label": "营销转码Agent",
+        "message": str(quote.get("note") or quote.get("error") or "营销转码未返回码值。"),
+    }
+
+
+def _apply_transcode_fallbacks(
+    request_items: list[dict[str, Any]], response_items: list[dict[str, Any]], *,
+    customer_code: str, employee_id: str,
+) -> None:
+    customer_name = _customer_short_name(customer_code)
+    for item, response in zip(request_items, response_items):
+        if _material_candidates(response):
+            continue
+        try:
+            fallback = _transcode_product_name(item, customer_code, customer_name, employee_id)
+        except Exception as exc:
+            fallback = {"product_name": "", "source_label": "", "message": f"转码失败：{exc}"}
+        response["transcode"] = fallback
+        if fallback["product_name"]:
+            response["product_name"] = fallback["product_name"]
+            response["product_name_source_label"] = fallback["source_label"]
+            response["message"] = f"{response.get('message') or '未命中料号。'} {fallback['source_label']}：{fallback['message']}"
+        else:
+            response["message"] = f"{response.get('message') or '未命中料号。'} 转码未回填品名：{fallback['message']}"
 
 
 def build_material_query_real(
@@ -1069,6 +1141,9 @@ def build_material_query_real(
         raise ValueError("请先填写并保存账款客户编号")
     rows = [row for row in rows if line_nos is None or int(row["line_no"]) in line_nos]
     request_items = [_material_request_item(int(row["line_no"]), _json(row["values_json"], {})) for row in rows]
+    values_by_line = {int(row["line_no"]): _json(row["values_json"], {}) for row in rows}
+    for item in request_items:
+        item["remark"] = str(values_by_line[item["line_no"]].get("remark") or "")
     if not request_items:
         raise ValueError("当前没有可查询的订单明细")
     request_payload = {
@@ -1094,6 +1169,10 @@ def build_material_query_real(
             )
         raise
     response_items = _real_material_response_items(request_items, response_body, http_status)
+    if not create_mode:
+        _apply_transcode_fallbacks(
+            request_items, response_items, customer_code=customer_code, employee_id=employee_id,
+        )
     call_status = "success" if any(item["status"] in {"matched", "creating"} for item in response_items) else "failed"
     all_changes: list[dict[str, Any]] = []
     with db_cursor() as conn:
@@ -1112,14 +1191,14 @@ def build_material_query_real(
                 line_no=item["line_no"], status=task_status, input_item=item, call_id=call_id, result=response,
             )
             values = _json(rows_by_line[item["line_no"]]["values_json"], {})
-            if status in {"matched", "creating"}:
+            if status in {"matched", "creating"} or response.get("product_name"):
                 candidates = _material_candidates(response)
                 changes = _backfill_material_line(
                     conn, template_id=template_id, line_no=item["line_no"], values=values,
                     factory_part_no=str(response.get("factory_part_no") or ""),
                     product_name=str(response.get("product_name") or ""),
                     correlation_id=task["correlation_id"],
-                    source_label="料号查询接口（真实）",
+                    source_label=str(response.get("product_name_source_label") or "料号查询接口（真实）"),
                 )
                 all_changes.extend(changes)
             if status == "matched":
@@ -1292,8 +1371,10 @@ def _material_candidates(result: dict[str, Any]) -> list[dict[str, str]]:
             continue
         candidate = {
             "product_code": str(raw.get("factory_part_no") or raw.get("peag01") or "").strip(),
-            "product_name": str(raw.get("product_name") or raw.get("peag08") or "").strip(),
+            "product_name": str(raw.get("product_name") or raw.get("peag09") or "").strip(),
         }
+        if not candidate["product_code"] or candidate["product_code"] in {"创建料号中", "创建品名中"}:
+            continue
         key = (candidate["product_code"], candidate["product_name"])
         if key == ("", "") or key in seen:
             continue

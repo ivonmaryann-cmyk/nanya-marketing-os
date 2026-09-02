@@ -97,7 +97,7 @@ _ATTACHMENT_HEADERS = {
     "customer_spec": {"客户规格", "规格", "型号", "名称规格", "物料规格", "物料描述"},
     "customer_spec_match": {"客户规格匹配", "规格匹配"},
     "product_type": {"产品类型", "产品类型（pp、基板）", "品类"},
-    "delivery_date": {"出货日期", "交货日期", "交期", "到货日期", "delivery date"},
+    "delivery_date": {"出货日期", "交货日期", "交期", "需求交期", "要求交期", "计划交期", "供应商交期", "到货日期", "delivery date"},
     "quantity": {"数量", "采购量", "订购数量", "订单数量", "qty", "quantity"},
     "_quantity_unit": {"单位", "计量单位", "数量单位", "uom"},
     "price_before_tax": {"税前单价", "未税单价", "不含税单价"},
@@ -231,12 +231,75 @@ def _apply_auto_extraction_policy(
     return result
 
 
-def _split_body_order_rows(body_text: str) -> list[dict[str, Any]]:
+def _normalize_body_delivery_date(value: Any, reference_date: Any = "") -> str:
+    normalized = normalize_date(value)
+    if normalized:
+        return normalized
+    match = re.search(r"(\d{1,2})\s*月\s*(\d{1,2})\s*日?", clean_text(value))
+    if not match:
+        return ""
+    year_match = re.search(r"(20\d{2})", clean_text(reference_date))
+    year = int(year_match.group(1)) if year_match else datetime.now().year
+    try:
+        return datetime(year, int(match.group(1)), int(match.group(2))).date().isoformat()
+    except ValueError:
+        return ""
+
+
+def _split_demand_delivery_rows(body_text: str, reference_date: Any = "") -> list[dict[str, Any]]:
+    """Parse ERP mail rows headed by 下单日期/需求交期 when no HTML table survives."""
+    text = " ".join(str(body_text or "").split())
+    if "下单日期" not in text or not any(label in text for label in ("需求交期", "要求交期")):
+        return []
+    row_pattern = re.compile(
+        r"(?P<order_date>\d{1,2}/\d{1,2})\s+"
+        r"(?P<product_type>板材|PP)\s+\S+\s+"
+        r"(?P<customer_product_code>[A-Za-z0-9]{8,})\s+"
+        r"(?P<body>.*?)(?=\s+\d{1,2}/\d{1,2}\s+(?:板材|PP)\s+\S+\s+[A-Za-z0-9]{8,}|$)",
+        re.IGNORECASE,
+    )
+    result: list[dict[str, Any]] = []
+    for match in row_pattern.finditer(text):
+        body = clean_text(match.group("body"))
+        detail_match = re.match(
+            r"(?P<customer_spec>.*?)\s+"
+            r"(?P<quantity>\d+(?:\.\d+)?)\s+"
+            r"(?P<unit>[A-Za-z]+|[\u4e00-\u9fff]+)\s+"
+            r"(?P<delivery_date>(?:20\d{2}[年./-]\s*)?\d{1,2}月\d{1,2}日?|20\d{2}[-/.]\d{1,2}[-/.]\d{1,2})(?P<remark>.*)$",
+            body,
+        )
+        if not detail_match:
+            continue
+        values = {
+            **_blank_line(len(result) + 1),
+            "customer_product_code": match.group("customer_product_code"),
+            "customer_spec": detail_match.group("customer_spec"),
+            "product_type": match.group("product_type"),
+            "quantity": detail_match.group("quantity"),
+            "delivery_date": _normalize_body_delivery_date(
+                detail_match.group("delivery_date"), reference_date,
+            ),
+            "remark": clean_text(detail_match.group("remark")),
+        }
+        result.append(_line_entry(
+            values,
+            label="邮件正文需求交期表",
+            reference=f"下单日期 {match.group('order_date')}",
+            line_no=len(result) + 1,
+            quantity_unit=detail_match.group("unit"),
+        ))
+    return result
+
+
+def _split_body_order_rows(body_text: str, reference_date: Any = "") -> list[dict[str, Any]]:
     """Extract simple ERP-style rows from the line-oriented mail body.
 
     This is a safe first path for HTML mail tables. Attachment-specific parsers
     will feed the same structure in the next extraction layer.
     """
+    demand_delivery_rows = _split_demand_delivery_rows(body_text, reference_date)
+    if demand_delivery_rows:
+        return demand_delivery_rows
     lines = [" ".join(item.split()) for item in str(body_text or "").splitlines() if item.strip()]
     positions = [index for index, value in enumerate(lines) if re.fullmatch(r"(?:HJ\d{8,}|[A-Z]{1,4}\d{6,}[A-Z0-9_-]*)", value, re.I)]
     result: list[dict[str, Any]] = []
@@ -493,7 +556,9 @@ def _line_from_pipeline_row(
             or ""
         ),
         "customer_spec": raw_spec or standard.get("说明") or standard.get("物料名称") or "",
-        "delivery_date": standard.get("交货日期") or _value_by_alias(original, "交货日期", "出货日期", "交期", "Delivery Date") or "",
+        "delivery_date": standard.get("交货日期") or _value_by_alias(
+            original, "交货日期", "出货日期", "交期", "需求交期", "要求交期", "计划交期", "供应商交期", "Delivery Date",
+        ) or "",
         "quantity": standard.get("数量") or _value_by_alias(original, "数量", "Quantity", "Qty") or "",
         "price_before_tax": raw_before_tax_price or standard.get("不含税单价") or "",
         "unit_price": raw_unit_price or "",
@@ -597,6 +662,7 @@ def _rows_from_mail_html(case: dict[str, Any]) -> list[dict[str, Any]]:
         str(case.get("body_html") or ""),
         str(case.get("body_text") or ""),
         source_name=f"邮件正文#{case.get('id') or ''}.html",
+        reference_date=str(case.get("received_at") or case.get("sent_at") or ""),
     )
     if not document:
         return []
@@ -747,7 +813,9 @@ def _initial_template_data(case: dict[str, Any]) -> tuple[dict[str, str], list[d
     # An order attachment remains authoritative.  When there is no supported
     # attachment, an HTML mail table gets the *same* canonical mapping and
     # validation path; only then use the legacy line-oriented body fallback.
-    rows = attachment_rows or _rows_from_mail_html(case) or _split_body_order_rows(str(case.get("body_text") or ""))
+    rows = attachment_rows or _rows_from_mail_html(case) or _split_body_order_rows(
+        str(case.get("body_text") or ""), case.get("received_at") or case.get("sent_at") or "",
+    )
     rows = _merge_initial_rows(rows)
     header = dict(DEFAULT_HEADER_VALUES)
     extracted_header = next(

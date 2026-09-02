@@ -89,6 +89,15 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertIn('openCustomerSpecMatchEditor', template)
         self.assertIn("control.dispatchEvent(new Event('input'))", template)
 
+    def test_material_create_dialog_keeps_transcoded_product_name_visible(self) -> None:
+        template = (
+            Path(__file__).resolve().parents[1]
+            / "templates"
+            / "order_automation_entry_template.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("const visibleFields=[['adhesive_code','input'],['product_name','input'],['customer_spec_match','textarea']]", template)
+
     def test_multiple_material_candidates_use_compact_colored_count_badge(self) -> None:
         template = (
             Path(__file__).resolve().parents[1]
@@ -438,6 +447,29 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertEqual(rows[0]["values"]["quantity"], "20")
         self.assertEqual(rows[0]["values"]["product_type"], "基板")
         self.assertEqual(rows[0]["sources"]["quantity"]["label"], "邮件正文表格")
+
+    def test_plain_text_demand_delivery_rows_extract_yearless_dates(self) -> None:
+        body_text = """
+        下单日期 类别 供应商 编码 描述 数量 单位 需求交期 供应商交期复期 料号
+        8/29 板材 南亚新材 AA1130050110010002 NY6300S 0.050mm 1/1 43\"x49\" Halogen-free RTF2 1x1027 25 PIE 9月25日 R0O30A520298A
+        8/29 PP 南亚新材 LA0911078650191001 NY6300SP 1078 RC65% 21.7\"x24.5\" Halogen-free CAF 390 PIE 9月25日 R0O30A520298A
+        """
+        header, rows = _initial_template_data({
+            "id": 1001,
+            "body_html": "",
+            "body_text": body_text,
+            "attachments": [],
+            "detected_fields": {},
+            "customer_id": None,
+            "received_at": "2026-08-29 09:00:00",
+        })
+
+        self.assertTrue(header["customer_order_number"].startswith("暂无PO号-"))
+        self.assertEqual(2, len(rows))
+        self.assertEqual("AA1130050110010002", rows[0]["values"]["customer_product_code"])
+        self.assertEqual("2026-09-25", rows[0]["values"]["delivery_date"])
+        self.assertEqual("PP", rows[1]["values"]["product_type"])
+        self.assertEqual("2026-09-25", rows[1]["values"]["delivery_date"])
 
     def test_missing_customer_order_number_receives_uuid_placeholder(self) -> None:
         with patch("fangzheng_web_app.order_entry_service.uuid.uuid4", return_value="12345678-1234-5678-9abc-def012345678"):

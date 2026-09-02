@@ -23,6 +23,7 @@ from fangzheng_web_app.order_interface_service import (
     list_interface_configs,
     process_material_created_callback,
     _real_material_request_item,
+    _transcode_product_name,
     select_material_candidate,
     save_interface_config,
     test_interface_config,
@@ -72,6 +73,8 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
                          "模板明细.客户规格（选填）")
         self.assertEqual(material["response_mapping"]["hitMaterialList[].peag01"],
                          "料号查询建议.产品编号")
+        self.assertEqual(material["response_mapping"]["hitMaterialList[].peag09"],
+                         "料号查询建议.品名")
         self.assertTrue(any("按运行模式执行" in note for note in material["maintenance_notes"]))
         domestic = get_interface_config("domestic_order_entry")
         self.assertEqual(
@@ -539,8 +542,8 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         response = {
             "msg": "处理成功", "code": 200,
             "hitMaterialList": [
-                {"scca03": "A021000550", "scca05": "客户匹配规格", "peag01": "6900013796", "peag08": "品名一"},
-                {"scca03": "A021000550", "scca05": "客户匹配规格", "peag01": "6900013797", "peag08": "品名二"},
+                {"scca03": "A021000550", "scca05": "客户匹配规格", "peag01": "6900013796", "peag08": "不应使用", "peag09": "旧品名一"},
+                {"scca03": "A021000550", "scca05": "客户匹配规格", "peag01": "6900013797", "peag08": "不应使用", "peag09": "旧品名二"},
             ],
         }
         with patch(
@@ -553,17 +556,18 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         self.assertEqual(payload["customerCode"], "103878")
         self.assertEqual(payload["operatorCode"], "employee-a")
         self.assertEqual(payload["materialInfoList"][0]["categoryCode"], "698")
+        self.assertNotIn("category", payload["materialInfoList"][0])
         self.assertEqual(payload["materialInfoList"][0]["customerSpecOld"], "南亚新材料 NY6180L 原始客户规格")
         self.assertNotIn("customerSpec", payload["materialInfoList"][0])
         self.assertNotIn("adhesiveCode", payload["materialInfoList"][0])
         self.assertNotIn("newFlag", payload["materialInfoList"][0])
-        self.assertEqual(payload["materialInfoList"][0]["oldProductName"], "")
+        self.assertNotIn("oldProductName", payload["materialInfoList"][0])
         states = get_material_resolution_states(self.case_id, "employee-a")["items"]
         self.assertEqual(
             states[0]["candidates"],
             [
-                {"product_code": "6900013796", "product_name": "品名一"},
-                {"product_code": "6900013797", "product_name": "品名二"},
+                {"product_code": "6900013796", "product_name": "旧品名一"},
+                {"product_code": "6900013797", "product_name": "旧品名二"},
             ],
         )
         with db.db_cursor() as conn:
@@ -579,7 +583,7 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
             "adhesive_code": "ADH-01", "product_name": "现有品名",
         })
         self.assertEqual(query_item["customerSpecOld"], "原客户规格")
-        self.assertEqual(query_item["oldProductName"], "现有品名")
+        self.assertNotIn("oldProductName", query_item)
         self.assertNotIn("adhesiveCode", query_item)
         self.assertNotIn("customerSpec", query_item)
         self.assertNotIn("newFlag", query_item)
@@ -590,12 +594,116 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
             "adhesive_code": "ADH-02", "product_name": "新品名",
         }, create=True)
         self.assertEqual(new_item["categoryCode"], "718")
+        self.assertNotIn("category", new_item)
         self.assertEqual(new_item["customerSpecOld"], "原客户规格")
         self.assertEqual(new_item["adhesiveCode"], "ADH-02")
         self.assertEqual(new_item["customerSpec"], "客户规格匹配")
         self.assertEqual(new_item["newFlag"], "Y")
-        self.assertEqual(new_item["newProductName"], "新品名")
-        self.assertEqual(new_item["oldProductName"], "")
+        self.assertEqual(new_item["newProductName"], "")
+        self.assertNotIn("oldProductName", new_item)
+
+    def test_unmatched_board_query_backfills_marketing_agent_result(self) -> None:
+        _case, template = get_or_create_template(self.case_id, "employee-a")
+        values = dict(template["lines"][0]["values"])
+        values.update({
+            "line_no": "1", "product_type": "基板", "customer_product_code": "BOARD-001",
+            "customer_spec": "基板客户规格", "remark": "订单备注", "product_code": "", "product_name": "",
+        })
+        with db.db_cursor() as conn:
+            conn.execute(
+                "UPDATE order_entry_templates SET header_json=? WHERE id=?",
+                (json.dumps({"bill_to_customer_code": "C-BOARD"}, ensure_ascii=False), template["id"]),
+            )
+            conn.execute(
+                "UPDATE order_entry_template_lines SET values_json=? WHERE template_id=? AND line_no=1",
+                (json.dumps(values, ensure_ascii=False), template["id"]),
+            )
+            conn.execute(
+                """INSERT INTO automation_customers(customer_code,customer_short_name,status,created_at,updated_at)
+                   VALUES (?,?,?,?,?)""",
+                ("C-BOARD", "基板客户", "active", "2026-09-01", "2026-09-01"),
+            )
+        config = get_interface_config("material_batch_query")
+        save_interface_config("material_batch_query", {
+            "display_name": config["display_name"], "description": config["description"],
+            "mode": "real", "method": "POST", "endpoint_url": config["endpoint_url"],
+            "request_mapping": json.dumps(config["request_mapping"], ensure_ascii=False),
+            "response_mapping": json.dumps(config["response_mapping"], ensure_ascii=False),
+            "mock_scenarios": json.dumps(config["mock_scenarios"], ensure_ascii=False),
+        }, "employee-a")
+        with patch(
+            "fangzheng_web_app.order_interface_service._post_json_endpoint",
+            return_value=(200, {"code": 200, "msg": "未找到料号", "hitMaterialList": []}, 10),
+        ), patch(
+            "fangzheng_web_app.order_interface_service.calculate_transcode_agent_quote",
+            return_value={"result": "BOARD-CODE", "note": "营销转码成功"},
+        ) as quote:
+            build_material_query(self.case_id, "employee-a", "employee-a")
+        self.assertEqual(quote.call_args.args[0], "基板客户规格")
+        self.assertEqual(quote.call_args.kwargs["customer"], "基板客户")
+        self.assertEqual(quote.call_args.kwargs["customer_code"], "C-BOARD")
+        self.assertEqual(quote.call_args.kwargs["order_remark"], "订单备注")
+        with db.db_cursor() as conn:
+            line = conn.execute(
+                "SELECT values_json,sources_json FROM order_entry_template_lines WHERE template_id=? AND line_no=1",
+                (template["id"],),
+            ).fetchone()
+        self.assertEqual(json.loads(line["values_json"])["product_name"], "BOARD-CODE")
+        self.assertEqual(json.loads(line["sources_json"])["product_name"]["label"], "营销转码Agent")
+
+    def test_unmatched_pp_query_backfills_pending_transcode_code(self) -> None:
+        _case, template = get_or_create_template(self.case_id, "employee-a")
+        values = dict(template["lines"][0]["values"])
+        values.update({
+            "line_no": "1", "product_type": "PP", "customer_product_code": "PP-001",
+            "customer_spec": "PP客户规格", "remark": "PP备注", "product_code": "", "product_name": "",
+        })
+        with db.db_cursor() as conn:
+            conn.execute(
+                "UPDATE order_entry_templates SET header_json=? WHERE id=?",
+                (json.dumps({"bill_to_customer_code": "C-PP"}, ensure_ascii=False), template["id"]),
+            )
+            conn.execute(
+                "UPDATE order_entry_template_lines SET values_json=? WHERE template_id=? AND line_no=1",
+                (json.dumps(values, ensure_ascii=False), template["id"]),
+            )
+        config = get_interface_config("material_batch_query")
+        save_interface_config("material_batch_query", {
+            "display_name": config["display_name"], "description": config["description"],
+            "mode": "real", "method": "POST", "endpoint_url": config["endpoint_url"],
+            "request_mapping": json.dumps(config["request_mapping"], ensure_ascii=False),
+            "response_mapping": json.dumps(config["response_mapping"], ensure_ascii=False),
+            "mock_scenarios": json.dumps(config["mock_scenarios"], ensure_ascii=False),
+        }, "employee-a")
+        with patch(
+            "fangzheng_web_app.order_interface_service._post_json_endpoint",
+            return_value=(200, {"code": 200, "msg": "未找到料号", "hitMaterialList": []}, 10),
+        ), patch(
+            "fangzheng_web_app.order_interface_service.calculate_pp_transcode_quote",
+            return_value={"pending_code": "PP-PENDING", "note": "PP 转码待确认"},
+        ) as quote:
+            build_material_query(self.case_id, "employee-a", "employee-a")
+        self.assertEqual(quote.call_args.args[0], "PP客户规格")
+        self.assertEqual(quote.call_args.kwargs["customer_code"], "C-PP")
+        self.assertEqual(quote.call_args.kwargs["order_remark"], "PP备注")
+        with db.db_cursor() as conn:
+            line = conn.execute(
+                "SELECT values_json FROM order_entry_template_lines WHERE template_id=? AND line_no=1",
+                (template["id"],),
+            ).fetchone()
+        self.assertEqual(json.loads(line["values_json"])["product_name"], "PP-PENDING")
+
+    def test_pp_transcode_placeholder_is_not_backfilled_as_product_name(self) -> None:
+        with patch(
+            "fangzheng_web_app.order_interface_service.calculate_pp_transcode_quote",
+            return_value={"pending_code": "***************************", "note": "存在未识别字段"},
+        ):
+            result = _transcode_product_name(
+                {"product_type": "PP", "customer_spec": "PP 客户规格"}, "C-PP", "PP客户", "employee-a"
+            )
+
+        self.assertEqual(result["product_name"], "")
+        self.assertIn("全为占位符", result["message"])
 
     def test_material_creation_sends_only_blank_rows_and_records_external_task(self) -> None:
         _case, template = get_or_create_template(self.case_id, "employee-a")
@@ -603,7 +711,7 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         header["bill_to_customer_code"] = "103878"
         values = dict(template["lines"][0]["values"])
         values.update({
-            "line_no": "1", "product_code": "", "product_name": "",
+            "line_no": "1", "product_code": "", "product_name": "转码品名",
             "product_type": "PP", "adhesive_code": "6CNL",
             "customer_product_code": "CUST-NEW-01", "customer_spec": "原客户规格",
             "customer_spec_match": "标准客户规格", "quantity": "10",
@@ -632,13 +740,16 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         ) as request_mock:
             result = build_material_creation(self.case_id, "employee-a", "employee-a", [{
                 "line_no": 1, "adhesive_code": "6CNL", "customer_product_code": "CUST-NEW-01",
-                "customer_spec": "原客户规格", "customer_spec_match": "标准客户规格",
+                "customer_spec": "原客户规格", "customer_spec_match": "标准客户规格", "product_name": "转码品名",
             }])
         item = request_mock.call_args.args[1]["materialInfoList"][0]
         self.assertEqual(item["newFlag"], "Y")
+        self.assertNotIn("category", item)
         self.assertEqual(item["adhesiveCode"], "6CNL")
         self.assertEqual(item["customerSpec"], "标准客户规格")
         self.assertEqual(item["customerSpecOld"], "原客户规格")
+        self.assertEqual(item["newProductName"], "")
+        self.assertNotIn("oldProductName", item)
         self.assertEqual(result["items"][0]["external_task_id"], "TASK-ORDER-001")
         with db.db_cursor() as conn:
             task = conn.execute(
@@ -653,7 +764,7 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         state = get_material_resolution_states(self.case_id, "employee-a")["items"][0]
         self.assertEqual(state["external_task_id"], "TASK-ORDER-001")
         self.assertEqual(json.loads(line["values_json"])["material_status"], "新增")
-        with self.assertRaisesRegex(ValueError, "已有产品编号或品名"):
+        with self.assertRaisesRegex(ValueError, "已有产品编号"):
             build_material_creation(self.case_id, "employee-a", "employee-a", [{
                 "line_no": 1, "adhesive_code": "6CNL", "customer_product_code": "CUST-NEW-01",
                 "customer_spec": "原客户规格", "customer_spec_match": "标准客户规格",

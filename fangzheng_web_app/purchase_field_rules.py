@@ -16,7 +16,10 @@ DETAIL_ALIASES = {
     "单位": ["单位", "计量单位", "unit", "uom"],
     "含税单价": ["含税单价", "单价", "单价rmb", "unit price", "price"],
     "金额": ["金额", "价税合计", "合计金额", "total amount", "amount", "total"],
-    "交货日期": ["交货日期", "到货日期", "交期", "delivery date", "del. date", "delivery"],
+    "交货日期": [
+        "交货日期", "到货日期", "交期", "需求交期", "要求交期",
+        "计划交期", "供应商交期", "delivery date", "del. date", "delivery",
+    ],
     "备注": ["备注", "附注", "notes", "remark", "comments"],
 }
 

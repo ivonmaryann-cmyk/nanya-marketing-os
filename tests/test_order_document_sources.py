@@ -62,6 +62,36 @@ class MailHtmlOrderDocumentTests(unittest.TestCase):
             )
         )
 
+    def test_demand_delivery_date_header_is_mapped_to_delivery_date(self) -> None:
+        document = build_mail_html_purchase_document("""
+        <table><tr><th>项次</th><th>料号</th><th>描述</th><th>数量</th><th>单位</th><th>需求交期</th></tr>
+        <tr><td>1</td><td>AA1130050110010002</td><td>NY6300S 0.050mm</td><td>25</td><td>PIE</td><td>9月25日</td></tr>
+        </table>
+        """, reference_date="2026-08-29 08:00:00")
+
+        self.assertIsNotNone(document)
+        assert document is not None
+        self.assertEqual("2026-09-25", document["mapped_detail_rows"][0]["standard"]["交货日期"])
+
+    def test_delivery_plan_table_backfills_material_rows_by_line_number(self) -> None:
+        document = build_mail_html_purchase_document("""
+        <table><tr><th>订单行号</th><th>物料编码</th><th>物料描述</th><th>数量</th><th>单位</th></tr>
+        <tr><td>1</td><td>100101014376</td><td>有卤基板 NY2150</td><td>5</td><td>PIE</td></tr>
+        <tr><td>2</td><td>100101006319</td><td>有卤基板 NY2140</td><td>2</td><td>PIE</td></tr>
+        </table>
+        <table><tr><th>订单行号</th><th>要求交期</th><th>计划交期</th></tr>
+        <tr><td>1</td><td>2026-08-28</td><td>2026-08-28</td></tr>
+        <tr><td>2</td><td>2026-08-29</td><td>2026-08-29</td></tr>
+        </table>
+        """)
+
+        self.assertIsNotNone(document)
+        assert document is not None
+        self.assertEqual(
+            ["2026-08-28", "2026-08-29"],
+            [row["standard"]["交货日期"] for row in document["mapped_detail_rows"]],
+        )
+
     def test_rule_catalogues_are_data_only_and_include_mail_po_headings(self) -> None:
         field_rules = order_field_rule_catalog()
         source_rules = order_source_adapter_catalog()
