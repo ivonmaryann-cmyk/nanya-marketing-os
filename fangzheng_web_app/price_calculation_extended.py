@@ -2099,6 +2099,17 @@ def _guigu_looks_like_pp(desc: str) -> bool:
     return "半固化片" in desc or explicit_pp_product or percentage_pp or roll_width_pp or bool(re.search(r"\bPP\b|RC\s*[:：=]?\s*\d", upper, re.I))
 
 
+def _guigu_extract_pp_piece(desc: str) -> tuple[float | None, float | None]:
+    """Return PP piece dimensions only when both inch dimensions are explicit."""
+    match = re.search(
+        r"(?<![\d.])(\d+(?:\.\d+)?)\s*(?:INCH|IN|英寸|\")\s*[*xX×]\s*"
+        r"(\d+(?:\.\d+)?)\s*(?:\([^)]*(?:纬|LAT)[^)]*\))?\s*(?:INCH|IN|英寸|\")",
+        desc,
+        re.I,
+    )
+    return (float(match.group(1)), float(match.group(2))) if match else (None, None)
+
+
 def _guigu_extract_rc(desc: str) -> float | None:
     rc = _extract_rc(desc)
     if rc is not None:
@@ -2132,7 +2143,7 @@ def _calculate_guigu_pp(desc: str, rules: ExtRules) -> ExtCalcResult:
     rc = _guigu_extract_rc(desc)
     length = _extract_length(desc)
     width = _extract_width(desc)
-    piece_length, piece_width = _extract_size(desc) if length is None else (None, None)
+    piece_length, piece_width = _guigu_extract_pp_piece(desc) if length is None else (None, None)
     if not products or not glass or rc is None:
         return ExtCalcResult("失败", "PP", "待确认", "", _fmt_width(width), _fmt_length(length), "硅谷PP规格缺少型号、玻布或RC")
     matches = [
@@ -3053,9 +3064,9 @@ def _calculate_zhongfu_spec(desc: str, rules: ExtRules, quantity: Any = None) ->
 def _calculate_zhongfu_pp(desc: str, rules: ExtRules) -> ExtCalcResult:
     if _zhongfu_is_pp_small_piece(desc):
         return ExtCalcResult("失败", "PP", "待确认", "", "", "", "中富PP小片不计算")
-    product = _extract_product(desc) or _zhongfu_product_from_text(desc)
+    product = _zhongfu_product_from_text(desc) or _extract_product(desc)
     glass = _zhongfu_norm_glass(_extract_glass(desc))
-    rc = _extract_rc(desc)
+    rc = _zhongfu_extract_rc(desc)
     if not product or not glass or rc is None:
         return ExtCalcResult("失败", "PP", "待确认", "", "", "", "中富PP规格缺少型号、玻布或RC")
     products = _zhongfu_pp_product_aliases(product)
@@ -3244,7 +3255,19 @@ def _zhongfu_extract_copper_included(desc: str) -> str:
         return "不含铜"
     if "含铜" in desc:
         return "含铜"
+    if "芯厚" in desc:
+        return "不含铜"
+    if "总厚" in desc:
+        return "含铜"
     return ""
+
+
+def _zhongfu_extract_rc(desc: str) -> float | None:
+    rc = _extract_rc(desc)
+    if rc is not None:
+        return rc
+    match = re.search(r"(?:含胶量|含量)\s*([0-9]+(?:\.[0-9]+)?)\s*%?", desc, re.I)
+    return float(match.group(1)) if match else None
 
 
 def _zhongfu_extract_thickness_mm(desc: str) -> float | None:
@@ -3276,7 +3299,10 @@ def _zhongfu_sheet_width(length_in: float, width_in: float) -> float:
 
 def _zhongfu_looks_like_pp(desc: str) -> bool:
     upper = desc.upper()
-    return "RC" in upper and (_extract_glass(desc) != "" or re.search(r"P\d{3,4}\s*RC", upper) is not None)
+    has_glass = _extract_glass(desc) != ""
+    has_rc = "RC" in upper or re.search(r"(?:含胶量|含量)\s*[0-9]+(?:\.[0-9]+)?\s*%?", desc, re.I) is not None
+    has_roll = re.search(r"(?:卷\s*[0-9]+(?:\.[0-9]+)?\s*M|[0-9]+(?:\.[0-9]+)?\s*M\s*[xX×]\s*[0-9]+(?:\.[0-9]+)?)", desc, re.I) is not None
+    return has_glass and has_rc and ("RC" in upper or has_roll)
 
 
 def _zhongfu_is_pp_small_piece(desc: str) -> bool:
@@ -3578,6 +3604,14 @@ def _guanghe_sheet_width(length_in: float, width_in: float) -> float:
 
 
 def _guanghe_ccl_cut_price(row: ExtCclRule, length_in: float, width_in: float) -> dict[str, Any]:
+    if _same_size(length_in, width_in, 17, 49) and row.prices.get("43") is not None:
+        parent_price = float(row.prices["43"])
+        return {
+            "ok": True,
+            "price": parent_price * 2 / 5,
+            "label": "86*49/5",
+            "formula": f"{parent_price:.6g}*2/5",
+        }
     candidates = [
         (74, 49, "37", 2),
         (82, 49, "41", 2),

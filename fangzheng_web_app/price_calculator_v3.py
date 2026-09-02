@@ -193,6 +193,11 @@ FOIL_ALIAS = {
     'HS2-M2-VSP': 'HVLP2',
 }
 
+# 方正订单中部分 PP 胶系会保留产品型号中的 0；报价表使用的是简写型号。
+PP_GLUE_ALIASES = {
+    'NY3170HFP': ('NY317HFP',),
+}
+
 def parse_foil_type(text, cu_thick=None):
     """
     提取铜箔类型，支持双代码（RTF2/RTF）
@@ -267,6 +272,7 @@ def parse_size(text):
         r'(\d+\.?\d*)"?\s*[*×xX]\s*(\d+\.?\d*)"',
         r'(\d+\.?\d*)"\s*(\d+\.?\d*)"',
         r'(\d+\.?\d*)\'?"\s*[*×xX]\s*(\d+\.?\d*)',
+        r'(\d+\.?\d*)\s*[*×xX]\s*(\d+\.?\d*)',
     ]
     for pattern in patterns:
         match = re.search(pattern, text)
@@ -540,6 +546,7 @@ def query_pp_price(df_price, glue, laminate_type, rc_percent):
     pp_rows = df_price[df_price['CCL'].astype(str).str.strip() == 'PP']
     
     glue_candidates = [glue]
+    glue_candidates.extend(PP_GLUE_ALIASES.get(glue.upper(), ()))
     converted = _try_convert_pp_glue(glue)
     if converted != glue:
         glue_candidates.append(converted)
