@@ -25,12 +25,19 @@ def _clean_frame(df: pd.DataFrame) -> pd.DataFrame:
     return df.dropna(how="all")
 
 
+def rule_version_exists(version: str | None) -> bool:
+    if not version:
+        return False
+    version_dir = RULES_VERSIONS_DIR / version
+    return version_dir.exists() and all(
+        (version_dir / name).exists() for name in [PRICE_FILENAME, ACCOUNT_FILENAME]
+    )
+
+
 def ensure_default_rule_version() -> str:
     active_version = get_setting("active_rule_version", "")
-    if active_version:
-        version_dir = RULES_VERSIONS_DIR / active_version
-        if version_dir.exists() and all((version_dir / name).exists() for name in [PRICE_FILENAME, ACCOUNT_FILENAME]):
-            return active_version
+    if rule_version_exists(active_version):
+        return active_version
 
     price_pkl = DEFAULT_PRICE_PKL
     account_pkl = DEFAULT_ACCOUNT_PKL
@@ -58,7 +65,7 @@ def ensure_default_rule_version() -> str:
 
 def get_active_rule_version() -> str:
     version = get_setting("active_rule_version", "")
-    if not version:
+    if not rule_version_exists(version):
         version = ensure_default_rule_version()
     return version
 

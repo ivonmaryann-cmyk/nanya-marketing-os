@@ -85,7 +85,18 @@ def run_job(job_id: int, employee_id: str, rule_version: str) -> None:
     try:
         calculator = load_calculator_module()
         calculator_path = Path(calculator.__file__).resolve()
-        price_df, account_df = load_rule_dataframes(rule_version)
+        try:
+            price_df, account_df = load_rule_dataframes(rule_version)
+        except FileNotFoundError:
+            fallback_rule_version = get_active_rule_version()
+            if fallback_rule_version == rule_version:
+                raise
+            append_job_log(
+                job_id,
+                f"任务规则版本 {rule_version} 已不存在，已回退至当前规则版本 {fallback_rule_version}。",
+            )
+            rule_version = fallback_rule_version
+            price_df, account_df = load_rule_dataframes(rule_version)
         append_job_log(job_id, f"规则加载完成：价格表 {len(price_df)} 行，基板表 {len(account_df)} 行")
         append_job_log(job_id, f"计算引擎已加载：{calculator_path.name}（{datetime.fromtimestamp(calculator_path.stat().st_mtime).strftime('%Y-%m-%d %H:%M:%S')}）")
 
