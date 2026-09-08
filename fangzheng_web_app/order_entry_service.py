@@ -27,6 +27,7 @@ from .paths import PACKAGE_DIR, PROJECT_DIR
 from .pdf_excel_domestic_export import build_domestic_template_data
 from .order_document_sources import build_mail_html_purchase_document
 from .order_interface_service import record_order_detail_event
+from .order_price_validation_service import PRICE_REVIEW_SNAPSHOT_KEY, review_case_template_prices
 from .purchase_field_rules import clean_text, normalize_date, normalize_number
 from .purchase_factory_mapper import project_factory_document
 from .pdf_excel_service import recognize_purchase_order_document
@@ -97,7 +98,7 @@ _ATTACHMENT_HEADERS = {
     "customer_spec": {"客户规格", "规格", "型号", "名称规格", "物料规格", "物料描述"},
     "customer_spec_match": {"客户规格匹配", "规格匹配"},
     "product_type": {"产品类型", "产品类型（pp、基板）", "品类"},
-    "delivery_date": {"出货日期", "交货日期", "交期", "需求交期", "要求交期", "计划交期", "供应商交期", "到货日期", "delivery date"},
+    "delivery_date": {"出货日期", "交货日期", "交期", "需求日", "需求交期", "要求交期", "计划交期", "供应商交期", "到货日期", "delivery date"},
     "quantity": {"数量", "采购量", "订购数量", "订单数量", "qty", "quantity"},
     "_quantity_unit": {"单位", "计量单位", "数量单位", "uom"},
     "price_before_tax": {"税前单价", "未税单价", "不含税单价"},
@@ -557,7 +558,7 @@ def _line_from_pipeline_row(
         ),
         "customer_spec": raw_spec or standard.get("说明") or standard.get("物料名称") or "",
         "delivery_date": standard.get("交货日期") or _value_by_alias(
-            original, "交货日期", "出货日期", "交期", "需求交期", "要求交期", "计划交期", "供应商交期", "Delivery Date",
+            original, "交货日期", "出货日期", "交期", "需求日", "需求交期", "要求交期", "计划交期", "供应商交期", "Delivery Date",
         ) or "",
         "quantity": standard.get("数量") or _value_by_alias(original, "数量", "Quantity", "Qty") or "",
         "price_before_tax": raw_before_tax_price or standard.get("不含税单价") or "",
@@ -898,6 +899,9 @@ def get_or_create_template(case_id: int, employee_id: str) -> tuple[dict[str, An
             return case, template
         now = utcnow()
         initial_header, initial_lines = _initial_template_data(case)
+        initial_header[PRICE_REVIEW_SNAPSHOT_KEY] = review_case_template_prices(
+            case, {"header": initial_header, "lines": initial_lines}
+        )
         cursor = conn.execute(
             "INSERT INTO order_entry_templates(case_id,employee_id,header_json,created_at,updated_at) VALUES (?,?,?,?,?)",
             (case_id, employee_id, json.dumps(initial_header, ensure_ascii=False), now, now),
@@ -1080,6 +1084,9 @@ def reextract_template(case_id: int, employee_id: str) -> dict[str, Any]:
     # Recognition can involve OCR and file conversion, so do it outside of the
     # database transaction.  It only reads the original mail and attachments.
     regenerated_header, regenerated_lines = _initial_template_data(case)
+    price_review_snapshot = review_case_template_prices(
+        case, {"header": regenerated_header, "lines": regenerated_lines}
+    )
     now = utcnow()
     previous_lines = [
         {"values": line.get("values") or {}, "sources": line.get("sources") or {}}
@@ -1091,8 +1098,13 @@ def reextract_template(case_id: int, employee_id: str) -> dict[str, Any]:
     # has already entered in this mail workspace.
     next_header = {
         **regenerated_header,
-        **{field: value for field, value in previous_header.items() if clean_text(value)},
+        **{
+            field: value
+            for field, value in previous_header.items()
+            if field != PRICE_REVIEW_SNAPSHOT_KEY and clean_text(value)
+        },
     }
+    next_header[PRICE_REVIEW_SNAPSHOT_KEY] = price_review_snapshot
     backup_version = 1
     current_version = 1
 
@@ -1328,6 +1340,9 @@ def save_template(case_id: int, employee_id: str, payload: dict[str, Any]) -> di
         template_id = int(template["id"])
         previous = _serialize_template(conn, template_id)
         previous_header = {**DEFAULT_HEADER_VALUES, **(previous.get("header") or {})}
+        price_review_snapshot = previous_header.get(PRICE_REVIEW_SNAPSHOT_KEY)
+        if isinstance(price_review_snapshot, dict):
+            header[PRICE_REVIEW_SNAPSHOT_KEY] = price_review_snapshot
         previous_lines = [
             {"values": line.get("values") or {}, "sources": line.get("sources") or {}}
             for line in previous.get("lines") or []

@@ -426,7 +426,7 @@
           <input type="hidden" name="action" value="save_confirmation_policy">
           <input type="hidden" name="confirmation_rule_id" value="{{ selected_policy.rule_id if selected_policy else '' }}">
           <h3>{{ '修改人工确认条件' if selected_policy else '新增人工确认条件' }}</h3>
-          <label class="rc-field"><span>适用客户（多个用逗号分开）</span><input name="confirmation_customers" value="{{ selected_policy.customers if selected_policy else '' }}" placeholder="例如：广东依顿，广州伊顿" required></label>
+          <label class="rc-field"><span>适用客户（多个用逗号分开）</span><input name="confirmation_customers" value="{{ selected_policy.customers if selected_policy else '' }}" placeholder="例如：广东依顿，广州依顿" required></label>
           <label class="rc-field"><span>需要确认的参数</span><select name="confirmation_field" required><option value="">请选择</option>{% for key, label in confirmation_fields.items() %}<option value="{{ key }}" {% if selected_policy and selected_policy.field_key == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
           <label class="rc-field"><span>必须同时出现的内容</span><input name="confirmation_contains_all" value="{{ selected_policy.contains_all if selected_policy else '' }}" placeholder="例如：NY2150H"></label>
           <label class="rc-field"><span>同组任意一个出现即可</span><textarea name="confirmation_any_groups" placeholder="例如：HW/华为；汽车板/汽板/下汽车板">{{ selected_policy.contains_any_groups if selected_policy else '' }}</textarea></label>

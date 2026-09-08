@@ -34,6 +34,9 @@ PRICE_COLUMNS = [
     '40"*48"',
     '42"*48"',
     "备注",
+    "报价Sheet",
+    "支持铜厚",
+    "基准铜箔",
 ]
 
 
@@ -155,6 +158,10 @@ def load_shennan_price_dataframe(path: Path | None = None) -> pd.DataFrame:
             rows.extend(_parse_ccl_sheet(rule_path, clean_name))
         elif clean_name.upper().endswith(" PP"):
             rows.extend(_parse_pp_sheet(rule_path, clean_name))
+        elif _looks_like_ccl_sheet(rule_path, clean_name):
+            # NYHP-7300&7350 is a CCL-only sheet whose name does not carry
+            # the CCL suffix.  Detect by its actual table structure instead.
+            rows.extend(_parse_ccl_sheet(rule_path, clean_name))
     return pd.DataFrame(rows, columns=PRICE_COLUMNS).dropna(how="all")
 
 
@@ -207,6 +214,9 @@ def _parse_ccl_sheet(rule_path: Path, sheet_name: str) -> list[dict]:
                 '40"*48"': _number_or_none(df.iat[row_idx, price_cols['40"*48"']]),
                 '42"*48"': _number_or_none(df.iat[row_idx, price_cols['42"*48"']]),
                 "备注": sheet_name,
+                "报价Sheet": sheet_name,
+                "支持铜厚": "|".join(_copper_options_from_block_label(label)),
+                "基准铜箔": _foil_from_block_label(label),
             }
             rows.append(row)
     return rows
@@ -247,6 +257,9 @@ def _parse_pp_sheet(rule_path: Path, sheet_name: str) -> list[dict]:
                 '40"*48"': "",
                 '42"*48"': "",
                 "备注": sheet_name,
+                "报价Sheet": sheet_name,
+                "支持铜厚": "",
+                "基准铜箔": "",
             }
         )
     return rows
@@ -258,6 +271,11 @@ def _find_row(df: pd.DataFrame, keywords: tuple[str, ...]) -> int | None:
         if all(keyword in row_text for keyword in keywords):
             return row_idx
     return None
+
+
+def _looks_like_ccl_sheet(rule_path: Path, sheet_name: str) -> bool:
+    df = pd.read_excel(rule_path, sheet_name=sheet_name, header=None, nrows=20)
+    return _find_row(df, ("产品类别", "厚度", "组合")) is not None
 
 
 def _find_ccl_blocks(header_row: pd.Series) -> list[int]:
@@ -285,27 +303,124 @@ def _find_price_columns(df: pd.DataFrame, subheader_row: int, start: int, end: i
 
 
 def load_shennan_surcharge_rules(path: Path | None = None) -> dict[str, dict]:
+    """Read per-sheet notes instead of keeping model-specific pricing in code.
+
+    The quote's footer is part of the commercial rule.  Keep its original
+    relationship (target foil/copper -> quote-table baseline) so an uploaded
+    quote can change the surcharge without a source-code release.
+    """
     rule_path = path or get_shennan_rule_file_path()
     excel = pd.ExcelFile(rule_path)
     rules: dict[str, dict] = {}
     for sheet_name in excel.sheet_names:
         clean_name = str(sheet_name).strip()
-        if not clean_name.upper().endswith(" CCL"):
+        if not clean_name.upper().endswith(" CCL") and not _looks_like_ccl_sheet(rule_path, clean_name):
             continue
         glue = clean_name.rsplit(" ", 1)[0]
         df = pd.read_excel(rule_path, sheet_name=clean_name, header=None)
         text = "\n".join(_clean_text(value) for value in df.to_numpy().ravel())
-        rtf_percent = _parse_rtf_percent_surcharge(text)
-        if rtf_percent:
-            rules.setdefault(glue, {})["RTF"] = rtf_percent
-            rules.setdefault(glue, {})["RTF1"] = rtf_percent
-        rtf2 = _parse_rtf2_surcharge(text)
-        if rtf2:
-            rules.setdefault(glue, {})["RTF2"] = rtf2
-        rtf3 = _parse_rtf3_surcharge(text)
-        if rtf3:
-            rules.setdefault(glue, {})["RTF3"] = rtf3
+        rule_set = rules.setdefault(glue, {"foil": {}, "copper": {}, "square_board": False})
+        rule_set["square_board"] = "方板价格" in text and "加7%" in text.replace(" ", "")
+        _parse_foil_note_rules(text, rule_set["foil"])
+        _parse_copper_note_rules(text, rule_set["copper"])
     return rules
+
+
+def _parse_foil_note_rules(text: str, rules: dict[str, dict]) -> None:
+    normalized = re.sub(r"\s+", "", text.upper().replace("Ｏ", "O"))
+
+    # Ordinary HTE sheets commonly state this as "指定使用 RTF 上调 3%".
+    percent_match = re.search(r"(?:指定)?使用RTF铜箔.*?(?:上调|加)(\d+(?:\.\d+)?)%", normalized)
+    if percent_match:
+        percent = float(percent_match.group(1)) / 100
+        rules["RTF"] = {"base": "HTE", "type": "percent", "percent": percent}
+        rules["RTF1"] = {"base": "HTE", "type": "percent", "percent": percent}
+
+    # Examples: "使用 HVLP2 铜箔时，在 RTF3 铜箔的基础上 ...".
+    pattern = re.compile(
+        r"使用(?P<target>RTF[1-4]?|HVLP[1-3]?)铜箔[^。\n]{0,120}?在(?P<base>RTF[1-4]?|HVLP[1-3]?)铜箔的基础上(?P<body>.*?)(?=(?:。|\n)\d+[、.]|客户回签|$)"
+    )
+    for match in pattern.finditer(normalized):
+        adjustment = _parse_copper_adjustment_body(match.group("body"))
+        if adjustment:
+            rules[match.group("target")] = {
+                "base": match.group("base"),
+                "type": "per_sf",
+                "values": adjustment,
+            }
+
+    # Some sheets omit "在 XXX 铜箔的基础上" but their column header gives
+    # a single RTF baseline.  Retain the explicit target and resolve its base
+    # against that selected column during calculation.
+    for target, body in re.findall(r"(?:若)?使用(RTF[1-4]?|HVLP[1-3]?)铜箔[^。\n]*?(?:加价|增加|加|减价|减)[:：]?(.+?)(?=(?:使用|客户回签|$))", normalized):
+        if target in rules:
+            continue
+        adjustment = _parse_copper_adjustment_body(body)
+        if adjustment:
+            rules[target] = {"base": "RTF", "type": "per_sf", "values": adjustment}
+
+    # Wording in several sheets: RTF2 / RTF3 are the same price as the
+    # quoted foil.  The baseline is resolved later from the selected column.
+    if "RTF2铜箔和RTF同价" in normalized:
+        rules["RTF2"] = {"base": "RTF", "type": "per_sf", "values": {}}
+    if "RTF2和RTF3铜箔与HVLP铜箔同价" in normalized:
+        rules.setdefault("RTF2", {"base": "HVLP1", "type": "per_sf", "values": {}})
+        rules.setdefault("RTF3", {"base": "HVLP1", "type": "per_sf", "values": {}})
+
+
+def _parse_copper_note_rules(text: str, rules: dict[str, dict]) -> None:
+    normalized = re.sub(r"\s+", "", text.upper().replace("Ｏ", "O"))
+    token_patterns = {
+        "3/3": r"3/3铜箔在H/H加价([\d.]+)元/SF",
+        "S3/S3": r"S3/S3铜箔在H/H加价([\d.]+)元/SF",
+        "S4/S4": r"S4/S4铜箔在H/H加价([\d.]+)元/SF",
+        "T/T": r"T/T铜箔在H/H加价([\d.]+)元/SF",
+        "ST/ST": r"ST/ST铜箔在H/H加价([\d.]+)元/SF",
+        "1.5/1.5": r"1\.5/1\.5铜箔2/2减价([\d.]+)元/SF",
+        "2.5/2.5": r"2\.5/2\.5铜箔H/H加价([\d.]+)元/SF",
+    }
+    base_copper = {
+        "3/3": "H/H", "S3/S3": "H/H", "S4/S4": "H/H", "T/T": "H/H",
+        "ST/ST": "H/H", "1.5/1.5": "2/2", "2.5/2.5": "H/H",
+    }
+    for token, pattern in token_patterns.items():
+        match = re.search(pattern, normalized)
+        if not match:
+            continue
+        amount = float(match.group(1))
+        if "减价" in match.group(0):
+            amount = -amount
+        rules[token] = {"base_copper": base_copper[token], "per_sf": amount}
+
+
+def _parse_copper_adjustment_body(body: str) -> dict[str, dict[str, float]]:
+    values: dict[str, dict[str, float]] = {}
+    for source, key in (("HOZ", "H"), ("H", "H"), ("1OZ", "1"), ("2OZ", "2")):
+        match = re.search(
+            rf"{source}单面(?P<single_action>加|增加|减|减少)(?P<single>[\d.]+)元(?:/SF)?.*?"
+            rf"双面(?P<double_action>加|增加|减|减少)(?P<double>[\d.]+)元(?:/SF)?",
+            body,
+        )
+        if not match:
+            continue
+        single_sign = -1 if "减" in match.group("single_action") else 1
+        double_sign = -1 if "减" in match.group("double_action") else 1
+        values[key] = {
+            "single": single_sign * float(match.group("single")),
+            "double": double_sign * float(match.group("double")),
+        }
+    # Some quote sheets state one amount per published copper-price column,
+    # without a single/double split (for example Hoz +2.25, 1OZ +3.75).  The
+    # amount is then already the column's complete RMB/SF adjustment.
+    for source, key in (("HOZ", "H"), ("1OZ", "1"), ("2OZ", "2")):
+        if key in values:
+            continue
+        match = re.search(rf"{source}(?P<action>加|增加|减|减少)(?P<value>[\d.]+)元(?:/SF)?", body)
+        if not match:
+            continue
+        sign = -1 if "减" in match.group("action") else 1
+        values[key] = {"any": sign * float(match.group("value"))}
+    return values
 
 
 def _parse_rtf_percent_surcharge(text: str) -> dict | None:
@@ -384,10 +499,27 @@ def _copper_from_block_label(label: str) -> str | None:
     return None
 
 
+def _copper_options_from_block_label(label: str) -> list[str]:
+    primary = _copper_from_block_label(label)
+    if not primary:
+        return []
+    upper = label.upper().replace(" ", "")
+    options = [primary]
+    if primary == "1/1" and "H" in upper:
+        options.append("H/1")
+    if primary == "2/2":
+        if "H/2" in upper or "HOZ/2OZ" in upper:
+            options.append("H/2")
+        if "1/2" in upper or "1OZ/2OZ" in upper:
+            options.append("1/2")
+    return options
+
+
 def _foil_from_block_label(label: str) -> str:
     upper = label.upper()
-    if "RTF" in upper:
-        return "RTF"
+    for foil in ("HVLP3", "HVLP2", "HVLP1", "RTF4", "RTF3", "RTF2", "RTF1", "RTF"):
+        if foil in upper:
+            return foil
     return "HTE"
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import ssl
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -12,8 +13,12 @@ from typing import Any
 
 from .database import automation_cursor as db_cursor
 from .db import utcnow
-from .pp_transcode_service import calculate_pp_transcode_quote
-from .transcode_agent_service import calculate_transcode_agent_quote
+from .order_price_validation_service import (
+    PRICE_REVIEW_SNAPSHOT_KEY,
+    PriceMismatchConfirmationRequired,
+    review_cached_template_prices,
+)
+from .paths import PACKAGE_DIR
 
 
 INTERFACE_DEFAULTS = {
@@ -27,13 +32,13 @@ INTERFACE_DEFAULTS = {
         "timeout_seconds": 15,
         "request_mapping": {
             "customerCode": "模板表头.账款客户编号（必填）",
+            "acsn": "组织代码（上海=NY01，江西=NY02；默认传 NY01）",
             "operatorCode": "当前登录账号（员工工号，必填）",
             "materialInfoList[].categoryCode": "模板明细.产品类型（PP=698，基板=718，必填）",
             "materialInfoList[].customerMaterialNo": "模板明细.客户产品编号（必填）",
-            "materialInfoList[].adhesiveCode": "新建料号弹窗.胶系编码（仅点击新建料号时传）",
-            "materialInfoList[].customerSpec": "新建料号弹窗.客户规格匹配（仅点击新建料号时传）",
+            "materialInfoList[].customerSpec": "模板明细.客户规格（仅点击新建料号时传）",
             "materialInfoList[].customerSpecOld": "模板明细.客户规格（选填）",
-            "materialInfoList[].newProductName": "暂不映射，发送空字符串（选填）",
+            "materialInfoList[].newProductName": "新建料号弹窗.品名（仅点击新建料号时传）",
             "materialInfoList[].newFlag": "点击新建料号时固定发送 Y；批量查询不发送",
         },
         "response_mapping": {
@@ -44,8 +49,8 @@ INTERFACE_DEFAULTS = {
             "source": "料号查询建议.来源（PARSE=规格解析）",
             "errors[]": "接口交互记录.逐行失败信息",
             "hitMaterialList[].peag01": "料号查询建议.产品编号",
-            "hitMaterialList[].peag09": "料号查询建议.品名",
-            "hitMaterialList[].peag08": "料号查询建议.接口品名（不回填模板）",
+            "hitMaterialList[].peag08": "料号查询建议.新品名（回填模板）",
+            "hitMaterialList[].peag09": "料号查询建议.旧品名（不回填模板）",
             "hitMaterialList[].peag06": "料号查询建议.销售品名规格",
             "hitMaterialList[].scca05": "料号查询建议.客户规格",
             "hitMaterialList[].scca03": "料号查询建议.客户产品编号",
@@ -66,6 +71,7 @@ INTERFACE_DEFAULTS = {
             "sctoDataList[].quantity": "模板明细.数量（必填）",
             "sctoDataList[].taxPrice": "模板明细.单价（与税前单价至少一项必填）",
             "sctoDataList[].untaxedPrice": "模板明细.税前单价（与单价至少一项必填）",
+            "sctoDataList[].factoryPartCode": "模板明细.产品编号（必填）",
             "sctoDataList[].materialCode": "模板明细.客户产品编号（必填）",
             "sctoDataList[].lineNumber": "模板明细.项次（与客户订单序号一致，必填）",
             "sctoDataList[].demandDate": "模板明细.出货日期（必填）",
@@ -118,14 +124,14 @@ INTERFACE_MAINTENANCE_NOTES = {
     "material_batch_query": [
         "当前地址是 NYEOS 测试环境；正式环境地址确认后只需修改“请求地址”。",
         "产品类型必须转换为接口编码：PP 使用 698，基板使用 718。",
-        "点击“新建料号”时，customerSpec 发送“客户规格匹配”，customerSpecOld 始终发送原“客户规格”。",
-        "点击“新建料号”时，adhesiveCode 发送“胶系编码”，newFlag 固定发送 Y；批量查询不发送这三项。",
+        "点击“新建料号”时，customerSpec 与 customerSpecOld 都发送模板中的客户规格。",
+        "点击“新建料号”时，newProductName 发送当前品名，newFlag 固定发送 Y；不发送胶系编码和客户规格匹配。",
         "接口未命中料号时可能返回 pera01，并在对方系统创建客户料号编制作业，请勿用随意数据测试。",
         "保存后业务页会按运行模式执行：Mock 走模拟流程，真实接口会请求当前地址。",
     ],
     "domestic_order_entry": [
         "当前地址是 NYEOS 测试环境；正式环境地址确认后只需修改“请求地址”。",
-        "materialCode 使用模板中的客户产品编号；产品编号仅用于页面展示和料号查询结果选择。",
+        "factoryPartCode 使用模板中的产品编号（必填）；materialCode 使用模板中的客户产品编号。",
         "orderNumber 与 custOrderId 都使用客户订单号；lineNumber 与 lineId 都使用客户订单序号。",
         "保存后业务页会按运行模式执行：Mock 走模拟流程，真实接口会生成订单。",
     ],
@@ -162,6 +168,35 @@ def _valid_endpoint_url(value: str) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("请求地址必须是完整的 http 或 https URL")
     return endpoint_url
+
+
+NYEOS_TLS_HOST = "nyeos.nouyatec.com"
+NYEOS_TLS_CERT_FILE = PACKAGE_DIR / "certs" / "nyeos.nouyatec.com.crt"
+
+
+def _interface_ssl_context(endpoint_url: str) -> ssl.SSLContext | None:
+    """Trust the supplied NYEOS certificate without disabling TLS verification."""
+    parsed = urlparse(endpoint_url)
+    if parsed.scheme != "https" or (parsed.hostname or "").lower() != NYEOS_TLS_HOST:
+        return None
+    if not NYEOS_TLS_CERT_FILE.is_file():
+        raise ValueError(f"未找到 NYEOS HTTPS 证书文件：{NYEOS_TLS_CERT_FILE}")
+    return ssl.create_default_context(cafile=str(NYEOS_TLS_CERT_FILE))
+
+
+def _open_interface_request(request: Request, *, timeout: int):
+    return urlopen(request, timeout=timeout, context=_interface_ssl_context(request.full_url))
+
+
+def _decode_interface_response(raw: bytes, headers: Any) -> str:
+    declared = getattr(headers, "get_content_charset", lambda: None)() or "utf-8"
+    text = raw.decode(declared, errors="replace")
+    # The NYEOS gateway declares UTF-8 but returns GB18030 on some business errors.
+    if "\ufffd" in text:
+        fallback = raw.decode("gb18030", errors="replace")
+        if fallback.count("\ufffd") < text.count("\ufffd"):
+            return fallback
+    return text
 
 
 def ensure_interface_configs(operated_by: str = "system") -> None:
@@ -258,8 +293,8 @@ def _upgrade_material_customer_spec_source(conn: Any, row: Any, operated_by: str
         mapping[key] = defaults[key]
         changed = True
         for mapping_key in (
-            "materialInfoList[].adhesiveCode",
             "materialInfoList[].customerSpecOld",
+            "materialInfoList[].newProductName",
             "materialInfoList[].newFlag",
         ):
             if mapping_key not in mapping:
@@ -301,6 +336,9 @@ def _upgrade_domestic_request_mapping(conn: Any, row: Any, operated_by: str, now
             changed = True
     if "sctoDataList[].custOrderId" not in mapping:
         mapping["sctoDataList[].custOrderId"] = defaults["sctoDataList[].custOrderId"]
+        changed = True
+    if "sctoDataList[].factoryPartCode" not in mapping:
+        mapping["sctoDataList[].factoryPartCode"] = defaults["sctoDataList[].factoryPartCode"]
         changed = True
     if not changed:
         return
@@ -472,6 +510,7 @@ def test_interface_config(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("请求方法不支持")
     request_body = {
         "customerCode": "",
+        "acsn": "NY01",
         "operatorCode": "",
         "materialInfoList": [{
             "categoryCode": "718",
@@ -508,26 +547,37 @@ def test_interface_config(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         import time
         started = time.monotonic()
-        with urlopen(request, timeout=15) as response:
-            raw = response.read(256 * 1024).decode("utf-8", errors="replace")
+        with _open_interface_request(request, timeout=15) as response:
+            raw = _decode_interface_response(response.read(256 * 1024), response.headers)
             status_code = int(response.status)
         try:
             response_body: Any = json.loads(raw) if raw else {}
         except ValueError:
             response_body = raw
+        business_code = response_body.get("code") if isinstance(response_body, dict) else None
+        business_ok = business_code in {None, "", 200, "200"}
+        error = ""
+        if not business_ok:
+            message = str(response_body.get("msg") or "接口未返回失败原因")
+            error = f"接口已连通，但业务状态码为 {business_code}：{message}"
         return {
-            "ok": 200 <= status_code < 300, "mode": "real", "status_code": status_code,
+            "ok": 200 <= status_code < 300 and business_ok,
+            "connection_ok": True,
+            "business_ok": business_ok,
+            "mode": "real", "status_code": status_code,
             "duration_ms": int((time.monotonic() - started) * 1000),
-            "endpoint_url": endpoint_url, "request": request_body, "response": response_body,
+            "endpoint_url": endpoint_url, "request": request_body, "response": response_body, "error": error,
         }
     except HTTPError as exc:
         return {"ok": False, "mode": "real", "status_code": exc.code, "duration_ms": 0,
                 "endpoint_url": endpoint_url, "request": request_body,
-                "response": {}, "error": f"接口返回 HTTP {exc.code}"}
+                "response": {}, "connection_ok": True, "business_ok": False,
+                "error": f"接口已连通，但测试报文被业务接口拒绝（HTTP {exc.code}）。请使用实际订单数据验证业务处理。"}
     except (URLError, TimeoutError, OSError) as exc:
         return {"ok": False, "mode": "real", "status_code": None, "duration_ms": 0,
                 "endpoint_url": endpoint_url, "request": request_body,
-                "response": {}, "error": f"接口请求失败：{str(exc)[:160]}"}
+                "response": {}, "connection_ok": False, "business_ok": False,
+                "error": f"接口请求失败：{str(exc)[:160]}"}
 
 
 def record_order_detail_event(
@@ -706,6 +756,12 @@ def list_nyeos_order_numbers(case_ids: list[int], employee_id: str) -> dict[int,
         return {}
     placeholders = ",".join("?" for _ in ids)
     with db_cursor() as conn:
+        successful_call_rows = conn.execute(
+            f"""SELECT id FROM order_interface_call_logs
+                WHERE employee_id=? AND interface_key='domestic_order_entry'
+                  AND status='success' AND case_id IN ({placeholders})""",
+            (employee_id, *ids),
+        ).fetchall()
         rows = conn.execute(
             f"""SELECT case_id,detail_json FROM order_entry_detail_events
                 WHERE employee_id=? AND event_type='domestic_order_entry_real'
@@ -713,10 +769,14 @@ def list_nyeos_order_numbers(case_ids: list[int], employee_id: str) -> dict[int,
                 ORDER BY id DESC""",
             (employee_id, *ids),
         ).fetchall()
+    successful_call_ids = {int(row["id"]) for row in successful_call_rows}
     result: dict[int, str] = {}
     for row in rows:
         case_id = int(row["case_id"])
-        entry_no = str(_json(row["detail_json"], {}).get("entry_no") or "").strip()
+        detail = _json(row["detail_json"], {})
+        if int(detail.get("call_id") or 0) not in successful_call_ids:
+            continue
+        entry_no = str(detail.get("entry_no") or "").strip()
         if entry_no:
             result.setdefault(case_id, entry_no)
     return result
@@ -890,10 +950,13 @@ def _save_material_creation_lines(
                     if "product_name" in raw
                     else str(values.get("product_name") or "").strip()
                 ),
-                "adhesive_code": str(raw.get("adhesive_code") or "").strip(),
-                "customer_product_code": str(raw.get("customer_product_code") or "").strip(),
-                "customer_spec": str(raw.get("customer_spec") or "").strip(),
-                "customer_spec_match": str(raw.get("customer_spec_match") or "").strip(),
+                "customer_product_code": str(raw.get("customer_product_code", values.get("customer_product_code")) or "").strip(),
+                "customer_spec": str(raw.get("customer_spec", values.get("customer_spec")) or "").strip(),
+                "product_type": str(raw.get("product_type", values.get("product_type")) or "").strip(),
+                # These two fields remain on the template for other workflows,
+                # but the new-material dialog no longer edits or sends them.
+                "adhesive_code": str(values.get("adhesive_code") or "").strip(),
+                "customer_spec_match": str(values.get("customer_spec_match") or "").strip(),
             }
             if not updates["customer_product_code"]:
                 raise ValueError(f"第 {line_no} 项缺少客户产品编号")
@@ -956,12 +1019,11 @@ def _real_material_request_item(item: dict[str, Any], *, create: bool = False) -
         "categoryCode": _material_category_code(str(item.get("product_type") or "")),
         "customerMaterialNo": str(item.get("customer_product_code") or "").strip(),
         "customerSpecOld": str(item.get("customer_spec") or "").strip(),
-        "newProductName": "",
     }
     if create:
         result.update({
-            "adhesiveCode": str(item.get("adhesive_code") or "").strip(),
-            "customerSpec": str(item.get("customer_spec_match") or "").strip(),
+            "customerSpec": str(item.get("customer_spec") or "").strip(),
+            "newProductName": str(item.get("product_name") or "").strip(),
             "newFlag": "Y",
         })
     return result
@@ -978,11 +1040,11 @@ def _post_json_endpoint(
     )
     started = time.monotonic()
     try:
-        with urlopen(request, timeout=int(config.get("timeout_seconds") or 15)) as response:
-            raw = response.read(1024 * 1024).decode("utf-8", errors="replace")
+        with _open_interface_request(request, timeout=int(config.get("timeout_seconds") or 15)) as response:
+            raw = _decode_interface_response(response.read(1024 * 1024), response.headers)
             status_code = int(response.status)
     except HTTPError as exc:
-        raw = exc.read(1024 * 1024).decode("utf-8", errors="replace")
+        raw = _decode_interface_response(exc.read(1024 * 1024), exc.headers)
         status_code = int(exc.code)
     except (URLError, TimeoutError, OSError) as exc:
         raise ValueError(f"{interface_label}请求失败：{str(exc)[:160]}") from exc
@@ -1017,7 +1079,7 @@ def _real_material_response_items(
         candidates = [
             {
                 "factory_part_no": str(hit.get("peag01") or "").strip(),
-                "product_name": str(hit.get("peag09") or "").strip(),
+                "product_name": str(hit.get("peag08") or "").strip(),
             }
             for hit in matched_hits
             if str(hit.get("peag01") or "").strip()
@@ -1044,77 +1106,6 @@ def _real_material_response_items(
                 "message": str(response_body.get("msg") or f"接口返回 HTTP {http_status}"),
             })
     return results
-
-
-def _customer_short_name(customer_code: str) -> str:
-    with db_cursor() as conn:
-        row = conn.execute(
-            """SELECT customer_short_name FROM automation_customers
-                 WHERE customer_code=? AND status='active'""",
-            (customer_code,),
-        ).fetchone()
-    return str(row["customer_short_name"] if row else "").strip()
-
-
-def _transcode_product_name(item: dict[str, Any], customer_code: str, customer_name: str, employee_id: str) -> dict[str, str]:
-    """Return a display-only product name for an unmatched material query row."""
-    customer_spec = str(item.get("customer_spec") or "").strip()
-    if not customer_spec:
-        return {"product_name": "", "source_label": "", "message": "未填写客户规格，无法调用转码。"}
-    order_remark = str(item.get("remark") or "").strip()
-    if _material_category_code(str(item.get("product_type") or "")) == "698":
-        quote = calculate_pp_transcode_quote(
-            customer_spec,
-            customer=customer_name,
-            customer_code=customer_code,
-            order_remark=order_remark,
-        )
-        product_name = str(quote.get("pending_code") or quote.get("candidate_code") or "").strip()
-        message = str(quote.get("note") or quote.get("error") or "PP 转码未返回码值。")
-        if product_name and not product_name.replace("*", "").strip():
-            product_name = ""
-            message = f"{message} 转码结果全为占位符，未回填品名。"
-        return {
-            "product_name": product_name,
-            "source_label": "PP转码",
-            "message": message,
-        }
-    quote = calculate_transcode_agent_quote(
-        customer_spec,
-        customer=customer_name,
-        customer_code=customer_code,
-        order_remark=order_remark,
-        employee_id=employee_id,
-    )
-    product_name = str(
-        quote.get("result") or quote.get("formal_code") or quote.get("pending_code") or quote.get("candidate_code") or ""
-    ).strip()
-    return {
-        "product_name": product_name,
-        "source_label": "营销转码Agent",
-        "message": str(quote.get("note") or quote.get("error") or "营销转码未返回码值。"),
-    }
-
-
-def _apply_transcode_fallbacks(
-    request_items: list[dict[str, Any]], response_items: list[dict[str, Any]], *,
-    customer_code: str, employee_id: str,
-) -> None:
-    customer_name = _customer_short_name(customer_code)
-    for item, response in zip(request_items, response_items):
-        if _material_candidates(response):
-            continue
-        try:
-            fallback = _transcode_product_name(item, customer_code, customer_name, employee_id)
-        except Exception as exc:
-            fallback = {"product_name": "", "source_label": "", "message": f"转码失败：{exc}"}
-        response["transcode"] = fallback
-        if fallback["product_name"]:
-            response["product_name"] = fallback["product_name"]
-            response["product_name_source_label"] = fallback["source_label"]
-            response["message"] = f"{response.get('message') or '未命中料号。'} {fallback['source_label']}：{fallback['message']}"
-        else:
-            response["message"] = f"{response.get('message') or '未命中料号。'} 转码未回填品名：{fallback['message']}"
 
 
 def build_material_query_real(
@@ -1148,6 +1139,7 @@ def build_material_query_real(
         raise ValueError("当前没有可查询的订单明细")
     request_payload = {
         "customerCode": customer_code,
+        "acsn": "NY01",
         "operatorCode": employee_id,
         "materialInfoList": [_real_material_request_item(item, create=create_mode) for item in request_items],
     }
@@ -1169,10 +1161,6 @@ def build_material_query_real(
             )
         raise
     response_items = _real_material_response_items(request_items, response_body, http_status)
-    if not create_mode:
-        _apply_transcode_fallbacks(
-            request_items, response_items, customer_code=customer_code, employee_id=employee_id,
-        )
     call_status = "success" if any(item["status"] in {"matched", "creating"} for item in response_items) else "failed"
     all_changes: list[dict[str, Any]] = []
     with db_cursor() as conn:
@@ -1576,7 +1564,30 @@ def build_domestic_order_entry_mock(case_id: int, employee_id: str, triggered_by
     return {"call_id": call_id, "entry_no": response_payload["entry_no"], "status": "success", "mode": "mock"}
 
 
-def build_domestic_order_entry(case_id: int, employee_id: str, triggered_by: str) -> dict[str, Any]:
+def review_domestic_order_entry_prices(case_id: int, employee_id: str) -> dict[str, Any]:
+    """Check current template values against the saved price-review snapshot."""
+    template_id = _case_template_id(case_id, employee_id)
+    if not template_id:
+        return {"association": {}, "tax_mode": "unknown", "by_line": {}, "mismatches": []}
+    with db_cursor() as conn:
+        template = conn.execute("SELECT header_json FROM order_entry_templates WHERE id=?", (template_id,)).fetchone()
+        rows = conn.execute(
+            "SELECT line_no,values_json FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no", (template_id,)
+        ).fetchall()
+    lines = [
+        {"line_no": int(row["line_no"]), "values": _json(row["values_json"], {})}
+        for row in rows
+    ]
+    header = _json(template["header_json"] if template else "", {})
+    return review_cached_template_prices(header.get(PRICE_REVIEW_SNAPSHOT_KEY), lines)
+
+
+def build_domestic_order_entry(
+    case_id: int, employee_id: str, triggered_by: str, *, allow_price_mismatch: bool = False,
+) -> dict[str, Any]:
+    price_review = review_domestic_order_entry_prices(case_id, employee_id)
+    if price_review["mismatches"] and not allow_price_mismatch:
+        raise PriceMismatchConfirmationRequired(price_review)
     config = get_interface_config("domestic_order_entry")
     if not config or not config.get("enabled"):
         raise ValueError("生成订单接口未启用")
@@ -1606,6 +1617,7 @@ def _domestic_order_request_payload(
         line_no = int(row["line_no"])
         values = _json(row["values_json"], {})
         quantity = str(values.get("quantity") or "").strip()
+        factory_part_code = str(values.get("product_code") or "").strip()
         material_code = str(values.get("customer_product_code") or "").strip()
         demand_date = str(values.get("delivery_date") or "").strip()
         tax_price = str(values.get("unit_price") or "").strip()
@@ -1614,6 +1626,8 @@ def _domestic_order_request_payload(
             line_issues.append(f"第 {line_no} 行未填写数量")
         if not material_code:
             line_issues.append(f"第 {line_no} 行未填写客户产品编号")
+        if not factory_part_code:
+            line_issues.append(f"第 {line_no} 行未填写产品编号")
         if not demand_date:
             line_issues.append(f"第 {line_no} 行未填写出货日期")
         if not tax_price and not untaxed_price:
@@ -1625,6 +1639,7 @@ def _domestic_order_request_payload(
             "quantity": quantity,
             "taxPrice": tax_price,
             "untaxedPrice": untaxed_price,
+            "factoryPartCode": factory_part_code,
             "materialCode": material_code,
             "lineNumber": str(line_no),
             "demandDate": demand_date,

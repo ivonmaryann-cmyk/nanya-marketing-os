@@ -19,6 +19,7 @@ from fangzheng_web_app.order_entry_service import (
     _rows_from_pdf_or_image,
     build_domestic_export,
     get_or_create_template,
+    reextract_template,
     reextract_all_templates,
     save_template,
 )
@@ -183,6 +184,26 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertIsNone(sheet["E5"].value)
         self.assertIsNone(sheet["J6"].value)
         book.close()
+
+    def test_price_review_is_calculated_only_on_initial_generation_and_refresh(self) -> None:
+        snapshot = {"tax_mode": "unknown", "target_field": "", "target_label": "", "by_line": {}, "mismatches": []}
+        with patch(
+            "fangzheng_web_app.order_entry_service.review_case_template_prices", return_value=snapshot,
+        ) as review:
+            _case, template = get_or_create_template(self.case_id, "employee-a")
+            get_or_create_template(self.case_id, "employee-a")
+            save_template(self.case_id, "employee-a", {
+                "header": template["header"],
+                "lines": template["lines"],
+            })
+            reextract_template(self.case_id, "employee-a")
+
+        self.assertEqual(review.call_count, 2)
+        with db.db_cursor() as conn:
+            header = json.loads(conn.execute(
+                "SELECT header_json FROM order_entry_templates WHERE id=?", (template["id"],)
+            ).fetchone()["header_json"])
+        self.assertEqual(header["_price_review"], snapshot)
 
     def test_material_status_defaults_to_query_and_rejects_unknown_values(self) -> None:
         get_or_create_template(self.case_id, "employee-a")

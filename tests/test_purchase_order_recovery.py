@@ -6,6 +6,7 @@ from fangzheng_web_app.purchase_order_pipeline import (
     _native_detail_rows_missing_from_docling,
     _native_detail_rows_for_merged_docling,
     _native_grid_rows_from_page,
+    _native_table_purchase_document,
 )
 from fangzheng_web_app.purchase_field_rules import header_score
 from fangzheng_web_app.purchase_result_normalizer import normalize_order_spec_spacing
@@ -129,6 +130,47 @@ class NativeDetailRecoveryTests(unittest.TestCase):
         self.assertEqual(rows[0]["standard"]["物料名称"], "NY 3170M2 0.8mm")
         self.assertEqual(rows[0]["method"], "pdf_native_table_reconciled")
         self.assertEqual(issues, [])
+
+    def test_native_table_fast_path_merges_continuations_and_skips_page_total(self) -> None:
+        headers = [
+            "序号", "物料编码", "物料名称", "规格", "单位", "数量",
+            "单价（含税）", "金额", "税率:%", "交货日期", "备注",
+        ]
+        first_page = [
+            headers,
+            ["1", "MAT-001", "NY6300SP", "2116 54%", "张", "0.45", "25,740 .00", "11,583.00", "13", "2026-09-23", ""],
+            ["", "", "(TG170) 无卤PP", "", "", "", "", "", "", "", ""],
+            ["2", "MAT-002", "NY3170", "1080 69%", "张", "0.23", "12,960.00", "2,980.80", "13", "2026-09-24", ""],
+        ]
+        second_page = [
+            headers,
+            ["9", "MAT-009", "NY3170M2", "106*1", "张", "40", "157.00", "6,280.00", "13", "2026-09-24", ""],
+            ["合计数量及金额：", "", "", "", "", "40.68", "", "20,843.80", "", "", ""],
+        ]
+        native = {
+            "text_quality": {"has_text": True, "readable": True},
+            "text": "采购订单",
+            "page_count": 2,
+            "pages": [
+                {"page_index": 0, "tables": [{"table_index": 0, "cells": self._cells(first_page)}]},
+                {"page_index": 1, "tables": [{"table_index": 0, "cells": self._cells(second_page)}]},
+            ],
+            "warnings": [],
+        }
+
+        document = _native_table_purchase_document(
+            {"stored_path": "purchase-order.pdf", "original_filename": "purchase-order.pdf"}, native
+        )
+
+        self.assertIsNotNone(document)
+        rows = document["mapped_detail_rows"]
+        self.assertEqual([row["standard"]["序号"] for row in rows], ["1", "2", "9"])
+        self.assertEqual(rows[0]["standard"]["物料编码"], "MAT-001")
+        self.assertIn("(TG170) 无卤PP", rows[0]["standard"]["物料名称"])
+        self.assertEqual(rows[0]["standard"]["含税单价"], "25740.00")
+        self.assertEqual(rows[-1]["standard"]["金额"], "6280.00")
+        self.assertEqual(rows[-1]["page_index"], 1)
+        self.assertEqual(sum(len(table["rows"]) for table in document["raw_detail_tables"]), 6)
 
 
 if __name__ == "__main__":

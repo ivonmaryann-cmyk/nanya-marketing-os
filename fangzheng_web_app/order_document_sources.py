@@ -130,6 +130,23 @@ def _order_number_from_tables(tables: list[list[list[str]]]) -> str:
     return ""
 
 
+def _delivery_factory_from_tables(tables: list[list[list[str]]]) -> str:
+    aliases = {"厂别", "送货厂别", "送货工厂", "交货工厂"}
+    for rows in tables:
+        header_index, _mapping = find_detail_header_row(rows)
+        if header_index is None:
+            continue
+        headers = rows[header_index]
+        for column, header in enumerate(headers):
+            if _header_key(header) not in aliases:
+                continue
+            for row in rows[header_index + 1 :]:
+                value = clean_text(row[column] if column < len(row) else "")
+                if value:
+                    return value
+    return ""
+
+
 def _normalize_delivery_date(value: Any, reference_date: Any = "") -> str:
     normalized = normalize_date(value)
     if normalized:
@@ -157,7 +174,7 @@ def _delivery_plan_dates(tables: list[list[list[str]]], reference_date: Any = ""
     """Read a separate delivery-plan table keyed by the purchase-order line."""
     dates: dict[str, str] = {}
     line_headers = {"订单行号", "订单项目", "订单项次", "行号", "项目号"}
-    date_headers = {"需求交期", "要求交期", "计划交期", "供应商交期", "交货日期", "交期"}
+    date_headers = {"需求日", "需求交期", "要求交期", "计划交期", "供应商交期", "交货日期", "交期"}
     for rows in tables:
         for header_index, headers in enumerate(rows):
             compact_headers = [_header_key(header) for header in headers]
@@ -189,6 +206,19 @@ def _apply_delivery_plan_dates(
     for detail in document.get("mapped_detail_rows") or []:
         standard = detail.get("standard") or {}
         original = detail.get("original") or {}
+        source_date = next(
+            (
+                original.get(header)
+                for header in ("需求日", "需求交期", "要求交期", "计划交期", "供应商交期", "交货日期", "交期")
+                if clean_text(original.get(header))
+            ),
+            "",
+        )
+        normalized = _normalize_delivery_date(source_date, reference_date)
+        if normalized:
+            standard["交货日期"] = normalized
+            original["要求交期"] = normalized
+            continue
         line_no = clean_text(
             standard.get("序号")
             or original.get("订单行号")
@@ -206,17 +236,6 @@ def _apply_delivery_plan_dates(
         if normalized_existing:
             standard["交货日期"] = normalized_existing
             continue
-        source_date = next(
-            (
-                original.get(header)
-                for header in ("需求交期", "要求交期", "计划交期", "供应商交期", "交货日期", "交期")
-                if clean_text(original.get(header))
-            ),
-            "",
-        )
-        normalized = _normalize_delivery_date(source_date, reference_date)
-        if normalized:
-            standard["交货日期"] = normalized
 
 
 def build_mail_html_purchase_document(
@@ -255,6 +274,10 @@ def build_mail_html_purchase_document(
         item for item in [clean_text(body_text), *(_table_text(rows) for rows in tables)] if item
     )
     order_number = _order_number_from_tables(tables)
+    delivery_factory = _delivery_factory_from_tables(tables)
+    header_info = {"订单号": order_number} if order_number else {}
+    if delivery_factory:
+        header_info["送货厂别"] = delivery_factory
     document: dict[str, Any] = {
         "pipeline_version": "purchase_order_v1",
         "source_file": source_name,
@@ -263,7 +286,7 @@ def build_mail_html_purchase_document(
         "template_id": "",
         "template_label": "",
         "page_count": 0,
-        "header_info": {"订单号": order_number} if order_number else {},
+        "header_info": header_info,
         "pages": [],
         "raw_detail_tables": raw_detail_tables,
         "mapped_detail_rows": [],

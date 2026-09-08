@@ -17,7 +17,7 @@ DETAIL_ALIASES = {
     "含税单价": ["含税单价", "单价", "单价rmb", "unit price", "price"],
     "金额": ["金额", "价税合计", "合计金额", "total amount", "amount", "total"],
     "交货日期": [
-        "交货日期", "到货日期", "交期", "需求交期", "要求交期",
+        "交货日期", "到货日期", "交期", "需求日", "需求交期", "要求交期",
         "计划交期", "供应商交期", "delivery date", "del. date", "delivery",
     ],
     "备注": ["备注", "附注", "notes", "remark", "comments"],
@@ -235,8 +235,9 @@ def map_detail_row(raw_headers: list[str], row: list[str], mapping: dict[int, st
             number = normalize_number(standard.get(numeric_field))
         if number:
             standard[numeric_field] = number
-    date = normalize_date(standard.get("交货日期"))
-    if not date:
+    source_date = standard.get("交货日期")
+    date = normalize_date(source_date)
+    if not date and not clean_text(source_date):
         date = normalize_date(" ".join(clean_text(value) for value in row))
     if date:
         standard["交货日期"] = date

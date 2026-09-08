@@ -1727,8 +1727,8 @@ def make_customer_key(code: Any, name: Any) -> str:
 def _customer_display_name(rule: Mapping[str, Any]) -> str:
     name = _clean(rule.get("customer_name"))
     code = _clean(rule.get("customer_code"))
-    if code == "103901/104686" or normalize_customer_name(name) == "广东依顿/广州伊顿":
-        return "广州伊顿"
+    if code == "103901/104686" or normalize_customer_name(name) in {"广东依顿/广州依顿", "广东依顿/广州伊顿"}:
+        return "广州依顿"
     return name
 
 

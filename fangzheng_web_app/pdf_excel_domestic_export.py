@@ -164,10 +164,12 @@ def build_domestic_template_data(document: dict[str, Any]) -> dict[str, Any]:
 
     main_values = list(factory_import.get("main_values") or [])
     order_number = clean_text(main_values[7] if len(main_values) > 7 else "")
+    header_info = document.get("header_info") or {}
     header = {
         "order_type": "220", "type_1": "1", "type_2": "1",
         "bill_to_customer_code": "", "ship_to_customer_code": "",
-        "delivery_factory": "", "customer_order_number": order_number,
+        "delivery_factory": clean_text(header_info.get("送货厂别") or header_info.get("厂别")),
+        "customer_order_number": order_number,
         "ledger": "KL01", "tax_type": "", "customer_invoice_number": "",
         "commission_rate": "",
     }

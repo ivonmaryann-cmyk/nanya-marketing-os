@@ -38,11 +38,29 @@ SPEC_REQUIRED = [
 ]
 
 
-def decode_and_simplify_html(payload: bytes, charset: str = "") -> str:
+def decode_mail_text(payload: bytes, charset: str = "") -> str:
+    """Decode text mail payloads while tolerating incorrectly declared Chinese charsets."""
+    declared = str(charset or "utf-8").strip().lower()
     try:
-        html = payload.decode(charset or "utf-8", errors="replace")
-    except Exception:
-        html = payload.decode("utf-8", errors="replace")
+        return payload.decode(declared)
+    except (LookupError, UnicodeDecodeError):
+        pass
+
+    for candidate in ("utf-8", "utf-8-sig", "big5", "cp950", "gb18030", "gbk"):
+        if candidate == declared:
+            continue
+        try:
+            return payload.decode(candidate)
+        except UnicodeDecodeError:
+            continue
+    try:
+        return payload.decode(declared, errors="replace")
+    except LookupError:
+        return payload.decode("utf-8", errors="replace")
+
+
+def decode_and_simplify_html(payload: bytes, charset: str = "") -> str:
+    html = decode_mail_text(payload, charset)
     return convert(html, "zh-cn")
 
 
