@@ -25,6 +25,7 @@ from fangzheng_web_app.order_interface_service import (
     process_material_created_callback,
     _decode_interface_response,
     _domestic_order_request_payload,
+    _extract_layout_structure,
     _real_material_request_item,
     select_material_candidate,
     save_interface_config,
@@ -76,9 +77,17 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         self.assertEqual(material["request_mapping"]["acsn"],
                          "组织代码（上海=NY01，江西=NY02；默认传 NY01）")
         self.assertEqual(material["request_mapping"]["materialInfoList[].customerSpec"],
-                         "模板明细.客户规格（仅点击新建料号时传）")
+                         "新建料号弹窗.客户规格匹配（仅点击新建料号时传）")
         self.assertEqual(material["request_mapping"]["materialInfoList[].customerSpecOld"],
-                         "模板明细.客户规格（选填）")
+                         "原始客户规格（选填，默认不传）")
+        self.assertEqual(material["request_mapping"]["materialInfoList[].oriCustomerSpec"],
+                         "新建料号弹窗.客户规格（仅点击新建料号时传）")
+        self.assertEqual(material["request_mapping"]["materialInfoList[].layoutStructure"],
+                         "客户排版结构（选填，默认不传）")
+        self.assertEqual(material["request_mapping"]["materialInfoList[].thicknessDescription"],
+                         "客户厚度描述（选填，默认不传）")
+        self.assertEqual(material["request_mapping"]["materialInfoList[].specialRequirements"],
+                         "客户特殊要求（选填，默认不传）")
         self.assertEqual(material["response_mapping"]["hitMaterialList[].peag01"],
                          "料号查询建议.产品编号")
         self.assertEqual(material["response_mapping"]["hitMaterialList[].peag08"],
@@ -112,7 +121,7 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
             "response_mapping": "{}",
             "mock_scenarios": "{}",
         }, "23582")
-        self.assertEqual(saved["config_version"], 2)
+        self.assertEqual(saved["config_version"], 3)
         self.assertEqual(saved["endpoint_url"], material["endpoint_url"])
 
     def test_interface_mapping_text_keeps_chinese_readable(self) -> None:
@@ -679,7 +688,7 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         self.assertEqual(payload["operatorCode"], "employee-a")
         self.assertEqual(payload["materialInfoList"][0]["categoryCode"], "698")
         self.assertNotIn("category", payload["materialInfoList"][0])
-        self.assertEqual(payload["materialInfoList"][0]["customerSpecOld"], "南亚新材料 NY6180L 原始客户规格")
+        self.assertNotIn("customerSpecOld", payload["materialInfoList"][0])
         self.assertNotIn("customerSpec", payload["materialInfoList"][0])
         self.assertNotIn("adhesiveCode", payload["materialInfoList"][0])
         self.assertNotIn("newFlag", payload["materialInfoList"][0])
@@ -698,31 +707,65 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual((call["is_mock"], call["http_status"], call["duration_ms"]), (0, 200, 18))
 
+    def test_layout_structure_is_extracted_only_for_base_material(self) -> None:
+        spec = "NY2170H 1.6mm H/H 7628×2+1080×1 TG150"
+
+        self.assertEqual(
+            _extract_layout_structure("", "基板", spec),
+            "7628×2+1080×1",
+        )
+        self.assertEqual(
+            _extract_layout_structure("", "板材", spec),
+            "7628×2+1080×1",
+        )
+        self.assertEqual(
+            _extract_layout_structure("", "基板", 'NY6300 0.203mm 1/1 41"*49"(3313*2)(HVLP1)(有卤素)'),
+            "3313*2",
+        )
+        self.assertEqual(_extract_layout_structure("", "PP", spec), "")
+        with patch(
+            "fangzheng_web_app.order_interface_service.extract_structure_from_customer_spec",
+            return_value="配置的客户排版",
+        ):
+            self.assertEqual(
+                _extract_layout_structure("CUST-01", "基板", spec),
+                "配置的客户排版",
+            )
+
     def test_real_material_request_sends_new_fields_only_for_create_action(self) -> None:
         query_item = _real_material_request_item({
             "material_status": "新增", "product_type": "PP", "customer_product_code": "CUST-001",
             "customer_spec": "原客户规格", "customer_spec_match": "客户规格匹配",
             "adhesive_code": "ADH-01", "product_name": "现有品名",
         })
-        self.assertEqual(query_item["customerSpecOld"], "原客户规格")
+        self.assertNotIn("customerSpecOld", query_item)
         self.assertNotIn("oldProductName", query_item)
         self.assertNotIn("adhesiveCode", query_item)
         self.assertNotIn("customerSpec", query_item)
         self.assertNotIn("newFlag", query_item)
+        self.assertNotIn("layoutStructure", query_item)
+        self.assertNotIn("thicknessDescription", query_item)
+        self.assertNotIn("specialRequirements", query_item)
 
         new_item = _real_material_request_item({
             "material_status": "新增", "product_type": "基板", "customer_product_code": "CUST-002",
             "customer_spec": "原客户规格", "customer_spec_match": "客户规格匹配",
             "adhesive_code": "ADH-02", "product_name": "新品名",
+            "layout_structure": "7628x2+1080x1", "thickness_description": "1.6mm",
+            "special_requirements": "无卤",
         }, create=True)
         self.assertEqual(new_item["categoryCode"], "718")
         self.assertNotIn("category", new_item)
-        self.assertEqual(new_item["customerSpecOld"], "原客户规格")
+        self.assertNotIn("customerSpecOld", new_item)
         self.assertNotIn("adhesiveCode", new_item)
-        self.assertEqual(new_item["customerSpec"], "原客户规格")
+        self.assertEqual(new_item["customerSpec"], "客户规格匹配")
+        self.assertEqual(new_item["oriCustomerSpec"], "原客户规格")
         self.assertEqual(new_item["newFlag"], "Y")
         self.assertEqual(new_item["newProductName"], "新品名")
         self.assertNotIn("oldProductName", new_item)
+        self.assertEqual(new_item["layoutStructure"], "7628x2+1080x1")
+        self.assertEqual(new_item["thicknessDescription"], "1.6mm")
+        self.assertEqual(new_item["specialRequirements"], "无卤")
 
     def test_unmatched_real_query_keeps_product_name_blank_without_transcode(self) -> None:
         _case, template = get_or_create_template(self.case_id, "employee-a")
@@ -797,15 +840,21 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
             result = build_material_creation(self.case_id, "employee-a", "employee-a", [{
                 "line_no": 1, "customer_product_code": "CUST-NEW-01",
                 "customer_spec": "原客户规格", "product_type": "基板", "product_name": "新品名",
+                "layout_structure": "7628x2+1080x1", "thickness_description": "1.6mm",
+                "special_requirements": "无卤",
             }])
         item = request_mock.call_args.args[1]["materialInfoList"][0]
         self.assertEqual(item["newFlag"], "Y")
         self.assertNotIn("category", item)
         self.assertEqual(item["categoryCode"], "718")
         self.assertNotIn("adhesiveCode", item)
-        self.assertEqual(item["customerSpec"], "原客户规格")
-        self.assertEqual(item["customerSpecOld"], "原客户规格")
+        self.assertEqual(item["customerSpec"], "标准客户规格")
+        self.assertEqual(item["oriCustomerSpec"], "原客户规格")
+        self.assertNotIn("customerSpecOld", item)
         self.assertEqual(item["newProductName"], "新品名")
+        self.assertEqual(item["layoutStructure"], "7628x2+1080x1")
+        self.assertEqual(item["thicknessDescription"], "1.6mm")
+        self.assertEqual(item["specialRequirements"], "无卤")
         self.assertNotIn("oldProductName", item)
         self.assertEqual(result["items"][0]["external_task_id"], "TASK-ORDER-001")
         with db.db_cursor() as conn:

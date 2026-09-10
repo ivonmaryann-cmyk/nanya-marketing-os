@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -17,7 +18,7 @@ DETAIL_ALIASES = {
     "含税单价": ["含税单价", "单价", "单价rmb", "unit price", "price"],
     "金额": ["金额", "价税合计", "合计金额", "total amount", "amount", "total"],
     "交货日期": [
-        "交货日期", "到货日期", "交期", "需求日", "需求交期", "要求交期",
+        "交货日期", "到货日期", "交期", "需求日", "需求交期", "要求交期", "要求交货期", "要求交货日期",
         "计划交期", "供应商交期", "delivery date", "del. date", "delivery",
     ],
     "备注": ["备注", "附注", "notes", "remark", "comments"],
@@ -97,17 +98,27 @@ def normalize_date(value: Any) -> str:
     if not match:
         compact_month_day = re.search(r"(20\d{2})[-/](\d{2})(\d{2})(?!\d)", text)
         if compact_month_day:
-            return f"{compact_month_day.group(1)}-{compact_month_day.group(2)}-{compact_month_day.group(3)}"
+            parts = tuple(int(compact_month_day.group(index)) for index in (1, 2, 3))
+            try:
+                return date(*parts).isoformat()
+            except ValueError:
+                return ""
         compact_date = re.search(r"20\d{6}", text)
         if compact_date:
             raw = compact_date.group(0)
-            return f"{raw[:4]}-{raw[4:6]}-{raw[6:]}"
+            try:
+                return date(int(raw[:4]), int(raw[4:6]), int(raw[6:])).isoformat()
+            except ValueError:
+                return ""
         return ""
     raw = match.group(0).replace("年", "-").replace("月", "-").replace("日", "")
     raw = raw.replace("/", "-").replace(".", "-")
     parts = [part.strip() for part in raw.split("-") if part.strip()]
     if len(parts) >= 3:
-        return f"{int(parts[0]):04d}-{int(parts[1]):02d}-{int(parts[2]):02d}"
+        try:
+            return date(int(parts[0]), int(parts[1]), int(parts[2])).isoformat()
+        except ValueError:
+            return ""
     return raw
 
 

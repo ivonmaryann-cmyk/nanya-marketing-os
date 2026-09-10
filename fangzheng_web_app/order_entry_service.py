@@ -24,7 +24,11 @@ from .excel_utils import load_workbook_compat
 from .file_storage import resolve_attachment_path
 from .order_intake_service import get_case
 from .paths import PACKAGE_DIR, PROJECT_DIR
-from .pdf_excel_domestic_export import build_domestic_template_data
+from .pdf_excel_domestic_export import (
+    build_domestic_template_data,
+    infer_product_type_from_spec,
+    normalize_product_type,
+)
 from .order_document_sources import build_mail_html_purchase_document
 from .order_interface_service import record_order_detail_event
 from .order_price_validation_service import PRICE_REVIEW_SNAPSHOT_KEY, review_case_template_prices
@@ -157,9 +161,8 @@ def _line_sequence(values: dict[str, Any], fallback: int) -> str:
 
 
 def _is_pp_spec(value: str) -> bool:
-    """Only classify PP when the customer specification explicitly says so."""
-    text = clean_text(value)
-    return bool(re.search(r"(?:半固化片|(?<![A-Za-z0-9])PP(?![A-Za-z0-9]))", text, re.IGNORECASE))
+    """Use the same PP classification for quantity conversion and the template."""
+    return infer_product_type_from_spec(value) == "PP"
 
 
 def _meter_values(value: str) -> list[Decimal]:
@@ -179,11 +182,15 @@ def _decimal_text(value: Decimal) -> str:
     return text.rstrip("0").rstrip(".") if "." in text else text
 
 
-def _append_remark(remark: str, meter: Decimal | None) -> str:
-    if meter is None:
+def _append_roll_remark(remark: str, roll_quantity: Decimal | None) -> str:
+    if roll_quantity is None:
         return remark
-    meter_text = f"PP米数：{_decimal_text(meter)}米"
-    return "；".join(item for item in (remark, meter_text) if item)
+    roll_text = f"{_decimal_text(roll_quantity)}卷"
+    prefix, separator, suffix = clean_text(remark).partition("&")
+    prefix_parts = [item.strip() for item in re.split(r"[；;\n]+", prefix) if item.strip()]
+    if roll_text not in prefix_parts:
+        prefix_parts.append(roll_text)
+    return f"{'；'.join(prefix_parts)}&{suffix}" if separator else "；".join(prefix_parts)
 
 
 def _apply_auto_extraction_policy(
@@ -210,25 +217,34 @@ def _apply_auto_extraction_policy(
     metres = _meter_values(spec)
     distinct_metres = {value.normalize() for value in metres}
     meter = next(iter(distinct_metres), None) if len(distinct_metres) == 1 else None
-    result["remark"] = _append_remark(result.get("remark", ""), meter)
+    if meter is None:
+        # PP small pieces and PP specifications without a per-roll length keep
+        # the customer-provided quantity; they cannot be converted to metres.
+        return result
 
+    try:
+        quantity = Decimal(str(result.get("quantity") or "").replace(",", ""))
+    except InvalidOperation:
+        return result
+    if quantity < 0:
+        return result
     unit = clean_text(quantity_unit)
     if "张" in unit:
         # PP 小片：客户明确以张计数，数量直接保留，不做米数换算。
         return result
-    if "卷" not in unit or meter is None:
-        # PP 的单位或米数不明确，不能猜测换算关系。
-        result["quantity"] = ""
+    if Decimal("0") < quantity < Decimal("1") and meter is not None:
+        # A fractional PP quantity still represents a roll fraction.  The
+        # template is in metres, so convert it from rolls even when the source
+        # unit column is absent.
+        result["quantity"] = _decimal_text(quantity * meter)
+        result["remark"] = _append_roll_remark(result.get("remark", ""), quantity)
         return result
-    try:
-        quantity = Decimal(str(result.get("quantity") or "").replace(",", ""))
-    except InvalidOperation:
-        result["quantity"] = ""
-        return result
-    if quantity < 0:
-        result["quantity"] = ""
+    if "卷" not in unit:
+        # A quantity of one or more is converted only when the source makes
+        # the roll unit explicit; otherwise retain the source quantity.
         return result
     result["quantity"] = _decimal_text(quantity * meter)
+    result["remark"] = _append_roll_remark(result.get("remark", ""), quantity)
     return result
 
 
@@ -345,6 +361,12 @@ def _line_entry(
         if value not in (None, ""):
             line[field] = clean_text(value)
     line["line_no"] = str(line_no)
+    if line["product_type"]:
+        line["product_type"] = normalize_product_type(line["product_type"])
+    if not line["product_type"]:
+        line["product_type"] = infer_product_type_from_spec(
+            f"{line['customer_spec']} {clean_text(product_context)}"
+        )
     if line["delivery_date"]:
         line["delivery_date"] = normalize_date(line["delivery_date"]) or line["delivery_date"]
     for field in {"quantity", "price_before_tax", "unit_price"}:
@@ -399,7 +421,17 @@ def _mapping_source_value(source: dict[str, Any], source_label: str, transform_t
     labels = [item.strip() for item in re.split(r"[+，,]", str(source_label or "")) if item.strip()]
     if not labels:
         return ""
-    values = [clean_text(_value_by_alias(source, label)) for label in labels]
+    delivery_aliases = (
+        "交货日期", "要求交货日期", "要求交货期", "要求交期", "需求交期", "需求日", "交期",
+    )
+    values = [
+        clean_text(
+            _value_by_alias(source, *delivery_aliases)
+            if _compact_key(label) in {_compact_key(alias) for alias in delivery_aliases}
+            else _value_by_alias(source, label)
+        )
+        for label in labels
+    ]
     if not all(values):
         return ""
     if transform_type == "concat":
@@ -413,16 +445,18 @@ def _apply_customer_extraction_mappings(
 ) -> dict[str, Any]:
     """Apply customer mappings registered for the current source adapter.
 
-    Manual mappings explicitly blank the target.  For all other mapping source
-    types we leave the universal result untouched.  ``source_kind`` is kept
-    explicit so an eventual rule-maintenance page can expose different source
-    adapters without making their mappings leak into one another.
+    Customer-maintained order-table mappings work for both attachment tables
+    and HTML tables in the mail body.  Manual mappings explicitly blank the
+    target.  For all other source types we leave the universal result untouched.
     """
     if not mappings:
         return values
     result = dict(values)
     for mapping in mappings:
-        if mapping.get("source_kind") != source_kind:
+        mapping_source = str(mapping.get("source_kind") or "")
+        if mapping_source != source_kind and not (
+            mapping_source == "attachment_table" and source_kind == "mail_html_table"
+        ):
             continue
         target = str(mapping.get("target_field") or "")
         transform = str(mapping.get("transform_type") or "")
@@ -436,6 +470,14 @@ def _apply_customer_extraction_mappings(
         # an explicit source value.  Otherwise retain an already verified
         # universal value; no fallback guess is introduced.
         if value:
+            if target == "product_type":
+                value = normalize_product_type(value)
+                if not value:
+                    continue
+            if target == "delivery_date":
+                value = normalize_date(value)
+                if not value:
+                    continue
             result[target] = value
     return result
 
@@ -558,7 +600,7 @@ def _line_from_pipeline_row(
         ),
         "customer_spec": raw_spec or standard.get("说明") or standard.get("物料名称") or "",
         "delivery_date": standard.get("交货日期") or _value_by_alias(
-            original, "交货日期", "出货日期", "交期", "需求日", "需求交期", "要求交期", "计划交期", "供应商交期", "Delivery Date",
+            original, "交货日期", "出货日期", "交期", "需求日", "需求交期", "要求交期", "要求交货期", "要求交货日期", "计划交期", "供应商交期", "Delivery Date",
         ) or "",
         "quantity": standard.get("数量") or _value_by_alias(original, "数量", "Quantity", "Qty") or "",
         "price_before_tax": raw_before_tax_price or standard.get("不含税单价") or "",
@@ -625,11 +667,24 @@ def _rows_from_shared_purchase_document(
     ):
         values = {field: clean_text(line.get(field)) for field in LINE_FIELDS}
         values["line_no"] = str(index)
+        original = source_row.get("original") or {}
+        standard = source_row.get("standard") or {}
         values = _apply_customer_extraction_mappings(
             values,
-            source_row.get("original") or {},
+            original,
             customer_mappings or [],
             source_kind=source_kind,
+        )
+        values = _apply_auto_extraction_policy(
+            values,
+            quantity_unit=(
+                _value_by_alias(original, "单位", "计量单位", "Unit", "UOM")
+                or standard.get("单位")
+                or ""
+            ),
+            product_context=_value_by_alias(
+                original, "物料品名", "物料名称", "材料名称", "Material Name",
+            ) or standard.get("物料名称") or "",
         )
         reference = f"{reference_prefix}第 {index} 行"
         result.append(
@@ -731,6 +786,19 @@ def _line_signature(entry: dict[str, Any]) -> tuple[str, ...]:
     )
 
 
+def _format_template_remark(value: Any) -> str:
+    """Keep derived roll/metre notes before ``&`` and source notes after it."""
+    current = clean_text(value)
+    if not current:
+        return current
+    parts = [part.strip() for part in re.split(r"[&；;\n]+", current) if part.strip()]
+    generated = [part for part in parts if re.fullmatch(r"\d+(?:\.\d+)?卷", part)]
+    source_notes = [part for part in parts if part not in generated]
+    prefix = "；".join(generated)
+    suffix = "；".join(source_notes)
+    return f"{prefix}&{suffix}" if prefix or suffix else ""
+
+
 def _merge_initial_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     seen: set[tuple[str, ...]] = set()
@@ -745,6 +813,7 @@ def _merge_initial_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         sequence = _line_sequence(entry["values"], len(result) + 1)
         entry["values"]["line_no"] = sequence
         entry["values"]["customer_order_seq"] = sequence
+        entry["values"]["remark"] = _format_template_remark(entry["values"].get("remark"))
         result.append(entry)
     return result
 
@@ -972,7 +1041,7 @@ def queue_template_extraction(case_id: int, employee_id: str) -> dict[str, Any]:
             """INSERT INTO order_entry_template_tasks
                (case_id,employee_id,status,message,started_at)
                VALUES (?,?,?,?,?)""",
-            (case_id, employee_id, "queued", "等待后台提取订单附件", now),
+            (case_id, employee_id, "queued", "等待后台提取订单信息", now),
         )
         task_id = int(cursor.lastrowid)
 
@@ -1016,7 +1085,7 @@ def run_template_extraction_task(task_id: int, case_id: int, employee_id: str) -
     with db_cursor() as conn:
         updated = conn.execute(
             """UPDATE order_entry_template_tasks
-               SET status='running', message='正在解析邮件正文和附件', started_at=?
+               SET status='running', message='正在解析邮件正文与附件', started_at=?
                WHERE id=? AND case_id=? AND employee_id=? AND status='queued'""",
             (utcnow(), task_id, case_id, employee_id),
         )
@@ -1233,7 +1302,7 @@ def template_progress(case_id: int, employee_id: str) -> dict[str, Any]:
             return {
                 "created": False, "saved": False, "completed": False, "version": 0,
                 "stage": "extracting", "label": "正在提取订单",
-                "next_action": "正在后台解析附件…", "step": 2,
+                "next_action": "正在后台提取订单信息…", "step": 2,
                 "task_id": task["id"], "task_status": task["status"],
                 "task_message": task.get("message") or "正在准备订单信息。",
             }

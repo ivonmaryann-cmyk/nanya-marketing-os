@@ -151,12 +151,13 @@ class PdfExcelDomesticExportTests(unittest.TestCase):
         self.assertEqual(sheet["J4"].value, 10)
         self.assertIsNone(sheet["K4"].value)
         self.assertEqual(sheet["M4"].value, "9")
-        self.assertEqual(sheet["O4"].value, "加急；2卷")
+        self.assertEqual(sheet["O4"].value, "2卷&加急")
 
         self.assertEqual(sheet["A5"].value, "2")
         self.assertEqual(sheet["G5"].value, "基板")
         self.assertEqual(sheet["K5"].value, 12.5)
         self.assertEqual(sheet["M5"].value, "7")
+        self.assertEqual(sheet["O5"].value, "&FR-4")
         self.assertIsNone(sheet["G6"].value)
         self.assertEqual(sheet["M6"].value, "3")
         self.assertEqual(sheet["G7"].value, "PP")
@@ -176,6 +177,57 @@ class PdfExcelDomesticExportTests(unittest.TestCase):
         _header, rows = build_domestic_rows(document)
 
         self.assertEqual(rows[0]["产品类型（PP、基板）"], "基板")
+
+    def test_explicit_product_type_column_overrides_descriptive_keywords(self) -> None:
+        document = _document()
+        document["mapped_detail_rows"] = [{
+            "original": {
+                "产品类型": "板材",
+                "物料描述": "PP NY2150 1080 300M/卷",
+            },
+            "standard": {"物料编码": "CUST-BASE", "数量": "1", "单位": "张"},
+        }]
+        document["factory_import"]["rows"] = [document["factory_import"]["rows"][0]]
+
+        _header, rows = build_domestic_rows(document)
+
+        self.assertEqual(rows[0]["产品类型（PP、基板）"], "基板")
+
+    def test_explicit_product_type_accepts_descriptive_category_value(self) -> None:
+        document = _document()
+        document["mapped_detail_rows"] = [{
+            "original": {"产品类别": "PP（半固化片）", "物料描述": "FR-4 1.6MM"},
+            "standard": {"物料编码": "CUST-PP", "数量": "1", "单位": "张"},
+        }]
+        document["factory_import"]["rows"] = [document["factory_import"]["rows"][0]]
+
+        _header, rows = build_domestic_rows(document)
+
+        self.assertEqual(rows[0]["产品类型（PP、基板）"], "PP")
+
+    def test_board_size_with_foil_type_is_classified_as_base_material(self) -> None:
+        document = _document()
+        document["mapped_detail_rows"] = [{
+            "original": {"物料描述": 'NY6200 0.089mm 1/1 37"*49"(1067*2)(RTF)(有卤素)'},
+            "standard": {"物料编码": "CUST-BASE", "数量": "1", "单位": "张"},
+        }]
+        document["factory_import"]["rows"] = [document["factory_import"]["rows"][0]]
+
+        _header, rows = build_domestic_rows(document)
+
+        self.assertEqual(rows[0]["产品类型（PP、基板）"], "基板")
+
+    def test_resin_content_spec_is_classified_as_pp_without_pp_keyword(self) -> None:
+        document = _document()
+        document["mapped_detail_rows"] = [{
+            "original": {"物料描述": 'NY2150P 2116 RC60% 18.62"x16.42"有卤 CAF'},
+            "standard": {"物料编码": "CUST-PP", "数量": "1", "单位": "张"},
+        }]
+        document["factory_import"]["rows"] = [document["factory_import"]["rows"][0]]
+
+        _header, rows = build_domestic_rows(document)
+
+        self.assertEqual(rows[0]["产品类型（PP、基板）"], "PP")
 
     def test_template_sample_rows_are_cleared(self) -> None:
         document = _document()

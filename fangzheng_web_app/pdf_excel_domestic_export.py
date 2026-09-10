@@ -115,7 +115,85 @@ def _customer_spec(detail: dict[str, Any]) -> str:
     return " ".join(combined)
 
 
+def normalize_product_type(value: Any) -> str:
+    """Normalize an explicitly supplied product category for the order template."""
+    text = _header_key(value)
+    pp_markers = ("pp", "半固化片", "prepreg")
+    base_markers = ("基板", "板材", "覆铜板", "铜箔基板", "ccl", "fr4")
+    is_pp = text in {"698", "2"} or any(marker in text for marker in pp_markers)
+    is_base = text in {"718", "1"} or any(marker in text for marker in base_markers)
+    if is_pp and not is_base:
+        return "PP"
+    if is_base and not is_pp:
+        return "基板"
+    return ""
+
+
+def _explicit_product_type(detail: dict[str, Any]) -> str:
+    """Read a type/category column before deriving a type from descriptive text."""
+    headers = {
+        _header_key(value)
+        for value in (
+            "产品类型", "产品类别", "产品品类", "物料类型", "物料类别", "物料品类",
+            "品类", "类别", "Material Type", "Material Category", "Product Type",
+            "Product Category", "Category",
+        )
+    }
+    for source in (detail.get("original") or {}, detail.get("standard") or {}):
+        for header, value in source.items():
+            if _header_key(header) not in headers:
+                continue
+            product_type = normalize_product_type(value)
+            if product_type:
+                return product_type
+    return ""
+
+
+def infer_product_type_from_spec(value: Any) -> str:
+    """Classify only when the specification has unambiguous product evidence."""
+    context = clean_text(value)
+    is_pp = bool(re.search(
+        r"(?:半固化片|PREPREG|(?<![A-Za-z0-9])PP(?![A-Za-z0-9]))",
+        context,
+        flags=re.IGNORECASE,
+    ))
+    # PP specifications commonly omit the literal "PP", but retain the resin
+    # content marker (for example NY2150P 2116 RC60%).  RC is not used as a
+    # standalone material keyword elsewhere, so it is a reliable PP signal.
+    if re.search(r"(?<![A-Za-z])RC\s*=?\s*\d+(?:\.\d+)?\s*%", context, re.IGNORECASE):
+        is_pp = True
+    is_base = bool(re.search(
+        r"(?:覆铜板|铜箔基板|基板|(?<![A-Za-z0-9])CCL(?![A-Za-z0-9])|(?<![A-Za-z0-9])FR\s*-\s*4(?![A-Za-z0-9]))",
+        context,
+        flags=re.IGNORECASE,
+    ))
+    board_size = bool(re.search(
+        r"\b\d{2}(?:\.\d+)?\s*(?:\"|英寸|inch)?\s*[x×*]\s*"
+        r"\d{2}(?:\.\d+)?\s*(?:\"|英寸|inch)?",
+        context,
+        flags=re.IGNORECASE,
+    ))
+    copper_foil = bool(re.search(
+        r"(?<![A-Za-z0-9])(?:RTF|HTE|HVLP|VLP|ED)(?![A-Za-z0-9])|铜箔",
+        context,
+        flags=re.IGNORECASE,
+    ))
+    copper_sides = bool(re.search(r"(?<!\d)(?:H/H|[12]/[12])(?!\d)", context, re.IGNORECASE))
+    # A board-size pair together with foil information is a reliable base-material
+    # signature even when customers omit words such as FR-4 or 覆铜板.
+    if board_size and (copper_foil or copper_sides):
+        is_base = True
+    if is_pp and not is_base:
+        return "PP"
+    if is_base and not is_pp:
+        return "基板"
+    return ""
+
+
 def _product_type(detail: dict[str, Any], customer_spec: str) -> str:
+    explicit_type = _explicit_product_type(detail)
+    if explicit_type:
+        return explicit_type
     standard = detail.get("standard") or {}
     context = " ".join(
         item
@@ -126,25 +204,16 @@ def _product_type(detail: dict[str, Any], customer_spec: str) -> str:
         ]
         if item
     )
-    is_pp = bool(re.search(
-        r"(?:半固化片|PREPREG|(?<![A-Za-z0-9])PP(?![A-Za-z0-9]))",
-        context,
-        flags=re.IGNORECASE,
-    ))
-    is_base = bool(re.search(
-        r"(?:覆铜板|铜箔基板|基板|(?<![A-Za-z0-9])CCL(?![A-Za-z0-9])|(?<![A-Za-z0-9])FR\s*-\s*4(?![A-Za-z0-9]))",
-        context,
-        flags=re.IGNORECASE,
-    ))
-    if is_pp and not is_base:
-        return "PP"
-    if is_base and not is_pp:
-        return "基板"
-    return ""
+    return infer_product_type_from_spec(context)
 
 
-def _clean_remark(value: Any) -> str:
-    return clean_text(value).rstrip("&").rstrip()
+def _template_remark(value: Any, detail: dict[str, Any]) -> str:
+    prefix = clean_text(value).rstrip("&").rstrip()
+    standard = detail.get("standard") or {}
+    source_note = clean_text(standard.get("备注")) or clean_text(standard.get("说明"))
+    if not prefix and not source_note:
+        return ""
+    return f"{prefix}&{source_note}"
 
 
 def _factory_import(document: dict[str, Any]) -> dict[str, Any]:
@@ -207,8 +276,8 @@ def build_domestic_template_data(document: dict[str, Any]) -> dict[str, Any]:
                 or str(index),
                 "customer_order_number": order_number,
                 "one_to_many": "",
-                "remark": _clean_remark(
-                    factory_row.get(FACTORY_DETAIL_HEADERS[11])
+                "remark": _template_remark(
+                    factory_row.get(FACTORY_DETAIL_HEADERS[11]), detail
                 ),
             }
         )

@@ -35,6 +35,51 @@ class FangzhengPriceCalculatorTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual(290.4, price)
 
+    def test_ccl_falls_back_from_hvlp1_to_hvlp_when_quote_uses_legacy_name(self) -> None:
+        self.price_rules.loc[len(self.price_rules)] = [
+            "CCL", "NY6300S", "0.203", "H/H", "HVLP", "3313x2", 19.88, 238.56, 265.0, 278.32,
+        ]
+
+        price, _note, error = calculator.calculate_price(
+            'NY6300S 0.203mm H/H 37"*49"(3313*2)(HVLP1)(无卤素)',
+            self.price_rules,
+            self.account_rules,
+        )
+
+        self.assertIsNone(error)
+        self.assertEqual(238.56, price)
+
+    def test_ccl_falls_back_from_hvlp_to_hvlp1_when_quote_uses_standard_name(self) -> None:
+        self.price_rules.loc[len(self.price_rules)] = [
+            "CCL", "NY6300", "0.127", "H/H", "HVLP1", "2116x1", 16.64, 199.68, 221.81, 232.96,
+        ]
+
+        price, _note, error = calculator.calculate_price(
+            'NY6300 0.127mm H/H 43"x49"有卤 HVLP 1x2116',
+            self.price_rules,
+            self.account_rules,
+        )
+
+        self.assertIsNone(error)
+        self.assertEqual(232.96, price)
+
+    def test_ccl_prefers_exact_hvlp1_quote_over_legacy_hvlp_fallback(self) -> None:
+        self.price_rules.loc[len(self.price_rules)] = [
+            "CCL", "NY6300S", "0.203", "H/H", "HVLP", "3313x2", 19.88, 238.56, 265.0, 278.32,
+        ]
+        self.price_rules.loc[len(self.price_rules)] = [
+            "CCL", "NY6300S", "0.203", "H/H", "HVLP1", "3313x2", 20.0, 240.0, 266.0, 279.0,
+        ]
+
+        price, _note, error = calculator.calculate_price(
+            'NY6300S 0.203mm H/H 37"*49"(3313*2)(HVLP1)(无卤素)',
+            self.price_rules,
+            self.account_rules,
+        )
+
+        self.assertIsNone(error)
+        self.assertEqual(240.0, price)
+
     def test_pp_accepts_unquoted_piece_size(self) -> None:
         price, _note, error = calculator.calculate_price(
             "NY6300P(C) 106 RC77% 30.1*24.5",

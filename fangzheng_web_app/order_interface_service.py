@@ -12,6 +12,7 @@ from urllib.request import Request, urlopen
 from typing import Any
 
 from .database import automation_cursor as db_cursor
+from .customer_spec_mapping_service import extract_structure_from_customer_spec
 from .db import utcnow
 from .order_price_validation_service import (
     PRICE_REVIEW_SNAPSHOT_KEY,
@@ -36,10 +37,14 @@ INTERFACE_DEFAULTS = {
             "operatorCode": "当前登录账号（员工工号，必填）",
             "materialInfoList[].categoryCode": "模板明细.产品类型（PP=698，基板=718，必填）",
             "materialInfoList[].customerMaterialNo": "模板明细.客户产品编号（必填）",
-            "materialInfoList[].customerSpec": "模板明细.客户规格（仅点击新建料号时传）",
-            "materialInfoList[].customerSpecOld": "模板明细.客户规格（选填）",
+            "materialInfoList[].customerSpec": "新建料号弹窗.客户规格匹配（仅点击新建料号时传）",
+            "materialInfoList[].customerSpecOld": "原始客户规格（选填，默认不传）",
+            "materialInfoList[].oriCustomerSpec": "新建料号弹窗.客户规格（仅点击新建料号时传）",
             "materialInfoList[].newProductName": "新建料号弹窗.品名（仅点击新建料号时传）",
             "materialInfoList[].newFlag": "点击新建料号时固定发送 Y；批量查询不发送",
+            "materialInfoList[].layoutStructure": "客户排版结构（选填，默认不传）",
+            "materialInfoList[].thicknessDescription": "客户厚度描述（选填，默认不传）",
+            "materialInfoList[].specialRequirements": "客户特殊要求（选填，默认不传）",
         },
         "response_mapping": {
             "code": "接口交互记录.业务状态码（200=处理完成，999=失败）",
@@ -124,7 +129,7 @@ INTERFACE_MAINTENANCE_NOTES = {
     "material_batch_query": [
         "当前地址是 NYEOS 测试环境；正式环境地址确认后只需修改“请求地址”。",
         "产品类型必须转换为接口编码：PP 使用 698，基板使用 718。",
-        "点击“新建料号”时，customerSpec 与 customerSpecOld 都发送模板中的客户规格。",
+        "点击“新建料号”时，customerSpec 发送客户规格匹配，oriCustomerSpec 发送客户规格；customerSpecOld 默认不传。",
         "点击“新建料号”时，newProductName 发送当前品名，newFlag 固定发送 Y；不发送胶系编码和客户规格匹配。",
         "接口未命中料号时可能返回 pera01，并在对方系统创建客户料号编制作业，请勿用随意数据测试。",
         "保存后业务页会按运行模式执行：Mock 走模拟流程，真实接口会请求当前地址。",
@@ -216,6 +221,10 @@ def ensure_interface_configs(operated_by: str = "system") -> None:
                     ).fetchone()
                 if interface_key == "material_batch_query":
                     _upgrade_material_customer_spec_source(conn, existing, operated_by, now)
+                    existing = conn.execute(
+                        "SELECT * FROM order_interface_configs WHERE interface_key=?", (interface_key,)
+                    ).fetchone()
+                    _upgrade_material_optional_request_fields(conn, existing, operated_by, now)
                 elif interface_key == "domestic_order_entry":
                     if _is_untouched_legacy_domestic_config(existing):
                         _upgrade_legacy_domestic_config(conn, existing, operated_by, now)
@@ -299,6 +308,51 @@ def _upgrade_material_customer_spec_source(conn: Any, row: Any, operated_by: str
         ):
             if mapping_key not in mapping:
                 mapping[mapping_key] = defaults[mapping_key]
+    if not changed:
+        return
+    next_version = int(before.get("config_version") or 0) + 1
+    conn.execute(
+        """UPDATE order_interface_configs
+           SET request_mapping_json=?,config_version=?,updated_at=? WHERE id=?""",
+        (json.dumps(mapping, ensure_ascii=False), next_version, now, int(before["id"])),
+    )
+    current = conn.execute("SELECT * FROM order_interface_configs WHERE id=?", (int(before["id"]),)).fetchone()
+    conn.execute(
+        """INSERT INTO order_interface_config_versions
+           (interface_config_id,config_version,before_json,after_json,operated_by,created_at)
+           VALUES (?,?,?,?,?,?)""",
+        (
+            int(before["id"]), next_version, json.dumps(before, ensure_ascii=False),
+            json.dumps(_row(current), ensure_ascii=False), operated_by, now,
+        ),
+    )
+
+
+def _upgrade_material_optional_request_fields(conn: Any, row: Any, operated_by: str, now: str) -> None:
+    """Expose new optional NYEOS fields without changing request behaviour."""
+    before = _row(row)
+    mapping = _json(before.get("request_mapping_json"), {})
+    defaults = INTERFACE_DEFAULTS["material_batch_query"]["request_mapping"]
+    optional_keys = (
+        "materialInfoList[].layoutStructure",
+        "materialInfoList[].thicknessDescription",
+        "materialInfoList[].specialRequirements",
+    )
+    changed = False
+    for key in optional_keys:
+        if key not in mapping:
+            mapping[key] = defaults[key]
+            changed = True
+    if mapping.get("materialInfoList[].customerSpecOld") != defaults["materialInfoList[].customerSpecOld"]:
+        mapping["materialInfoList[].customerSpecOld"] = defaults["materialInfoList[].customerSpecOld"]
+        changed = True
+    for key in (
+        "materialInfoList[].customerSpec",
+        "materialInfoList[].oriCustomerSpec",
+    ):
+        if mapping.get(key) != defaults[key]:
+            mapping[key] = defaults[key]
+            changed = True
     if not changed:
         return
     next_version = int(before.get("config_version") or 0) + 1
@@ -515,7 +569,6 @@ def test_interface_config(payload: dict[str, Any]) -> dict[str, Any]:
         "materialInfoList": [{
             "categoryCode": "718",
             "customerMaterialNo": "",
-            "customerSpecOld": "",
             "newProductName": "",
         }],
     } if interface_key == "material_batch_query" else {
@@ -787,6 +840,29 @@ MATERIAL_STATUS_LABELS = {
     "resolved": "已回填", "manual_resolved": "人工已填写", "failed": "查询异常",
 }
 
+_LAYOUT_STRUCTURE_PATTERN = re.compile(
+    r"(?:\(\s*(?P<parenthesized>\d{3,4}\s*[xX*×]\s*\d+"
+    r"(?:\s*\+\s*\d{3,4}\s*[xX*×]\s*\d+)*)\s*\)"
+    r"|(?P<compound>\d{3,4}\s*[xX*×]\s*\d+"
+    r"(?:\s*\+\s*\d{3,4}\s*[xX*×]\s*\d+)+))"
+)
+
+
+def _extract_layout_structure(customer_code: Any, product_type: Any, customer_spec: Any) -> str:
+    """Prefer a customer's configured structure position, then a conservative stackup pattern."""
+    if _material_category_code(str(product_type or "")) != "718":
+        return ""
+    try:
+        configured = extract_structure_from_customer_spec(customer_code, product_type, customer_spec)
+    except Exception:
+        # The optional customer-spec mapping data may not exist in historical
+        # databases; new-material creation must still be able to proceed.
+        configured = ""
+    if configured:
+        return configured
+    matched = _LAYOUT_STRUCTURE_PATTERN.search(str(customer_spec or ""))
+    return re.sub(r"\s+", "", (matched.group("parenthesized") or matched.group("compound"))) if matched else ""
+
 
 def _material_request_item(line_no: int, values: dict[str, Any]) -> dict[str, Any]:
     return {
@@ -798,6 +874,9 @@ def _material_request_item(line_no: int, values: dict[str, Any]) -> dict[str, An
         "customer_product_code": str(values.get("customer_product_code") or ""),
         "customer_spec": str(values.get("customer_spec") or ""),
         "customer_spec_match": str(values.get("customer_spec_match") or ""),
+        "layout_structure": str(values.get("layout_structure") or ""),
+        "thickness_description": str(values.get("thickness_description") or ""),
+        "special_requirements": str(values.get("special_requirements") or ""),
     }
 
 
@@ -925,6 +1004,11 @@ def _save_material_creation_lines(
     changes: list[dict[str, Any]] = []
     now = utcnow()
     with db_cursor() as conn:
+        template = conn.execute(
+            "SELECT header_json FROM order_entry_templates WHERE id=?", (template_id,)
+        ).fetchone()
+        header = _json(template["header_json"] if template else "", {})
+        customer_code = str(header.get("bill_to_customer_code") or "").strip()
         rows = conn.execute(
             "SELECT line_no,values_json,sources_json FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no",
             (template_id,),
@@ -943,6 +1027,10 @@ def _save_material_creation_lines(
             ).fetchone()
             if task and _material_candidates(_json(task["result_json"], {})):
                 raise ValueError(f"第 {line_no} 项已有候选料号，请先选择候选，不能重复新建")
+            product_type = str(raw.get("product_type", values.get("product_type")) or "").strip()
+            customer_spec = str(raw.get("customer_spec", values.get("customer_spec")) or "").strip()
+            manual_layout = str(raw.get("layout_structure") or "").strip()
+            automatic_layout = _extract_layout_structure(customer_code, product_type, customer_spec)
             updates = {
                 "material_status": "新增",
                 "product_name": (
@@ -951,12 +1039,16 @@ def _save_material_creation_lines(
                     else str(values.get("product_name") or "").strip()
                 ),
                 "customer_product_code": str(raw.get("customer_product_code", values.get("customer_product_code")) or "").strip(),
-                "customer_spec": str(raw.get("customer_spec", values.get("customer_spec")) or "").strip(),
-                "product_type": str(raw.get("product_type", values.get("product_type")) or "").strip(),
-                # These two fields remain on the template for other workflows,
-                # but the new-material dialog no longer edits or sends them.
+                "customer_spec": customer_spec,
+                "product_type": product_type,
+                # 胶系编码仍由其他流程维护；客户规格匹配在新建料号弹窗中可修改。
                 "adhesive_code": str(values.get("adhesive_code") or "").strip(),
-                "customer_spec_match": str(values.get("customer_spec_match") or "").strip(),
+                "customer_spec_match": str(raw.get(
+                    "customer_spec_match", values.get("customer_spec_match"),
+                ) or "").strip(),
+                "layout_structure": manual_layout or automatic_layout,
+                "thickness_description": str(raw.get("thickness_description") or "").strip(),
+                "special_requirements": str(raw.get("special_requirements") or "").strip(),
             }
             if not updates["customer_product_code"]:
                 raise ValueError(f"第 {line_no} 项缺少客户产品编号")
@@ -967,7 +1059,10 @@ def _save_material_creation_lines(
                 before = str(values.get(field) or "")
                 values[field] = value
                 if before != value:
-                    sources[field] = {"label": "人工修改", "reference": "新建料号弹窗"}
+                    sources[field] = {
+                        "label": "客户规格自动提取" if field == "layout_structure" and not manual_layout else "人工修改",
+                        "reference": "客户规格" if field == "layout_structure" and not manual_layout else "新建料号弹窗",
+                    }
                     changes.append({"field": field, "before": before, "after": value, "line_no": line_no})
             conn.execute(
                 """UPDATE order_entry_template_lines SET values_json=?,sources_json=?,updated_at=?
@@ -1007,9 +1102,9 @@ def build_material_creation(
 def _material_category_code(product_type: str) -> str:
     value = str(product_type or "").strip()
     normalized = value.upper()
-    if normalized in {"PP", "698", "1"}:
+    if value == "半固化片" or normalized in {"PP", "PREPREG", "698", "1"}:
         return "698"
-    if value == "基板" or normalized in {"718", "2"}:
+    if value in {"基板", "板材", "覆铜板", "铜箔基板"} or normalized in {"CCL", "FR4", "718", "2"}:
         return "718"
     return value
 
@@ -1018,14 +1113,22 @@ def _real_material_request_item(item: dict[str, Any], *, create: bool = False) -
     result = {
         "categoryCode": _material_category_code(str(item.get("product_type") or "")),
         "customerMaterialNo": str(item.get("customer_product_code") or "").strip(),
-        "customerSpecOld": str(item.get("customer_spec") or "").strip(),
     }
     if create:
         result.update({
-            "customerSpec": str(item.get("customer_spec") or "").strip(),
+            "customerSpec": str(item.get("customer_spec_match") or "").strip(),
+            "oriCustomerSpec": str(item.get("customer_spec") or "").strip(),
             "newProductName": str(item.get("product_name") or "").strip(),
             "newFlag": "Y",
         })
+        for source, target in (
+            ("layout_structure", "layoutStructure"),
+            ("thickness_description", "thicknessDescription"),
+            ("special_requirements", "specialRequirements"),
+        ):
+            value = str(item.get(source) or "").strip()
+            if value:
+                result[target] = value
     return result
 
 

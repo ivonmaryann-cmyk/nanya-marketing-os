@@ -43,9 +43,9 @@ ROUTING_SCOPE_LABELS = {
     "subject": "邮件主题", "body": "邮件正文", "attachment_name": "附件名称", "attachment_content": "附件内容",
 }
 EXTRACTION_SOURCE_KIND_LABELS = {
-    # 客户级字段映射当前仅对已解析出的附件订单表格生效。不要在页面上
-    # 暴露尚未执行的正文或附件名称映射，避免业务维护了无效配置。
-    "attachment_table": "附件订单表格字段",
+    # 正文 HTML 表格与附件表格都使用同一组可见列名映射，避免客户为同一
+    # 订单格式维护两次配置。
+    "attachment_table": "订单表格字段（正文/附件）",
 }
 EXTRACTION_TARGET_LABELS = {
     "customer_product_code": "客户产品编号", "customer_spec": "客户规格", "quantity": "数量", "delivery_date": "出货日期",

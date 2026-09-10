@@ -73,6 +73,17 @@ class MailHtmlOrderDocumentTests(unittest.TestCase):
         assert document is not None
         self.assertEqual("2026-09-25", document["mapped_detail_rows"][0]["standard"]["交货日期"])
 
+    def test_requested_delivery_period_header_is_mapped_to_delivery_date(self) -> None:
+        document = build_mail_html_purchase_document("""
+        <table><tr><th>项次</th><th>料号</th><th>描述</th><th>数量</th><th>单位</th><th>要求交货期</th></tr>
+        <tr><td>1</td><td>AA1130050110010002</td><td>NY6300S 0.050mm</td><td>25</td><td>PIE</td><td>9月15日</td></tr>
+        </table>
+        """, reference_date="2026-09-09 08:00:00")
+
+        self.assertIsNotNone(document)
+        assert document is not None
+        self.assertEqual("2026-09-15", document["mapped_detail_rows"][0]["standard"]["交货日期"])
+
     def test_demand_date_overrides_a_date_like_purchase_request_number(self) -> None:
         document = build_mail_html_purchase_document("""
         <table><tr><th>日期</th><th>厂别</th><th>请购单号</th><th>物料编码</th><th>品名规格</th><th>数量</th><th>单位</th><th>需求日</th></tr>

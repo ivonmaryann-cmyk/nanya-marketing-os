@@ -313,6 +313,18 @@ def extract_glue_system_from_customer_spec_match(
     return "" if value == "*" else value.strip()
 
 
+def extract_structure_from_customer_spec(
+    customer_code: Any, product_type: Any, customer_spec: Any,
+) -> str:
+    """Read the configured structure segment directly from a customer specification."""
+    detail = build_customer_spec_match_detail(customer_code, product_type, customer_spec)
+    field = next(
+        (item for item in detail["fields"] if item["field"] == "structure_position"),
+        {},
+    )
+    return as_text(field.get("value"))
+
+
 def save_spec_mapping(
     values: dict[str, Any], *, mapping_id: int | None = None, operated_by: str = "",
 ) -> int:

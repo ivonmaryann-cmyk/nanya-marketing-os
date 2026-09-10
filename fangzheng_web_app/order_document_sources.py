@@ -174,7 +174,7 @@ def _delivery_plan_dates(tables: list[list[list[str]]], reference_date: Any = ""
     """Read a separate delivery-plan table keyed by the purchase-order line."""
     dates: dict[str, str] = {}
     line_headers = {"订单行号", "订单项目", "订单项次", "行号", "项目号"}
-    date_headers = {"需求日", "需求交期", "要求交期", "计划交期", "供应商交期", "交货日期", "交期"}
+    date_headers = {"需求日", "需求交期", "要求交期", "要求交货期", "要求交货日期", "计划交期", "供应商交期", "交货日期", "交期"}
     for rows in tables:
         for header_index, headers in enumerate(rows):
             compact_headers = [_header_key(header) for header in headers]
@@ -209,7 +209,7 @@ def _apply_delivery_plan_dates(
         source_date = next(
             (
                 original.get(header)
-                for header in ("需求日", "需求交期", "要求交期", "计划交期", "供应商交期", "交货日期", "交期")
+                for header in ("需求日", "需求交期", "要求交期", "要求交货期", "要求交货日期", "计划交期", "供应商交期", "交货日期", "交期")
                 if clean_text(original.get(header))
             ),
             "",

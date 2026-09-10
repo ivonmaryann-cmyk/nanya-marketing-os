@@ -11,6 +11,7 @@ from openpyxl import Workbook, load_workbook
 from fangzheng_web_app import db
 from fangzheng_web_app.mail_transcode_agent import mail_store
 from fangzheng_web_app.order_entry_service import (
+    _apply_customer_extraction_mappings,
     _apply_customer_spec_matches,
     _line_entry,
     _line_from_pipeline_row,
@@ -97,7 +98,10 @@ class OrderEntryTemplateTests(unittest.TestCase):
             / "order_automation_entry_template.html"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("const visibleFields=[['adhesive_code','input'],['product_name','input'],['customer_spec_match','textarea']]", template)
+        self.assertIn("['layout_structure','textarea']", template)
+        self.assertIn("['thickness_description','textarea']", template)
+        self.assertIn("['special_requirements','textarea']", template)
+        self.assertIn("['customer_spec_match','textarea']", template)
 
     def test_multiple_material_candidates_use_compact_colored_count_badge(self) -> None:
         template = (
@@ -446,6 +450,33 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertEqual(matching[0]["values"]["unit_price"], "12.5")
         self.assertEqual(matching[0]["sources"]["quantity"]["label"], "附件：客户订单.xlsx")
 
+    def test_customer_product_type_mapping_normalizes_board_material(self) -> None:
+        mappings = [{
+            "source_kind": "attachment_table", "target_field": "product_type",
+            "source_label": "物料类别", "transform_type": "direct",
+        }]
+        values = _apply_customer_extraction_mappings(
+            {"product_type": "PP"}, {"物料类别": "板材"}, mappings,
+        )
+
+        self.assertEqual(values["product_type"], "基板")
+
+    def test_board_size_with_foil_type_is_classified_for_direct_order_rows(self) -> None:
+        line = _line_entry(
+            {"customer_spec": 'NY6200 0.089mm 1/1 37"*49"(1067*2)(RTF)(有卤素)'},
+            label="邮件正文", reference="第 1 行",
+        )
+
+        self.assertEqual(line["values"]["product_type"], "基板")
+
+    def test_resin_content_spec_is_classified_for_direct_order_rows(self) -> None:
+        line = _line_entry(
+            {"customer_spec": 'NY-A2P 1080 RC68% 20.6"x24.6"有卤 CAF（汽车板）'},
+            label="邮件正文", reference="第 1 行",
+        )
+
+        self.assertEqual(line["values"]["product_type"], "PP")
+
     def test_html_mail_table_uses_shared_domestic_template_mapping(self) -> None:
         body_html = """
         <table><tr><th>PO单号</th><th>PO项目号</th><th>物料编码</th><th>物料名称</th>
@@ -468,6 +499,56 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertEqual(rows[0]["values"]["quantity"], "20")
         self.assertEqual(rows[0]["values"]["product_type"], "基板")
         self.assertEqual(rows[0]["sources"]["quantity"]["label"], "邮件正文表格")
+
+    def test_html_mail_pp_fractional_roll_quantity_is_converted_to_metres(self) -> None:
+        body_html = """
+        <table><tr><th>PO单号</th><th>PO项目号</th><th>物料编码</th><th>物料名称</th>
+        <th>物料规格</th><th>数量</th><th>单位</th><th>单价</th><th>交期</th></tr>
+        <tr><td>PO-20260910</td><td>1</td><td>LA-001</td><td></td>
+        <td>NY-A2P 1080 RC66% 49.5\"有卤 CAF 300M/卷（汽车板）</td>
+        <td>0.7</td><td></td><td>27.72</td><td>2026-09-15</td></tr>
+        </table>
+        """
+        with patch("fangzheng_web_app.order_entry_service.get_enabled_extraction_maps", return_value=[]):
+            _header, rows = _initial_template_data({
+                "id": 1003, "body_html": body_html, "body_text": "", "attachments": [],
+                "detected_fields": {}, "customer_id": None,
+            })
+
+        self.assertEqual(rows[0]["values"]["product_type"], "PP")
+        self.assertEqual(rows[0]["values"]["quantity"], "210")
+        self.assertEqual(rows[0]["values"]["remark"], "0.7卷&")
+
+    def test_html_mail_table_uses_customer_order_table_mappings(self) -> None:
+        body_html = """
+        <table><tr><th>PO单号</th><th>项次</th><th>客户料号</th><th>数量</th>
+        <th>要求交货期</th><th>订单类型</th></tr>
+        <tr><td>PO-20260909</td><td>1</td><td>CUST-001</td><td>20</td>
+        <td>2026/09/25</td><td>加急订单</td></tr>
+        </table>
+        """
+        mappings = [
+            {
+                "source_kind": "attachment_table", "target_field": "delivery_date",
+                "source_label": "要求交货日期", "transform_type": "direct",
+            },
+            {
+                "source_kind": "attachment_table", "target_field": "remark",
+                "source_label": "订单类型", "transform_type": "direct",
+            },
+        ]
+        with patch("fangzheng_web_app.order_entry_service.get_enabled_extraction_maps", return_value=mappings):
+            _header, rows = _initial_template_data({
+                "id": 1002,
+                "body_html": body_html,
+                "body_text": "",
+                "attachments": [],
+                "detected_fields": {},
+                "customer_id": 1,
+            })
+
+        self.assertEqual("2026-09-25", rows[0]["values"]["delivery_date"])
+        self.assertEqual("&加急订单", rows[0]["values"]["remark"])
 
     def test_plain_text_demand_delivery_rows_extract_yearless_dates(self) -> None:
         body_text = """
@@ -539,9 +620,19 @@ class OrderEntryTemplateTests(unittest.TestCase):
             label="附件：PP订单.xlsx", reference="订单 第 2 行", quantity_unit="卷",
         )
         self.assertEqual(line["values"]["quantity"], "600")
-        self.assertEqual(line["values"]["remark"], "客户加急；PP米数：300米")
+        self.assertEqual(line["values"]["remark"], "客户加急；2卷")
 
-    def test_pp_sheet_keeps_customer_quantity_and_unknown_pp_is_blank(self) -> None:
+    def test_fractional_pp_quantity_converts_from_rolls_without_unit(self) -> None:
+        line = _line_entry(
+            {"customer_spec": 'NY-A2P 1080 RC66% 49.5"有卤 CAF 300M/卷', "quantity": "0.7"},
+            label="附件：PP订单.xlsx", reference="订单 第 2 行", quantity_unit="",
+        )
+
+        self.assertEqual(line["values"]["product_type"], "PP")
+        self.assertEqual(line["values"]["quantity"], "210")
+        self.assertEqual(line["values"]["remark"], "0.7卷")
+
+    def test_pp_sheet_and_no_roll_length_keep_customer_quantity(self) -> None:
         small_piece = _line_entry(
             {"customer_spec": "PP 1080 300m", "quantity": "30"},
             label="附件：PP订单.xlsx", reference="订单 第 2 行", quantity_unit="张",
@@ -551,9 +642,38 @@ class OrderEntryTemplateTests(unittest.TestCase):
             label="附件：PP订单.xlsx", reference="订单 第 3 行", quantity_unit="",
         )
         self.assertEqual(small_piece["values"]["quantity"], "30")
-        self.assertEqual(small_piece["values"]["remark"], "PP米数：300米")
-        self.assertEqual(unknown["values"]["quantity"], "")
-        self.assertEqual(unknown["values"]["remark"], "PP米数：300米")
+        self.assertEqual(small_piece["values"]["remark"], "")
+        self.assertEqual(unknown["values"]["quantity"], "2")
+        self.assertEqual(unknown["values"]["remark"], "")
+
+        no_roll_length = _line_entry(
+            {"customer_spec": 'NY-A2P 2116 RC60% 18.62"x16.42"有卤 CAF', "quantity": "0.1"},
+            label="附件：PP订单.xlsx", reference="订单 第 4 行", quantity_unit="",
+        )
+        self.assertEqual(no_roll_length["values"]["quantity"], "0.1")
+
+    def test_template_remark_keeps_generated_meter_note_before_source_note(self) -> None:
+        rows = _merge_initial_rows([
+            _line_entry(
+                {"customer_product_code": "PP-01", "customer_spec": "PP 1080", "remark": "客户加急；0.1卷"},
+                label="附件：PP订单.xlsx", reference="订单第 2 行",
+            ),
+            _line_entry(
+                {"customer_product_code": "CCL-01", "customer_spec": "FR-4", "remark": "订单说明"},
+                label="附件：基板订单.xlsx", reference="订单第 3 行",
+            ),
+        ])
+
+        self.assertEqual(rows[0]["values"]["remark"], "0.1卷&客户加急")
+        self.assertEqual(rows[1]["values"]["remark"], "&订单说明")
+
+    def test_template_remark_moves_roll_quantity_before_existing_source_separator(self) -> None:
+        rows = _merge_initial_rows([_line_entry(
+            {"customer_product_code": "PP-01", "remark": "&客户加急；0.7卷"},
+            label="附件：PP订单.xlsx", reference="订单第 2 行",
+        )])
+
+        self.assertEqual(rows[0]["values"]["remark"], "0.7卷&客户加急")
 
     def test_pipeline_mapping_uses_raw_description_and_keeps_pp_detail_rows(self) -> None:
         first = _line_from_pipeline_row(

@@ -4,6 +4,7 @@ import importlib
 import sys
 import traceback
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 from werkzeug.utils import secure_filename
@@ -26,6 +27,12 @@ def load_calculator_module():
     return importlib.import_module(CALCULATOR_MODULE_NAME)
 
 
+@lru_cache(maxsize=4)
+def _load_fangzheng_quote_engine(rule_version: str):
+    """Keep the parsed rule workbooks for repeated quotes under one rule version."""
+    return load_calculator_module(), load_rule_dataframes(rule_version)
+
+
 def is_effective_description(value) -> bool:
     text = str(value).strip() if value is not None else ""
     return bool(text and text.lower() not in {"nan", "none"} and text not in NON_DATA_DESCRIPTIONS)
@@ -37,8 +44,7 @@ def calculate_fangzheng_quote(spec: str) -> dict:
         return {"status": "失败", "price": None, "error": "请输入客户规格"}
 
     rule_version = get_active_rule_version()
-    calculator = load_calculator_module()
-    price_df, account_df = load_rule_dataframes(rule_version)
+    calculator, (price_df, account_df) = _load_fangzheng_quote_engine(rule_version)
     price, note, err = calculator.calculate_price(spec, price_df, account_df)
     if err:
         return {
