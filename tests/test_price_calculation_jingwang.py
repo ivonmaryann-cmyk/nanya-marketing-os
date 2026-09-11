@@ -32,7 +32,7 @@ class JingwangPriceCalculationTests(unittest.TestCase):
         self.assertEqual("NY-A3HF", _norm_jingwang_pp_product("NY-A3HFP"))
         self.assertEqual("NY6300S", _norm_jingwang_pp_product("NY6300SP"))
 
-    def test_a3hfp_half_width_roll_matches_a3hf_pp_quote(self) -> None:
+    def test_a3hfp_narrow_roll_returns_quoted_per_meter_price(self) -> None:
         result = calculate_jingwang_spec(
             "PP NY-A3HFP 1080 RC68% 24.41IN 300m 无卤",
             self.rules,
@@ -40,7 +40,7 @@ class JingwangPriceCalculationTests(unittest.TestCase):
 
         self.assertEqual("成功", result.status)
         self.assertEqual("PP", result.material_type)
-        self.assertEqual(18.18, result.price)
+        self.assertEqual(36.37, result.price)
         self.assertEqual("24.41IN", result.width)
         self.assertEqual("300m", result.roll_length)
         self.assertEqual(469, result.rule_row)

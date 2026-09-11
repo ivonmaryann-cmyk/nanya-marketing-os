@@ -712,18 +712,6 @@ def _calculate_jingwang_pp(desc: str, rules: JingwangRules, quantity: Any = None
                     f"公式={base_price:.2f}*{length_mm:.2f}/1000/{split}"
                 )
                 return CalcResult("成功", "PP", price, total, f"{width_in:.2f}IN", "", note, row.excel_row)
-            if width_match and length_match:
-                width_in = _to_float(width_match.group(1))
-                split = math.floor(49.5 / width_in) if width_in else 0
-                if split <= 0:
-                    return CalcResult("失败", "PP", "待确认", "待确认", width, roll_length, f"PP卷料宽幅无法一开：{width_in:.2f} inch")
-                price = _round_money(base_price / split)
-                total = _calc_total(quantity, price)
-                note = (
-                    f"PP半幅卷命中报价表第 {row.excel_row} 行，整幅每米价={base_price:.2f}，"
-                    f"卷宽={width_in:.2f}inch，纬向一开{split}，公式={base_price:.2f}/{split}"
-                )
-                return CalcResult("成功", "PP", price, total, f"{width_in:.2f}IN", roll_length, note, row.excel_row)
             price = base_price
             total = _calc_total(quantity, price)
             return CalcResult("成功", "PP", price, total, width, roll_length, f"命中PP报价表第 {row.excel_row} 行", row.excel_row)
