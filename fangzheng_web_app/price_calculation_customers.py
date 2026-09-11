@@ -32,10 +32,10 @@ PRICE_CALCULATION_CUSTOMERS = [
     },
     {
         "key": "eaton",
-        "label": "伊顿",
+        "label": "依顿",
         "enabled": True,
-        "rule_label": "伊顿报价表",
-        "test_label": "伊顿测试数据",
+        "rule_label": "依顿报价表",
+        "test_label": "依顿测试数据",
     },
     {
         "key": "taixing",
@@ -148,6 +148,13 @@ PRICE_CALCULATION_CUSTOMERS = [
         "enabled": True,
         "rule_label": "骏亚报价表",
         "test_label": "骏亚测试数据",
+    },
+    {
+        "key": "chaoying",
+        "label": "超颖",
+        "enabled": True,
+        "rule_label": "超颖报价表",
+        "test_label": "超颖测试数据",
     },
     {"key": "shenghong", "label": "胜宏", "enabled": False, "rule_label": "胜宏报价表", "test_label": "胜宏测试数据"},
     {"key": "bomin", "label": "博敏", "enabled": False, "rule_label": "博敏报价表", "test_label": "博敏测试数据"},

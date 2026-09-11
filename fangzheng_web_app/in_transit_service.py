@@ -72,6 +72,19 @@ CUSTOMER_REQUIRED_COLUMNS = {
     "物料说明",
 }
 
+# Older customer-detail exports use these labels for the same business fields.
+# Normalize them before matching so result workbooks always use the system labels.
+CUSTOMER_HEADER_ALIASES = {
+    "订单创建日期": "PO创建日期",
+    "采购订单号": "单据编号",
+    "订单行号": "单据行号",
+    "需求日期": "订单需求日期",
+    "承诺日期": "订单承诺日期",
+    "物料描述": "物料说明",
+    "单位": "物料单位",
+    "PO发运行数量": "物料数量",
+}
+
 ARRIVAL_DIRECT_CUSTOMERS = {"无锡深南", "南通深南"}
 ARRIVAL_OFFSET_CUSTOMERS = {"深南电路"}
 
@@ -384,12 +397,25 @@ def load_system_rows(path: Path, *, job_id: int | None = None, sheet_name: str |
 def load_customer_rows(path: Path, *, job_id: int | None = None, sheet_name: str | None = None) -> tuple[list[CustomerRow], Counter]:
     workbook = load_workbook_compat(path, data_only=True)
     worksheet = (
-        _select_named_sheet_with_columns(workbook, sheet_name, CUSTOMER_REQUIRED_COLUMNS)
+        _select_named_sheet_with_columns(
+            workbook,
+            sheet_name,
+            CUSTOMER_REQUIRED_COLUMNS,
+            header_aliases=CUSTOMER_HEADER_ALIASES,
+        )
         if sheet_name
-        else _select_sheet_with_columns(workbook, CUSTOMER_REQUIRED_COLUMNS)
+        else _select_sheet_with_columns(
+            workbook,
+            CUSTOMER_REQUIRED_COLUMNS,
+            header_aliases=CUSTOMER_HEADER_ALIASES,
+        )
     )
-    header_row = _find_header_row(worksheet, CUSTOMER_REQUIRED_COLUMNS)
-    headers = _header_occurrences(worksheet, header_row)
+    header_row = _find_header_row(
+        worksheet,
+        CUSTOMER_REQUIRED_COLUMNS,
+        header_aliases=CUSTOMER_HEADER_ALIASES,
+    )
+    headers = _header_occurrences(worksheet, header_row, header_aliases=CUSTOMER_HEADER_ALIASES)
     header_names = _first_header_names(headers)
 
     stats = Counter()
@@ -602,25 +628,41 @@ def _delivery_base_date_from_customer_rows(customer_rows: list[CustomerRow]) -> 
     return min(commitment_dates) - timedelta(days=1)
 
 
-def _select_named_sheet_with_columns(workbook, sheet_name: str, required_columns: set[str]):
+def _select_named_sheet_with_columns(
+    workbook,
+    sheet_name: str,
+    required_columns: set[str],
+    *,
+    header_aliases: dict[str, str] | None = None,
+):
     if sheet_name not in workbook.sheetnames:
         raise ValueError(f"上传文件必须包含 Sheet：{INTERNAL_DETAIL_SHEET} 和 {CUSTOMER_DETAIL_SHEET}。当前缺少：{sheet_name}")
     worksheet = workbook[sheet_name]
-    _find_header_row(worksheet, required_columns)
+    _find_header_row(worksheet, required_columns, header_aliases=header_aliases)
     return worksheet
 
 
-def _select_sheet_with_columns(workbook, required_columns: set[str]):
+def _select_sheet_with_columns(workbook, required_columns: set[str], *, header_aliases: dict[str, str] | None = None):
     for worksheet in workbook.worksheets:
-        if _find_header_row(worksheet, required_columns, raise_missing=False):
+        if _find_header_row(worksheet, required_columns, raise_missing=False, header_aliases=header_aliases):
             return worksheet
     raise ValueError(f"未找到包含必要字段的 Sheet：{', '.join(sorted(required_columns))}")
 
 
-def _find_header_row(worksheet, required_columns: set[str], *, raise_missing: bool = True) -> int | None:
+def _find_header_row(
+    worksheet,
+    required_columns: set[str],
+    *,
+    raise_missing: bool = True,
+    header_aliases: dict[str, str] | None = None,
+) -> int | None:
     max_scan = min(worksheet.max_row, 30)
     for row_idx in range(1, max_scan + 1):
-        names = {_text(cell.value) for cell in worksheet[row_idx] if _text(cell.value)}
+        names = {
+            _normalized_header_name(cell.value, header_aliases)
+            for cell in worksheet[row_idx]
+            if _text(cell.value)
+        }
         if required_columns.issubset(names):
             return row_idx
     if raise_missing:
@@ -628,13 +670,23 @@ def _find_header_row(worksheet, required_columns: set[str], *, raise_missing: bo
     return None
 
 
-def _header_occurrences(worksheet, header_row: int) -> dict[str, list[int]]:
+def _header_occurrences(
+    worksheet,
+    header_row: int,
+    *,
+    header_aliases: dict[str, str] | None = None,
+) -> dict[str, list[int]]:
     headers: dict[str, list[int]] = {}
     for cell in worksheet[header_row]:
-        name = _text(cell.value)
+        name = _normalized_header_name(cell.value, header_aliases)
         if name:
             headers.setdefault(name, []).append(cell.column)
     return headers
+
+
+def _normalized_header_name(value: Any, header_aliases: dict[str, str] | None = None) -> str:
+    name = _text(value)
+    return (header_aliases or {}).get(name, name)
 
 
 def _first_header_names(headers: dict[str, list[int]]) -> list[str]:

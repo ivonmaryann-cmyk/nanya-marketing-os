@@ -12,11 +12,13 @@ from email.header import decode_header
 from pathlib import Path
 from typing import Any
 
+from zhconv import convert
+
 from ..file_storage import save_automation_file
 from ..paths import STORAGE_DIR
 from . import mail_store
 from .mail_crypto import decrypt_text
-from .mail_html_parser import decode_and_simplify_html, extract_order_fields, html_to_text
+from .mail_html_parser import decode_and_simplify_html, decode_mail_text, extract_order_fields, html_to_text
 
 
 ORDER_SUBJECT_KEYWORDS = ("采购订单", "订单", "樣品需求", "样品需求", "po", "ga")
@@ -31,7 +33,7 @@ def _decode_header_value(value: str | None) -> str:
     out: list[str] = []
     for text, charset in parts:
         if isinstance(text, bytes):
-            out.append(text.decode(charset or "utf-8", errors="replace"))
+            out.append(decode_mail_text(text, charset or "utf-8"))
         else:
             out.append(str(text))
     return "".join(out)
@@ -115,8 +117,8 @@ def _body_parts(message: email.message.Message) -> tuple[str, str]:
         html = decode_and_simplify_html(html_payload, html_charset)
         return html, html_to_text(html)
     if plain_payload:
-        text = plain_payload.decode(plain_charset or "utf-8", errors="replace")
-        return "", text
+        text = decode_mail_text(plain_payload, plain_charset)
+        return "", convert(text, "zh-cn")
     return "", ""
 
 

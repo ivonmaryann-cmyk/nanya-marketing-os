@@ -24,9 +24,14 @@ from .excel_utils import load_workbook_compat
 from .file_storage import resolve_attachment_path
 from .order_intake_service import get_case
 from .paths import PACKAGE_DIR, PROJECT_DIR
-from .pdf_excel_domestic_export import build_domestic_template_data
+from .pdf_excel_domestic_export import (
+    build_domestic_template_data,
+    infer_product_type_from_spec,
+    normalize_product_type,
+)
 from .order_document_sources import build_mail_html_purchase_document
 from .order_interface_service import record_order_detail_event
+from .order_price_validation_service import PRICE_REVIEW_SNAPSHOT_KEY, review_case_template_prices
 from .purchase_field_rules import clean_text, normalize_date, normalize_number
 from .purchase_factory_mapper import project_factory_document
 from .pdf_excel_service import recognize_purchase_order_document
@@ -97,7 +102,7 @@ _ATTACHMENT_HEADERS = {
     "customer_spec": {"客户规格", "规格", "型号", "名称规格", "物料规格", "物料描述"},
     "customer_spec_match": {"客户规格匹配", "规格匹配"},
     "product_type": {"产品类型", "产品类型（pp、基板）", "品类"},
-    "delivery_date": {"出货日期", "交货日期", "交期", "到货日期", "delivery date"},
+    "delivery_date": {"出货日期", "交货日期", "交期", "需求日", "需求交期", "要求交期", "计划交期", "供应商交期", "到货日期", "delivery date"},
     "quantity": {"数量", "采购量", "订购数量", "订单数量", "qty", "quantity"},
     "_quantity_unit": {"单位", "计量单位", "数量单位", "uom"},
     "price_before_tax": {"税前单价", "未税单价", "不含税单价"},
@@ -156,9 +161,8 @@ def _line_sequence(values: dict[str, Any], fallback: int) -> str:
 
 
 def _is_pp_spec(value: str) -> bool:
-    """Only classify PP when the customer specification explicitly says so."""
-    text = clean_text(value)
-    return bool(re.search(r"(?:半固化片|(?<![A-Za-z0-9])PP(?![A-Za-z0-9]))", text, re.IGNORECASE))
+    """Use the same PP classification for quantity conversion and the template."""
+    return infer_product_type_from_spec(value) == "PP"
 
 
 def _meter_values(value: str) -> list[Decimal]:
@@ -178,11 +182,15 @@ def _decimal_text(value: Decimal) -> str:
     return text.rstrip("0").rstrip(".") if "." in text else text
 
 
-def _append_remark(remark: str, meter: Decimal | None) -> str:
-    if meter is None:
+def _append_roll_remark(remark: str, roll_quantity: Decimal | None) -> str:
+    if roll_quantity is None:
         return remark
-    meter_text = f"PP米数：{_decimal_text(meter)}米"
-    return "；".join(item for item in (remark, meter_text) if item)
+    roll_text = f"{_decimal_text(roll_quantity)}卷"
+    prefix, separator, suffix = clean_text(remark).partition("&")
+    prefix_parts = [item.strip() for item in re.split(r"[；;\n]+", prefix) if item.strip()]
+    if roll_text not in prefix_parts:
+        prefix_parts.append(roll_text)
+    return f"{'；'.join(prefix_parts)}&{suffix}" if separator else "；".join(prefix_parts)
 
 
 def _apply_auto_extraction_policy(
@@ -209,34 +217,106 @@ def _apply_auto_extraction_policy(
     metres = _meter_values(spec)
     distinct_metres = {value.normalize() for value in metres}
     meter = next(iter(distinct_metres), None) if len(distinct_metres) == 1 else None
-    result["remark"] = _append_remark(result.get("remark", ""), meter)
+    if meter is None:
+        # PP small pieces and PP specifications without a per-roll length keep
+        # the customer-provided quantity; they cannot be converted to metres.
+        return result
 
+    try:
+        quantity = Decimal(str(result.get("quantity") or "").replace(",", ""))
+    except InvalidOperation:
+        return result
+    if quantity < 0:
+        return result
     unit = clean_text(quantity_unit)
     if "张" in unit:
         # PP 小片：客户明确以张计数，数量直接保留，不做米数换算。
         return result
-    if "卷" not in unit or meter is None:
-        # PP 的单位或米数不明确，不能猜测换算关系。
-        result["quantity"] = ""
+    if Decimal("0") < quantity < Decimal("1") and meter is not None:
+        # A fractional PP quantity still represents a roll fraction.  The
+        # template is in metres, so convert it from rolls even when the source
+        # unit column is absent.
+        result["quantity"] = _decimal_text(quantity * meter)
+        result["remark"] = _append_roll_remark(result.get("remark", ""), quantity)
         return result
-    try:
-        quantity = Decimal(str(result.get("quantity") or "").replace(",", ""))
-    except InvalidOperation:
-        result["quantity"] = ""
-        return result
-    if quantity < 0:
-        result["quantity"] = ""
+    if "卷" not in unit:
+        # A quantity of one or more is converted only when the source makes
+        # the roll unit explicit; otherwise retain the source quantity.
         return result
     result["quantity"] = _decimal_text(quantity * meter)
+    result["remark"] = _append_roll_remark(result.get("remark", ""), quantity)
     return result
 
 
-def _split_body_order_rows(body_text: str) -> list[dict[str, Any]]:
+def _normalize_body_delivery_date(value: Any, reference_date: Any = "") -> str:
+    normalized = normalize_date(value)
+    if normalized:
+        return normalized
+    match = re.search(r"(\d{1,2})\s*月\s*(\d{1,2})\s*日?", clean_text(value))
+    if not match:
+        return ""
+    year_match = re.search(r"(20\d{2})", clean_text(reference_date))
+    year = int(year_match.group(1)) if year_match else datetime.now().year
+    try:
+        return datetime(year, int(match.group(1)), int(match.group(2))).date().isoformat()
+    except ValueError:
+        return ""
+
+
+def _split_demand_delivery_rows(body_text: str, reference_date: Any = "") -> list[dict[str, Any]]:
+    """Parse ERP mail rows headed by 下单日期/需求交期 when no HTML table survives."""
+    text = " ".join(str(body_text or "").split())
+    if "下单日期" not in text or not any(label in text for label in ("需求交期", "要求交期")):
+        return []
+    row_pattern = re.compile(
+        r"(?P<order_date>\d{1,2}/\d{1,2})\s+"
+        r"(?P<product_type>板材|PP)\s+\S+\s+"
+        r"(?P<customer_product_code>[A-Za-z0-9]{8,})\s+"
+        r"(?P<body>.*?)(?=\s+\d{1,2}/\d{1,2}\s+(?:板材|PP)\s+\S+\s+[A-Za-z0-9]{8,}|$)",
+        re.IGNORECASE,
+    )
+    result: list[dict[str, Any]] = []
+    for match in row_pattern.finditer(text):
+        body = clean_text(match.group("body"))
+        detail_match = re.match(
+            r"(?P<customer_spec>.*?)\s+"
+            r"(?P<quantity>\d+(?:\.\d+)?)\s+"
+            r"(?P<unit>[A-Za-z]+|[\u4e00-\u9fff]+)\s+"
+            r"(?P<delivery_date>(?:20\d{2}[年./-]\s*)?\d{1,2}月\d{1,2}日?|20\d{2}[-/.]\d{1,2}[-/.]\d{1,2})(?P<remark>.*)$",
+            body,
+        )
+        if not detail_match:
+            continue
+        values = {
+            **_blank_line(len(result) + 1),
+            "customer_product_code": match.group("customer_product_code"),
+            "customer_spec": detail_match.group("customer_spec"),
+            "product_type": match.group("product_type"),
+            "quantity": detail_match.group("quantity"),
+            "delivery_date": _normalize_body_delivery_date(
+                detail_match.group("delivery_date"), reference_date,
+            ),
+            "remark": clean_text(detail_match.group("remark")),
+        }
+        result.append(_line_entry(
+            values,
+            label="邮件正文需求交期表",
+            reference=f"下单日期 {match.group('order_date')}",
+            line_no=len(result) + 1,
+            quantity_unit=detail_match.group("unit"),
+        ))
+    return result
+
+
+def _split_body_order_rows(body_text: str, reference_date: Any = "") -> list[dict[str, Any]]:
     """Extract simple ERP-style rows from the line-oriented mail body.
 
     This is a safe first path for HTML mail tables. Attachment-specific parsers
     will feed the same structure in the next extraction layer.
     """
+    demand_delivery_rows = _split_demand_delivery_rows(body_text, reference_date)
+    if demand_delivery_rows:
+        return demand_delivery_rows
     lines = [" ".join(item.split()) for item in str(body_text or "").splitlines() if item.strip()]
     positions = [index for index, value in enumerate(lines) if re.fullmatch(r"(?:HJ\d{8,}|[A-Z]{1,4}\d{6,}[A-Z0-9_-]*)", value, re.I)]
     result: list[dict[str, Any]] = []
@@ -281,6 +361,12 @@ def _line_entry(
         if value not in (None, ""):
             line[field] = clean_text(value)
     line["line_no"] = str(line_no)
+    if line["product_type"]:
+        line["product_type"] = normalize_product_type(line["product_type"])
+    if not line["product_type"]:
+        line["product_type"] = infer_product_type_from_spec(
+            f"{line['customer_spec']} {clean_text(product_context)}"
+        )
     if line["delivery_date"]:
         line["delivery_date"] = normalize_date(line["delivery_date"]) or line["delivery_date"]
     for field in {"quantity", "price_before_tax", "unit_price"}:
@@ -335,7 +421,17 @@ def _mapping_source_value(source: dict[str, Any], source_label: str, transform_t
     labels = [item.strip() for item in re.split(r"[+，,]", str(source_label or "")) if item.strip()]
     if not labels:
         return ""
-    values = [clean_text(_value_by_alias(source, label)) for label in labels]
+    delivery_aliases = (
+        "交货日期", "要求交货日期", "要求交货期", "要求交期", "需求交期", "需求日", "交期",
+    )
+    values = [
+        clean_text(
+            _value_by_alias(source, *delivery_aliases)
+            if _compact_key(label) in {_compact_key(alias) for alias in delivery_aliases}
+            else _value_by_alias(source, label)
+        )
+        for label in labels
+    ]
     if not all(values):
         return ""
     if transform_type == "concat":
@@ -349,16 +445,18 @@ def _apply_customer_extraction_mappings(
 ) -> dict[str, Any]:
     """Apply customer mappings registered for the current source adapter.
 
-    Manual mappings explicitly blank the target.  For all other mapping source
-    types we leave the universal result untouched.  ``source_kind`` is kept
-    explicit so an eventual rule-maintenance page can expose different source
-    adapters without making their mappings leak into one another.
+    Customer-maintained order-table mappings work for both attachment tables
+    and HTML tables in the mail body.  Manual mappings explicitly blank the
+    target.  For all other source types we leave the universal result untouched.
     """
     if not mappings:
         return values
     result = dict(values)
     for mapping in mappings:
-        if mapping.get("source_kind") != source_kind:
+        mapping_source = str(mapping.get("source_kind") or "")
+        if mapping_source != source_kind and not (
+            mapping_source == "attachment_table" and source_kind == "mail_html_table"
+        ):
             continue
         target = str(mapping.get("target_field") or "")
         transform = str(mapping.get("transform_type") or "")
@@ -372,6 +470,14 @@ def _apply_customer_extraction_mappings(
         # an explicit source value.  Otherwise retain an already verified
         # universal value; no fallback guess is introduced.
         if value:
+            if target == "product_type":
+                value = normalize_product_type(value)
+                if not value:
+                    continue
+            if target == "delivery_date":
+                value = normalize_date(value)
+                if not value:
+                    continue
             result[target] = value
     return result
 
@@ -493,7 +599,9 @@ def _line_from_pipeline_row(
             or ""
         ),
         "customer_spec": raw_spec or standard.get("说明") or standard.get("物料名称") or "",
-        "delivery_date": standard.get("交货日期") or _value_by_alias(original, "交货日期", "出货日期", "交期", "Delivery Date") or "",
+        "delivery_date": standard.get("交货日期") or _value_by_alias(
+            original, "交货日期", "出货日期", "交期", "需求日", "需求交期", "要求交期", "要求交货期", "要求交货日期", "计划交期", "供应商交期", "Delivery Date",
+        ) or "",
         "quantity": standard.get("数量") or _value_by_alias(original, "数量", "Quantity", "Qty") or "",
         "price_before_tax": raw_before_tax_price or standard.get("不含税单价") or "",
         "unit_price": raw_unit_price or "",
@@ -559,11 +667,24 @@ def _rows_from_shared_purchase_document(
     ):
         values = {field: clean_text(line.get(field)) for field in LINE_FIELDS}
         values["line_no"] = str(index)
+        original = source_row.get("original") or {}
+        standard = source_row.get("standard") or {}
         values = _apply_customer_extraction_mappings(
             values,
-            source_row.get("original") or {},
+            original,
             customer_mappings or [],
             source_kind=source_kind,
+        )
+        values = _apply_auto_extraction_policy(
+            values,
+            quantity_unit=(
+                _value_by_alias(original, "单位", "计量单位", "Unit", "UOM")
+                or standard.get("单位")
+                or ""
+            ),
+            product_context=_value_by_alias(
+                original, "物料品名", "物料名称", "材料名称", "Material Name",
+            ) or standard.get("物料名称") or "",
         )
         reference = f"{reference_prefix}第 {index} 行"
         result.append(
@@ -597,6 +718,7 @@ def _rows_from_mail_html(case: dict[str, Any]) -> list[dict[str, Any]]:
         str(case.get("body_html") or ""),
         str(case.get("body_text") or ""),
         source_name=f"邮件正文#{case.get('id') or ''}.html",
+        reference_date=str(case.get("received_at") or case.get("sent_at") or ""),
     )
     if not document:
         return []
@@ -664,6 +786,19 @@ def _line_signature(entry: dict[str, Any]) -> tuple[str, ...]:
     )
 
 
+def _format_template_remark(value: Any) -> str:
+    """Keep derived roll/metre notes before ``&`` and source notes after it."""
+    current = clean_text(value)
+    if not current:
+        return current
+    parts = [part.strip() for part in re.split(r"[&；;\n]+", current) if part.strip()]
+    generated = [part for part in parts if re.fullmatch(r"\d+(?:\.\d+)?卷", part)]
+    source_notes = [part for part in parts if part not in generated]
+    prefix = "；".join(generated)
+    suffix = "；".join(source_notes)
+    return f"{prefix}&{suffix}" if prefix or suffix else ""
+
+
 def _merge_initial_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     seen: set[tuple[str, ...]] = set()
@@ -678,6 +813,7 @@ def _merge_initial_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         sequence = _line_sequence(entry["values"], len(result) + 1)
         entry["values"]["line_no"] = sequence
         entry["values"]["customer_order_seq"] = sequence
+        entry["values"]["remark"] = _format_template_remark(entry["values"].get("remark"))
         result.append(entry)
     return result
 
@@ -747,7 +883,9 @@ def _initial_template_data(case: dict[str, Any]) -> tuple[dict[str, str], list[d
     # An order attachment remains authoritative.  When there is no supported
     # attachment, an HTML mail table gets the *same* canonical mapping and
     # validation path; only then use the legacy line-oriented body fallback.
-    rows = attachment_rows or _rows_from_mail_html(case) or _split_body_order_rows(str(case.get("body_text") or ""))
+    rows = attachment_rows or _rows_from_mail_html(case) or _split_body_order_rows(
+        str(case.get("body_text") or ""), case.get("received_at") or case.get("sent_at") or "",
+    )
     rows = _merge_initial_rows(rows)
     header = dict(DEFAULT_HEADER_VALUES)
     extracted_header = next(
@@ -830,6 +968,9 @@ def get_or_create_template(case_id: int, employee_id: str) -> tuple[dict[str, An
             return case, template
         now = utcnow()
         initial_header, initial_lines = _initial_template_data(case)
+        initial_header[PRICE_REVIEW_SNAPSHOT_KEY] = review_case_template_prices(
+            case, {"header": initial_header, "lines": initial_lines}
+        )
         cursor = conn.execute(
             "INSERT INTO order_entry_templates(case_id,employee_id,header_json,created_at,updated_at) VALUES (?,?,?,?,?)",
             (case_id, employee_id, json.dumps(initial_header, ensure_ascii=False), now, now),
@@ -910,7 +1051,7 @@ def queue_template_extraction(case_id: int, employee_id: str) -> dict[str, Any]:
             """INSERT INTO order_entry_template_tasks
                (case_id,employee_id,status,message,started_at)
                VALUES (?,?,?,?,?)""",
-            (case_id, employee_id, "queued", "等待后台提取订单附件", now),
+            (case_id, employee_id, "queued", "等待后台提取订单信息", now),
         )
         task_id = int(cursor.lastrowid)
 
@@ -954,7 +1095,7 @@ def run_template_extraction_task(task_id: int, case_id: int, employee_id: str) -
     with db_cursor() as conn:
         updated = conn.execute(
             """UPDATE order_entry_template_tasks
-               SET status='running', message='正在解析邮件正文和附件', started_at=?
+               SET status='running', message='正在解析邮件正文与附件', started_at=?
                WHERE id=? AND case_id=? AND employee_id=? AND status='queued'""",
             (utcnow(), task_id, case_id, employee_id),
         )
@@ -1022,6 +1163,9 @@ def reextract_template(case_id: int, employee_id: str) -> dict[str, Any]:
     # Recognition can involve OCR and file conversion, so do it outside of the
     # database transaction.  It only reads the original mail and attachments.
     regenerated_header, regenerated_lines = _initial_template_data(case)
+    price_review_snapshot = review_case_template_prices(
+        case, {"header": regenerated_header, "lines": regenerated_lines}
+    )
     now = utcnow()
     previous_lines = [
         {"values": line.get("values") or {}, "sources": line.get("sources") or {}}
@@ -1033,8 +1177,13 @@ def reextract_template(case_id: int, employee_id: str) -> dict[str, Any]:
     # has already entered in this mail workspace.
     next_header = {
         **regenerated_header,
-        **{field: value for field, value in previous_header.items() if clean_text(value)},
+        **{
+            field: value
+            for field, value in previous_header.items()
+            if field != PRICE_REVIEW_SNAPSHOT_KEY and clean_text(value)
+        },
     }
+    next_header[PRICE_REVIEW_SNAPSHOT_KEY] = price_review_snapshot
     backup_version = 1
     current_version = 1
 
@@ -1176,7 +1325,7 @@ def _entry_progress(case_id: int, employee_id: str) -> dict[str, Any]:
             return {
                 "created": False, "saved": False, "completed": False, "version": 0,
                 "stage": "extracting", "label": "正在提取订单",
-                "next_action": "正在后台解析附件…", "step": 2,
+                "next_action": "正在后台提取订单信息…", "step": 2,
                 "task_id": task["id"], "task_status": task["status"],
                 "task_message": task.get("message") or "正在准备订单信息。",
             }
@@ -1283,6 +1432,9 @@ def save_template(case_id: int, employee_id: str, payload: dict[str, Any]) -> di
         template_id = int(template["id"])
         previous = _serialize_template(conn, template_id)
         previous_header = {**DEFAULT_HEADER_VALUES, **(previous.get("header") or {})}
+        price_review_snapshot = previous_header.get(PRICE_REVIEW_SNAPSHOT_KEY)
+        if isinstance(price_review_snapshot, dict):
+            header[PRICE_REVIEW_SNAPSHOT_KEY] = price_review_snapshot
         previous_lines = [
             {"values": line.get("values") or {}, "sources": line.get("sources") or {}}
             for line in previous.get("lines") or []

@@ -233,12 +233,9 @@ def _append_original_roll_remark(remark: Any, roll_quantity: Decimal | None) -> 
     return f"{current}；{roll_text}" if current else roll_text
 
 
-def _factory_remark(remark: Any, roll_quantity: Decimal | None) -> str:
-    current = clean_text(remark)
-    while current.endswith("&"):
-        current = current[:-1].rstrip()
-    combined = _append_original_roll_remark(current, roll_quantity)
-    return f"{combined}&" if combined else ""
+def _factory_remark(roll_quantity: Decimal | None) -> str:
+    """Keep system-derived roll quantity before the source-note separator."""
+    return _append_original_roll_remark("", roll_quantity) + "&" if roll_quantity is not None else ""
 
 
 def _project_detail_standard_fields(detail: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -786,9 +783,7 @@ def project_factory_document(
             FACTORY_DETAIL_HEADERS[8]: "",
             FACTORY_DETAIL_HEADERS[9]: "",
             FACTORY_DETAIL_HEADERS[10]: order_number,
-            FACTORY_DETAIL_HEADERS[11]: _factory_remark(
-                projected.get("备注"), original_roll_quantity
-            ),
+            FACTORY_DETAIL_HEADERS[11]: _factory_remark(original_roll_quantity),
         }
         missing_required = [
             header

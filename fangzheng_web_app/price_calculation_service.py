@@ -145,7 +145,7 @@ class PlinCclRule:
 class PlinRules:
     pp_rows: list[PlinPpRule]
     ccl_rows: list[PlinCclRule]
-    copper_adders: dict[str, float]
+    copper_adders: dict[str, dict[str, float]]
 
 
 @dataclass
@@ -310,7 +310,7 @@ def process_price_workbook(workbook, customer_key: str, rules: JingwangRules | P
         qty_col = headers.get("订单数量") or headers.get("数量")
         has_quantity = bool(qty_col)
         is_plin = customer_key == "plin"
-        simple_price_only = customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing", "kexiang", "junya"}
+        simple_price_only = customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing", "kexiang", "junya", "chaoying"}
         if customer_key == "mingyang" and "200M整卷价格" in headers:
             old_roll_col = headers.pop("200M整卷价格")
             if "整卷价格" in headers and headers["整卷价格"] != old_roll_col:
@@ -506,7 +506,7 @@ def process_price_workbook(workbook, customer_key: str, rules: JingwangRules | P
 def run_jingwang_regression(customer_key: str, version: str | None = None, quote_variant: str | None = None) -> dict:
     if customer_key == "plin":
         return run_plin_regression(customer_key, version)
-    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing", "kexiang", "junya"}:
+    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing", "kexiang", "junya", "chaoying"}:
         rule_version = version or get_active_price_rule_version(customer_key)
         rules = load_extended_rules(customer_key, get_price_rule_file_path(customer_key, rule_version))
         return run_extended_regression(customer_key, rules, get_price_test_data_file_path(customer_key, rule_version))
@@ -636,17 +636,23 @@ def run_plin_regression(customer_key: str, version: str | None = None) -> dict:
 
 
 def load_price_rules(customer_key: str, rule_path: str | Path) -> JingwangRules | PlinRules | ExtRules:
+    path = Path(rule_path)
+    if not path.is_file():
+        customer = enabled_price_customer(customer_key)
+        raise ValueError(
+            f"{customer['label']}当前生效报价单文件在本机缺失，请恢复 storage 中对应版本文件或重新上传报价单：{path}"
+        )
     if customer_key == "plin":
-        return load_plin_rules(rule_path)
-    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing", "kexiang", "junya"}:
-        return load_extended_rules(customer_key, rule_path)
-    return load_jingwang_rules(rule_path)
+        return load_plin_rules(path)
+    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing", "kexiang", "junya", "chaoying"}:
+        return load_extended_rules(customer_key, path)
+    return load_jingwang_rules(path)
 
 
 def calculate_customer_spec(customer_key: str, spec: str, rules: JingwangRules | PlinRules | ExtRules, quantity: Any = None) -> CalcResult:
     if customer_key == "plin":
         return calculate_plin_spec(spec, rules)  # type: ignore[arg-type]
-    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing", "kexiang", "junya"}:
+    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing", "kexiang", "junya", "chaoying"}:
         result = calculate_extended_spec(customer_key, spec, rules, quantity=quantity)  # type: ignore[arg-type]
         return CalcResult(
             result.status,
@@ -672,8 +678,8 @@ def calculate_jingwang_spec(spec: str, rules: JingwangRules, quantity: Any = Non
 
 
 def _calculate_jingwang_pp(desc: str, rules: JingwangRules, quantity: Any = None) -> CalcResult:
-    parts = desc.split()
-    product = _norm_product(parts[1]) if len(parts) > 1 and parts[0].upper() == "PP" else ""
+    product_match = re.search(r"\b(NY[\w\-.（）()]+)\b", desc, re.I)
+    product = _norm_jingwang_pp_product(product_match.group(1)) if product_match else ""
     glass_match = re.search(r"\b(106|10[0-9]{2}|1067|1078|1080|1506|2113|2116|2313|3313|7628)\b", desc, re.I)
     rc_match = re.search(r"RC\s*([0-9]+(?:\.[0-9]+)?)\s*%?", desc, re.I)
     width_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(?:IN|INCH|英寸)\b", desc, re.I)
@@ -882,7 +888,7 @@ def _calculate_plin_ccl(desc: str, rules: PlinRules) -> CalcResult:
     for row in candidates:
         base37 = row.prices.get("37")
         if copper in {"2/2", "3/3"}:
-            adder = rules.copper_adders.get(copper)
+            adder = rules.copper_adders.get(row.sheet, {}).get(copper)
             if base37 is None or adder is None:
                 continue
             if size_key:
@@ -942,7 +948,7 @@ def load_plin_rules(rule_path: str | Path) -> PlinRules:
     workbook = load_workbook_compat(rule_path, data_only=True)
     pp_rows: list[PlinPpRule] = []
     ccl_rows: list[PlinCclRule] = []
-    copper_adders: dict[str, float] = {}
+    copper_adders: dict[str, dict[str, float]] = {}
     for ws in workbook.worksheets:
         _collect_plin_adders(ws, copper_adders)
         header_row, headers = _find_exact_header_row(ws, {"Products", "Glass type", "Resin Content", "Length (m)", "Per M"})
@@ -1109,7 +1115,7 @@ def _parse_jingwang_pp_rule_row(excel_row: int, row: dict[int, str]) -> PpRule |
 
 
 def _build_pp_rule(excel_row: int, *, product: Any, glass: Any, rc: Any, price: Any) -> PpRule | None:
-    norm_product = _norm_product(product)
+    norm_product = _norm_jingwang_pp_product(product)
     norm_glass = _norm_glass(glass)
     rc_min, rc_max = _parse_rc_range(rc)
     parsed_price = _to_float(price)
@@ -1122,7 +1128,7 @@ def _build_pp_rule(excel_row: int, *, product: Any, glass: Any, rc: Any, price: 
 
 def _looks_like_pp_product(value: Any) -> bool:
     text = _norm_product(value)
-    return bool(re.fullmatch(r"NY[\w\-.()]+P(?:\(C\))?", text))
+    return bool(re.fullmatch(r"NY[\w\-.()]+P(?:\(C\))?", text)) or bool(re.fullmatch(r"NY[\w\-.()]+", text))
 
 
 def _looks_like_rc(value: Any) -> bool:
@@ -1575,7 +1581,8 @@ def _find_exact_header_row(ws, required: set[str]) -> tuple[int | None, dict[str
     return None, {}
 
 
-def _collect_plin_adders(ws, adders: dict[str, float]) -> None:
+def _collect_plin_adders(ws, adders: dict[str, dict[str, float]]) -> None:
+    sheet_adders: dict[str, float] = {}
     for row in ws.iter_rows():
         text = " ".join(_text(cell.value) for cell in row if _text(cell.value))
         if "2/2" not in text and "3/3" not in text:
@@ -1583,9 +1590,11 @@ def _collect_plin_adders(ws, adders: dict[str, float]) -> None:
         two = re.search(r"2/2.*?高\s*([0-9]+(?:\.[0-9]+)?)", text, re.I)
         three = re.search(r"3/3\w*.*?高\s*([0-9]+(?:\.[0-9]+)?)", text, re.I)
         if two:
-            adders["2/2"] = float(two.group(1))
+            sheet_adders["2/2"] = float(two.group(1))
         if three:
-            adders["3/3"] = float(three.group(1))
+            sheet_adders["3/3"] = float(three.group(1))
+    if sheet_adders:
+        adders[ws.title] = sheet_adders
 
 
 def _looks_like_plin_pp_desc(desc: str) -> bool:
@@ -1816,6 +1825,13 @@ def _norm_product(value: Any) -> str:
     if match:
         return f"{match.group(1)}(C)P"
     return text
+
+
+def _norm_jingwang_pp_product(value: Any) -> str:
+    product = _norm_product(value)
+    if product.endswith("P"):
+        return product[:-1]
+    return product
 
 
 def _norm_glass(value: Any) -> str:

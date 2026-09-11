@@ -55,14 +55,14 @@ def get_bomin_rule_file_path(version: str | None = None) -> Path:
 
 def get_active_bomin_rule_version() -> str:
     version = get_setting(_active_key(), "") or ""
-    if version and get_bomin_rule_file_path(version).exists():
+    if version:
         return version
     return ensure_default_bomin_rule_version()
 
 
 def ensure_default_bomin_rule_version() -> str:
     active_version = get_setting(_active_key(), "") or ""
-    if active_version and get_bomin_rule_file_path(active_version).exists():
+    if active_version:
         return active_version
 
     seed_file = DEFAULT_RULES_DIR / BOMIN_RULE_FILENAME
@@ -126,4 +126,3 @@ def validate_bomin_rule_file(path: str | Path) -> None:
     missing = {"CCL", "PP"} - sheet_names
     if missing:
         raise ValueError(f"博敏价格表缺少必需 sheet：{', '.join(sorted(missing))}")
-

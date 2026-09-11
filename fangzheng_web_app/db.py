@@ -1759,15 +1759,16 @@ def list_transcode_agent_row_verifications(
 
 
 def prune_jobs_for_employee(employee_id: str, keep_limit: int = 500) -> list[sqlite3.Row]:
+    keep_limit = max(0, int(keep_limit))
     with transcode_db_cursor() as conn:
         rows = conn.execute(
             """
             SELECT * FROM jobs
             WHERE employee_id = ?
             ORDER BY id DESC
-            LIMIT -1 OFFSET ?
+            LIMIT ? OFFSET ?
             """,
-            (employee_id, keep_limit),
+            (employee_id, 2_147_483_647, keep_limit),
         ).fetchall()
         if rows:
             stale_ids = [row["id"] for row in rows]

@@ -6,7 +6,7 @@ from typing import Any
 
 
 CUSTOMER_ALIAS_GROUPS = (
-    frozenset({"广东依顿", "广州伊顿"}),
+    frozenset({"广东依顿", "广州依顿", "广州伊顿"}),
 )
 
 

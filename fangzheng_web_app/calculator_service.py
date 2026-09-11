@@ -4,6 +4,7 @@ import importlib
 import sys
 import traceback
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 from werkzeug.utils import secure_filename
@@ -26,6 +27,12 @@ def load_calculator_module():
     return importlib.import_module(CALCULATOR_MODULE_NAME)
 
 
+@lru_cache(maxsize=4)
+def _load_fangzheng_quote_engine(rule_version: str):
+    """Keep the parsed rule workbooks for repeated quotes under one rule version."""
+    return load_calculator_module(), load_rule_dataframes(rule_version)
+
+
 def is_effective_description(value) -> bool:
     text = str(value).strip() if value is not None else ""
     return bool(text and text.lower() not in {"nan", "none"} and text not in NON_DATA_DESCRIPTIONS)
@@ -37,8 +44,7 @@ def calculate_fangzheng_quote(spec: str) -> dict:
         return {"status": "失败", "price": None, "error": "请输入客户规格"}
 
     rule_version = get_active_rule_version()
-    calculator = load_calculator_module()
-    price_df, account_df = load_rule_dataframes(rule_version)
+    calculator, (price_df, account_df) = _load_fangzheng_quote_engine(rule_version)
     price, note, err = calculator.calculate_price(spec, price_df, account_df)
     if err:
         return {
@@ -85,7 +91,18 @@ def run_job(job_id: int, employee_id: str, rule_version: str) -> None:
     try:
         calculator = load_calculator_module()
         calculator_path = Path(calculator.__file__).resolve()
-        price_df, account_df = load_rule_dataframes(rule_version)
+        try:
+            price_df, account_df = load_rule_dataframes(rule_version)
+        except FileNotFoundError:
+            fallback_rule_version = get_active_rule_version()
+            if fallback_rule_version == rule_version:
+                raise
+            append_job_log(
+                job_id,
+                f"任务规则版本 {rule_version} 已不存在，已回退至当前规则版本 {fallback_rule_version}。",
+            )
+            rule_version = fallback_rule_version
+            price_df, account_df = load_rule_dataframes(rule_version)
         append_job_log(job_id, f"规则加载完成：价格表 {len(price_df)} 行，基板表 {len(account_df)} 行")
         append_job_log(job_id, f"计算引擎已加载：{calculator_path.name}（{datetime.fromtimestamp(calculator_path.stat().st_mtime).strftime('%Y-%m-%d %H:%M:%S')}）")
 

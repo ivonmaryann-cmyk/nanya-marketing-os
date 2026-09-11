@@ -145,7 +145,7 @@ def get_price_test_data_file_path(customer_key: str, version: str | None = None,
 def get_active_price_rule_version(customer_key: str, quote_variant: str | None = None) -> str:
     enabled_price_customer(customer_key)
     version = get_setting(_active_key(customer_key, quote_variant), "") or ""
-    if version and get_price_rule_file_path(customer_key, version, quote_variant).exists():
+    if version:
         return version
     return ensure_default_price_rule_version(customer_key, quote_variant)
 
@@ -160,7 +160,9 @@ def ensure_default_price_rule_version(customer_key: str, quote_variant: str | No
     customer = enabled_price_customer(customer_key)
     variant = normalize_price_quote_variant(customer_key, quote_variant)
     active_version = get_setting(_active_key(customer_key, variant), "") or ""
-    if active_version and get_price_rule_file_path(customer_key, active_version, variant).exists():
+    if active_version:
+        # The database is shared but storage is local to each host.  Never let a
+        # host missing an uploaded workbook replace the shared active version.
         return active_version
     if customer_key == "jingwang" and variant == "old":
         return ""
@@ -224,6 +226,7 @@ def ensure_default_price_rule_version(customer_key: str, quote_variant: str | No
         "zhongjing": (packaged_dir / "zhongjing" / PRICE_RULE_FILENAME, packaged_dir / "zhongjing" / TEST_DATA_FILENAME),
         "kexiang": (packaged_dir / "kexiang" / PRICE_RULE_FILENAME, packaged_dir / "kexiang" / "test_data.xls"),
         "junya": (packaged_dir / "junya" / PRICE_RULE_FILENAME, packaged_dir / "junya" / TEST_DATA_FILENAME),
+        "chaoying": (packaged_dir / "chaoying" / PRICE_RULE_FILENAME, packaged_dir / "chaoying" / TEST_DATA_FILENAME),
     }
     seed_files = seed_map.get(customer_key)
     if not seed_files:
@@ -394,7 +397,6 @@ def save_new_price_rule_version(
 
 
 def save_new_guanghe_rule_version(
-    huangshi_file: FileStorage,
     nanya_file: FileStorage,
     test_file: FileStorage | None = None,
     *,
@@ -402,16 +404,10 @@ def save_new_guanghe_rule_version(
     remark: str,
 ) -> str:
     customer = enabled_price_customer("guanghe")
-    source_files = [
-        ("黄石广合单价", huangshi_file, GUANGHE_HUANGSHI_RULE_FILENAME),
-        ("南亚新材价格更新", nanya_file, GUANGHE_NANYA_RULE_FILENAME),
-    ]
-    for label, storage, _target_name in source_files:
-        if not storage or not storage.filename:
-            raise ValueError(f"请上传{label} Excel")
-        source_name = secure_filename(storage.filename) or _target_name
-        if Path(source_name).suffix.lower() not in ALLOWED_RULE_EXTENSIONS:
-            raise ValueError(f"{label}仅支持 .xlsx / .xls / .xlsm 文件")
+    if not nanya_file or not nanya_file.filename:
+        raise ValueError("请上传南亚新材价格更新 Excel")
+    if Path(nanya_file.filename).suffix.lower() not in ALLOWED_RULE_EXTENSIONS:
+        raise ValueError("南亚新材价格更新仅支持 .xlsx / .xls / .xlsm 文件")
     test_name = ""
     if test_file and test_file.filename:
         test_name = secure_filename(test_file.filename or TEST_DATA_FILENAME) or TEST_DATA_FILENAME
@@ -422,17 +418,11 @@ def save_new_guanghe_rule_version(
     version_dir = _versions_dir("guanghe") / version
     version_dir.mkdir(parents=True, exist_ok=True)
 
-    saved_sources: list[tuple[str, Path, str]] = []
-    uploaded_names: list[str] = []
-    for label, storage, target_name in source_files:
-        uploaded_name = storage.filename or target_name
-        uploaded_names.append(uploaded_name)
-        target_path = version_dir / target_name
-        storage.save(target_path)
-        validate_price_rule_files("guanghe", target_path)
-        saved_sources.append((label, target_path, uploaded_name))
-
-    _merge_guanghe_rule_sources([(label, path) for label, path, _name in saved_sources], version_dir / PRICE_RULE_FILENAME)
+    uploaded_name = nanya_file.filename or GUANGHE_NANYA_RULE_FILENAME
+    uploaded_path = version_dir / GUANGHE_NANYA_RULE_FILENAME
+    nanya_file.save(uploaded_path)
+    validate_price_rule_files("guanghe", uploaded_path)
+    _copy_price_rule(uploaded_path, version_dir / PRICE_RULE_FILENAME)
     if test_file and test_file.filename:
         uploaded_test = version_dir / test_name
         test_file.save(uploaded_test)
@@ -452,8 +442,8 @@ def save_new_guanghe_rule_version(
             "quote_variant_label": "",
             "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "updated_by": updated_by,
-            "remark": remark or "网页上传广合两份报价单并合并生效",
-            "rule_file": "；".join(uploaded_names),
+            "remark": remark or "网页上传广合南亚新材价格更新表并生效",
+            "rule_file": uploaded_name,
             "test_file": test_name,
         },
     )
@@ -469,15 +459,15 @@ def validate_price_rule_files(customer_key: str, rule_path: str | Path, test_dat
         load_workbook_compat(rule_path, data_only=True)
         _validate_plin_rule_file(rule_path)
         return
-    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing", "kexiang", "junya"}:
+    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing", "kexiang", "junya", "chaoying"}:
         load_workbook_compat(rule_path, data_only=True)
-        if customer_key in {"mingyang", "kexiang", "junya"}:
+        if customer_key in {"mingyang", "kexiang", "junya", "chaoying"}:
             from .price_calculation_extended import load_extended_rules
 
             try:
                 load_extended_rules(customer_key, rule_path)
             except ValueError as exc:
-                customer_label = {"mingyang": "明阳", "kexiang": "科翔", "junya": "骏亚"}[customer_key]
+                customer_label = {"mingyang": "明阳", "kexiang": "科翔", "junya": "骏亚", "chaoying": "超颖"}[customer_key]
                 raise ValueError(f"{customer_label}报价单未识别到有效规则，请确认工作表名称和表头：{exc}") from exc
         return
     if customer_key == "lejian":

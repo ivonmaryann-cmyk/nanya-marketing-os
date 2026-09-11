@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import re
 from copy import deepcopy
+from datetime import date
 from html.parser import HTMLParser
 from typing import Any
 
-from .purchase_field_rules import clean_text, find_detail_header_row
+from .purchase_field_rules import clean_text, find_detail_header_row, normalize_date
 from .purchase_result_normalizer import normalize_purchase_document
 
 
@@ -129,11 +130,120 @@ def _order_number_from_tables(tables: list[list[list[str]]]) -> str:
     return ""
 
 
+def _delivery_factory_from_tables(tables: list[list[list[str]]]) -> str:
+    aliases = {"厂别", "送货厂别", "送货工厂", "交货工厂"}
+    for rows in tables:
+        header_index, _mapping = find_detail_header_row(rows)
+        if header_index is None:
+            continue
+        headers = rows[header_index]
+        for column, header in enumerate(headers):
+            if _header_key(header) not in aliases:
+                continue
+            for row in rows[header_index + 1 :]:
+                value = clean_text(row[column] if column < len(row) else "")
+                if value:
+                    return value
+    return ""
+
+
+def _normalize_delivery_date(value: Any, reference_date: Any = "") -> str:
+    normalized = normalize_date(value)
+    if normalized:
+        return normalized
+    match = re.search(r"(\d{1,2})\s*月\s*(\d{1,2})\s*日?", clean_text(value))
+    if not match:
+        return ""
+    reference_match = re.search(r"(20\d{2})[-/.年]", clean_text(reference_date))
+    year = int(reference_match.group(1)) if reference_match else date.today().year
+    try:
+        target = date(year, int(match.group(1)), int(match.group(2)))
+    except ValueError:
+        return ""
+    if reference_match:
+        try:
+            reference = date.fromisoformat(clean_text(reference_date)[:10])
+            if (reference - target).days > 180:
+                target = date(year + 1, target.month, target.day)
+        except ValueError:
+            pass
+    return target.isoformat()
+
+
+def _delivery_plan_dates(tables: list[list[list[str]]], reference_date: Any = "") -> dict[str, str]:
+    """Read a separate delivery-plan table keyed by the purchase-order line."""
+    dates: dict[str, str] = {}
+    line_headers = {"订单行号", "订单项目", "订单项次", "行号", "项目号"}
+    date_headers = {"需求日", "需求交期", "要求交期", "要求交货期", "要求交货日期", "计划交期", "供应商交期", "交货日期", "交期"}
+    for rows in tables:
+        for header_index, headers in enumerate(rows):
+            compact_headers = [_header_key(header) for header in headers]
+            line_index = next(
+                (index for index, header in enumerate(compact_headers) if header in line_headers),
+                None,
+            )
+            date_index = next(
+                (index for index, header in enumerate(compact_headers) if header in date_headers),
+                None,
+            )
+            if line_index is None or date_index is None:
+                continue
+            for row in rows[header_index + 1:]:
+                line_no = clean_text(row[line_index] if line_index < len(row) else "")
+                delivery_date = _normalize_delivery_date(
+                    row[date_index] if date_index < len(row) else "", reference_date,
+                )
+                if re.fullmatch(r"\d+", line_no) and delivery_date:
+                    dates[str(int(line_no))] = delivery_date
+            break
+    return dates
+
+
+def _apply_delivery_plan_dates(
+    document: dict[str, Any], tables: list[list[list[str]]], reference_date: Any = "",
+) -> None:
+    dates = _delivery_plan_dates(tables, reference_date)
+    for detail in document.get("mapped_detail_rows") or []:
+        standard = detail.get("standard") or {}
+        original = detail.get("original") or {}
+        source_date = next(
+            (
+                original.get(header)
+                for header in ("需求日", "需求交期", "要求交期", "要求交货期", "要求交货日期", "计划交期", "供应商交期", "交货日期", "交期")
+                if clean_text(original.get(header))
+            ),
+            "",
+        )
+        normalized = _normalize_delivery_date(source_date, reference_date)
+        if normalized:
+            standard["交货日期"] = normalized
+            original["要求交期"] = normalized
+            continue
+        line_no = clean_text(
+            standard.get("序号")
+            or original.get("订单行号")
+            or original.get("订单项目")
+            or original.get("行号")
+        )
+        if not re.fullmatch(r"\d+", line_no):
+            continue
+        delivery_date = dates.get(str(int(line_no)))
+        if delivery_date:
+            standard["交货日期"] = delivery_date
+            original["要求交期"] = delivery_date
+            continue
+        normalized_existing = _normalize_delivery_date(standard.get("交货日期"), reference_date)
+        if normalized_existing:
+            standard["交货日期"] = normalized_existing
+            continue
+
+
 def build_mail_html_purchase_document(
     body_html: str,
     body_text: str = "",
     *,
     source_name: str = "邮件正文.html",
+    reference_date: str = "",
 ) -> dict[str, Any] | None:
     """Adapt HTML order tables into the same normalised purchase document as files.
 
@@ -164,6 +274,10 @@ def build_mail_html_purchase_document(
         item for item in [clean_text(body_text), *(_table_text(rows) for rows in tables)] if item
     )
     order_number = _order_number_from_tables(tables)
+    delivery_factory = _delivery_factory_from_tables(tables)
+    header_info = {"订单号": order_number} if order_number else {}
+    if delivery_factory:
+        header_info["送货厂别"] = delivery_factory
     document: dict[str, Any] = {
         "pipeline_version": "purchase_order_v1",
         "source_file": source_name,
@@ -172,7 +286,7 @@ def build_mail_html_purchase_document(
         "template_id": "",
         "template_label": "",
         "page_count": 0,
-        "header_info": {"订单号": order_number} if order_number else {},
+        "header_info": header_info,
         "pages": [],
         "raw_detail_tables": raw_detail_tables,
         "mapped_detail_rows": [],
@@ -185,6 +299,7 @@ def build_mail_html_purchase_document(
         },
     }
     normalized = normalize_purchase_document(document, source_text=source_text)
+    _apply_delivery_plan_dates(normalized, tables, reference_date)
     if not normalized.get("mapped_detail_rows"):
         return None
     return normalized

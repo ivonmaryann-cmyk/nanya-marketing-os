@@ -274,6 +274,10 @@ def calculate_shennan_price(
         price, note, err, calc_desc = _calculate_shennan_roll_pp(text, price_df)
         return price, note, err, calc_desc
 
+    if text.startswith("半固化片"):
+        price, note, err, calc_desc = _calculate_shennan_sheet_pp(text, price_df)
+        return price, note, err, calc_desc
+
     if text.startswith("覆铜板"):
         price, note, err, calc_desc = _calculate_shennan_ccl(
             text,
@@ -527,6 +531,50 @@ def _calculate_shennan_roll_pp(desc: str, price_df: pd.DataFrame):
     return price, note, None, calc_desc
 
 
+def _calculate_shennan_sheet_pp(desc: str, price_df: pd.DataFrame):
+    """Price PP pieces from the matching PP sheet's RMB/SF column.
+
+    PP piece prices must not use the CCL cutting-board account table.  Their
+    area is the requested finished piece area in square inches converted to
+    square feet (one square inch equals 1/144 square feet).
+    """
+    glue = _extract_shennan_glue(desc)
+    glass = _match_text(r"\s(\d{3,4})\s+RC\s*\d+", desc)
+    rc_text = _match_text(r"\bRC\s*(\d+)\b", desc)
+    size_text = _extract_size(desc)
+    size = _parse_size_pair(size_text)
+    if not glue or not glass or not rc_text or not size:
+        return None, "", "深南PP小片无法提取胶系、玻纤、RC或尺寸", desc
+
+    rc = int(rc_text)
+    original_glue = glue
+    resolved_glue = _resolve_pp_glue(price_df, glue, glass, rc)
+    pp_rows = price_df[price_df["CCL"].astype(str).str.strip() == "PP"]
+    candidates = _filter_pp_candidates(pp_rows, resolved_glue, glass)
+    matched, rc_note = _match_rc_rows_with_note(candidates, rc)
+    if matched.empty:
+        return None, "", f"深南PP小片未找到匹配：胶系={resolved_glue}, 叠构={glass}, RC%={rc}", desc
+
+    row = matched.iloc[0]
+    sf_price = row.get("RMB/SF")
+    if pd.isna(sf_price) or sf_price in (None, ""):
+        return None, "", "深南PP小片匹配行没有RMB/SF单价", desc
+    width, height = size
+    area_sf = width * height / 144
+    price = round(float(sf_price) * area_sf, 2)
+    actual_rc = str(row.get("铜厚") or rc)
+    calc_desc = f"PP {resolved_glue} {glass} RC{actual_rc}% {size_text}"
+    note = (
+        f"[深南PP小片报价表] 原始胶系={original_glue}→匹配={resolved_glue} | "
+        f"叠构={glass} | RC%={actual_rc} | 尺寸={_format_size_number(width)}x{_format_size_number(height)} | "
+        f"面积={_format_size_number(width)}×{_format_size_number(height)}/144={area_sf:.6g}SF | "
+        f"报价单RMB/SF={float(sf_price):.6g} | 价格={price:.2f}"
+    )
+    if rc_note:
+        note = f"{note} | {rc_note}"
+    return price, note, None, calc_desc
+
+
 def _calculate_shennan_ccl(
     desc: str,
     price_df: pd.DataFrame,
@@ -556,6 +604,8 @@ def _calculate_shennan_ccl(
         copper=copper,
         foil=foil,
         requested_laminate=requested_laminate,
+        copper_token=parsed["copper_token"],
+        surcharge_rules=surcharge_rules,
     )
     laminate_pattern = requested_laminate.replace("x", "*")
     calc_desc = (
@@ -610,7 +660,7 @@ def _calculate_shennan_ccl(
         price,
     )
     if surcharge:
-        price = round(float(price) + surcharge["amount"], 2)
+        price = round(float(surcharge["adjusted_price"]), 2)
         notes.append(
             f"深南加价：{surcharge['foil']} {surcharge['copper_label']}{surcharge['side_label']} "
             f"{surcharge['rule_text']} = {surcharge['amount']:.2f}，合计={price:.2f}"
@@ -725,6 +775,8 @@ def _normalize_shennan_ccl(desc: str, price_df: pd.DataFrame) -> tuple[str, str]
         copper=copper,
         foil=foil,
         requested_laminate=requested_laminate,
+        copper_token=parsed["copper_token"],
+        surcharge_rules={},
     )
     if not selected:
         if not requested_laminate:
@@ -799,6 +851,7 @@ def _parse_shennan_ccl(desc: str) -> dict | None:
     core = float(match.group("core"))
     total = float(match.group("total"))
     return {
+        "raw": desc,
         "glue": glue,
         "core_thickness": _format_size_number(core),
         "total_thickness": _format_size_number(total),
@@ -906,28 +959,40 @@ def _select_shennan_ccl_row(
     copper: str,
     foil: str,
     requested_laminate: str,
+    copper_token: str = "",
+    surcharge_rules: dict[str, dict] | None = None,
 ) -> dict | None:
     ccl_rows = price_df[(price_df["CCL"].astype(str).str.strip() == "CCL")].copy()
     ccl_rows = _filter_shennan_model_rows(ccl_rows, glue, product="CCL")
     if ccl_rows.empty:
         return None
 
-    copper_candidates = {copper, _copper_fallback(copper)}
-    rows = ccl_rows[
-        ccl_rows["铜厚"].astype(str).str.strip().isin(copper_candidates)
-        & (ccl_rows["铜箔"].astype(str).str.strip() == foil)
-    ].copy()
-    if rows.empty and foil != "HTE":
-        rows = ccl_rows[
-            ccl_rows["铜厚"].astype(str).str.strip().isin(copper_candidates)
-            & (ccl_rows["铜箔"].astype(str).str.strip() == "HTE")
-        ].copy()
+    rule_key = str(ccl_rows.iloc[0].get("报价Sheet", "")).rsplit(" ", 1)[0]
+    rule_set = (surcharge_rules or {}).get(rule_key, {})
+    copper_rule = rule_set.get("copper", {}).get(_normalize_copper_token(copper_token), {})
+    quote_copper = str(copper_rule.get("base_copper") or copper)
+    copper_candidates = {quote_copper, _copper_fallback(quote_copper)}
+    rows = ccl_rows[ccl_rows.apply(lambda row: _row_supports_copper(row, copper_candidates), axis=1)].copy()
+    if rows.empty:
+        return None
+
+    target_foil = _foil_detail_from_shennan_token(copper_token) or foil
+    rows, foil_adjustments = _select_rows_for_foil(rows, target_foil, rule_set)
     if rows.empty:
         return None
 
     if requested_laminate:
         laminate_values = rows["叠构"].astype(str).map(_normalize_laminate_key)
-        rows = rows[laminate_values == _normalize_laminate_key(requested_laminate)].copy()
+        exact_rows = rows[laminate_values == _normalize_laminate_key(requested_laminate)].copy()
+        if exact_rows.empty:
+            # A small number of CCL sheets explicitly publish "\\" in the
+            # structure column.  That is a quote-table-wide (not inferred)
+            # structure rule, so it can be used only when no specific row
+            # exists in that same sheet.
+            generic_rows = rows[rows["叠构"].astype(str).str.strip().isin({"\\", "/", "不限"})].copy()
+            rows = generic_rows
+        else:
+            rows = exact_rows
         if rows.empty:
             return None
 
@@ -950,14 +1015,83 @@ def _select_shennan_ccl_row(
         "thickness": str(row["不含铜板厚/（mm)"]).strip(),
         "copper": str(row["铜厚"]).strip(),
         "foil": str(row["铜箔"]).strip(),
+        "base_foil": str(row.get("基准铜箔") or row["铜箔"]).strip(),
+        "rule_key": rule_key,
+        "foil_adjustments": foil_adjustments,
+        "copper_adjustment": copper_rule,
+        "square_board": bool(rule_set.get("square_board")) if rule_set else False,
         "laminate": str(row["叠构"]).strip(),
         "thickness_note": thickness_note,
         "prices": {
+            "RMB/SF": row.get("RMB/SF"),
             '36"*48"': row.get('36"*48"'),
             '40"*48"': row.get('40"*48"'),
             '42"*48"': row.get('42"*48"'),
         },
     }
+
+
+def _normalize_copper_token(token: str) -> str:
+    return "/".join(re.sub(r"[^A-Z0-9.]", "", part.upper()) for part in str(token).split("/"))
+
+
+def _row_supports_copper(row: pd.Series, candidates: set[str]) -> bool:
+    supported = str(row.get("支持铜厚") or "").split("|")
+    if not supported or supported == [""]:
+        supported = [str(row.get("铜厚") or "").strip()]
+    return any(value.strip() in candidates for value in supported)
+
+
+def _select_rows_for_foil(
+    rows: pd.DataFrame,
+    target_foil: str,
+    rule_set: dict,
+) -> tuple[pd.DataFrame, list[dict]]:
+    """Choose a quote-table baseline which can be reached from the requested foil."""
+    target = str(target_foil or "").strip().upper()
+    if not target:
+        first_baseline = str(rows.iloc[0].get("基准铜箔") or rows.iloc[0].get("铜箔") or "").strip().upper()
+        return rows[_row_baseline(rows) == first_baseline].copy(), []
+
+    candidates: list[tuple[pd.DataFrame, list[dict]]] = []
+    for baseline in _row_baseline(rows).dropna().unique():
+        baseline = str(baseline).strip().upper()
+        chain = _resolve_foil_adjustment_chain(target, baseline, rule_set.get("foil", {}))
+        if chain is not None:
+            candidates.append((rows[_row_baseline(rows) == baseline].copy(), chain))
+    if not candidates:
+        return rows.iloc[0:0].copy(), []
+    # Exact quote-table foil wins.  Otherwise take the shortest documented path.
+    candidates.sort(key=lambda item: len(item[1]))
+    return candidates[0]
+
+
+def _row_baseline(rows: pd.DataFrame) -> pd.Series:
+    if "基准铜箔" in rows.columns:
+        return rows["基准铜箔"].fillna(rows["铜箔"]).astype(str).str.strip().str.upper()
+    return rows["铜箔"].astype(str).str.strip().str.upper()
+
+
+def _resolve_foil_adjustment_chain(target: str, baseline: str, foil_rules: dict) -> list[dict] | None:
+    current = target
+    chain: list[dict] = []
+    visited: set[str] = set()
+    while current != baseline:
+        if current in visited:
+            return None
+        visited.add(current)
+        rule = foil_rules.get(current)
+        if not rule:
+            # RTF1 is the detailed token name for a plain RTF quote/table rule.
+            if current == "RTF1":
+                current = "RTF"
+                continue
+            return None
+        chain.append({"target": current, **rule})
+        current = str(rule.get("base") or "").upper()
+        if not current:
+            return None
+    return list(reversed(chain))
 
 
 def _select_shennan_numeric_slot(values: pd.Series, target: float, *, label: str, unit: str = "") -> tuple[str, str]:
@@ -989,12 +1123,7 @@ def _format_numeric_text(value) -> str:
 def _normalize_laminate_key(value: str) -> str:
     text = str(value).strip().replace("×", "x").replace("*", "x").replace("X", "x")
     text = re.sub(r"\s+", "", text).lower()
-    canonical = _canonical_laminate_key(text)
-    return canonical or text
-
-
-def _canonical_laminate_key(text: str) -> str:
-    counts: dict[str, int] = {}
+    terms: list[str] = []
     for term in str(text).split("+"):
         if not term:
             return ""
@@ -1008,10 +1137,12 @@ def _canonical_laminate_key(text: str) -> str:
             glass, count = right, left
         else:
             return ""
-        counts[glass] = counts.get(glass, 0) + int(count)
-    if not counts:
+        # Do not merge repeated glass styles.  2T1K2T is structurally
+        # different from 4T1K even though their aggregate glass counts match.
+        terms.append(f"{glass}x{int(count)}")
+    if not terms:
         return ""
-    return "+".join(f"{glass}x{counts[glass]}" for glass in sorted(counts, key=lambda item: int(item)))
+    return "+".join(terms)
 
 
 def _copper_fallback(copper: str) -> str:
@@ -1112,6 +1243,9 @@ def _format_size_number(value: float) -> str:
 
 
 def _copper_from_shennan_token(token: str) -> str:
+    copper, _foil_detail = _shennan_copper_mapping(token)
+    if copper:
+        return copper
     parts = str(token).upper().split("/")
     if len(parts) != 2:
         side = _copper_side(str(token))
@@ -1133,6 +1267,9 @@ def _base_foil_for_copper_token(token: str) -> str:
 
 
 def _foil_detail_from_shennan_token(token: str) -> str:
+    _copper, foil_detail = _shennan_copper_mapping(token)
+    if foil_detail:
+        return foil_detail
     details = [_foil_detail_from_side(part) for part in str(token).upper().split("/")]
     details = [detail for detail in details if detail]
     if not details:
@@ -1146,6 +1283,25 @@ def _foil_detail_from_shennan_token(token: str) -> str:
     if any(detail.startswith("HVLP") for detail in details):
         return sorted(detail for detail in details if detail.startswith("HVLP"))[-1]
     return details[0]
+
+
+def _shennan_copper_mapping(token: str) -> tuple[str, str]:
+    normalized = "/".join(
+        re.sub(r"[^A-Z0-9]", "", part.upper())
+        for part in str(token).split("/")
+    )
+    return {
+        "H/H": ("H/H", ""),
+        "1/1": ("1/1", ""),
+        "2/2": ("2/2", ""),
+        "3/3": ("3/3", ""),
+        "S1/S1": ("1/1", "RTF1"),
+        "S2/S2": ("2/2", "RTF"),
+        "R21/R21": ("1/1", "RTF2"),
+        "R31/R31": ("1/1", "RTF3"),
+        "HV1/HV1": ("1/1", "HVLP1"),
+        "HV21/HV21": ("1/1", "HVLP2"),
+    }.get(normalized, ("", ""))
 
 
 def _foil_detail_from_side(side: str) -> str:
@@ -1217,7 +1373,7 @@ def _laminate_from_structure(structure: str) -> str:
 
 
 def _parse_size_pair(size: str) -> tuple[float, float] | None:
-    match = re.match(r"(\d+(?:\.\d+)?)\s*[xX×]\s*(\d+(?:\.\d+)?)", str(size))
+    match = re.match(r"(\d+(?:\.\d+)?)\s*[\"']?\s*[xX×]\s*(\d+(?:\.\d+)?)", str(size))
     if not match:
         return None
     return float(match.group(1)), float(match.group(2))
@@ -1272,13 +1428,6 @@ def _shennan_tail_factor(piece_h: float, big_h: float) -> tuple[float, str]:
     return factor, note
 
 
-def _allocated_area_sf(size_col: str, multiplier: float, qty: float, tail_factor: float) -> float:
-    base_area = {'36"*48"': 12.0, '40"*48"': 40 * 48 / 144, '42"*48"': 14.0}.get(size_col, 0.0)
-    if not base_area or not qty:
-        return 0.0
-    return base_area * float(multiplier) / float(qty) * float(tail_factor)
-
-
 def _calculate_ccl_surcharge_for_context(
     parsed: dict,
     glue: str,
@@ -1287,44 +1436,68 @@ def _calculate_ccl_surcharge_for_context(
     size_ctx: dict,
     base_price: float,
 ):
-    foil_detail = _foil_detail_from_shennan_token(parsed["copper_token"])
-    rule = surcharge_rules.get(glue, {}).get(foil_detail)
-    if not rule and foil_detail == "RTF":
-        rule = surcharge_rules.get(glue, {}).get("RTF1")
-    if not rule and foil_detail == "RTF1":
-        rule = surcharge_rules.get(glue, {}).get("RTF")
-    if not rule:
-        return None
-
     copper_label = _surcharge_copper_label(selected["copper"])
     side_label = _surcharge_side_label(selected["copper"])
-    if rule.get("type") == "percent":
-        percent = float(rule.get("percent", 0))
-        amount = round(float(base_price) * percent, 4)
-        return {
-            "foil": foil_detail,
-            "copper_label": _display_copper_label(copper_label),
-            "side_label": "单面" if side_label == "single" else "双面",
-            "rule_text": f"+{percent:.0%} × {float(base_price):.2f}",
-            "amount": amount,
-        }
-
-    per_sf = rule.get(copper_label, {}).get(side_label)
-    if per_sf is None:
+    size_col = size_ctx.get("size_col", "")
+    sf_price = selected["prices"].get("RMB/SF")
+    size_price = selected["prices"].get(size_col)
+    qty = float(size_ctx.get("qty", 1))
+    if pd.isna(sf_price) or sf_price in ("", None) or float(sf_price) == 0:
         return None
-    area_sf = _allocated_area_sf(
-        size_ctx.get("size_col", ""),
-        size_ctx.get("multiplier", 1),
-        size_ctx.get("qty", 1),
-        size_ctx.get("tail_factor", 1.0),
+    if pd.isna(size_price) or size_price in ("", None) or qty == 0:
+        return None
+
+    sf_price = float(sf_price)
+    size_price = float(size_price)
+    cell_formula_factor = size_price / sf_price
+    downstream_factor = (
+        float(size_ctx.get("multiplier", 1))
+        / qty
+        * float(size_ctx.get("tail_factor", 1.0))
     )
-    amount = round(float(per_sf) * area_sf, 4)
+    adjusted_sf = sf_price
+    details: list[str] = []
+    for rule in selected.get("foil_adjustments", []):
+        if rule.get("type") == "percent":
+            percent = float(rule.get("percent", 0))
+            adjusted_sf *= 1 + percent
+            details.append(f"{rule['target']}：SF×(1+{percent:.0%})")
+            continue
+        values = rule.get("values", {})
+        per_sf = values.get(copper_label, {}).get(side_label)
+        if per_sf is None:
+            per_sf = values.get(copper_label, {}).get("any")
+        if per_sf is not None:
+            adjusted_sf += float(per_sf)
+            details.append(f"{rule['target']}：SF{float(per_sf):+.6g}")
+
+    copper_rule = selected.get("copper_adjustment", {})
+    copper_per_sf = copper_rule.get("per_sf")
+    if copper_per_sf is not None:
+        adjusted_sf += float(copper_per_sf)
+        details.append(f"{_normalize_copper_token(parsed['copper_token'])}：SF{float(copper_per_sf):+.6g}")
+
+    is_square_board = "方板" in str(parsed.get("raw", ""))
+    square_factor = 1.07 if selected.get("square_board") and is_square_board else 1.0
+    if square_factor != 1.0:
+        details.append("方板：价格×1.07")
+
+    if not details:
+        return None
+    adjusted_price = adjusted_sf * cell_formula_factor * downstream_factor
+    adjusted_price *= square_factor
+    amount = round(adjusted_price - float(base_price), 4)
     return {
-        "foil": foil_detail,
+        "foil": _foil_detail_from_shennan_token(parsed["copper_token"]) or selected.get("base_foil", ""),
         "copper_label": _display_copper_label(copper_label),
         "side_label": "单面" if side_label == "single" else "双面",
-        "rule_text": f"+{float(per_sf)}/SF × {area_sf:.4f}SF",
+        "rule_text": (
+            f"{'；'.join(details)}；SF {sf_price:.6g}→{adjusted_sf:.6g}，"
+            f"再按原{size_col}单元格公式系数{cell_formula_factor:.6g}"
+            f"×后续尺寸系数{downstream_factor:.6g}"
+        ),
         "amount": amount,
+        "adjusted_price": adjusted_price,
     }
 
 

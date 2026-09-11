@@ -50,10 +50,9 @@ def get_hushi_rule_history() -> list[dict]:
 
 def get_active_hushi_rule_version() -> str:
     version = get_setting(_active_key(), "") or ""
-    if version and _has_hushi_rule_files(get_hushi_rule_dir(version)):
+    if version:
         return version
-    version = ensure_default_hushi_rule_version()
-    return version
+    return ensure_default_hushi_rule_version()
 
 
 def get_hushi_rule_dir(version: str | None = None) -> Path:
@@ -63,7 +62,7 @@ def get_hushi_rule_dir(version: str | None = None) -> Path:
 
 def ensure_default_hushi_rule_version() -> str:
     active_version = get_setting(_active_key(), "") or ""
-    if active_version and _has_hushi_rule_files(get_hushi_rule_dir(active_version)):
+    if active_version:
         return active_version
 
     seed_zip = DEFAULT_RULES_DIR / "hushi_rules.zip"

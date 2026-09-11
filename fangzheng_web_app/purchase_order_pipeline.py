@@ -205,6 +205,50 @@ def _compact_native_material_code_column(rows: list[list[str]], header_index: in
     return repaired
 
 
+def _merge_native_detail_continuations(
+    rows: list[list[str]], header_index: int, mapping: dict[int, str]
+) -> list[list[str]]:
+    """Join wrapped native-PDF cells back to their preceding detail row."""
+    repaired = [list(row) for row in rows[: header_index + 1]]
+    column_count = len(rows[header_index])
+    sequence_column = next((column for column, field in mapping.items() if field == "序号"), None)
+    allowed_fields = {"物料编码", "物料名称", "说明", "含税单价"}
+
+    for source_row in rows[header_index + 1 :]:
+        row = list(source_row) + [""] * max(0, column_count - len(source_row))
+        row = row[:column_count]
+        for column, field in mapping.items():
+            if field in {"数量", "含税单价", "金额"} and column < len(row):
+                row[column] = re.sub(r"(?<=\d)\s+\.(?=\d{2}(?:\D|$))", ".", clean_text(row[column]))
+        text = " ".join(clean_text(value) for value in row)
+        sequence = normalize_number(row[sequence_column]) if sequence_column is not None else ""
+        is_total = bool(re.search(r"合计|总计|总金额|total", text, flags=re.I))
+        is_continuation = bool(repaired and not sequence and not is_total)
+        if is_continuation:
+            for column, value in enumerate(row):
+                value = clean_text(value)
+                if not value:
+                    continue
+                if mapping.get(column) not in allowed_fields:
+                    is_continuation = False
+                    break
+        if not is_continuation:
+            repaired.append(row)
+            continue
+
+        previous = repaired[-1]
+        for column, value in enumerate(row):
+            value = clean_text(value)
+            if not value:
+                continue
+            previous_value = clean_text(previous[column])
+            if mapping.get(column) in {"物料编码", "含税单价"}:
+                previous[column] = f"{previous_value}{value}"
+            else:
+                previous[column] = "\n".join(part for part in [previous_value, value] if part)
+    return repaired
+
+
 def _native_coordinate_rows(rows: list[list[str]]) -> tuple[list[list[str]], str]:
     """Collapse coordinate-only continuation rows without guessing their owner."""
     header_index, mapping = find_detail_header_row(rows)
@@ -904,6 +948,7 @@ def _native_table_purchase_document(file_item: dict[str, str], native: dict[str,
             header_index, mapping = find_detail_header_row(source_rows)
             if header_index is not None and _native_table_has_required_fields(mapping):
                 source_rows = _compact_native_material_code_column(source_rows, header_index, mapping)
+                source_rows = _merge_native_detail_continuations(source_rows, header_index, mapping)
                 reusable_headers = list(source_rows[header_index])
                 table_rows = [list(row) for row in source_rows[header_index:]]
             elif reusable_headers is not None:
@@ -1080,6 +1125,7 @@ def _native_detail_rows_missing_from_docling(
             header_index, mapping = find_detail_header_row(source_rows)
             if header_index is None or not _native_table_has_required_fields(mapping):
                 continue
+            source_rows = _merge_native_detail_continuations(source_rows, header_index, mapping)
             table_rows = [list(row) for row in source_rows[header_index:]]
             table_document = {
                 "page_index": page.get("page_index", 0),
@@ -1138,6 +1184,7 @@ def _native_detail_rows_for_merged_docling(
             ):
                 continue
             source_rows = _compact_native_material_code_column(source_rows, header_index, mapping)
+            source_rows = _merge_native_detail_continuations(source_rows, header_index, mapping)
             table_rows = [list(row) for row in source_rows[header_index:]]
             table_document = {
                 "page_index": page.get("page_index", 0),

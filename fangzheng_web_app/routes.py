@@ -177,6 +177,7 @@ from .order_entry_service import (
 )
 from .order_interface_service import (
     MOCK_SCENARIOS as ORDER_INTERFACE_MOCK_SCENARIOS,
+    PriceMismatchConfirmationRequired,
     build_domestic_order_entry,
     build_material_creation,
     build_material_query,
@@ -185,6 +186,7 @@ from .order_interface_service import (
     get_material_resolution_states,
     select_material_candidate,
     list_nyeos_order_numbers,
+    review_domestic_order_entry_prices,
     get_interface_config,
     list_interface_configs,
     process_material_created_callback,
@@ -251,6 +253,7 @@ from .price_calculation_customers import (
     default_price_customer_key,
     enabled_price_customer,
 )
+from .price_calculation_customer_mapping import resolve_customer_price_calculation
 from .price_calculation_rule_docs import get_price_calculation_rule_doc
 from .price_calculation_rules import (
     JINGWANG_QUOTE_VARIANTS,
@@ -1542,6 +1545,8 @@ def order_automation_entry_template(case_id: int):
         order_details=order_details,
         nyeos_order_number=list_nyeos_order_numbers([case_id], employee_id).get(case_id, ""),
         material_resolutions=get_material_resolution_states(case_id, employee_id),
+        price_review=review_domestic_order_entry_prices(case_id, employee_id),
+        show_price_confirmation=request.args.get("price_confirmation") == "1",
         # Share the same workflow state as the mail list and mail detail.
         order_entry_completed=progress["completed"],
         entry_progress=progress,
@@ -1726,9 +1731,18 @@ def order_automation_domestic_entry(case_id: int):
     if not get_order_intake_case(case_id, employee_id):
         abort(404)
     try:
-        result = build_domestic_order_entry(case_id, employee_id, employee_id)
+        result = build_domestic_order_entry(
+            case_id,
+            employee_id,
+            employee_id,
+            allow_price_mismatch=request.form.get("confirm_price_mismatch") == "1",
+        )
         mode_label = "真实接口" if result.get("mode") == "real" else "Mock"
         flash(f"提交录单（{mode_label}）已完成：订单号 {result['entry_no']}。", "success")
+    except PriceMismatchConfirmationRequired:
+        query = request.args.to_dict()
+        query["price_confirmation"] = "1"
+        return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **query))
     except ValueError as exc:
         flash(str(exc), "error")
     return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))
@@ -1760,7 +1774,7 @@ def interface_maintenance():
             return render_template(
                 "interface_maintenance.html",
                 configs=list_interface_configs(),
-                selected=selected,
+                selected=_interface_maintenance_view(selected),
                 mock_scenarios=ORDER_INTERFACE_MOCK_SCENARIOS,
                 test_result=test_result,
             )
@@ -1777,10 +1791,20 @@ def interface_maintenance():
     return render_template(
         "interface_maintenance.html",
         configs=configs,
-        selected=selected,
+        selected=_interface_maintenance_view(selected),
         mock_scenarios=ORDER_INTERFACE_MOCK_SCENARIOS,
         test_result=None,
     )
+
+
+def _interface_maintenance_view(config: dict[str, Any]) -> dict[str, Any]:
+    """Prepare editable JSON as readable text without Unicode escape sequences."""
+    return {
+        **config,
+        "request_mapping_text": json.dumps(config.get("request_mapping") or {}, ensure_ascii=False, indent=2),
+        "response_mapping_text": json.dumps(config.get("response_mapping") or {}, ensure_ascii=False, indent=2),
+        "mock_scenarios_text": json.dumps(config.get("mock_scenarios") or {}, ensure_ascii=False, indent=2),
+    }
 
 
 @bp.post("/order-automation/cases/<int:case_id>/entry-template/refresh")
@@ -1967,10 +1991,12 @@ def customer_archive():
     page = min(page, total_pages)
     customers = all_customers[(page - 1) * page_size: page * page_size]
     workspace = get_customer_workspace(selected_id) if selected_id else None
+    price_calculation_match = resolve_customer_price_calculation((workspace or {}).get("customer"))
     return render_template(
         "customer_archive.html",
         customers=customers,
         workspace=workspace,
+        price_calculation_match=price_calculation_match,
         selected_id=selected_id,
         new_mode=new_mode,
         selected_tab=tab,
@@ -5742,8 +5768,8 @@ def admin_price_calculation_rules():
         remark = request.form.get("remark", "").strip()
         if not verify_admin_password(admin_password):
             flash("管理员密码错误。", "error")
-        elif selected_customer == "guanghe" and (not guanghe_huangshi_file or not guanghe_huangshi_file.filename or not guanghe_nanya_file or not guanghe_nanya_file.filename):
-            flash("请上传黄石广合单价和南亚新材价格更新两份 Excel。", "error")
+        elif selected_customer == "guanghe" and (not guanghe_nanya_file or not guanghe_nanya_file.filename):
+            flash("请上传已合并黄石数据的南亚新材价格更新 Excel。", "error")
         elif selected_customer == "suhang" and (not suhang_pp_file or not suhang_pp_file.filename) and (not suhang_ccl_file or not suhang_ccl_file.filename):
             flash("请至少上传苏杭PP报价单或苏杭CCL报价单其中一份 Excel。", "error")
         elif selected_customer not in {"guanghe", "suhang"} and (not rule_file or not rule_file.filename):
@@ -5752,7 +5778,6 @@ def admin_price_calculation_rules():
             try:
                 if selected_customer == "guanghe":
                     version = save_new_guanghe_rule_version(
-                        guanghe_huangshi_file,
                         guanghe_nanya_file,
                         updated_by=current_employee(),
                         remark=remark,
