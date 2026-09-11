@@ -189,18 +189,35 @@ def save_account_smtp(account_id: int):
             smtp_auth_code = mail_store.get_account_auth_code(
                 account_id, owner_employee_id=owner_employee_id
             ) or ""
+        smtp_fields = {
+            "host": str(request.form.get("smtp_host") or ""),
+            "port": int(request.form.get("smtp_port") or 465),
+            "security": str(request.form.get("smtp_security") or "ssl"),
+            "username": str(request.form.get("smtp_username") or ""),
+            "auth_code": smtp_auth_code,
+            "sender_name": str(request.form.get("smtp_sender_name") or ""),
+        }
+        wants_enabled = bool(request.form.get("smtp_enabled"))
+        # A changed endpoint or secret invalidates the previous connection test.
+        # Keep that safety invariant while completing save -> test -> enable in
+        # one user action when the enable checkbox is selected.
         mail_store.save_smtp_config(
             account_id,
             owner_employee_id=owner_employee_id,
-            host=str(request.form.get("smtp_host") or ""),
-            port=int(request.form.get("smtp_port") or 465),
-            security=str(request.form.get("smtp_security") or "ssl"),
-            username=str(request.form.get("smtp_username") or ""),
-            auth_code=smtp_auth_code,
-            sender_name=str(request.form.get("smtp_sender_name") or ""),
-            enabled=1 if request.form.get("smtp_enabled") else 0,
+            **smtp_fields,
+            enabled=0,
         )
-        flash("SMTP 发信配置已保存。授权码不会在页面中回显。", "success")
+        if wants_enabled:
+            test_smtp_connection(account_id, owner_employee_id=owner_employee_id)
+            mail_store.save_smtp_config(
+                account_id,
+                owner_employee_id=owner_employee_id,
+                **{**smtp_fields, "auth_code": ""},
+                enabled=1,
+            )
+            flash("SMTP 连接测试成功，真实邮件发送已启用。", "success")
+        else:
+            flash("SMTP 发信配置已保存但未启用。授权码不会在页面中回显。", "success")
     except ValueError as exc:
         flash(f"SMTP 保存失败：{exc}", "error")
     return redirect(url_for("mail_transcode.accounts_page", edit=account_id))

@@ -3,6 +3,7 @@ from __future__ import annotations
 import smtplib
 import ssl
 import time
+from html import escape
 from email.message import EmailMessage
 from email.utils import formataddr, getaddresses, make_msgid, parseaddr
 from typing import Any
@@ -117,11 +118,52 @@ def smtp_ready_for_case(case_id: int, *, employee_id: str) -> bool:
     return bool(config and config.get("enabled"))
 
 
-def _case_sender_config(case_id: int, *, employee_id: str) -> tuple[dict[str, Any], int | None]:
+def build_order_reply_draft(case_id: int, *, employee_id: str) -> dict[str, Any]:
+    """Return the web-equivalent editable reply draft without sending mail."""
+    from ..order_entry_service import get_saved_template
+    from ..order_intake_service import get_case
+
+    case = get_case(case_id, employee_id)
+    if not case:
+        raise ValueError("订单邮件不存在或无权读取")
+    _case, template = get_saved_template(case_id, employee_id)
+    sender_name, sender_email = parseaddr(str(case.get("sender") or ""))
+    subject = str(case.get("subject") or "订单回复").strip()
+    if not subject.lower().startswith("re:"):
+        subject = f"Re: {subject}"
+    header = (template or {}).get("header") or {}
+    lines = (template or {}).get("lines") or []
+    customer_name = str(case.get("customer_name") or "客户").strip()
+    order_no = str(header.get("customer_order_number") or "").strip()
+    body_lines = [f"尊敬的{customer_name}：", "", "您好！", "您的订单我司已收到并完成内部处理。"]
+    if order_no:
+        body_lines.append(f"客户订单号：{order_no}")
+    if lines:
+        body_lines.append(f"订单明细：共 {len(lines)} 项")
+    body_lines.extend(["", "如需补充交期或其他信息，请直接回复本邮件。", "", "此致", "南亚营销自动化平台"])
+    return {
+        "case_id": int(case_id),
+        "to": sender_email or str(case.get("sender") or "").strip(),
+        "recipient_name": sender_name,
+        "cc": "",
+        "subject": subject,
+        "body": "\n".join(body_lines),
+        "template_available": bool(template),
+        "smtp_ready": smtp_ready_for_case(case_id, employee_id=employee_id),
+        "send_supported": True,
+        "sent": False,
+    }
+
+
+def _case_sender_config(
+    case_id: int, *, employee_id: str
+) -> tuple[dict[str, Any], int | None, dict[str, Any]]:
     with db_cursor() as conn:
         row = conn.execute(
             """
-            SELECT a.id AS account_id, t.id AS template_id
+            SELECT a.id AS account_id, t.id AS template_id,
+                   m.message_id, m.sender, m.subject, m.sent_at, m.received_at,
+                   m.body_text, m.body_html
             FROM order_intake_cases c
             JOIN mail_messages m ON m.id = c.mail_id
             JOIN mail_accounts a ON a.id = m.account_id
@@ -136,7 +178,55 @@ def _case_sender_config(case_id: int, *, employee_id: str) -> tuple[dict[str, An
         mail_store.get_smtp_config(int(row["account_id"]), owner_employee_id=employee_id),
         require_enabled=True,
     )
-    return config, (int(row["template_id"]) if row["template_id"] is not None else None)
+    source_mail = {
+        key: row[key]
+        for key in (
+            "message_id", "sender", "subject", "sent_at", "received_at", "body_text", "body_html"
+        )
+    }
+    return (
+        config,
+        int(row["template_id"]) if row["template_id"] is not None else None,
+        source_mail,
+    )
+
+
+def _quoted_original_text(source_mail: dict[str, Any]) -> str:
+    original = str(source_mail.get("body_text") or "").strip()
+    if not original and source_mail.get("body_html"):
+        from .mail_html_parser import html_to_text
+
+        original = html_to_text(str(source_mail["body_html"]))
+    return "\n".join(
+        [
+            "----- 原邮件 -----",
+            f"发件人：{source_mail.get('sender') or '未提供'}",
+            f"发送时间：{source_mail.get('sent_at') or source_mail.get('received_at') or '未提供'}",
+            f"主题：{source_mail.get('subject') or '（无主题）'}",
+            "",
+            original or "（原邮件正文为空）",
+        ]
+    )
+
+
+def _reply_html(body: str, source_mail: dict[str, Any]) -> str:
+    from .mail_html_parser import safe_display_html
+
+    reply = escape(body).replace("\n", "<br>")
+    original = safe_display_html(
+        str(source_mail.get("body_html") or ""), str(source_mail.get("body_text") or "")
+    )
+    sender = escape(str(source_mail.get("sender") or "未提供"))
+    sent_at = escape(
+        str(source_mail.get("sent_at") or source_mail.get("received_at") or "未提供")
+    )
+    subject = escape(str(source_mail.get("subject") or "（无主题）"))
+    return (
+        f"<div>{reply}</div><br><div style=\"color:#666\">----- 原邮件 -----<br>"
+        f"发件人：{sender}<br>发送时间：{sent_at}<br>主题：{subject}</div>"
+        f"<blockquote style=\"margin:12px 0 0;padding-left:12px;border-left:2px solid #ccc\">"
+        f"{original}</blockquote>"
+    )
 
 
 def _record_send_event(
@@ -169,9 +259,10 @@ def send_order_reply(
     cc: str,
     subject: str,
     body: str,
+    body_html: str | None = None,
 ) -> dict[str, Any]:
     """Send an operator-confirmed order reply through the source mailbox SMTP."""
-    config, template_id = _case_sender_config(case_id, employee_id=employee_id)
+    config, template_id, source_mail = _case_sender_config(case_id, employee_id=employee_id)
     recipients = _addresses(to, "收件人")
     cc_recipients = _addresses(cc, "抄送")
     subject = _safe_header(subject, "主题")
@@ -188,7 +279,18 @@ def send_order_reply(
         message["Cc"] = ", ".join(cc_recipients)
     message["Subject"] = subject
     message["Message-ID"] = make_msgid(domain=sender_email.split("@")[-1])
-    message.set_content(body)
+    source_message_id = _safe_header(str(source_mail.get("message_id") or ""), "原邮件标识")
+    if source_message_id:
+        message["In-Reply-To"] = source_message_id
+        message["References"] = source_message_id
+    if body_html is not None:
+        from .mail_html_parser import safe_display_html, html_to_text
+        cleaned = safe_display_html(body_html)
+        message.set_content(html_to_text(cleaned))
+        message.add_alternative(cleaned, subtype="html")
+    else:
+        message.set_content(f"{body}\n\n{_quoted_original_text(source_mail)}")
+        message.add_alternative(_reply_html(body, source_mail), subtype="html")
 
     started = time.monotonic()
     client = None
@@ -223,6 +325,7 @@ def send_order_reply(
         "cc": cc_recipients,
         "subject": subject,
         "duration_ms": int((time.monotonic() - started) * 1000),
+        "body_html": message.get_body(preferencelist=("html",)).get_content(),
     }
     _record_send_event(
         case_id=case_id,

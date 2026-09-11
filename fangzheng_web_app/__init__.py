@@ -18,6 +18,7 @@ from .transcode_semantic_rules import ensure_default_transcode_semantic_rule_ver
 from .transcode_rule_center import ensure_daily_backup, ensure_rule_center_tables
 from .pp_transcode_rules import ensure_pp_transcode_daily_backup, ensure_pp_transcode_tables, seed_pp_transcode_rules
 from .mail_transcode_agent import bp as mail_transcode_bp
+from .connector_api import bp as connector_api_bp
 
 
 def create_app() -> Flask:
@@ -48,4 +49,5 @@ def create_app() -> Flask:
 
     app.register_blueprint(bp)
     app.register_blueprint(mail_transcode_bp, url_prefix="/mail-transcode")
+    app.register_blueprint(connector_api_bp)
     return app

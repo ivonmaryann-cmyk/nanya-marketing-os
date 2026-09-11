@@ -1219,7 +1219,8 @@ def get_case(case_id: int, employee_id: str) -> dict[str, Any] | None:
     with db_cursor() as conn:
         row = conn.execute(
             """
-            SELECT c.*, m.account_id, m.subject, m.sender, m.sent_at, m.received_at, m.body_html, m.body_text, m.eml_path,
+            SELECT c.*, m.account_id, m.message_id, m.subject, m.sender, m.sent_at, m.received_at,
+                   m.body_html, m.body_text, m.eml_path,
                    rr.name AS routing_rule_name
             FROM order_intake_cases c
             JOIN mail_messages m ON m.id = c.mail_id

@@ -66,6 +66,58 @@ python app.py
 
 浏览器打开：`http://127.0.0.1:5000`
 
+### NYEOS 内网 HTTPS 证书
+
+当接口维护中的 NYEOS 地址使用 `https://nyeos.nouyatec.com` 或
+`https://10.30.12.117`，且服务端使用企业自签名证书时，在不提交版本库的
+`config/local.env` 配置证书路径：
+
+```bash
+NYEOS_CA_CERT_FILE=/absolute/path/to/api.crt
+```
+
+平台会保留默认 HTTPS 校验，并仅为上述 NYEOS 地址额外信任该证书；不会全局关闭
+证书或主机名校验。修改后需重启服务。
+
+## 南亚智能办公连接器（开发版）
+
+本项目提供独立的 JSON REST + MCP Streamable HTTP 门面，直接调用邮件抓取与订单案件服务层；它不模拟网页登录、不返回 HTML，也不使用 Cookie。
+
+首次启动前，为连接器设置**独立** Token（不是邮箱授权码、SMTP 密码或 NYEOS 凭据）：
+
+```bash
+export CONNECTOR_API_TOKEN='请生成一段随机长字符串'
+export CONNECTOR_ALLOWED_EMPLOYEE_IDS=23582
+export CONNECTOR_DEFAULT_EMPLOYEE_ID=23582
+```
+
+调用需带 `Authorization: Bearer $CONNECTOR_API_TOKEN`，可带 `X-Nanya-Employee-Id: 23582` 与 `X-Correlation-Id`。默认范围是工号 `23582`。
+
+| 端点 | 用途 |
+| --- | --- |
+| `GET /api/connector/v1/health` | 如实返回邮箱、料号查询、录单、SMTP 的 enabled、Mock/Real mode 与 readiness；`real_configured_unverified` 只代表配置存在，绝不代表真实接口已验通。 |
+| `GET /api/connector/v1/jobs/{id}` | 查询订单邮件同步任务。 |
+| `GET /api/connector/v1/orders/cases` | 列出订单案件。 |
+| `GET /api/connector/v1/orders/cases/{id}` | 读取案件与已提取的业务信息。 |
+| `POST /api/connector/v1/mcp` | MCP Streamable HTTP JSON-RPC 入口。 |
+
+MCP 工具及其业务边界：
+
+- `marketing.mail.sync_orders`、`marketing.job.get`：真实调用已有 IMAP 后台抓取队列并轮询任务；
+- `marketing.order.list_cases`、`marketing.order.get_case`：读取案件及已经提取的业务数据；
+- `marketing.material.query`：调用既有 `build_material_query`，严格沿用接口维护中的 Mock/Real 状态、模板校验和接口审计；
+- `marketing.order.prepare_entry`：调用既有录单模板校验/载荷映射，仅生成载荷预览，不请求 NYEOS、不写接口日志；
+- `marketing.order.reply_draft`：生成可编辑邮件草稿，绝不发送；
+- `marketing.order.submit_entry`：只有 `confirm=true` 才调用既有 `build_domestic_order_entry`，沿用其 Mock/Real、成功提交防重复和审计记录。
+
+现有 SMTP 发信服务尚未提供幂等键，因此连接器**不暴露** `marketing.mail.send_reply`，避免 Agent 重试造成重复邮件。接口不会返回授权码、密码、Cookie、HTML 或服务器文件路径。
+
+开发验收可进行一次真实 MCP Streamable HTTP 握手（只执行 `initialize` 与 `tools/list`，不会同步邮件；未设置 `CONNECTOR_BASE_URL` 时脚本会拉起一个不连接数据库的临时 Flask 测试宿主）：
+
+```bash
+CONNECTOR_API_TOKEN='同上' node tests/connector_api_mcp_handshake.mjs
+```
+
 ## 历史任务清理
 
 先预演超过 30 天的终态任务和任务日志：

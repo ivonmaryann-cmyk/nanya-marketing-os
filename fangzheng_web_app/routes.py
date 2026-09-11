@@ -18,11 +18,9 @@ from openpyxl import load_workbook
 PDF_EXCEL_FEATURE = "pdf_excel"
 
 ORDER_MAIL_STATUS_FILTER_LABELS = {
-    "pending_extraction": "待提取订单",
-    "extracting": "正在提取订单",
-    "extraction_error": "提取失败",
-    "pending_template_save": "待保存模板",
-    "pending_interface_submit": "订单信息确认",
+    "pending_entry": "待录单",
+    "entry_pending_reply": "录单完成待回复",
+    "entry_replied": "录单完成已回复",
     "pending_triage": "待处理",
     "pending_review": "处理中",
     "ready_for_erp": "待确认",
@@ -33,6 +31,10 @@ ORDER_MAIL_STATUS_FILTER_LABELS = {
 
 def _order_mail_status_key(case: dict[str, Any], entry_progress: dict[str, Any] | None) -> str:
     if entry_progress:
+        if entry_progress.get('task_status'):
+            return entry_progress['task_status']
+        if entry_progress.get('completed') and entry_progress.get('replied') is False:
+            return 'pending_reply'
         return str(entry_progress.get("stage") or "")
     status = str(case.get("status") or "")
     return "completed" if status == "archived" else status
@@ -1024,7 +1026,7 @@ def order_automation():
         ),
         action_labels=ORDER_ACTION_LABELS,
         status_labels=ORDER_INTAKE_STATUS_LABELS,
-        mail_status_filter_labels=ORDER_MAIL_STATUS_FILTER_LABELS,
+        mail_status_filter_labels=({k: ORDER_MAIL_STATUS_FILTER_LABELS[k] for k in ('pending_entry', 'entry_pending_reply', 'entry_replied')} if selected_action == 'new_order' else ORDER_MAIL_STATUS_FILTER_LABELS),
         scope_labels=ORDER_SCOPE_LABELS,
         selected_action=selected_action,
         selected_mail_status=selected_mail_status,
@@ -1394,27 +1396,43 @@ def order_automation_reply(case_id: int):
     header = (template or {}).get("header") or {}
     lines = (template or {}).get("lines") or []
     draft_key = f"order_reply_draft:{case_id}"
-    saved_draft = session.get(draft_key) or {}
-    default_body = _order_reply_default_body(case, header, lines)
+    from .order_intake_service import _metadata_get, _metadata_set, db_cursor
+    from .mail_transcode_agent.mail_html_parser import safe_display_html, html_to_text
+    from html import escape
+    storage_key = f"order_reply_draft:{employee_id}:{case_id}"
+    with db_cursor() as conn:
+        saved_draft = json.loads(_metadata_get(conn, storage_key) or "{}")
+    saved_draft = saved_draft or session.get(draft_key) or {}
+    default_body = str(case.get("body_text") or "")
+    original_html = str(case.get("body_html") or "") or f"<pre>{escape(default_body)}</pre>"
     draft = {
         "to": str(saved_draft.get("to") or recipient),
         "cc": str(saved_draft.get("cc") or ""),
         "subject": str(saved_draft.get("subject") or subject),
         "body": str(saved_draft.get("body") or default_body),
+        "body_html": safe_display_html(saved_draft.get("body_html") or (f"<pre>{escape(saved_draft['body'])}</pre>" if saved_draft.get("body") else original_html)),
     }
     smtp_ready = smtp_ready_for_case(case_id, employee_id=employee_id)
+    with db_cursor() as conn:
+        reply_rows = conn.execute("SELECT created_at, detail_json FROM order_entry_detail_events WHERE case_id=? AND operated_by=? AND event_type='order_reply_sent' ORDER BY id DESC", (case_id, employee_id)).fetchall()
+    reply_history = [dict(json.loads(row['detail_json']), sent_at=str(row['created_at'])) for row in reply_rows]
     if request.method == "POST":
+        if len(request.form.get("body_html", "")) > 240000:
+            abort(413, description="邮件正文过长，请精简后重试")
         draft = {
             "to": str(request.form.get("to") or "").strip(),
             "cc": str(request.form.get("cc") or "").strip(),
             "subject": str(request.form.get("subject") or "").strip(),
             "body": str(request.form.get("body") or "").strip(),
+            "body_html": safe_display_html(str(request.form.get("body_html") or "")) if request.form.get("body_html", "").strip() else "",
         }
+        draft["body"] = html_to_text(draft["body_html"]).strip()
         if not draft["to"] or not draft["subject"] or not draft["body"]:
             flash("请填写收件人、主题和邮件正文后再保存草稿。", "error")
         else:
-            session[draft_key] = draft
-            session.modified = True
+            with db_cursor() as conn:
+                _metadata_set(conn, storage_key, json.dumps(draft, ensure_ascii=False))
+            session.pop(draft_key, None)
             if request.form.get("action") == "send":
                 try:
                     result = send_order_reply(
@@ -1424,11 +1442,13 @@ def order_automation_reply(case_id: int):
                         cc=draft["cc"],
                         subject=draft["subject"],
                         body=draft["body"],
+                        body_html=draft["body_html"],
                     )
                     flash(
                         f"订单回复已发送至 {', '.join(result['to'])}。发送记录已写入订单详情。",
                         "success",
                     )
+                    return redirect(_order_automation_return_context(case)["url"], code=303)
                 except ValueError as exc:
                     flash(str(exc), "error")
             else:
@@ -1438,6 +1458,7 @@ def order_automation_reply(case_id: int):
         "order_automation_reply.html",
         case=case,
         draft=draft,
+        reply_history=reply_history,
         sender_name=sender_name,
         entry_progress=progress,
         order_template=template,

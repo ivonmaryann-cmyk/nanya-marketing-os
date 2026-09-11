@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -25,6 +26,7 @@ from fangzheng_web_app.order_interface_service import (
     _real_material_request_item,
     select_material_candidate,
     save_interface_config,
+    _ssl_context_for_endpoint,
     test_interface_config,
     validate_domestic_order_entry,
 )
@@ -99,6 +101,15 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         }, "23582")
         self.assertEqual(saved["config_version"], 2)
         self.assertEqual(saved["endpoint_url"], material["endpoint_url"])
+
+    def test_nyeos_tls_context_uses_extra_ca_without_disabling_hostname_checks(self) -> None:
+        context = object()
+        with patch.dict(os.environ, {"NYEOS_CA_CERT_FILE": "/tmp/nyeos-api.crt"}, clear=False), patch(
+            "fangzheng_web_app.order_interface_service.ssl.create_default_context", return_value=context
+        ) as create_context:
+            self.assertIs(_ssl_context_for_endpoint("https://nyeos.nouyatec.com/api"), context)
+        create_context.assert_called_once_with(cafile="/tmp/nyeos-api.crt")
+        self.assertIsNone(_ssl_context_for_endpoint("https://example.com/api"))
 
     def test_untouched_legacy_material_config_is_upgraded_without_enabling_real_calls(self) -> None:
         material = get_interface_config("material_batch_query")

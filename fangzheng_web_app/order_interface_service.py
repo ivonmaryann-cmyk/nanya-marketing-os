@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import ssl
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -153,6 +155,30 @@ def _endpoint_url(config: dict[str, Any]) -> str:
     base_url = str(config.get("base_url") or "").strip().rstrip("/")
     path = str(config.get("path") or "").strip()
     return base_url if not path else f"{base_url}/{path.lstrip('/')}"
+
+
+def _ssl_context_for_endpoint(endpoint_url: str) -> ssl.SSLContext | None:
+    """Return the default-verifying TLS context, extended for NYEOS if configured.
+
+    ``api.crt`` is a self-signed certificate for the internal NYEOS host.  It
+    must be added as a *single extra trust anchor* instead of disabling TLS
+    verification for the whole application.  The setting deliberately applies
+    only to the NYEOS host/IP covered by that certificate.
+    """
+    parsed = urlparse(endpoint_url)
+    if parsed.scheme.lower() != "https":
+        return None
+    if (parsed.hostname or "").lower() not in {"nyeos.nouyatec.com", "10.30.12.117"}:
+        return None
+    ca_file = os.getenv("NYEOS_CA_CERT_FILE", "").strip()
+    if not ca_file:
+        return None
+    try:
+        # create_default_context keeps the OS trust store, then adds the
+        # internal NYEOS certificate. Hostname validation remains enabled.
+        return ssl.create_default_context(cafile=ca_file)
+    except (FileNotFoundError, OSError, ssl.SSLError) as exc:
+        raise ValueError(f"Nyeos 接口证书配置无效：{str(exc)[:160]}") from exc
 
 
 def _valid_endpoint_url(value: str) -> str:
@@ -508,7 +534,7 @@ def test_interface_config(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         import time
         started = time.monotonic()
-        with urlopen(request, timeout=15) as response:
+        with urlopen(request, timeout=15, context=_ssl_context_for_endpoint(endpoint_url)) as response:
             raw = response.read(256 * 1024).decode("utf-8", errors="replace")
             status_code = int(response.status)
         try:
@@ -977,7 +1003,12 @@ def _post_json_endpoint(
     )
     started = time.monotonic()
     try:
-        with urlopen(request, timeout=int(config.get("timeout_seconds") or 15)) as response:
+        endpoint_url = _endpoint_url(config)
+        with urlopen(
+            request,
+            timeout=int(config.get("timeout_seconds") or 15),
+            context=_ssl_context_for_endpoint(endpoint_url),
+        ) as response:
             raw = response.read(1024 * 1024).decode("utf-8", errors="replace")
             status_code = int(response.status)
     except HTTPError as exc:
@@ -1417,6 +1448,51 @@ def validate_domestic_order_entry(case_id: int, employee_id: str) -> list[str]:
         elif not str(values.get("customer_product_code") or "").strip():
             issues.append(f"第 {line_no} 行未填写客户产品编号")
     return issues
+
+
+def prepare_domestic_order_entry(case_id: int, employee_id: str) -> dict[str, Any]:
+    """Build the existing NYEOS domestic-entry payload without submitting it.
+
+    This is deliberately a service-layer operation, so Connector/API clients
+    use the same template, validation and payload mapping as the web workflow.
+    Unlike ``build_domestic_order_entry`` it performs no HTTP request, writes
+    no interface log and does not change an order state.
+    """
+    config = get_interface_config("domestic_order_entry")
+    if not config:
+        raise ValueError("内销录单接口配置不存在")
+    template_id = _case_template_id(case_id, employee_id)
+    if not template_id:
+        raise ValueError("请先生成并保存录单模板")
+    issues = validate_domestic_order_entry(case_id, employee_id)
+    with db_cursor() as conn:
+        template = conn.execute("SELECT header_json FROM order_entry_templates WHERE id=?", (template_id,)).fetchone()
+        rows = conn.execute(
+            "SELECT line_no,values_json FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no", (template_id,)
+        ).fetchall()
+    try:
+        payload = _domestic_order_request_payload(
+            _json(template["header_json"] if template else "", {}), list(rows), employee_id
+        )
+    except ValueError as exc:
+        # A preview must show all business blockers rather than pretending the
+        # payload exists.  The submit service will run the same validation.
+        issues.append(str(exc))
+        payload = None
+    completed = is_domestic_order_entry_completed(case_id, employee_id)
+    return {
+        "case_id": case_id,
+        "template_id": template_id,
+        "validation_issues": issues,
+        "can_submit": bool(config.get("enabled")) and not issues and not completed,
+        "already_submitted": completed,
+        "interface": {
+            "enabled": bool(config.get("enabled")),
+            "mode": str(config.get("mode") or "disabled"),
+            "config_version": int(config.get("config_version") or 0),
+        },
+        "payload": payload,
+    }
 
 
 def is_domestic_order_entry_completed(case_id: int, employee_id: str) -> bool:

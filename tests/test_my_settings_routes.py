@@ -94,6 +94,32 @@ class MySettingsRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), {"auth_code": "smtp-secret"})
 
+    def test_saving_enabled_smtp_runs_save_test_enable_sequence(self) -> None:
+        with patch(
+            "fangzheng_web_app.mail_transcode_agent.routes.mail_store.save_smtp_config"
+        ) as save_config, patch(
+            "fangzheng_web_app.mail_transcode_agent.routes.test_smtp_connection"
+        ) as test_connection:
+            response = self.client.post(
+                "/mail-transcode/accounts/7/smtp",
+                data={
+                    "smtp_host": "smtp.example.com",
+                    "smtp_port": "465",
+                    "smtp_security": "ssl",
+                    "smtp_username": "tester@example.com",
+                    "smtp_auth_code": "smtp-secret",
+                    "smtp_sender_name": "订单中心",
+                    "smtp_enabled": "1",
+                },
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(save_config.call_count, 2)
+        self.assertEqual(save_config.call_args_list[0].kwargs["enabled"], 0)
+        self.assertEqual(save_config.call_args_list[1].kwargs["enabled"], 1)
+        self.assertEqual(save_config.call_args_list[1].kwargs["auth_code"], "")
+        test_connection.assert_called_once_with(7, owner_employee_id="tester")
+
 
 if __name__ == "__main__":
     unittest.main()

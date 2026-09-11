@@ -854,6 +854,16 @@ def get_or_create_template(case_id: int, employee_id: str) -> tuple[dict[str, An
         return case, _serialize_template(conn, template_id)
 
 
+def get_saved_template(case_id: int, employee_id: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Read a saved template without creating or modifying one."""
+    case = _case_for_template(case_id, employee_id)
+    with db_cursor() as conn:
+        row = conn.execute(
+            "SELECT id FROM order_entry_templates WHERE case_id=? AND employee_id=?", (case_id, employee_id)
+        ).fetchone()
+        return case, _serialize_template(conn, int(row["id"])) if row else None
+
+
 def _template_task_row(case_id: int, employee_id: str) -> dict[str, Any] | None:
     """Return the latest extraction task for one employee-owned mail case."""
     with db_cursor() as conn:
@@ -1122,6 +1132,19 @@ def reextract_all_templates(employee_id: str) -> dict[str, Any]:
 
 
 def template_progress(case_id: int, employee_id: str) -> dict[str, Any]:
+    progress = _entry_progress(case_id, employee_id)
+    with db_cursor() as conn:
+        sent = conn.execute("SELECT 1 FROM order_entry_detail_events WHERE case_id=? AND operated_by=? AND event_type='order_reply_sent' LIMIT 1", (case_id, employee_id)).fetchone()
+    progress['replied'] = bool(sent)
+    progress['closed'] = bool(progress['completed'])
+    progress['operation_label'] = progress['label']
+    progress['task_status'] = ('entry_replied' if sent else 'entry_pending_reply') if progress['completed'] else 'pending_entry'
+    progress['label'] = {'pending_entry': '待录单', 'entry_pending_reply': '录单完成待回复', 'entry_replied': '录单完成已回复'}[progress['task_status']]
+    progress['next_action'] = ('查看订单' if sent else '回复邮件') if progress['completed'] else '去录单'
+    return progress
+
+
+def _entry_progress(case_id: int, employee_id: str) -> dict[str, Any]:
     """Return the single read-only workflow state used by every order view.
 
     A successful domestic-entry interface call is the terminal business fact.

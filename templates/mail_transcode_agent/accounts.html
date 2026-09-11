@@ -114,7 +114,7 @@
       <hr style="border:0;border-top:1px solid #e4ebf4;margin:24px 0;">
       <div class="step-tag">发信</div>
       <h2 style="margin-top:8px;">SMTP 发信配置</h2>
-      <p class="mail-account-note">用于从该业务邮箱向客户发送已确认的订单回复。SMTP 客户端授权码会加密保存，保存后不会在页面回显。</p>
+      <p class="mail-account-note">用于从该业务邮箱向客户发送已确认的订单回复。勾选启用并保存时，系统会自动完成连接测试；SMTP 客户端授权码会加密保存。</p>
       <form method="post" action="{{ url_for('mail_transcode.save_account_smtp', account_id=edit_account.id) }}" class="form-grid">
         <div class="result-actions">
           <label class="mail-field" style="flex:1;">

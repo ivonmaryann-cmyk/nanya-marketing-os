@@ -201,7 +201,10 @@ class OrderMailPagePresentationTests(unittest.TestCase):
         self.assertIn("业务分流与进度", detail_html)
         self.assertIn("NYEOS订单号", detail_html)
         self.assertIn("SA2608270003", detail_html)
-        self.assertIn("查看清洗后的 HTML 正文", detail_html)
+        self.assertIn("查看纯文本邮件正文", detail_html)
+        self.assertIn('id="routingToggle"', detail_html)
+        self.assertIn('aria-expanded="false"', detail_html)
+        self.assertIn('id="sourceMailHtml"', detail_html)
 
 
 if __name__ == "__main__":

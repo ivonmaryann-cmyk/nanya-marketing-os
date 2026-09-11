@@ -361,6 +361,27 @@ class MailTranscodeAccountIsolationTests(unittest.TestCase):
         self.assertEqual(sender, "orders@example.com")
         self.assertEqual(recipients, ["customer@example.com", "copy@example.com"])
         self.assertEqual(message["Subject"], "Re: 采购订单")
+        self.assertEqual(message["In-Reply-To"], "<reply-1@example.com>")
+        self.assertEqual(message["References"], "<reply-1@example.com>")
+        plain_body = message.get_body(preferencelist=("plain",)).get_content()
+        self.assertIn("订单已确认。", plain_body)
+        self.assertIn("----- 原邮件 -----", plain_body)
+        self.assertIn("PO-001", plain_body)
+        self.assertIsNotNone(message.get_body(preferencelist=("html",)))
+        with patch.object(smtp_service, "_connect", return_value=client):
+            smtp_service.send_order_reply(
+                case_id, employee_id="employee-a", to="customer@example.com",
+                cc="", subject="Re: 采购订单", body="已修改",
+                body_html='<table><tr><td>已修改</td></tr></table><script>alert(1)</script>',
+            )
+        edited = client.messages[-1][0]
+        html = edited.get_body(preferencelist=("html",)).get_content()
+        self.assertIn("<table>", html)
+        self.assertIn("已修改", html)
+        self.assertNotIn("<script", html)
+        self.assertNotIn("PO-001", html)
+        self.assertNotIn("原邮件", html)
+        self.assertEqual(edited["In-Reply-To"], "<reply-1@example.com>")
         with db.db_cursor() as conn:
             event = conn.execute(
                 "SELECT event_type, detail_json FROM order_entry_detail_events WHERE case_id = ?",
