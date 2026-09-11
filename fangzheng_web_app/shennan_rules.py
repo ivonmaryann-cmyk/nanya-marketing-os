@@ -74,9 +74,7 @@ def get_shennan_rule_history() -> list[dict]:
 def ensure_default_shennan_rule_version() -> str:
     active_version = get_setting(_active_key(), "")
     if active_version:
-        version_dir = SHENNAN_RULES_VERSIONS_DIR / active_version
-        if (version_dir / SHENNAN_RULE_FILENAME).exists():
-            return active_version
+        return active_version
 
     if not BUILTIN_SHENNAN_RULE_PATH.exists():
         raise FileNotFoundError(f"未找到内置深南报价单：{BUILTIN_SHENNAN_RULE_PATH}")
@@ -103,9 +101,9 @@ def ensure_default_shennan_rule_version() -> str:
 
 def get_active_shennan_rule_version() -> str:
     version = get_setting(_active_key(), "")
-    if not version:
-        version = ensure_default_shennan_rule_version()
-    return version
+    if version:
+        return version
+    return ensure_default_shennan_rule_version()
 
 
 def get_shennan_rule_file_path(version: str | None = None) -> Path:

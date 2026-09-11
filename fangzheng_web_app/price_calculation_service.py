@@ -636,11 +636,17 @@ def run_plin_regression(customer_key: str, version: str | None = None) -> dict:
 
 
 def load_price_rules(customer_key: str, rule_path: str | Path) -> JingwangRules | PlinRules | ExtRules:
+    path = Path(rule_path)
+    if not path.is_file():
+        customer = enabled_price_customer(customer_key)
+        raise ValueError(
+            f"{customer['label']}当前生效报价单文件在本机缺失，请恢复 storage 中对应版本文件或重新上传报价单：{path}"
+        )
     if customer_key == "plin":
-        return load_plin_rules(rule_path)
+        return load_plin_rules(path)
     if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "lejian", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing", "kexiang", "junya", "chaoying"}:
-        return load_extended_rules(customer_key, rule_path)
-    return load_jingwang_rules(rule_path)
+        return load_extended_rules(customer_key, path)
+    return load_jingwang_rules(path)
 
 
 def calculate_customer_spec(customer_key: str, spec: str, rules: JingwangRules | PlinRules | ExtRules, quantity: Any = None) -> CalcResult:
@@ -672,8 +678,8 @@ def calculate_jingwang_spec(spec: str, rules: JingwangRules, quantity: Any = Non
 
 
 def _calculate_jingwang_pp(desc: str, rules: JingwangRules, quantity: Any = None) -> CalcResult:
-    parts = desc.split()
-    product = _norm_product(parts[1]) if len(parts) > 1 and parts[0].upper() == "PP" else ""
+    product_match = re.search(r"\b(NY[\w\-.（）()]+)\b", desc, re.I)
+    product = _norm_jingwang_pp_product(product_match.group(1)) if product_match else ""
     glass_match = re.search(r"\b(106|10[0-9]{2}|1067|1078|1080|1506|2113|2116|2313|3313|7628)\b", desc, re.I)
     rc_match = re.search(r"RC\s*([0-9]+(?:\.[0-9]+)?)\s*%?", desc, re.I)
     width_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(?:IN|INCH|英寸)\b", desc, re.I)
@@ -706,6 +712,18 @@ def _calculate_jingwang_pp(desc: str, rules: JingwangRules, quantity: Any = None
                     f"公式={base_price:.2f}*{length_mm:.2f}/1000/{split}"
                 )
                 return CalcResult("成功", "PP", price, total, f"{width_in:.2f}IN", "", note, row.excel_row)
+            if width_match and length_match:
+                width_in = _to_float(width_match.group(1))
+                split = math.floor(49.5 / width_in) if width_in else 0
+                if split <= 0:
+                    return CalcResult("失败", "PP", "待确认", "待确认", width, roll_length, f"PP卷料宽幅无法一开：{width_in:.2f} inch")
+                price = _round_money(base_price / split)
+                total = _calc_total(quantity, price)
+                note = (
+                    f"PP半幅卷命中报价表第 {row.excel_row} 行，整幅每米价={base_price:.2f}，"
+                    f"卷宽={width_in:.2f}inch，纬向一开{split}，公式={base_price:.2f}/{split}"
+                )
+                return CalcResult("成功", "PP", price, total, f"{width_in:.2f}IN", roll_length, note, row.excel_row)
             price = base_price
             total = _calc_total(quantity, price)
             return CalcResult("成功", "PP", price, total, width, roll_length, f"命中PP报价表第 {row.excel_row} 行", row.excel_row)
@@ -1109,7 +1127,7 @@ def _parse_jingwang_pp_rule_row(excel_row: int, row: dict[int, str]) -> PpRule |
 
 
 def _build_pp_rule(excel_row: int, *, product: Any, glass: Any, rc: Any, price: Any) -> PpRule | None:
-    norm_product = _norm_product(product)
+    norm_product = _norm_jingwang_pp_product(product)
     norm_glass = _norm_glass(glass)
     rc_min, rc_max = _parse_rc_range(rc)
     parsed_price = _to_float(price)
@@ -1122,7 +1140,7 @@ def _build_pp_rule(excel_row: int, *, product: Any, glass: Any, rc: Any, price: 
 
 def _looks_like_pp_product(value: Any) -> bool:
     text = _norm_product(value)
-    return bool(re.fullmatch(r"NY[\w\-.()]+P(?:\(C\))?", text))
+    return bool(re.fullmatch(r"NY[\w\-.()]+P(?:\(C\))?", text)) or bool(re.fullmatch(r"NY[\w\-.()]+", text))
 
 
 def _looks_like_rc(value: Any) -> bool:
@@ -1819,6 +1837,13 @@ def _norm_product(value: Any) -> str:
     if match:
         return f"{match.group(1)}(C)P"
     return text
+
+
+def _norm_jingwang_pp_product(value: Any) -> str:
+    product = _norm_product(value)
+    if product.endswith("P"):
+        return product[:-1]
+    return product
 
 
 def _norm_glass(value: Any) -> str:

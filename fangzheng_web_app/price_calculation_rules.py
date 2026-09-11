@@ -145,7 +145,7 @@ def get_price_test_data_file_path(customer_key: str, version: str | None = None,
 def get_active_price_rule_version(customer_key: str, quote_variant: str | None = None) -> str:
     enabled_price_customer(customer_key)
     version = get_setting(_active_key(customer_key, quote_variant), "") or ""
-    if version and get_price_rule_file_path(customer_key, version, quote_variant).exists():
+    if version:
         return version
     return ensure_default_price_rule_version(customer_key, quote_variant)
 
@@ -160,7 +160,9 @@ def ensure_default_price_rule_version(customer_key: str, quote_variant: str | No
     customer = enabled_price_customer(customer_key)
     variant = normalize_price_quote_variant(customer_key, quote_variant)
     active_version = get_setting(_active_key(customer_key, variant), "") or ""
-    if active_version and get_price_rule_file_path(customer_key, active_version, variant).exists():
+    if active_version:
+        # The database is shared but storage is local to each host.  Never let a
+        # host missing an uploaded workbook replace the shared active version.
         return active_version
     if customer_key == "jingwang" and variant == "old":
         return ""

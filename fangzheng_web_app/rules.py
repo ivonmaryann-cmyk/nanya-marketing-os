@@ -36,7 +36,9 @@ def rule_version_exists(version: str | None) -> bool:
 
 def ensure_default_rule_version() -> str:
     active_version = get_setting("active_rule_version", "")
-    if rule_version_exists(active_version):
+    if active_version:
+        # Rule files live in host-local storage while the active version may
+        # live in a shared database. Never replace that shared selection.
         return active_version
 
     price_pkl = DEFAULT_PRICE_PKL
@@ -65,9 +67,9 @@ def ensure_default_rule_version() -> str:
 
 def get_active_rule_version() -> str:
     version = get_setting("active_rule_version", "")
-    if not rule_version_exists(version):
-        version = ensure_default_rule_version()
-    return version
+    if version:
+        return version
+    return ensure_default_rule_version()
 
 
 def get_rule_file_paths(version: str | None = None) -> tuple[Path, Path]:
@@ -104,6 +106,12 @@ def _read_account_excel(path: Path) -> pd.DataFrame:
 
 def load_rule_dataframes(version: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     price_path, account_path = get_rule_file_paths(version)
+    missing = [str(path) for path in (price_path, account_path) if not path.is_file()]
+    if missing:
+        raise ValueError(
+            "方正当前生效报价文件在本机缺失，请恢复 storage 中对应版本文件或重新上传报价单："
+            + "；".join(missing)
+        )
     return _read_price_excel(price_path), _read_account_excel(account_path)
 
 
