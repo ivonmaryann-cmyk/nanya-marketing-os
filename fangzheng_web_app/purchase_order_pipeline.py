@@ -219,7 +219,9 @@ def _merge_native_detail_continuations(
         row = row[:column_count]
         for column, field in mapping.items():
             if field in {"数量", "含税单价", "金额"} and column < len(row):
-                row[column] = re.sub(r"(?<=\d)\s+\.(?=\d{2}(?:\D|$))", ".", clean_text(row[column]))
+                value = clean_text(row[column])
+                value = re.sub(r"(?<=\d)\s+\.(?=\d{2}(?:\D|$))", ".", value)
+                row[column] = re.sub(r"(?<=\.\d)\s+(?=\d{1,2}$)", "", value)
         text = " ".join(clean_text(value) for value in row)
         sequence = normalize_number(row[sequence_column]) if sequence_column is not None else ""
         is_total = bool(re.search(r"合计|总计|总金额|total", text, flags=re.I))
@@ -937,6 +939,7 @@ def _native_table_purchase_document(file_item: dict[str, str], native: dict[str,
     mapped_rows: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
     reusable_headers: list[str] | None = None
+    reusable_mapping: dict[int, str] | None = None
 
     for page in native.get("pages") or []:
         for table in page.get("tables") or []:
@@ -950,8 +953,9 @@ def _native_table_purchase_document(file_item: dict[str, str], native: dict[str,
                 source_rows = _compact_native_material_code_column(source_rows, header_index, mapping)
                 source_rows = _merge_native_detail_continuations(source_rows, header_index, mapping)
                 reusable_headers = list(source_rows[header_index])
+                reusable_mapping = dict(mapping)
                 table_rows = [list(row) for row in source_rows[header_index:]]
-            elif reusable_headers is not None:
+            elif reusable_headers is not None and reusable_mapping is not None:
                 continuation_rows = (
                     [list(row) for row in source_rows]
                     if max((len(row) for row in source_rows), default=0) == len(reusable_headers)
@@ -960,6 +964,8 @@ def _native_table_purchase_document(file_item: dict[str, str], native: dict[str,
                 if not continuation_rows:
                     continue
                 table_rows = [list(reusable_headers), *continuation_rows]
+                table_rows = _compact_native_material_code_column(table_rows, 0, reusable_mapping)
+                table_rows = _merge_native_detail_continuations(table_rows, 0, reusable_mapping)
             else:
                 continue
 

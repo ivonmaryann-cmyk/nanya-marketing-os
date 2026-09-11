@@ -143,8 +143,7 @@ class NativeDetailRecoveryTests(unittest.TestCase):
             ["2", "MAT-002", "NY3170", "1080 69%", "张", "0.23", "12,960.00", "2,980.80", "13", "2026-09-24", ""],
         ]
         second_page = [
-            headers,
-            ["9", "MAT-009", "NY3170M2", "106*1", "张", "40", "157.00", "6,280.00", "13", "2026-09-24", ""],
+            ["9", "MAT 009", "NY3170M2", "106*1", "张", "40", "157.00", "6,280.0 0", "13", "2026-09-24", ""],
             ["合计数量及金额：", "", "", "", "", "40.68", "", "20,843.80", "", "", ""],
         ]
         native = {
@@ -154,6 +153,7 @@ class NativeDetailRecoveryTests(unittest.TestCase):
             "pages": [
                 {"page_index": 0, "tables": [{"table_index": 0, "cells": self._cells(first_page)}]},
                 {"page_index": 1, "tables": [{"table_index": 0, "cells": self._cells(second_page)}]},
+                {"page_index": 2, "tables": [{"table_index": 0, "cells": self._cells([["合同条款"]])}]},
             ],
             "warnings": [],
         }
@@ -169,6 +169,7 @@ class NativeDetailRecoveryTests(unittest.TestCase):
         self.assertIn("(TG170) 无卤PP", rows[0]["standard"]["物料名称"])
         self.assertEqual(rows[0]["standard"]["含税单价"], "25740.00")
         self.assertEqual(rows[-1]["standard"]["金额"], "6280.00")
+        self.assertEqual(rows[-1]["standard"]["物料编码"], "MAT009")
         self.assertEqual(rows[-1]["page_index"], 1)
         self.assertEqual(sum(len(table["rows"]) for table in document["raw_detail_tables"]), 6)
 
