@@ -104,6 +104,7 @@ from .db import (
     update_feedback_status,
     update_personal_task,
     update_task_category,
+    update_user_display_name,
     verify_admin_password,
     verify_user_password,
 )
@@ -169,8 +170,12 @@ from .order_entry_service import (
     LINE_LABELS as ORDER_ENTRY_LINE_LABELS,
     build_domestic_export as build_order_entry_domestic_export,
     get_or_create_template as get_order_entry_template,
+    get_order_change_template,
+    order_change_template_progress,
     queue_template_extraction as queue_order_entry_template_extraction,
+    queue_order_change_template_extraction,
     reextract_template as reextract_order_entry_template,
+    save_order_change_template,
     save_template as save_order_entry_template,
     template_progress as order_entry_template_progress,
     validation_issues as order_entry_validation_issues,
@@ -181,6 +186,10 @@ from .order_interface_service import (
     build_domestic_order_entry,
     build_material_creation,
     build_material_query,
+    get_order_change_matches,
+    query_order_info,
+    select_order_change_candidate,
+    submit_aps_order_demand_import,
     is_domestic_order_entry_completed,
     get_order_detail_records,
     get_material_resolution_states,
@@ -1357,6 +1366,7 @@ def order_automation_case(case_id: int):
         "order_automation_case.html",
         case=case,
         entry_progress=order_entry_template_progress(case_id, employee_id) if case["action_type"] == "new_order" else None,
+        change_progress=order_change_template_progress(case_id, employee_id) if case["action_type"] == "order_change" else None,
         nyeos_order_number=list_nyeos_order_numbers([case_id], employee_id).get(case_id, ""),
         return_context=return_context,
         status_labels=ORDER_INTAKE_STATUS_LABELS,
@@ -1383,11 +1393,18 @@ def order_automation_reply(case_id: int):
     # this module during application startup.
     from .mail_transcode_agent.smtp_service import send_order_reply, smtp_ready_for_case
 
-    progress = order_entry_template_progress(case_id, employee_id)
+    is_order_change = case.get("action_type") == "order_change"
+    progress = (
+        order_change_template_progress(case_id, employee_id)
+        if is_order_change else order_entry_template_progress(case_id, employee_id)
+    )
     template = None
     if progress.get("created"):
         try:
-            _case, template = get_order_entry_template(case_id, employee_id)
+            _case, template = (
+                get_order_change_template(case_id, employee_id)
+                if is_order_change else get_order_entry_template(case_id, employee_id)
+            )
         except ValueError:
             template = None
 
@@ -1464,6 +1481,10 @@ def order_automation_reply(case_id: int):
         reply_history=reply_history,
         sender_name=sender_name,
         entry_progress=progress,
+        reply_back_endpoint=(
+            "main.order_automation_order_change_template"
+            if is_order_change else "main.order_automation_entry_template"
+        ),
         order_template=template,
         line_count=len(lines),
         reply_lines=lines[:6],
@@ -1495,6 +1516,9 @@ def order_automation_entry_template(case_id: int):
     if redirect_resp:
         return redirect_resp
     employee_id = current_employee() or ""
+    case = get_order_intake_case(case_id, employee_id)
+    if not case or case.get("action_type") != "new_order":
+        abort(404)
     if request.method == "POST":
         if is_domestic_order_entry_completed(case_id, employee_id):
             flash("内销录单已完成，不能再保存或覆盖模板。", "error")
@@ -1506,9 +1530,6 @@ def order_automation_entry_template(case_id: int):
             except (ValueError, json.JSONDecodeError) as exc:
                 flash(str(exc) if isinstance(exc, ValueError) else "模板数据格式错误。", "error")
         return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))
-    case = get_order_intake_case(case_id, employee_id)
-    if not case:
-        abort(404)
     progress = order_entry_template_progress(case_id, employee_id)
     if not progress["created"]:
         # Keep old bookmarks and direct URLs safe: they now enqueue work rather
@@ -1552,6 +1573,151 @@ def order_automation_entry_template(case_id: int):
         entry_progress=progress,
         return_context=_order_automation_return_context(case),
     )
+
+
+@bp.post("/order-automation/cases/<int:case_id>/order-change-template/start")
+def order_automation_order_change_template_start(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    try:
+        result = queue_order_change_template_extraction(case_id, employee_id)
+        flash(result["message"], "success" if result["status"] != "error" else "error")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return redirect(url_for("main.order_automation_case", case_id=case_id, **request.args.to_dict()))
+
+
+@bp.route("/order-automation/cases/<int:case_id>/order-change-template", methods=["GET", "POST"])
+def order_automation_order_change_template(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    case = get_order_intake_case(case_id, employee_id)
+    if not case or case.get("action_type") != "order_change":
+        abort(404)
+    if request.method == "POST":
+        try:
+            payload = json.loads(request.form.get("template_payload") or "{}")
+            save_order_change_template(case_id, employee_id, payload)
+            flash("修改订单模板已保存。", "success")
+        except (ValueError, json.JSONDecodeError) as exc:
+            flash(str(exc) if isinstance(exc, ValueError) else "模板数据格式错误。", "error")
+        return redirect(url_for("main.order_automation_order_change_template", case_id=case_id, **request.args.to_dict()))
+    progress = order_change_template_progress(case_id, employee_id)
+    if not progress["created"]:
+        if progress["stage"] == "pending_extraction":
+            try:
+                result = queue_order_change_template_extraction(case_id, employee_id)
+                flash(result["message"], "success")
+            except ValueError as exc:
+                flash(str(exc), "error")
+        return redirect(url_for("main.order_automation_case", case_id=case_id, **request.args.to_dict()))
+    _case, template = get_order_change_template(case_id, employee_id)
+    if not template:
+        abort(404)
+    return render_template(
+        "order_automation_order_change_template.html",
+        case=case,
+        template=template,
+        line_fields=("customer_order_number", "line_no", "customer_product_code", "customer_spec", "delivery_date", "quantity"),
+        line_labels={
+            "customer_order_number": "客户订单号", "line_no": "项次", "customer_product_code": "客户料号",
+            "customer_spec": "客户规格", "delivery_date": "客户需求日期", "quantity": "数量",
+        },
+        progress=progress,
+        order_matches=get_order_change_matches(case_id, int(template["id"]), employee_id),
+        order_candidate_fields=(
+            ("scta39", "ERP订单号"), ("scta01", "NYEOS订单号"), ("sctb02", "料号"),
+            ("sctb03", "品名规格"), ("peag08", "品号"),
+            ("peag09", "旧品号"), ("szaa01", "单位"), ("sctb05", "数量"),
+            ("sctb23", "未出数量"), ("sctb06", "含税单价"), ("sctb07", "未税单价"),
+            ("sctb14", "客户料号"), ("sctb15", "客户订单号"), ("sctb16", "客户需求日"),
+            ("sctb17", "预计出货日"), ("sctb30", "结案码"), ("sctb35", "项次"),
+            ("sctb36", "客户规格"),
+        ),
+        order_details=get_order_detail_records(case_id, employee_id),
+        return_context=_order_automation_return_context(case),
+    )
+
+
+@bp.post("/order-automation/cases/<int:case_id>/order-change-template/query-order")
+def order_automation_order_change_template_query(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    case = get_order_intake_case(case_id, employee_id)
+    if not case or case.get("action_type") != "order_change":
+        abort(404)
+    try:
+        payload = json.loads(request.form.get("template_payload") or "{}")
+        template = save_order_change_template(case_id, employee_id, payload)
+        order_numbers = [
+            line.get("values", {}).get("customer_order_number", "")
+            for line in template.get("lines", [])
+        ]
+        result = query_order_info(case_id, int(template["id"]), employee_id, employee_id, order_numbers)
+        counts = {status: 0 for status in ("matched", "multiple", "unmatched")}
+        for item in result.get("matches") or []:
+            counts[item["status"]] = counts.get(item["status"], 0) + 1
+        flash(
+            f"查询订单信息（{'Mock' if result['mode'] == 'mock' else '真实接口'}）已完成："
+            f"已匹配 {counts['matched']} 项，多个匹配 {counts['multiple']} 项，未匹配 {counts['unmatched']} 项。",
+            "success",
+        )
+    except (ValueError, json.JSONDecodeError) as exc:
+        flash(str(exc) if isinstance(exc, ValueError) else "模板数据格式错误。", "error")
+    return redirect(url_for("main.order_automation_order_change_template", case_id=case_id, **request.args.to_dict()))
+
+
+@bp.post("/order-automation/cases/<int:case_id>/order-change-template/select-match")
+def order_automation_order_change_template_select_match(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    case = get_order_intake_case(case_id, employee_id)
+    if not case or case.get("action_type") != "order_change":
+        abort(404)
+    try:
+        _case, template = get_order_change_template(case_id, employee_id)
+        if not template:
+            raise ValueError("请先生成修改订单模板")
+        line_no = int(request.form.get("line_no") or 0)
+        candidate_key = str(request.form.get("candidate_key") or "").strip()
+        select_order_change_candidate(
+            case_id, int(template["id"]), employee_id, line_no, candidate_key, employee_id,
+        )
+        flash(f"第 {line_no} 项已关联 ERP 订单明细。", "success")
+    except (TypeError, ValueError) as exc:
+        flash(str(exc), "error")
+    return redirect(url_for("main.order_automation_order_change_template", case_id=case_id, **request.args.to_dict()))
+
+
+@bp.post("/order-automation/cases/<int:case_id>/order-change-template/submit-change")
+def order_automation_order_change_template_submit_change(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    case = get_order_intake_case(case_id, employee_id)
+    if not case or case.get("action_type") != "order_change":
+        abort(404)
+    try:
+        payload = json.loads(request.form.get("template_payload") or "{}")
+        template = save_order_change_template(case_id, employee_id, payload)
+        result = submit_aps_order_demand_import(
+            case_id, int(template["id"]), employee_id, employee_id,
+            request.form.get("alter_type") or "", request.form.get("require_specification") or "",
+        )
+        category = "success" if result["status"] == "success" else "error"
+        flash(f"APS订单需求导入（{'Mock' if result['mode'] == 'mock' else '真实接口'}）：{result['message']}", category)
+    except (ValueError, json.JSONDecodeError) as exc:
+        flash(str(exc) if isinstance(exc, ValueError) else "模板数据格式错误。", "error")
+    return redirect(url_for("main.order_automation_order_change_template", case_id=case_id, **request.args.to_dict()))
 
 
 @bp.post("/order-automation/cases/<int:case_id>/entry-template/spec-match")
@@ -5844,6 +6010,16 @@ def admin_password():
                 session["admin_maintenance_verified"] = True
                 flash("管理员身份验证通过。", "success")
                 return redirect(url_for("main.admin_password", mode="admin"))
+        elif action == "user_profile":
+            employee_id = current_employee()
+            try:
+                if not employee_id:
+                    raise ValueError("未找到当前员工账号")
+                update_user_display_name(employee_id, request.form.get("display_name", ""))
+                flash("用户名已更新。", "success")
+                return redirect(url_for("main.admin_password", mode="user"))
+            except ValueError as exc:
+                flash(str(exc), "error")
         elif action == "user_password":
             employee_id = current_employee()
             old_password = request.form.get("old_password", "")
@@ -5904,7 +6080,10 @@ def admin_password():
         else:
             flash("未知的账户操作。", "error")
     admin_verified = bool(session.get("admin_maintenance_verified"))
-    return render_template("admin_password.html", users=list_users(), mode=mode, admin_verified=admin_verified)
+    return render_template(
+        "admin_password.html", users=list_users(), mode=mode, admin_verified=admin_verified,
+        current_user=get_user(current_employee() or ""),
+    )
 
 
 @bp.get("/rules-docs/<feature>")

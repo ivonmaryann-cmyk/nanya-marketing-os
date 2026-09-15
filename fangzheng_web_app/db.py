@@ -802,6 +802,27 @@ def init_db() -> None:
                 FOREIGN KEY(template_id) REFERENCES order_entry_templates(id),
                 FOREIGN KEY(last_call_log_id) REFERENCES order_interface_call_logs(id)
             );
+            CREATE TABLE IF NOT EXISTS order_change_line_matches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id INTEGER NOT NULL,
+                template_id INTEGER NOT NULL,
+                employee_id TEXT NOT NULL,
+                line_no INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'unqueried',
+                match_level TEXT NOT NULL DEFAULT '',
+                input_json TEXT NOT NULL DEFAULT '{}',
+                candidates_json TEXT NOT NULL DEFAULT '[]',
+                selected_candidate_json TEXT NOT NULL DEFAULT '{}',
+                query_call_log_id INTEGER,
+                selected_by TEXT NOT NULL DEFAULT '',
+                selected_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(template_id, line_no),
+                FOREIGN KEY(case_id) REFERENCES order_intake_cases(id),
+                FOREIGN KEY(template_id) REFERENCES order_entry_templates(id),
+                FOREIGN KEY(query_call_log_id) REFERENCES order_interface_call_logs(id)
+            );
 
             CREATE INDEX IF NOT EXISTS idx_order_entry_templates_case
                 ON order_entry_templates(case_id, employee_id);
@@ -817,6 +838,8 @@ def init_db() -> None:
                 ON order_entry_detail_events(case_id, employee_id, id DESC);
             CREATE INDEX IF NOT EXISTS idx_order_material_resolution_callback
                 ON order_material_resolution_tasks(correlation_id, status);
+            CREATE INDEX IF NOT EXISTS idx_order_change_line_matches_case
+                ON order_change_line_matches(case_id, employee_id, line_no);
             """
         )
 
@@ -1059,6 +1082,19 @@ def create_user(
                 now,
             ),
         )
+
+
+def update_user_display_name(employee_id: str, display_name: str) -> None:
+    name = str(display_name or "").strip()
+    if not name:
+        raise ValueError("用户名不能为空")
+    with identity_db_cursor() as conn:
+        cursor = conn.execute(
+            "UPDATE users SET display_name=?,updated_at=? WHERE employee_id=?",
+            (name, utcnow(), employee_id),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("未找到当前员工账号")
 
 
 def verify_user_password(employee_id: str, password: str) -> bool:

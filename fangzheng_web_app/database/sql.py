@@ -11,7 +11,7 @@ _IDENTITY_TABLES = {
     "order_entry_templates", "order_entry_template_lines", "order_entry_template_versions",
     "order_entry_template_tasks", "order_interface_configs", "order_interface_config_versions",
     "order_entry_detail_events", "order_interface_call_logs", "order_material_query_suggestions",
-    "order_material_resolution_tasks",
+    "order_material_resolution_tasks", "order_change_line_matches",
     "automation_customers", "automation_customer_contacts", "automation_customer_routing_rules",
     "automation_customer_routing_conditions", "automation_customer_extraction_maps",
     "automation_customer_events", "automation_customer_spec_mappings", "automation_adhesive_codes",

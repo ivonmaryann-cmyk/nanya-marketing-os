@@ -13,11 +13,14 @@ def main() -> None:
     parser.add_argument("--task-id", required=True, type=int)
     parser.add_argument("--case-id", required=True, type=int)
     parser.add_argument("--employee-id", required=True)
+    parser.add_argument("--action-type", choices=("new_order", "order_change"), default="new_order")
     args = parser.parse_args()
     # A worker is started as an independent interpreter, so it must load the
     # local PostgreSQL configuration just as the Flask application does.
     load_local_env()
-    run_template_extraction_task(args.task_id, args.case_id, args.employee_id)
+    run_template_extraction_task(
+        args.task_id, args.case_id, args.employee_id, action_type=args.action_type,
+    )
 
 
 if __name__ == "__main__":

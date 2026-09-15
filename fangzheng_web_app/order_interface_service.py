@@ -7,6 +7,7 @@ import ssl
 import time
 import uuid
 from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -14,13 +15,15 @@ from typing import Any
 
 from .database import automation_cursor as db_cursor
 from .customer_spec_mapping_service import extract_structure_from_customer_spec
-from .db import utcnow
+from .db import get_user, utcnow
 from .order_price_validation_service import (
     PRICE_REVIEW_SNAPSHOT_KEY,
     PriceMismatchConfirmationRequired,
     review_cached_template_prices,
 )
 from .paths import PACKAGE_DIR
+from .purchase_field_rules import normalize_date
+from zoneinfo import ZoneInfo
 
 
 INTERFACE_DEFAULTS = {
@@ -100,6 +103,75 @@ INTERFACE_DEFAULTS = {
             "data.data[].message": "接口交互记录.失败原因",
         },
     },
+    "order_info_query": {
+        "display_name": "查询订单信息",
+        "description": "按客户单号批量查询订单单头、明细及未匹配的客户单号。",
+        "method": "POST",
+        "base_url": "http://nyeos2.nouyatec.com:7030/NY01-APP/nyeos/api/sc/queryOrderInfo",
+        "port": 7030,
+        "path": "",
+        "timeout_seconds": 15,
+        "request_mapping": {
+            "orderNumberList[]": "客户单号列表（必填，支持批量）",
+            "customerMaterialCode": "客户料号（选填）",
+            "customerOrderNo": "客户订单号（选填）",
+            "itemNo": "项次（选填）",
+            "customerSpec": "客户规格（选填）",
+        },
+        "response_mapping": {
+            "code": "接口交互记录.业务状态码（200=查询成功）",
+            "msg": "接口交互记录.提示",
+            "data.orderList[].scta01": "订单信息.订单号",
+            "data.orderList[].scta11": "订单信息.送货客户 ID",
+            "data.orderList[].scta38": "订单信息.客户订单号",
+            "data.orderList[].scta39": "订单信息.ERP 订单号",
+            "data.orderList[].sctbList[].sctb02": "订单明细.料号",
+            "data.orderList[].sctbList[].sctb03": "订单明细.品名规格",
+            "data.orderList[].sctbList[].sctb05": "订单明细.数量",
+            "data.orderList[].sctbList[].sctb23": "订单明细.未出数量",
+            "data.orderList[].sctbList[].sctb06": "订单明细.含税单价",
+            "data.orderList[].sctbList[].sctb07": "订单明细.未税单价",
+            "data.orderList[].sctbList[].sctb14": "订单明细.客户料号",
+            "data.orderList[].sctbList[].sctb15": "订单明细.客户单号",
+            "data.orderList[].sctbList[].sctb16": "订单明细.客户需求日",
+            "data.orderList[].sctbList[].sctb17": "订单明细.预计出货日",
+            "data.orderList[].sctbList[].sctb30": "订单明细.结案码",
+            "data.orderList[].sctbList[].sctb35": "订单明细.项次",
+            "data.orderList[].sctbList[].sctb36": "订单明细.客户规格",
+            "data.orderCount": "查询结果.匹配订单数",
+            "data.notFoundList[]": "查询结果.未匹配客户单号",
+        },
+    },
+    "aps_order_demand_import": {
+        "display_name": "APS订单需求导入",
+        "description": "将已确认的订单需求变更批量导入 APS；创建人取当前账号用户名，单次建议不超过 500 条。",
+        "method": "POST",
+        "base_url": "http://aps.nouyatec.com:13000/forward/erp_order_change_blocking",
+        "port": 13000,
+        "path": "",
+        "timeout_seconds": 15,
+        "request_mapping": {
+            "data[].require_shipment_date": "需求出货日期（必填，YYYY-MM-DD）",
+            "data[].Order_Item_Account_Set_outer_key": "订单项次账套外键（必填，唯一标识订单项次）",
+            "data[].alter_type": "变更类型（必填，仅限接口约定的10种值）",
+            "data[].creator_name": "当前登录账号.用户名（必填，APS业务人员昵称）",
+            "data[].require_specification": "需求说明（选填，默认空字符串）",
+            "data[].emergency_score": "紧急度分值（选填，默认0）",
+            "data[].NPI_Commitment_Statement": "NPI承诺说明（选填，默认空字符串）",
+            "data[].Estimated_launch_month": "预估起量月份（选填，YYYY-MM或YYYY-MM-DD）",
+            "data[].Estimated_volume": "预估量（选填，默认0.0）",
+            "data[].created_at": "提交时间（选填，YYYY-MM-DD HH:MM:SS）",
+        },
+        "response_mapping": {
+            "code": "接口交互记录.状态码",
+            "message": "接口交互记录.处理结果",
+            "success_count": "接口交互记录.成功条数",
+            "fail_count": "接口交互记录.失败条数（HTTP 200时仍必须检查）",
+            "failed_details[].row": "失败明细.请求序号（从1开始）",
+            "failed_details[].order_key": "失败明细.订单项次账套外键",
+            "failed_details[].reason": "失败明细.失败原因",
+        },
+    },
 }
 
 LEGACY_MATERIAL_DEFAULT = {
@@ -140,6 +212,19 @@ INTERFACE_MAINTENANCE_NOTES = {
         "factoryPartCode 使用模板中的产品编号（必填）；materialCode 使用模板中的客户产品编号。",
         "orderNumber 与 custOrderId 都使用客户订单号；lineNumber 与 lineId 都使用客户订单序号。",
         "保存后业务页会按运行模式执行：Mock 走模拟流程，真实接口会生成订单。",
+    ],
+    "order_info_query": [
+        "按客户单号批量查询订单；可用客户料号、客户订单号、项次或客户规格进一步筛选。",
+        "Mock 测试会返回一笔订单、一个订单明细及一个未匹配客户单号，便于核对字段映射。",
+        "保存后可通过“接口测试”验证 Mock 或当前真实地址，查询本身不会修改订单数据。",
+    ],
+    "aps_order_demand_import": [
+        "接口请求必须使用 data 数组包裹；即使只有一条记录也不能发送裸对象。",
+        "creator_name 必填，取当前登录账号在“账户与密码”维护的用户名，且必须是 APS 业务人员昵称。",
+        "created_at 由系统按中国标准时间生成，格式为 YYYY-MM-DD HH:MM:SS。",
+        "HTTP 200 不代表全部成功，必须同时检查 fail_count 和 failed_details。",
+        "接口自身不去重，正式调用前必须避免重复推送同一订单项次账套外键。",
+        "当前默认使用 Mock 模式；切换真实接口后会向 APS 写入数据，测试数据需联系 APS 删除。",
     ],
 }
 
@@ -590,28 +675,104 @@ def test_interface_config(payload: dict[str, Any]) -> dict[str, Any]:
     method = str(payload.get("method") or "POST").upper()
     if method not in {"GET", "POST", "PUT", "PATCH"}:
         raise ValueError("请求方法不支持")
-    request_body = {
-        "customerCode": "",
-        "acsn": "NY01",
-        "operatorCode": "",
-        "materialInfoList": [{
-            "categoryCode": "718",
-            "customerMaterialNo": "",
-            "newProductName": "",
-        }],
-    } if interface_key == "material_batch_query" else {
-        "sctoDataList": [{
-            "customerCode": "", "orderType": "", "operator": "", "quantity": "",
-            "taxPrice": "", "untaxedPrice": "", "materialCode": "", "lineNumber": "1",
-            "demandDate": "", "orderNumber": "",
-        }],
-    }
+    if interface_key == "material_batch_query":
+        request_body = {
+            "customerCode": "",
+            "acsn": "NY01",
+            "operatorCode": "",
+            "materialInfoList": [{
+                "categoryCode": "718",
+                "customerMaterialNo": "",
+                "newProductName": "",
+            }],
+        }
+    elif interface_key == "domestic_order_entry":
+        request_body = {
+            "sctoDataList": [{
+                "customerCode": "", "orderType": "", "operator": "", "quantity": "",
+                "taxPrice": "", "untaxedPrice": "", "materialCode": "", "lineNumber": "1",
+                "demandDate": "", "orderNumber": "",
+            }],
+        }
+    elif interface_key == "order_info_query":
+        request_body = {
+            "orderNumberList": ["MOCK-ORDER-001", "MOCK-ORDER-NOT-FOUND"],
+            "customerMaterialCode": "",
+            "customerOrderNo": "",
+            "itemNo": "",
+            "customerSpec": "",
+        }
+    elif interface_key == "aps_order_demand_import":
+        request_body = {
+            "data": [{
+                "require_shipment_date": "2026-09-15",
+                "Order_Item_Account_Set_outer_key": "220-260114007_2_KL01",
+                "alter_type": "交期变更",
+                "creator_name": "Mock 测试用户",
+                "require_specification": "Mock 接口测试",
+                "emergency_score": 5,
+                "NPI_Commitment_Statement": "无",
+                "Estimated_launch_month": "2026-10",
+                "Estimated_volume": 1500.5,
+                "created_at": "2026-09-14 10:00:00",
+            }],
+        }
+    else:
+        raise ValueError("未知的接口配置")
     if mode == "mock":
-        mock_response = (
-            {"msg": "Mock 测试成功", "code": 200, "reqParams": request_body, "hitMaterialList": []}
-            if interface_key == "material_batch_query"
-            else {"msg": "Mock 测试成功", "code": 200, "data": {"data": [], "failCount": 0, "successCount": 0}}
-        )
+        if interface_key == "material_batch_query":
+            mock_response = {
+                "msg": "Mock 测试成功", "code": 200,
+                "reqParams": request_body, "hitMaterialList": [],
+            }
+        elif interface_key == "domestic_order_entry":
+            mock_response = {
+                "msg": "Mock 测试成功", "code": 200,
+                "data": {"data": [], "failCount": 0, "successCount": 0},
+            }
+        elif interface_key == "order_info_query":
+            mock_response = {
+                "msg": "查询成功",
+                "code": 200,
+                "data": {
+                    "orderList": [{
+                        "scta01": "MOCK-ORDER-001",
+                        "scta11": "MOCK-CUSTOMER-001",
+                        "scta38": "MOCK-ORDER-001",
+                        "scta39": "MOCK-ERP-001",
+                        "sctbList": [{
+                            "sctb02": "MOCK-PART-001",
+                            "sctb03": "Mock 品名规格",
+                            "sctb04": "2",
+                            "peag04": "Mock 品名规格",
+                            "peag08": "MOCK-NEW-PRODUCT",
+                            "peag09": "MOCK-OLD-PRODUCT",
+                            "szaa01": "米",
+                            "sctb05": 100,
+                            "sctb23": 100,
+                            "sctb06": 12.50,
+                            "sctb07": 11.06,
+                            "sctb14": "MOCK-CUSTOMER-PART",
+                            "sctb15": "MOCK-ORDER-001",
+                            "sctb16": "2026-09-14",
+                            "sctb17": "2026-09-15 00:00:00",
+                            "sctb30": "N",
+                            "sctb35": 10,
+                            "sctb36": "Mock 客户规格",
+                        }],
+                    }],
+                    "orderCount": 1,
+                    "notFoundList": ["MOCK-ORDER-NOT-FOUND"],
+                },
+            }
+        else:
+            mock_response = {
+                "code": 200,
+                "message": "处理完成。成功接收 1 条，失败 0 条",
+                "success_count": 1,
+                "fail_count": 0,
+                "failed_details": [],
+            }
         return {
             "ok": True, "mode": "mock", "status_code": 200, "duration_ms": 0,
             "endpoint_url": endpoint_url,
@@ -702,6 +863,10 @@ _AUDIT_SOURCE_LABELS = {
     "material_query_real": "料号查询接口",
     "material_candidate_selected": "人工选择候选料号",
     "domestic_order_entry_mock": "生成订单接口", "domestic_order_entry_real": "生成订单接口",
+    "order_info_query_mock": "查询订单信息接口", "order_info_query_real": "查询订单信息接口",
+    "order_change_candidate_selected": "人工选择订单明细",
+    "aps_order_demand_import_mock": "APS订单需求导入接口",
+    "aps_order_demand_import_real": "APS订单需求导入接口",
 }
 
 
@@ -816,7 +981,11 @@ def get_order_detail_records(case_id: int, employee_id: str) -> dict[str, list[d
             item[key[:-5]] = _json(item.pop(key, ""), {})
         item["trace_id"] = f"I-{item['id']}"
         item["occurred_at"] = _audit_time(item.get("created_at"))
-        item["interface_label"] = "批量料号查询" if item.get("interface_key") == "material_batch_query" else "生成订单"
+        item["interface_label"] = {
+            "material_batch_query": "批量料号查询",
+            "domestic_order_entry": "生成订单",
+            "order_info_query": "查询订单信息",
+        }.get(str(item.get("interface_key") or ""), "接口调用")
         item["mode_label"] = "Mock" if item.get("is_mock") else "真实接口"
         item["outcome_label"] = "成功" if item.get("status") == "success" else "失败"
         item["summary"] = _call_summary(item)
@@ -912,7 +1081,7 @@ def _insert_call_log(conn: Any, *, case_id: int, template_id: int, employee_id: 
                      config: dict[str, Any], status: str, request_payload: dict[str, Any],
                      response_payload: dict[str, Any], triggered_by: str, error_message: str = "",
                      is_mock: bool = True, http_status: int | None = None,
-                     duration_ms: int | None = 1) -> int:
+                     duration_ms: int | None = 1, interface_key: str = "material_batch_query") -> int:
     if is_mock and http_status is None:
         http_status = 200 if status == "success" else 422
     cursor = conn.execute(
@@ -920,7 +1089,7 @@ def _insert_call_log(conn: Any, *, case_id: int, template_id: int, employee_id: 
            (case_id,template_id,employee_id,interface_config_id,interface_key,config_version,is_mock,
             status,http_status,duration_ms,request_json,response_json,error_message,triggered_by,created_at)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (case_id, template_id, employee_id, int(config["id"]), "material_batch_query",
+        (case_id, template_id, employee_id, int(config["id"]), interface_key,
          int(config["config_version"]), int(is_mock), status, http_status, duration_ms,
          json.dumps(request_payload, ensure_ascii=False), json.dumps(response_payload, ensure_ascii=False),
          error_message, triggered_by, utcnow()),
@@ -1186,6 +1355,416 @@ def _post_json_endpoint(
     if not isinstance(response_body, dict):
         raise ValueError(f"{interface_label}返回格式错误")
     return status_code, response_body, int((time.monotonic() - started) * 1000)
+
+
+ORDER_CHANGE_MATCH_LABELS = {
+    "unqueried": "未查询", "matched": "已匹配", "multiple": "多个匹配", "unmatched": "未匹配",
+}
+
+APS_ORDER_CHANGE_TYPES = {
+    "交期变更", "品名变更", "大板料号变更", "数量变更", "备注修改",
+    "订单取消", "订单不取消", "客户信息更改", "欠数补料", "特采交期调整",
+}
+
+
+def _match_text(value: Any) -> str:
+    return str(value or "").strip().casefold()
+
+
+def _match_decimal(value: Any) -> Decimal | None:
+    try:
+        return Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _order_change_match_input(values: dict[str, Any]) -> dict[str, str]:
+    return {
+        "customer_order_number": str(values.get("customer_order_number") or "").strip(),
+        "customer_product_code": str(values.get("customer_product_code") or "").strip(),
+        "line_no": str(values.get("line_no") or "").strip(),
+        "quantity": str(values.get("quantity") or "").strip(),
+    }
+
+
+def _flatten_order_info_candidates(response_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    data = response_payload.get("data") if isinstance(response_payload.get("data"), dict) else {}
+    candidates: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for order in data.get("orderList") or []:
+        if not isinstance(order, dict):
+            continue
+        header = {key: order.get(key) for key in ("scta01", "scta11", "scta38", "scta39")}
+        for detail in order.get("sctbList") or []:
+            if not isinstance(detail, dict):
+                continue
+            candidate = {**header, **detail}
+            candidate["customer_order_number"] = str(detail.get("sctb15") or order.get("scta38") or "").strip()
+            key = tuple(_match_text(candidate.get(field)) for field in ("scta39", "sctb02", "sctb35", "customer_order_number"))
+            if key in seen:
+                continue
+            seen.add(key)
+            candidate["candidate_key"] = "|".join(key)
+            candidates.append(candidate)
+    return candidates
+
+
+def _match_order_change_line(values: dict[str, Any], candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    match_input = _order_change_match_input(values)
+    order_no = _match_text(match_input["customer_order_number"])
+    customer_part = _match_text(match_input["customer_product_code"])
+    base = [
+        item for item in candidates
+        if _match_text(item.get("customer_order_number")) == order_no
+        and _match_text(item.get("sctb14")) == customer_part
+    ] if order_no and customer_part else []
+    levels = (
+        ("order_part_item", [item for item in base if _match_text(item.get("sctb35")) == _match_text(match_input["line_no"])]),
+        ("order_part_quantity", [item for item in base if _match_decimal(item.get("sctb05")) is not None and _match_decimal(item.get("sctb05")) == _match_decimal(match_input["quantity"])]),
+        ("order_part", base),
+    )
+    for level, matches in levels:
+        if len(matches) == 1:
+            return {"status": "matched", "match_level": level, "candidates": matches, "selected": matches[0]}
+    final = levels[-1][1]
+    return {
+        "status": "multiple" if len(final) > 1 else "unmatched",
+        "match_level": "order_part" if final else "",
+        "candidates": final,
+        "selected": {},
+    }
+
+
+def _store_order_change_matches(
+    conn: Any, *, case_id: int, template_id: int, employee_id: str,
+    call_id: int, response_payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT line_no,values_json FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no",
+        (template_id,),
+    ).fetchall()
+    candidates = _flatten_order_info_candidates(response_payload)
+    now = utcnow()
+    results = []
+    for row in rows:
+        values = _json(row["values_json"], {})
+        matched = _match_order_change_line(values, candidates)
+        match_input = _order_change_match_input(values)
+        conn.execute(
+            """INSERT INTO order_change_line_matches
+               (case_id,template_id,employee_id,line_no,status,match_level,input_json,candidates_json,
+                selected_candidate_json,query_call_log_id,selected_by,selected_at,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(template_id,line_no) DO UPDATE SET
+                 status=excluded.status,match_level=excluded.match_level,input_json=excluded.input_json,
+                 candidates_json=excluded.candidates_json,selected_candidate_json=excluded.selected_candidate_json,
+                 query_call_log_id=excluded.query_call_log_id,selected_by=excluded.selected_by,
+                 selected_at=excluded.selected_at,updated_at=excluded.updated_at""",
+            (
+                case_id, template_id, employee_id, int(row["line_no"]), matched["status"], matched["match_level"],
+                json.dumps(match_input, ensure_ascii=False), json.dumps(matched["candidates"], ensure_ascii=False),
+                json.dumps(matched["selected"], ensure_ascii=False), call_id,
+                "system" if matched["status"] == "matched" else "", now if matched["status"] == "matched" else None,
+                now, now,
+            ),
+        )
+        results.append({"line_no": int(row["line_no"]), **matched, "input": match_input})
+    return results
+
+
+def invalidate_changed_order_matches(conn: Any, template_id: int, lines: list[dict[str, Any]]) -> None:
+    current = {int(item["values"]["line_no"]): _order_change_match_input(item["values"]) for item in lines}
+    rows = conn.execute(
+        "SELECT id,line_no,input_json FROM order_change_line_matches WHERE template_id=?", (template_id,),
+    ).fetchall()
+    for row in rows:
+        if current.get(int(row["line_no"])) != _json(row["input_json"], {}):
+            conn.execute("DELETE FROM order_change_line_matches WHERE id=?", (int(row["id"]),))
+
+
+def get_order_change_matches(case_id: int, template_id: int, employee_id: str) -> dict[int, dict[str, Any]]:
+    with db_cursor() as conn:
+        rows = conn.execute(
+            """SELECT * FROM order_change_line_matches
+               WHERE case_id=? AND template_id=? AND employee_id=? ORDER BY line_no""",
+            (case_id, template_id, employee_id),
+        ).fetchall()
+    result = {}
+    for row in rows:
+        item = _row(row)
+        item["input"] = _json(item.pop("input_json"), {})
+        item["candidates"] = _json(item.pop("candidates_json"), [])
+        item["selected_candidate"] = _json(item.pop("selected_candidate_json"), {})
+        item["label"] = ORDER_CHANGE_MATCH_LABELS.get(item["status"], item["status"])
+        result[int(item["line_no"])] = item
+    return result
+
+
+def select_order_change_candidate(
+    case_id: int, template_id: int, employee_id: str, line_no: int, candidate_key: str, selected_by: str,
+) -> dict[str, Any]:
+    with db_cursor() as conn:
+        row = conn.execute(
+            """SELECT * FROM order_change_line_matches
+               WHERE case_id=? AND template_id=? AND employee_id=? AND line_no=?""",
+            (case_id, template_id, employee_id, line_no),
+        ).fetchone()
+        if not row:
+            raise ValueError("该明细尚未查询到可选订单")
+        candidates = _json(row["candidates_json"], [])
+        selected = next((item for item in candidates if item.get("candidate_key") == candidate_key), None)
+        if not selected:
+            raise ValueError("所选订单明细已失效，请重新查询")
+        now = utcnow()
+        conn.execute(
+            """UPDATE order_change_line_matches SET status='matched',selected_candidate_json=?,
+               selected_by=?,selected_at=?,updated_at=? WHERE id=?""",
+            (json.dumps(selected, ensure_ascii=False), selected_by, now, now, int(row["id"])),
+        )
+        record_order_detail_event(
+            conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
+            event_type="order_change_candidate_selected", title="已选择修改订单对应明细",
+            detail={"line_no": line_no, "erp_order_number": selected.get("scta39"), "candidate": selected},
+            operated_by=selected_by,
+        )
+    return selected
+
+
+def query_order_info(
+    case_id: int, template_id: int, employee_id: str, triggered_by: str, order_numbers: list[Any],
+) -> dict[str, Any]:
+    """Query existing orders using only the customer order-number list.
+
+    The modification-template page deliberately does not send its other
+    columns as filters. They remain editable business data, while this lookup
+    is only intended to retrieve the current ERP order by customer order no.
+    """
+    config = get_interface_config("order_info_query")
+    if not config or not config.get("enabled"):
+        raise ValueError("查询订单信息接口未启用")
+    numbers = list(dict.fromkeys(str(value or "").strip() for value in order_numbers if str(value or "").strip()))
+    if not numbers:
+        raise ValueError("请先填写客户订单号后再查询")
+    request_payload = {"orderNumberList": numbers}
+    mode = str(config.get("mode") or "mock")
+
+    if mode == "mock":
+        with db_cursor() as conn:
+            template_rows = conn.execute(
+                "SELECT values_json FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no",
+                (template_id,),
+            ).fetchall()
+        template_values = [_json(row["values_json"], {}) for row in template_rows]
+        order_list = [
+            {
+                "scta01": f"MOCK-{index:04d}",
+                "scta38": number,
+                "scta39": f"220-MOCK-{index:04d}",
+                "sctbList": [
+                    {
+                        "sctb02": f"MOCK-PART-{line_index:04d}", "sctb03": "Mock 品名规格",
+                        "sctb04": values.get("line_no", ""),
+                        "sctb14": values.get("customer_product_code", ""), "sctb15": number,
+                        "sctb16": values.get("delivery_date", ""), "sctb17": values.get("delivery_date", ""),
+                        "sctb35": values.get("line_no", ""), "sctb36": values.get("customer_spec", ""),
+                        "sctb05": values.get("quantity", ""), "sctb23": values.get("quantity", ""),
+                    }
+                    for line_index, values in enumerate(template_values, start=1)
+                    if _match_text(values.get("customer_order_number")) == _match_text(number)
+                ],
+            }
+            for index, number in enumerate(numbers, start=1)
+        ]
+        response_payload = {
+            "code": 200,
+            "msg": "Mock 查询成功",
+            "data": {"orderList": order_list, "orderCount": len(order_list), "notFoundList": []},
+        }
+        with db_cursor() as conn:
+            call_id = _insert_call_log(
+                conn, case_id=case_id, template_id=template_id, employee_id=employee_id, config=config,
+                status="success", request_payload=request_payload, response_payload=response_payload,
+                triggered_by=triggered_by, interface_key="order_info_query",
+            )
+            matches = _store_order_change_matches(
+                conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
+                call_id=call_id, response_payload=response_payload,
+            )
+            record_order_detail_event(
+                conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
+                event_type="order_info_query_mock", title="查询订单信息（Mock）完成",
+                detail={"call_id": call_id, "order_count": len(order_list), "order_numbers": numbers,
+                        "matched_count": sum(item["status"] == "matched" for item in matches)},
+                operated_by=triggered_by,
+            )
+        return {"call_id": call_id, "status": "success", "mode": "mock", "response": response_payload,
+                "matches": matches}
+
+    try:
+        http_status, response_payload, duration_ms = _post_json_endpoint(config, request_payload, "查询订单信息")
+        status = "success" if http_status == 200 and int(response_payload.get("code") or 0) == 200 else "failed"
+        error_message = "" if status == "success" else str(response_payload.get("msg") or f"接口返回 HTTP {http_status}")
+    except ValueError as exc:
+        http_status, response_payload, duration_ms = None, {}, None
+        status, error_message = "failed", str(exc)
+
+    with db_cursor() as conn:
+        call_id = _insert_call_log(
+            conn, case_id=case_id, template_id=template_id, employee_id=employee_id, config=config,
+            status=status, request_payload=request_payload, response_payload=response_payload,
+            triggered_by=triggered_by, error_message=error_message, is_mock=False,
+            http_status=http_status, duration_ms=duration_ms, interface_key="order_info_query",
+        )
+        matches = _store_order_change_matches(
+            conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
+            call_id=call_id, response_payload=response_payload,
+        ) if status == "success" else []
+        record_order_detail_event(
+            conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
+            event_type="order_info_query_real", title=f"查询订单信息（真实接口）{'完成' if status == 'success' else '失败'}",
+            detail={"call_id": call_id, "order_numbers": numbers, "error_message": error_message},
+            operated_by=triggered_by,
+        )
+    if status != "success":
+        raise ValueError(error_message)
+    return {"call_id": call_id, "status": status, "mode": "real", "response": response_payload,
+            "matches": matches}
+
+
+def _aps_order_demand_request_payload(
+    lines: list[dict[str, Any]], matches: dict[int, dict[str, Any]],
+    alter_type: str, require_specification: str, creator_name: str, created_at: str,
+) -> dict[str, list[dict[str, Any]]]:
+    """Build APS demand records from the saved template and confirmed ERP matches."""
+    alter_type = str(alter_type or "").strip()
+    if alter_type not in APS_ORDER_CHANGE_TYPES:
+        raise ValueError("请选择有效的变更类型")
+    specification = str(require_specification or "").strip()
+    creator_name = str(creator_name or "").strip()
+    if not creator_name:
+        raise ValueError("请先在账户与密码中维护用户名")
+    items: list[dict[str, Any]] = []
+    issues: list[str] = []
+    for line in lines:
+        line_no = int(line["line_no"])
+        values = _json(line["values_json"], {})
+        match = matches.get(line_no) or {}
+        selected = match.get("selected_candidate") or {}
+        erp_order_number = str(selected.get("scta39") or "").strip()
+        item_no = str(selected.get("sctb35") or "").strip()
+        shipment_date = normalize_date(values.get("delivery_date"))
+        if match.get("status") != "matched":
+            issues.append(f"第 {line_no} 项尚未确认 ERP 匹配")
+        if not erp_order_number:
+            issues.append(f"第 {line_no} 项缺少 ERP订单号")
+        if not item_no:
+            issues.append(f"第 {line_no} 项缺少 ERP 项次")
+        if not shipment_date:
+            issues.append(f"第 {line_no} 项客户需求日期格式无效")
+        if match.get("status") == "matched" and erp_order_number and item_no and shipment_date:
+            items.append({
+                "require_shipment_date": shipment_date,
+                "Order_Item_Account_Set_outer_key": f"{erp_order_number}_{item_no}_KL01",
+                "alter_type": alter_type,
+                "creator_name": creator_name,
+                "require_specification": specification,
+                "created_at": created_at,
+            })
+    if issues:
+        raise ValueError("暂不能提交修改订单：" + "；".join(issues))
+    if not items:
+        raise ValueError("当前没有可提交的修改订单明细")
+    return {"data": items}
+
+
+def _aps_order_demand_result(response_payload: dict[str, Any], http_status: int, expected_count: int) -> tuple[bool, str]:
+    try:
+        code = int(response_payload.get("code") or 0)
+        success_count = int(response_payload.get("success_count") or 0)
+        fail_count = int(response_payload.get("fail_count") or 0)
+    except (TypeError, ValueError):
+        return False, "APS 返回的成功/失败条数格式无效"
+    failed_details = response_payload.get("failed_details") or []
+    if http_status == 200 and code == 200 and success_count == expected_count and fail_count == 0 and not failed_details:
+        return True, str(response_payload.get("message") or f"成功导入 {success_count} 条订单需求")
+    reasons = [str(item.get("reason") or "") for item in failed_details if isinstance(item, dict)]
+    message = str(response_payload.get("message") or f"成功 {success_count} 条，失败 {fail_count} 条")
+    return False, "；".join([message, *[reason for reason in reasons if reason]])
+
+
+def submit_aps_order_demand_import(
+    case_id: int, template_id: int, employee_id: str, triggered_by: str,
+    alter_type: str, require_specification: str = "",
+) -> dict[str, Any]:
+    """Submit all confirmed order-change lines to APS and keep a complete audit trail."""
+    config = get_interface_config("aps_order_demand_import")
+    if not config or not config.get("enabled"):
+        raise ValueError("APS订单需求导入接口未启用")
+    with db_cursor() as conn:
+        rows = conn.execute(
+            "SELECT line_no,values_json FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no",
+            (template_id,),
+        ).fetchall()
+    matches = get_order_change_matches(case_id, template_id, employee_id)
+    account = get_user(employee_id)
+    creator_name = str(account["display_name"] or "").strip() if account else ""
+    created_at = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
+    request_payload = _aps_order_demand_request_payload(
+        list(rows), matches, alter_type, require_specification, creator_name, created_at,
+    )
+    mode = str(config.get("mode") or "mock")
+
+    if mode == "mock":
+        response_payload = {
+            "code": 200,
+            "message": f"处理完成。成功接收 {len(request_payload['data'])} 条，失败 0 条",
+            "success_count": len(request_payload["data"]),
+            "fail_count": 0,
+            "failed_details": [],
+        }
+        http_status, duration_ms = 200, 0
+    else:
+        try:
+            http_status, response_payload, duration_ms = _post_json_endpoint(
+                config, request_payload, "APS订单需求导入",
+            )
+        except ValueError as exc:
+            with db_cursor() as conn:
+                call_id = _insert_call_log(
+                    conn, case_id=case_id, template_id=template_id, employee_id=employee_id, config=config,
+                    status="failed", request_payload=request_payload, response_payload={}, triggered_by=triggered_by,
+                    error_message=str(exc), is_mock=False, http_status=None, duration_ms=None,
+                    interface_key="aps_order_demand_import",
+                )
+                record_order_detail_event(
+                    conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
+                    event_type="aps_order_demand_import_real", title="APS订单需求导入（真实接口）失败",
+                    detail={"call_id": call_id, "error_message": str(exc)}, operated_by=triggered_by,
+                )
+            raise
+
+    ok, message = _aps_order_demand_result(response_payload, http_status, len(request_payload["data"]))
+    with db_cursor() as conn:
+        call_id = _insert_call_log(
+            conn, case_id=case_id, template_id=template_id, employee_id=employee_id, config=config,
+            status="success" if ok else "failed", request_payload=request_payload, response_payload=response_payload,
+            triggered_by=triggered_by, error_message="" if ok else message, is_mock=mode == "mock",
+            http_status=http_status, duration_ms=duration_ms, interface_key="aps_order_demand_import",
+        )
+        record_order_detail_event(
+            conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
+            event_type=f"aps_order_demand_import_{mode}",
+            title=f"APS订单需求导入（{'Mock' if mode == 'mock' else '真实接口'}）{'完成' if ok else '失败'}",
+            detail={
+                "call_id": call_id, "line_count": len(request_payload["data"]), "alter_type": alter_type,
+                "require_specification": str(require_specification or "").strip(), "message": message,
+            },
+            operated_by=triggered_by,
+        )
+    return {
+        "call_id": call_id, "status": "success" if ok else "failed", "mode": mode,
+        "message": message, "request": request_payload, "response": response_payload,
+    }
 
 
 def _real_material_response_items(

@@ -48,7 +48,7 @@ EXTRACTION_SOURCE_KIND_LABELS = {
     "attachment_table": "订单表格字段（正文/附件）",
 }
 EXTRACTION_TARGET_LABELS = {
-    "customer_product_code": "客户产品编号", "customer_spec": "客户规格", "quantity": "数量", "delivery_date": "出货日期",
+    "customer_product_code": "客户产品编号", "customer_spec": "客户规格", "quantity": "数量", "delivery_date": "客户需求日期",
     "price_before_tax": "税前单价", "unit_price": "单价", "customer_order_seq": "客户订单序号",
     "customer_order_number": "客户订单号", "remark": "备注",
 }

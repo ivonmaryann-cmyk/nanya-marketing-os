@@ -67,7 +67,15 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
 
     def test_default_configs_are_seeded_and_versioned(self) -> None:
         configs = list_interface_configs()
-        self.assertEqual({item["interface_key"] for item in configs}, {"material_batch_query", "domestic_order_entry"})
+        self.assertEqual(
+            {item["interface_key"] for item in configs},
+            {
+                "material_batch_query",
+                "domestic_order_entry",
+                "order_info_query",
+                "aps_order_demand_import",
+            },
+        )
         material = get_interface_config("material_batch_query")
         self.assertEqual(material["mode"], "mock")
         self.assertEqual(
@@ -112,6 +120,13 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
             domestic["request_mapping"]["sctoDataList[].spec"],
             "模板明细.客户规格（选填）",
         )
+        order_info = get_interface_config("order_info_query")
+        self.assertEqual(
+            order_info["endpoint_url"],
+            "http://nyeos2.nouyatec.com:7030/NY01-APP/nyeos/api/sc/queryOrderInfo",
+        )
+        self.assertEqual(order_info["request_mapping"]["orderNumberList[]"], "客户单号列表（必填，支持批量）")
+        self.assertEqual(order_info["response_mapping"]["data.notFoundList[]"], "查询结果.未匹配客户单号")
         saved = save_interface_config("material_batch_query", {
             "display_name": material["display_name"],
             "description": material["description"],
@@ -259,6 +274,14 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         self.assertIn("sctoDataList", domestic["request"])
         self.assertNotIn("header", domestic["request"])
         self.assertEqual(domestic["response"]["code"], 200)
+
+        order_info = test_interface_config({
+            "interface_key": "order_info_query", "mode": "mock", "method": "POST",
+            "endpoint_url": "http://nyeos2.nouyatec.com:7030/NY01-APP/nyeos/api/sc/queryOrderInfo",
+        })
+        self.assertEqual(order_info["request"]["orderNumberList"], ["MOCK-ORDER-001", "MOCK-ORDER-NOT-FOUND"])
+        self.assertEqual(order_info["response"]["data"]["orderCount"], 1)
+        self.assertEqual(order_info["response"]["data"]["notFoundList"], ["MOCK-ORDER-NOT-FOUND"])
 
     def test_real_interface_test_distinguishes_business_failure_from_connectivity(self) -> None:
         response = MagicMock()

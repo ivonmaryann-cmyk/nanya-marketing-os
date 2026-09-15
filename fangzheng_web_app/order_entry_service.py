@@ -30,7 +30,7 @@ from .pdf_excel_domestic_export import (
     normalize_product_type,
 )
 from .order_document_sources import build_mail_html_purchase_document
-from .order_interface_service import record_order_detail_event
+from .order_interface_service import invalidate_changed_order_matches, record_order_detail_event
 from .order_price_validation_service import PRICE_REVIEW_SNAPSHOT_KEY, review_case_template_prices
 from .purchase_field_rules import clean_text, normalize_date, normalize_number
 from .purchase_factory_mapper import project_factory_document
@@ -132,12 +132,15 @@ def _json(value: str, fallback: Any) -> Any:
         return fallback
 
 
-def _case_for_template(case_id: int, employee_id: str) -> dict[str, Any]:
+def _case_for_template(
+    case_id: int, employee_id: str, *, action_type: str = "new_order",
+) -> dict[str, Any]:
     case = get_case(case_id, employee_id)
     if not case:
-        raise ValueError("录单邮件不存在或无权操作")
-    if case.get("action_type") != "new_order":
-        raise ValueError("只有已分流为“录单”的邮件才能提取到内销模板")
+        raise ValueError("订单邮件不存在或无权操作")
+    if case.get("action_type") != action_type:
+        label = "录单" if action_type == "new_order" else "修改订单"
+        raise ValueError(f"只有已分流为“{label}”的邮件才能打开此模板")
     return case
 
 
@@ -924,6 +927,31 @@ def _initial_lines(case: dict[str, Any]) -> list[dict[str, Any]]:
     return _initial_template_data(case)[1]
 
 
+def _initial_order_change_template_data(case: dict[str, Any]) -> tuple[dict[str, str], list[dict[str, Any]]]:
+    """Extract only the fields needed by the order-change workspace.
+
+    The source-document parser is shared, but pricing, material resolution and
+    all domestic-order fields are deliberately discarded before persistence.
+    """
+    header, extracted_lines = _initial_template_data(case)
+    order_number = clean_text(header.get("customer_order_number"))
+    lines: list[dict[str, Any]] = []
+    for index, entry in enumerate(extracted_lines, start=1):
+        source_values = entry.get("values") or {}
+        values = _blank_line(index)
+        values.update({
+            "customer_order_number": clean_text(source_values.get("customer_order_number")) or order_number,
+            "line_no": clean_text(source_values.get("line_no")) or str(index),
+            "customer_product_code": clean_text(source_values.get("customer_product_code")),
+            "customer_spec": clean_text(source_values.get("customer_spec")),
+            "delivery_date": clean_text(source_values.get("delivery_date")),
+            "quantity": clean_text(source_values.get("quantity")),
+        })
+        values["material_status"] = "查询"
+        lines.append({"values": values, "sources": dict(entry.get("sources") or {})})
+    return header, lines or [{"values": _blank_line(1), "sources": {}}]
+
+
 def _serialize_template(conn, template_id: int) -> dict[str, Any]:
     template = conn.execute("SELECT * FROM order_entry_templates WHERE id=?", (template_id,)).fetchone()
     if not template:
@@ -948,8 +976,10 @@ def _serialize_template(conn, template_id: int) -> dict[str, Any]:
     return result
 
 
-def get_or_create_template(case_id: int, employee_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    case = _case_for_template(case_id, employee_id)
+def get_or_create_template(
+    case_id: int, employee_id: str, *, action_type: str = "new_order",
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    case = _case_for_template(case_id, employee_id, action_type=action_type)
     with db_cursor() as conn:
         existing = conn.execute(
             "SELECT id FROM order_entry_templates WHERE case_id=? AND employee_id=?", (case_id, employee_id)
@@ -967,10 +997,15 @@ def get_or_create_template(case_id: int, employee_id: str) -> tuple[dict[str, An
                 template = _serialize_template(conn, template_id)
             return case, template
         now = utcnow()
-        initial_header, initial_lines = _initial_template_data(case)
-        initial_header[PRICE_REVIEW_SNAPSHOT_KEY] = review_case_template_prices(
-            case, {"header": initial_header, "lines": initial_lines}
+        initial_header, initial_lines = (
+            _initial_template_data(case)
+            if action_type == "new_order"
+            else _initial_order_change_template_data(case)
         )
+        if action_type == "new_order":
+            initial_header[PRICE_REVIEW_SNAPSHOT_KEY] = review_case_template_prices(
+                case, {"header": initial_header, "lines": initial_lines}
+            )
         cursor = conn.execute(
             "INSERT INTO order_entry_templates(case_id,employee_id,header_json,created_at,updated_at) VALUES (?,?,?,?,?)",
             (case_id, employee_id, json.dumps(initial_header, ensure_ascii=False), now, now),
@@ -987,8 +1022,8 @@ def get_or_create_template(case_id: int, employee_id: str) -> tuple[dict[str, An
             case_id=case_id,
             template_id=template_id,
             employee_id=employee_id,
-            event_type="template_extracted",
-            title="已提取内销录单模板",
+            event_type="template_extracted" if action_type == "new_order" else "order_change_template_extracted",
+            title="已提取内销录单模板" if action_type == "new_order" else "已提取修改订单模板",
             detail={"line_count": len(initial_lines), "source": "邮件正文和附件"},
             operated_by=employee_id,
         )
@@ -1017,14 +1052,15 @@ def _template_task_row(case_id: int, employee_id: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
-def queue_template_extraction(case_id: int, employee_id: str) -> dict[str, Any]:
+def _queue_template_extraction(case_id: int, employee_id: str, *, action_type: str) -> dict[str, Any]:
     """Create one background extraction task without doing document work in HTTP.
 
     The original attachment can require native PDF parsing or OCR.  Keeping that
     work out of the request is important: a click should always return at once,
     while the case page can accurately show the durable task state.
     """
-    _case_for_template(case_id, employee_id)
+    _case_for_template(case_id, employee_id, action_type=action_type)
+    template_label = "内销模板" if action_type == "new_order" else "修改订单模板"
     with db_cursor() as conn:
         template = conn.execute(
             "SELECT id FROM order_entry_templates WHERE case_id=? AND employee_id=?",
@@ -1033,7 +1069,7 @@ def queue_template_extraction(case_id: int, employee_id: str) -> dict[str, Any]:
         if template:
             return {
                 "status": "completed", "task_id": None, "template_id": int(template["id"]),
-                "message": "内销模板已生成，可直接打开核对。",
+                "message": f"{template_label}已生成，可直接打开核对。",
             }
         active = conn.execute(
             """SELECT * FROM order_entry_template_tasks
@@ -1051,14 +1087,14 @@ def queue_template_extraction(case_id: int, employee_id: str) -> dict[str, Any]:
             """INSERT INTO order_entry_template_tasks
                (case_id,employee_id,status,message,started_at)
                VALUES (?,?,?,?,?)""",
-            (case_id, employee_id, "queued", "等待后台提取订单信息", now),
+                (case_id, employee_id, "queued", f"等待后台提取{template_label}", now),
         )
         task_id = int(cursor.lastrowid)
 
     command = [
         sys.executable, "-m", "fangzheng_web_app.order_entry_template_worker",
         "--task-id", str(task_id), "--case-id", str(case_id),
-        "--employee-id", employee_id,
+        "--employee-id", employee_id, "--action-type", action_type,
     ]
     try:
         subprocess.Popen(
@@ -1075,8 +1111,16 @@ def queue_template_extraction(case_id: int, employee_id: str) -> dict[str, Any]:
         raise ValueError("无法启动后台订单提取，请稍后重试") from exc
     return {
         "status": "queued", "task_id": task_id, "template_id": None,
-        "message": "已开始后台提取订单信息，完成后会自动显示内销模板。",
+        "message": f"已开始后台提取订单信息，完成后会自动显示{template_label}。",
     }
+
+
+def queue_template_extraction(case_id: int, employee_id: str) -> dict[str, Any]:
+    return _queue_template_extraction(case_id, employee_id, action_type="new_order")
+
+
+def queue_order_change_template_extraction(case_id: int, employee_id: str) -> dict[str, Any]:
+    return _queue_template_extraction(case_id, employee_id, action_type="order_change")
 
 
 def _complete_template_extraction_task(
@@ -1090,7 +1134,9 @@ def _complete_template_extraction_task(
         )
 
 
-def run_template_extraction_task(task_id: int, case_id: int, employee_id: str) -> None:
+def run_template_extraction_task(
+    task_id: int, case_id: int, employee_id: str, *, action_type: str = "new_order",
+) -> None:
     """Worker entry point.  This process owns the expensive first extraction."""
     with db_cursor() as conn:
         updated = conn.execute(
@@ -1102,11 +1148,11 @@ def run_template_extraction_task(task_id: int, case_id: int, employee_id: str) -
     if not updated.rowcount:
         return
     try:
-        _case, template = get_or_create_template(case_id, employee_id)
+        _case, template = get_or_create_template(case_id, employee_id, action_type=action_type)
         _complete_template_extraction_task(
             task_id,
             status="completed",
-            message="订单信息已提取，请核对并保存订单。",
+            message="订单信息已提取，请核对并保存订单。" if action_type == "new_order" else "订单修改信息已提取，请核对并保存。",
             template_id=int(template["id"]),
         )
     except Exception as exc:
@@ -1291,6 +1337,122 @@ def template_progress(case_id: int, employee_id: str) -> dict[str, Any]:
     progress['label'] = {'pending_entry': '待录单', 'entry_pending_reply': '录单完成待回复', 'entry_replied': '录单完成已回复'}[progress['task_status']]
     progress['next_action'] = ('查看订单' if sent else '回复邮件') if progress['completed'] else '去录单'
     return progress
+
+
+ORDER_CHANGE_LINE_FIELDS = (
+    "customer_order_number", "line_no", "customer_product_code", "customer_spec",
+    "delivery_date", "quantity",
+)
+
+
+def order_change_template_progress(case_id: int, employee_id: str) -> dict[str, Any]:
+    """Return the lightweight extraction/save state for an order-change mail."""
+    _case_for_template(case_id, employee_id, action_type="order_change")
+    with db_cursor() as conn:
+        row = conn.execute(
+            "SELECT current_version FROM order_entry_templates WHERE case_id=? AND employee_id=?",
+            (case_id, employee_id),
+        ).fetchone()
+    version = int(row["current_version"] or 0) if row else 0
+    if row:
+        return {
+            "created": True, "saved": version > 0, "version": version,
+            "stage": "saved" if version > 0 else "pending_template_save",
+            "label": "修改模板已保存" if version > 0 else "待核对并保存修改模板",
+            "next_action": "打开修改订单" if version > 0 else "核对并保存修改订单",
+            "step": 3,
+        }
+    task = _template_task_row(case_id, employee_id)
+    if task and task.get("status") in {"queued", "running"}:
+        return {
+            "created": False, "saved": False, "version": 0, "stage": "extracting",
+            "label": "正在提取修改订单", "next_action": "正在后台提取订单信息…", "step": 2,
+            "task_id": task["id"], "task_message": task.get("message") or "正在准备订单信息。",
+        }
+    if task and task.get("status") == "error":
+        return {
+            "created": False, "saved": False, "version": 0, "stage": "extraction_error",
+            "label": "提取失败", "next_action": "重新提取修改订单", "step": 2,
+            "task_id": task["id"], "task_message": task.get("message") or "请重新提取订单信息。",
+        }
+    return {
+        "created": False, "saved": False, "version": 0, "stage": "pending_extraction",
+        "label": "待提取修改订单", "next_action": "提取订单到修改模板", "step": 2,
+    }
+
+
+def get_order_change_template(case_id: int, employee_id: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    case = _case_for_template(case_id, employee_id, action_type="order_change")
+    with db_cursor() as conn:
+        row = conn.execute(
+            "SELECT id FROM order_entry_templates WHERE case_id=? AND employee_id=?", (case_id, employee_id)
+        ).fetchone()
+        return case, _serialize_template(conn, int(row["id"])) if row else None
+
+
+def save_order_change_template(case_id: int, employee_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Save the six user-facing fields without entering the domestic order flow."""
+    _case_for_template(case_id, employee_id, action_type="order_change")
+    raw_lines = payload.get("lines") or []
+    if not isinstance(raw_lines, list):
+        raise ValueError("修改订单明细格式无效")
+    lines: list[dict[str, Any]] = []
+    used_line_nos: set[str] = set()
+    for index, raw in enumerate(raw_lines, start=1):
+        source = (raw or {}).get("sources") or {}
+        raw_values = (raw or {}).get("values") or raw or {}
+        values = _blank_line(index)
+        values["material_status"] = "查询"
+        for field in ORDER_CHANGE_LINE_FIELDS:
+            values[field] = clean_text(raw_values.get(field))
+        line_no = values["line_no"]
+        values["line_no"] = line_no if re.fullmatch(r"[1-9]\d*", line_no or "") else str(index)
+        if not any(values.get(field) for field in ORDER_CHANGE_LINE_FIELDS if field != "line_no"):
+            continue
+        if values["line_no"] in used_line_nos:
+            raise ValueError(f"项次 {values['line_no']} 重复")
+        used_line_nos.add(values["line_no"])
+        lines.append({"values": values, "sources": source if isinstance(source, dict) else {}})
+    if not lines:
+        lines = [{"values": _blank_line(1), "sources": {}}]
+
+    now = utcnow()
+    with db_cursor() as conn:
+        row = conn.execute(
+            "SELECT id,current_version,header_json FROM order_entry_templates WHERE case_id=? AND employee_id=?",
+            (case_id, employee_id),
+        ).fetchone()
+        if not row:
+            raise ValueError("请先提取修改订单模板")
+        template_id = int(row["id"])
+        previous = _serialize_template(conn, template_id)
+        invalidate_changed_order_matches(conn, template_id, lines)
+        header = {**DEFAULT_HEADER_VALUES, **_json(row["header_json"], {})}
+        first_order_number = next((item["values"]["customer_order_number"] for item in lines if item["values"].get("customer_order_number")), "")
+        if first_order_number:
+            header["customer_order_number"] = first_order_number
+        _replace_backup(
+            conn, template_id=template_id, header=previous["header"], lines=previous["lines"],
+            employee_id=employee_id, saved_at=now,
+        )
+        conn.execute(
+            "UPDATE order_entry_templates SET header_json=?,current_version=?,updated_at=? WHERE id=?",
+            (json.dumps(header, ensure_ascii=False), int(row["current_version"] or 0) + 1, now, template_id),
+        )
+        conn.execute("DELETE FROM order_entry_template_lines WHERE template_id=?", (template_id,))
+        for entry in lines:
+            values = entry["values"]
+            conn.execute(
+                "INSERT INTO order_entry_template_lines(template_id,line_no,values_json,sources_json,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+                (template_id, int(values["line_no"]), json.dumps(values, ensure_ascii=False),
+                 json.dumps(entry["sources"], ensure_ascii=False), now, now),
+            )
+        record_order_detail_event(
+            conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
+            event_type="order_change_template_saved", title="修改订单模板已保存",
+            detail={"line_count": len(lines)}, operated_by=employee_id,
+        )
+        return _serialize_template(conn, template_id)
 
 
 def _entry_progress(case_id: int, employee_id: str) -> dict[str, Any]:
