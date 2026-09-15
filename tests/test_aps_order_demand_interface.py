@@ -46,14 +46,14 @@ class ApsOrderDemandInterfaceTests(unittest.TestCase):
         payload = _aps_order_demand_request_payload(
             [{"line_no": 2, "values_json": '{"delivery_date":"2026/09/25"}'}],
             {2: {"status": "matched", "selected_candidate": {
-                "scta39": "220-260114007", "sctb35": "2",
+                "scta39": "220-260114007", "sctb35": "2", "acsn": "NY02",
             }}},
             "交期变更", "客户要求提前交货", "张三", "2026-09-14 10:00:00",
         )
 
         self.assertEqual(payload, {"data": [{
             "require_shipment_date": "2026-09-25",
-            "Order_Item_Account_Set_outer_key": "220-260114007_2_KL01",
+            "Order_Item_Account_Set_outer_key": "220-260114007_2_KL02",
             "alter_type": "交期变更",
             "creator_name": "张三",
             "require_specification": "客户要求提前交货",
@@ -67,6 +67,30 @@ class ApsOrderDemandInterfaceTests(unittest.TestCase):
                 {2: {"status": "matched", "selected_candidate": {"scta39": "220-260114007"}}},
                 "交期变更", "", "张三", "2026-09-14 10:00:00",
             )
+
+    def test_change_submission_rejects_missing_account_set_code(self) -> None:
+        with self.assertRaisesRegex(ValueError, "账套组织代码"):
+            _aps_order_demand_request_payload(
+                [{"line_no": 2, "values_json": '{"delivery_date":"2026-09-25"}'}],
+                {2: {"status": "matched", "selected_candidate": {
+                    "scta39": "220-260114007", "sctb35": "2",
+                }}},
+                "交期变更", "", "张三", "2026-09-14 10:00:00",
+            )
+
+    def test_change_submission_uses_kl55_for_ny03(self) -> None:
+        payload = _aps_order_demand_request_payload(
+            [{"line_no": 3, "values_json": '{"delivery_date":"2026-09-25"}'}],
+            {3: {"status": "matched", "selected_candidate": {
+                "scta39": "220-260114008", "sctb35": "3", "acsn": "ny03",
+            }}},
+            "交期变更", "", "张三", "2026-09-14 10:00:00",
+        )
+
+        self.assertEqual(
+            payload["data"][0]["Order_Item_Account_Set_outer_key"],
+            "220-260114008_3_KL55",
+        )
 
 
 if __name__ == "__main__":

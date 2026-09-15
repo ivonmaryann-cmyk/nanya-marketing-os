@@ -26,6 +26,17 @@ from .purchase_field_rules import normalize_date
 from zoneinfo import ZoneInfo
 
 
+ORDER_ACCOUNT_SET_BY_ACSN = {
+    "NY01": "KL01",
+    "NY02": "KL02",
+    "NY03": "KL55",
+}
+
+
+def _order_account_set(acsn: Any) -> str:
+    return ORDER_ACCOUNT_SET_BY_ACSN.get(str(acsn or "").strip().upper(), "")
+
+
 INTERFACE_DEFAULTS = {
     "material_batch_query": {
         "display_name": "批量料号查询",
@@ -125,6 +136,7 @@ INTERFACE_DEFAULTS = {
             "data.orderList[].scta11": "订单信息.送货客户 ID",
             "data.orderList[].scta38": "订单信息.客户订单号",
             "data.orderList[].scta39": "订单信息.ERP 订单号",
+            "data.orderList[].acsn": "订单信息.组织代码（NY01/NY02/NY03）",
             "data.orderList[].sctbList[].sctb02": "订单明细.料号",
             "data.orderList[].sctbList[].sctb03": "订单明细.品名规格",
             "data.orderList[].sctbList[].sctb05": "订单明细.数量",
@@ -138,6 +150,7 @@ INTERFACE_DEFAULTS = {
             "data.orderList[].sctbList[].sctb30": "订单明细.结案码",
             "data.orderList[].sctbList[].sctb35": "订单明细.项次",
             "data.orderList[].sctbList[].sctb36": "订单明细.客户规格",
+            "data.orderList[].sctbList[].sctb43": "订单明细.厂别",
             "data.orderCount": "查询结果.匹配订单数",
             "data.notFoundList[]": "查询结果.未匹配客户单号",
         },
@@ -739,7 +752,7 @@ def test_interface_config(payload: dict[str, Any]) -> dict[str, Any]:
                         "scta01": "MOCK-ORDER-001",
                         "scta11": "MOCK-CUSTOMER-001",
                         "scta38": "MOCK-ORDER-001",
-                        "scta39": "MOCK-ERP-001",
+                        "scta39": "MOCK-ERP-001", "acsn": "NY01",
                         "sctbList": [{
                             "sctb02": "MOCK-PART-001",
                             "sctb03": "Mock 品名规格",
@@ -757,7 +770,7 @@ def test_interface_config(payload: dict[str, Any]) -> dict[str, Any]:
                             "sctb16": "2026-09-14",
                             "sctb17": "2026-09-15 00:00:00",
                             "sctb30": "N",
-                            "sctb35": 10,
+                            "sctb35": 10, "sctb43": "S1",
                             "sctb36": "Mock 客户规格",
                         }],
                     }],
@@ -1394,11 +1407,12 @@ def _flatten_order_info_candidates(response_payload: dict[str, Any]) -> list[dic
     for order in data.get("orderList") or []:
         if not isinstance(order, dict):
             continue
-        header = {key: order.get(key) for key in ("scta01", "scta11", "scta38", "scta39")}
+        header = {key: order.get(key) for key in ("scta01", "scta11", "scta38", "scta39", "acsn")}
         for detail in order.get("sctbList") or []:
             if not isinstance(detail, dict):
                 continue
             candidate = {**header, **detail}
+            candidate["account_set"] = _order_account_set(candidate.get("acsn"))
             candidate["customer_order_number"] = str(detail.get("sctb15") or order.get("scta38") or "").strip()
             key = tuple(_match_text(candidate.get(field)) for field in ("scta39", "sctb02", "sctb35", "customer_order_number"))
             if key in seen:
@@ -1652,6 +1666,7 @@ def _aps_order_demand_request_payload(
         selected = match.get("selected_candidate") or {}
         erp_order_number = str(selected.get("scta39") or "").strip()
         item_no = str(selected.get("sctb35") or "").strip()
+        account_set = _order_account_set(selected.get("acsn"))
         shipment_date = normalize_date(values.get("delivery_date"))
         if match.get("status") != "matched":
             issues.append(f"第 {line_no} 项尚未确认 ERP 匹配")
@@ -1659,12 +1674,14 @@ def _aps_order_demand_request_payload(
             issues.append(f"第 {line_no} 项缺少 ERP订单号")
         if not item_no:
             issues.append(f"第 {line_no} 项缺少 ERP 项次")
+        if not account_set:
+            issues.append(f"第 {line_no} 项缺少或不支持 ERP 账套组织代码")
         if not shipment_date:
             issues.append(f"第 {line_no} 项客户需求日期格式无效")
-        if match.get("status") == "matched" and erp_order_number and item_no and shipment_date:
+        if match.get("status") == "matched" and erp_order_number and item_no and account_set and shipment_date:
             items.append({
                 "require_shipment_date": shipment_date,
-                "Order_Item_Account_Set_outer_key": f"{erp_order_number}_{item_no}_KL01",
+                "Order_Item_Account_Set_outer_key": f"{erp_order_number}_{item_no}_{account_set}",
                 "alter_type": alter_type,
                 "creator_name": creator_name,
                 "require_specification": specification,

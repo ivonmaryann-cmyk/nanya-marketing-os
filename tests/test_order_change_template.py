@@ -46,6 +46,8 @@ class OrderChangeTemplateMarkupTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn('("scta01", "NYEOS订单号")', route_source)
+        self.assertIn('("account_set", "账套")', route_source)
+        self.assertIn('("sctb43", "厂别")', route_source)
         self.assertIn('("sctb35", "项次")', route_source)
         self.assertNotIn('("sctb04", "项次")', route_source)
         self.assertNotIn('("scta11", "送货客户ID")', route_source)
@@ -167,18 +169,20 @@ class OrderChangeTemplateTests(unittest.TestCase):
     def test_order_change_matching_uses_priority_and_deduplicates_erp_rows(self) -> None:
         first = {
             "scta39": "ERP-1", "scta01": "ORDER-1", "sctb02": "PART-1", "sctb14": "Cust-A",
-            "sctb15": "PO-A", "sctb35": 10, "sctb05": 100,
+            "sctb15": "PO-A", "sctb35": 10, "sctb05": 100, "sctb43": "S1",
         }
         second = {
             "scta39": "ERP-2", "scta01": "ORDER-2", "sctb02": "PART-2", "sctb14": "CUST-A",
             "sctb15": "po-a", "sctb35": 20, "sctb05": 200,
         }
         payload = {"data": {"orderList": [
-            {"scta01": "ORDER-1", "scta39": "ERP-1", "sctbList": [first, dict(first)]},
+            {"scta01": "ORDER-1", "scta39": "ERP-1", "acsn": "NY02", "sctbList": [first, dict(first)]},
             {"scta01": "ORDER-2", "scta39": "ERP-2", "sctbList": [second]},
         ]}}
         candidates = _flatten_order_info_candidates(payload)
         self.assertEqual(len(candidates), 2)
+        self.assertEqual(candidates[0]["account_set"], "KL02")
+        self.assertEqual(candidates[0]["sctb43"], "S1")
         by_item = _match_order_change_line({
             "customer_order_number": " PO-A ", "customer_product_code": "cust-a",
             "line_no": "10", "quantity": "200.0",
