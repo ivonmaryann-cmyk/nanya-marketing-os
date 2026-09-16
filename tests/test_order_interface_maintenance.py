@@ -21,9 +21,11 @@ from fangzheng_web_app.order_interface_service import (
     is_domestic_order_entry_completed,
     get_order_detail_records,
     get_material_resolution_states,
+    get_order_change_matches,
     list_nyeos_order_numbers,
     list_interface_configs,
     process_material_created_callback,
+    query_order_info_readonly,
     _decode_interface_response,
     _domestic_order_request_payload,
     _extract_layout_structure,
@@ -140,6 +142,54 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         }, "23582")
         self.assertEqual(saved["config_version"], 3)
         self.assertEqual(saved["endpoint_url"], material["endpoint_url"])
+
+    def test_reply_order_query_is_readonly_and_returns_display_fields(self) -> None:
+        _case, template = get_or_create_template(self.case_id, "employee-a")
+        save_template(self.case_id, "employee-a", {
+            "header": {"customer_order_number": "PO-REPLY-001"},
+            "lines": [{"values": {
+                "line_no": "1", "customer_order_number": "PO-REPLY-001",
+                "customer_product_code": "CUST-001", "customer_spec": "客户规格",
+                "quantity": "10", "delivery_date": "2026-09-25",
+            }}],
+        })
+        with db.db_cursor() as conn:
+            before_case = dict(conn.execute(
+                "SELECT status,workflow_stage,erp_prepare_status FROM order_intake_cases WHERE id=?",
+                (self.case_id,),
+            ).fetchone())
+            before_template = dict(conn.execute(
+                "SELECT header_json,current_version FROM order_entry_templates WHERE id=?",
+                (int(template["id"]),),
+            ).fetchone())
+
+        result = query_order_info_readonly(
+            self.case_id, int(template["id"]), "employee-a", "employee-a", ["PO-REPLY-001"],
+        )
+
+        self.assertEqual(result["mode"], "mock")
+        self.assertEqual(result["order_count"], 1)
+        self.assertEqual(result["orders"][0]["customer_order_number"], "PO-REPLY-001")
+        self.assertEqual(result["orders"][0]["details"][0]["customer_part_code"], "CUST-001")
+        self.assertEqual(
+            get_order_change_matches(self.case_id, int(template["id"]), "employee-a"), {}
+        )
+        with db.db_cursor() as conn:
+            call = conn.execute(
+                "SELECT request_json,interface_key FROM order_interface_call_logs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            after_case = dict(conn.execute(
+                "SELECT status,workflow_stage,erp_prepare_status FROM order_intake_cases WHERE id=?",
+                (self.case_id,),
+            ).fetchone())
+            after_template = dict(conn.execute(
+                "SELECT header_json,current_version FROM order_entry_templates WHERE id=?",
+                (int(template["id"]),),
+            ).fetchone())
+        self.assertEqual(json.loads(call["request_json"]), {"orderNumberList": ["PO-REPLY-001"]})
+        self.assertEqual(call["interface_key"], "order_info_query")
+        self.assertEqual(after_case, before_case)
+        self.assertEqual(after_template, before_template)
 
     def test_nyeos_tls_context_uses_extra_ca_without_disabling_hostname_checks(self) -> None:
         context = object()

@@ -19,6 +19,7 @@
   <form id="orderChangeTemplateForm" method="post"><input id="templatePayload" type="hidden" name="template_payload"><section class="oc-sheet">
     <div class="oc-toolbar"><div><h2>订单修改明细</h2><p>仅维护本次订单变更所需字段。</p></div><div class="oc-tools">
       <a class="oc-tool secondary" href="{{ url_for('main.order_automation_reply', case_id=case.id, **return_context.query) }}">回复邮件</a>
+      <button class="oc-tool secondary" type="submit" formaction="{{ url_for('main.order_automation_order_change_template_refresh', case_id=case.id, **return_context.query) }}" formmethod="post" onclick="return window.confirm('确认重新提取邮件中的修改订单明细吗？未保存的手工编辑会被覆盖，当前明细会保留在历史版本中。')">重新提取</button>
       <button class="oc-tool secondary" type="submit" formaction="{{ url_for('main.order_automation_order_change_template_query', case_id=case.id, **return_context.query) }}" formmethod="post">查询订单</button>
       <button class="oc-tool secondary" id="submitOrderChange" type="button">提交APS</button>
       <button class="oc-tool danger" id="deleteSelected" type="button" disabled>删除所选</button>

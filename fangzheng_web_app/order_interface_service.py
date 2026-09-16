@@ -1544,10 +1544,11 @@ def select_order_change_candidate(
     return selected
 
 
-def query_order_info(
+def _query_order_info(
     case_id: int, template_id: int, employee_id: str, triggered_by: str, order_numbers: list[Any],
+    *, persist_matches: bool,
 ) -> dict[str, Any]:
-    """Query existing orders using only the customer order-number list.
+    """Query existing orders and optionally persist modification-line matches.
 
     The modification-template page deliberately does not send its other
     columns as filters. They remain editable business data, while this lookup
@@ -1564,10 +1565,15 @@ def query_order_info(
 
     if mode == "mock":
         with db_cursor() as conn:
+            template_row = conn.execute(
+                "SELECT header_json FROM order_entry_templates WHERE id=?", (template_id,),
+            ).fetchone()
             template_rows = conn.execute(
                 "SELECT values_json FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no",
                 (template_id,),
             ).fetchall()
+        template_header = _json(template_row["header_json"], {}) if template_row else {}
+        header_order_number = _match_text(template_header.get("customer_order_number"))
         template_values = [_json(row["values_json"], {}) for row in template_rows]
         order_list = [
             {
@@ -1584,7 +1590,13 @@ def query_order_info(
                         "sctb05": values.get("quantity", ""), "sctb23": values.get("quantity", ""),
                     }
                     for line_index, values in enumerate(template_values, start=1)
-                    if _match_text(values.get("customer_order_number")) == _match_text(number)
+                    if (
+                        _match_text(values.get("customer_order_number")) == _match_text(number)
+                        or (
+                            not _match_text(values.get("customer_order_number"))
+                            and header_order_number == _match_text(number)
+                        )
+                    )
                 ],
             }
             for index, number in enumerate(numbers, start=1)
@@ -1603,10 +1615,11 @@ def query_order_info(
             matches = _store_order_change_matches(
                 conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
                 call_id=call_id, response_payload=response_payload,
-            )
+            ) if persist_matches else []
             record_order_detail_event(
                 conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
-                event_type="order_info_query_mock", title="查询订单信息（Mock）完成",
+                event_type=("order_info_query_mock" if persist_matches else "order_reply_info_query_mock"),
+                title=("查询订单信息（Mock）完成" if persist_matches else "回复邮件查询订单信息（Mock）完成"),
                 detail={"call_id": call_id, "order_count": len(order_list), "order_numbers": numbers,
                         "matched_count": sum(item["status"] == "matched" for item in matches)},
                 operated_by=triggered_by,
@@ -1632,10 +1645,15 @@ def query_order_info(
         matches = _store_order_change_matches(
             conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
             call_id=call_id, response_payload=response_payload,
-        ) if status == "success" else []
+        ) if status == "success" and persist_matches else []
         record_order_detail_event(
             conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
-            event_type="order_info_query_real", title=f"查询订单信息（真实接口）{'完成' if status == 'success' else '失败'}",
+            event_type=("order_info_query_real" if persist_matches else "order_reply_info_query_real"),
+            title=(
+                f"查询订单信息（真实接口）{'完成' if status == 'success' else '失败'}"
+                if persist_matches else
+                f"回复邮件查询订单信息（真实接口）{'完成' if status == 'success' else '失败'}"
+            ),
             detail={"call_id": call_id, "order_numbers": numbers, "error_message": error_message},
             operated_by=triggered_by,
         )
@@ -1643,6 +1661,79 @@ def query_order_info(
         raise ValueError(error_message)
     return {"call_id": call_id, "status": status, "mode": "real", "response": response_payload,
             "matches": matches}
+
+
+def query_order_info(
+    case_id: int, template_id: int, employee_id: str, triggered_by: str, order_numbers: list[Any],
+) -> dict[str, Any]:
+    """Query orders for the modification workflow and persist line matches."""
+    return _query_order_info(
+        case_id, template_id, employee_id, triggered_by, order_numbers,
+        persist_matches=True,
+    )
+
+
+def _order_info_display_result(response_payload: dict[str, Any]) -> dict[str, Any]:
+    data = response_payload.get("data") if isinstance(response_payload.get("data"), dict) else {}
+    orders: list[dict[str, Any]] = []
+    for order in data.get("orderList") or []:
+        if not isinstance(order, dict):
+            continue
+        details = []
+        for detail in order.get("sctbList") or []:
+            if not isinstance(detail, dict):
+                continue
+            details.append({
+                "item_no": detail.get("sctb35", ""),
+                "factory_part_code": detail.get("sctb02", ""),
+                "product_spec": detail.get("sctb03", ""),
+                "customer_part_code": detail.get("sctb14", ""),
+                "customer_order_number": detail.get("sctb15", ""),
+                "customer_spec": detail.get("sctb36", ""),
+                "quantity": detail.get("sctb05", ""),
+                "outstanding_quantity": detail.get("sctb23", ""),
+                "tax_price": detail.get("sctb06", ""),
+                "untaxed_price": detail.get("sctb07", ""),
+                "demand_date": detail.get("sctb16", ""),
+                "expected_ship_date": detail.get("sctb17", ""),
+                "closing_code": detail.get("sctb30", ""),
+                "factory": detail.get("sctb43", ""),
+            })
+        orders.append({
+            "order_number": order.get("scta01", ""),
+            "erp_order_number": order.get("scta39", ""),
+            "customer_order_number": order.get("scta38", ""),
+            "ship_to_customer_id": order.get("scta11", ""),
+            "organization": order.get("acsn", ""),
+            "details": details,
+        })
+    not_found = [str(value) for value in data.get("notFoundList") or [] if str(value).strip()]
+    try:
+        order_count = int(data.get("orderCount"))
+    except (TypeError, ValueError):
+        order_count = len(orders)
+    return {
+        "message": str(response_payload.get("msg") or "查询完成"),
+        "order_count": order_count,
+        "orders": orders,
+        "not_found": not_found,
+    }
+
+
+def query_order_info_readonly(
+    case_id: int, template_id: int, employee_id: str, triggered_by: str, order_numbers: list[Any],
+) -> dict[str, Any]:
+    """Query orders for reply review without changing modification matches."""
+    result = _query_order_info(
+        case_id, template_id, employee_id, triggered_by, order_numbers,
+        persist_matches=False,
+    )
+    return {
+        "call_id": result["call_id"],
+        "status": result["status"],
+        "mode": result["mode"],
+        **_order_info_display_result(result["response"]),
+    }
 
 
 def _aps_order_demand_request_payload(

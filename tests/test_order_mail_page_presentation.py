@@ -14,7 +14,10 @@ from fangzheng_web_app.routes import (
     _filter_order_cases_by_mail_content,
     _filter_order_cases_by_nyeos_order_number,
     _filter_order_cases_by_status,
+    _order_automation_list_progress,
     _order_mail_status_key,
+    _template_customer_order_numbers,
+    order_automation_reply_query_order,
 )
 
 
@@ -131,6 +134,91 @@ class OrderMailPagePresentationTests(unittest.TestCase):
         self.assertEqual(
             _filter_order_cases_by_mail_content(cases, "  "), cases,
         )
+
+    def test_order_change_list_exposes_reply_only_after_aps_submission(self) -> None:
+        case = {"id": 8, "action_type": "order_change"}
+        with patch(
+            "fangzheng_web_app.routes.order_change_template_progress",
+            return_value={"stage": "pending_reply", "label": "待回复邮件"},
+        ):
+            self.assertEqual(
+                _order_automation_list_progress(case, "employee-a"),
+                {
+                    "stage": "pending_reply", "label": "待回复邮件",
+                    "completed": True, "replied": False,
+                },
+            )
+        with patch(
+            "fangzheng_web_app.routes.order_change_template_progress",
+            return_value={"stage": "saved", "label": "修改模板已保存"},
+        ):
+            self.assertIsNone(_order_automation_list_progress(case, "employee-a"))
+
+    def test_reply_query_collects_distinct_header_and_line_order_numbers(self) -> None:
+        self.assertEqual(
+            _template_customer_order_numbers({
+                "header": {"customer_order_number": " PO-001 "},
+                "lines": [
+                    {"values": {"customer_order_number": "PO-001"}},
+                    {"values": {"customer_order_number": "PO-002"}},
+                    {"values": {"customer_order_number": ""}},
+                ],
+            }),
+            ["PO-001", "PO-002"],
+        )
+
+    def test_reply_query_control_is_only_rendered_for_new_orders(self) -> None:
+        app = Flask(__name__, template_folder=str(Path(__file__).parents[1] / "templates"))
+        app.secret_key = "test-secret"
+        app.jinja_env.globals["url_for"] = lambda *_args, **_kwargs: "/test"
+        context = {
+            "draft": {"to": "buyer@example.com", "cc": "", "subject": "Re: PO", "body_html": "<p>正文</p>"},
+            "reply_history": [], "smtp_ready": False, "reply_back_endpoint": "main.order_automation_entry_template",
+            "order_template": {}, "line_count": 0, "reply_lines": [], "return_context": {"query": {}},
+        }
+        with app.test_request_context("/reply"):
+            new_order_html = render_template(
+                "order_automation_reply.html", case={"id": 1, "action_type": "new_order", "subject": "PO"},
+                **context,
+            )
+            change_html = render_template(
+                "order_automation_reply.html", case={"id": 2, "action_type": "order_change", "subject": "PO"},
+                **context,
+            )
+        self.assertIn('id="orderQueryOpen"', new_order_html)
+        self.assertIn('id="orderQueryDrawer"', new_order_html)
+        self.assertNotIn('id="orderQueryOpen"', change_html)
+        self.assertNotIn('id="orderQueryDrawer"', change_html)
+
+    def test_reply_query_route_uses_saved_template_order_numbers(self) -> None:
+        app = Flask(__name__)
+        app.secret_key = "test-secret"
+        template = {
+            "id": 9,
+            "header": {"customer_order_number": "PO-001"},
+            "lines": [
+                {"values": {"customer_order_number": "PO-001"}},
+                {"values": {"customer_order_number": "PO-002"}},
+            ],
+        }
+        with app.test_request_context("/order-automation/cases/7/reply/query-order", method="POST"), patch(
+            "fangzheng_web_app.routes.require_login", return_value=None,
+        ), patch(
+            "fangzheng_web_app.routes.current_employee", return_value="employee-a",
+        ), patch(
+            "fangzheng_web_app.routes.get_order_intake_case",
+            return_value={"id": 7, "action_type": "new_order"},
+        ), patch(
+            "fangzheng_web_app.routes.get_saved_order_entry_template",
+            return_value=({"id": 7}, template),
+        ), patch(
+            "fangzheng_web_app.routes.query_order_info_readonly",
+            return_value={"mode": "mock", "order_count": 0, "orders": [], "not_found": []},
+        ) as query:
+            response = order_automation_reply_query_order(7)
+
+        self.assertTrue(response.get_json()["ok"])
+        query.assert_called_once_with(7, 9, "employee-a", "employee-a", ["PO-001", "PO-002"])
 
     def test_optimized_templates_render_with_list_and_detail_data(self) -> None:
         app = Flask(__name__, template_folder=str(Path(__file__).parents[1] / "templates"))

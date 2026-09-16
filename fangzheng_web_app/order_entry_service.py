@@ -1188,30 +1188,36 @@ def _replace_backup(
     )
 
 
-def reextract_template(case_id: int, employee_id: str) -> dict[str, Any]:
+def reextract_template(
+    case_id: int, employee_id: str, *, action_type: str = "new_order",
+) -> dict[str, Any]:
     """Rebuild one saved template's detail rows with the current extraction rules.
 
     The customer/header section is business-maintained and is intentionally left
     untouched. Before replacing the current detail rows, the immediately prior
     contents replace the single backup snapshot.
     """
-    case = _case_for_template(case_id, employee_id)
+    case = _case_for_template(case_id, employee_id, action_type=action_type)
     with db_cursor() as conn:
         row = conn.execute(
             "SELECT id,current_version FROM order_entry_templates WHERE case_id=? AND employee_id=?",
             (case_id, employee_id),
         ).fetchone()
         if not row:
-            raise ValueError("请先打开录单模板")
+            raise ValueError("请先打开修改订单模板" if action_type == "order_change" else "请先打开录单模板")
         template_id = int(row["id"])
         previous = _serialize_template(conn, template_id)
 
     # Recognition can involve OCR and file conversion, so do it outside of the
     # database transaction.  It only reads the original mail and attachments.
-    regenerated_header, regenerated_lines = _initial_template_data(case)
-    price_review_snapshot = review_case_template_prices(
-        case, {"header": regenerated_header, "lines": regenerated_lines}
-    )
+    if action_type == "order_change":
+        regenerated_header, regenerated_lines = _initial_order_change_template_data(case)
+        price_review_snapshot = None
+    else:
+        regenerated_header, regenerated_lines = _initial_template_data(case)
+        price_review_snapshot = review_case_template_prices(
+            case, {"header": regenerated_header, "lines": regenerated_lines}
+        )
     now = utcnow()
     previous_lines = [
         {"values": line.get("values") or {}, "sources": line.get("sources") or {}}
@@ -1229,7 +1235,8 @@ def reextract_template(case_id: int, employee_id: str) -> dict[str, Any]:
             if field != PRICE_REVIEW_SNAPSHOT_KEY and clean_text(value)
         },
     }
-    next_header[PRICE_REVIEW_SNAPSHOT_KEY] = price_review_snapshot
+    if price_review_snapshot is not None:
+        next_header[PRICE_REVIEW_SNAPSHOT_KEY] = price_review_snapshot
     backup_version = 1
     current_version = 1
 
@@ -1271,13 +1278,15 @@ def reextract_template(case_id: int, employee_id: str) -> dict[str, Any]:
                     now,
                 ),
             )
+        if action_type == "order_change":
+            invalidate_changed_order_matches(conn, template_id, regenerated_lines)
         record_order_detail_event(
             conn,
             case_id=case_id,
             template_id=template_id,
             employee_id=employee_id,
-            event_type="template_reextracted",
-            title="已重新提取订单明细",
+            event_type=("order_change_template_reextracted" if action_type == "order_change" else "template_reextracted"),
+            title=("已重新提取修改订单明细" if action_type == "order_change" else "已重新提取订单明细"),
             detail={
                 "previous_line_count": len(previous_lines),
                 "line_count": len(regenerated_lines),
@@ -1304,6 +1313,10 @@ def reextract_template(case_id: int, employee_id: str) -> dict[str, Any]:
         "current_version": current_version,
         "template": template,
     }
+
+
+def reextract_order_change_template(case_id: int, employee_id: str) -> dict[str, Any]:
+    return reextract_template(case_id, employee_id, action_type="order_change")
 
 
 def reextract_all_templates(employee_id: str) -> dict[str, Any]:
