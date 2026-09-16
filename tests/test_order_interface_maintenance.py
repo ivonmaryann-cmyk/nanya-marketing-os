@@ -30,6 +30,7 @@ from fangzheng_web_app.order_interface_service import (
     _decode_interface_response,
     _domestic_order_request_payload,
     _extract_layout_structure,
+    _order_info_display_result,
     _real_material_request_item,
     select_material_candidate,
     save_interface_config,
@@ -199,6 +200,20 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         self.assertEqual(call["interface_key"], "order_info_query")
         self.assertEqual(after_case, before_case)
         self.assertEqual(after_template, before_template)
+
+    def test_expected_arrival_uses_customer_demand_date_not_expected_ship_date(self) -> None:
+        result = _order_info_display_result({
+            "code": 200,
+            "data": {"orderList": [{
+                "scta38": "PO-ARRIVAL-001",
+                "sctbList": [{"sctb16": "2026-09-21", "sctb17": "2026-09-25"}],
+            }]},
+        }, transit_days="3")
+
+        detail = result["orders"][0]["details"][0]
+        self.assertEqual(detail["demand_date"], "2026-09-21")
+        self.assertEqual(detail["expected_ship_date"], "2026-09-25")
+        self.assertEqual(detail["expected_arrival_date"], "2026-09-24")
 
     def test_nyeos_tls_context_uses_extra_ca_without_disabling_hostname_checks(self) -> None:
         context = object()

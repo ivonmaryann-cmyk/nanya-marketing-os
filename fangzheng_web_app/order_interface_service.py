@@ -1708,13 +1708,13 @@ def query_order_info(
     )
 
 
-def _expected_arrival_date(expected_ship_date: Any, transit_days: Any) -> str:
-    shipment_date = normalize_date(expected_ship_date)
+def _expected_arrival_date(customer_demand_date: Any, transit_days: Any) -> str:
+    demand_date = normalize_date(customer_demand_date)
     days_text = str(transit_days or "").strip()
-    if not shipment_date or not re.fullmatch(r"\d+", days_text):
+    if not demand_date or not re.fullmatch(r"\d+", days_text):
         return ""
     try:
-        return (datetime.fromisoformat(shipment_date) + timedelta(days=int(days_text))).date().isoformat()
+        return (datetime.fromisoformat(demand_date) + timedelta(days=int(days_text))).date().isoformat()
     except (OverflowError, ValueError):
         return ""
 
@@ -1744,7 +1744,7 @@ def _order_info_display_result(
                 "untaxed_price": detail.get("sctb07", ""),
                 "demand_date": detail.get("sctb16", ""),
                 "expected_ship_date": detail.get("sctb17", ""),
-                "expected_arrival_date": _expected_arrival_date(detail.get("sctb17"), transit_days),
+                "expected_arrival_date": _expected_arrival_date(detail.get("sctb16"), transit_days),
                 "closing_code": detail.get("sctb30", ""),
                 "factory": detail.get("sctb43", ""),
             })
