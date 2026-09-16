@@ -66,6 +66,20 @@ def _filter_order_cases_by_nyeos_order_number(
         if needle in order_numbers.get(int(item["id"]), "").casefold()
     ]
 
+
+def _filter_order_cases_by_mail_content(
+    cases: list[dict[str, Any]], query: str,
+) -> list[dict[str, Any]]:
+    """Match the visible mail title and plain-text body without changing case data."""
+    needle = str(query or "").strip().casefold()
+    if not needle:
+        return cases
+    return [
+        item for item in cases
+        if needle in str(item.get("subject") or "").casefold()
+        or needle in str(item.get("body_text") or "").casefold()
+    ]
+
 from .bomin_rules import (
     get_active_bomin_rule_version,
     get_bomin_rule_file_path,
@@ -972,6 +986,7 @@ def order_automation():
     employee_id = current_employee() or ""
     selected_action = request.args.get("category", "all")
     selected_mail_status = request.args.get("mail_status", "all")
+    selected_mail_query = request.args.get("mail_query", "").strip()
     selected_order_number = request.args.get("order_no", "").strip()
     if selected_mail_status not in ORDER_MAIL_STATUS_FILTER_LABELS:
         selected_mail_status = "all"
@@ -1004,6 +1019,7 @@ def order_automation():
     filtered_cases = overview_cases if selected_action == "all" else list_order_intake_cases(
         employee_id, selected_date, selected_action, selected_account_id, prepare=False
     )
+    filtered_cases = _filter_order_cases_by_mail_content(filtered_cases, selected_mail_query)
     nyeos_order_numbers = list_nyeos_order_numbers(
         [int(item["id"]) for item in filtered_cases], employee_id
     )
@@ -1044,6 +1060,7 @@ def order_automation():
         scope_labels=ORDER_SCOPE_LABELS,
         selected_action=selected_action,
         selected_mail_status=selected_mail_status,
+        selected_mail_query=selected_mail_query,
         selected_order_number=selected_order_number,
         selected_date=selected_date,
         previous_date=(selected_date_value - timedelta(days=1)).isoformat(),
@@ -1098,6 +1115,7 @@ def order_automation_sync():
         per_page=request.form.get("return_per_page", 20, type=int) or 20,
         page=request.form.get("return_page", 1, type=int) or 1,
         mail_status=request.form.get("return_mail_status") or "all",
+        mail_query=request.form.get("return_mail_query", "").strip(),
         account_id=account_id,
     ))
 
@@ -1129,6 +1147,7 @@ def order_automation_refresh_customer_recognition():
         per_page=request.form.get("return_per_page", 20, type=int) or 20,
         page=request.form.get("return_page", 1, type=int) or 1,
         mail_status=request.form.get("return_mail_status") or "all",
+        mail_query=request.form.get("return_mail_query", "").strip(),
         account_id=account_id,
     ))
 
@@ -1282,6 +1301,7 @@ def _order_automation_return_context(case: dict[str, Any]) -> dict[str, Any]:
     if selected_action not in {*ORDER_ACTION_LABELS, "needs_business_routing", "all"}:
         selected_action = "all"
     selected_mail_status = request.args.get("return_mail_status", "all")
+    selected_mail_query = request.args.get("return_mail_query", "").strip()
     selected_order_number = request.args.get("return_order_no", "").strip()
     if selected_mail_status not in ORDER_MAIL_STATUS_FILTER_LABELS:
         selected_mail_status = "all"
@@ -1300,6 +1320,8 @@ def _order_automation_return_context(case: dict[str, Any]) -> dict[str, Any]:
     }
     if selected_order_number:
         values["order_no"] = selected_order_number
+    if selected_mail_query:
+        values["mail_query"] = selected_mail_query
     if account_id:
         values["account_id"] = int(account_id)
     if batch_id:
@@ -1313,6 +1335,7 @@ def _order_automation_return_context(case: dict[str, Any]) -> dict[str, Any]:
             "return_per_page": per_page,
             "return_page": page,
             "return_mail_status": selected_mail_status,
+            "return_mail_query": selected_mail_query,
             "return_order_no": selected_order_number,
             "return_batch": batch_id,
             "return_account": account_id,

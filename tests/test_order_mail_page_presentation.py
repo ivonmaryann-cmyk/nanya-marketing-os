@@ -11,6 +11,7 @@ from fangzheng_web_app import db
 from fangzheng_web_app.mail_transcode_agent import mail_store
 from fangzheng_web_app.order_intake_service import bootstrap_cases, get_case, list_cases
 from fangzheng_web_app.routes import (
+    _filter_order_cases_by_mail_content,
     _filter_order_cases_by_nyeos_order_number,
     _filter_order_cases_by_status,
     _order_mail_status_key,
@@ -112,6 +113,25 @@ class OrderMailPagePresentationTests(unittest.TestCase):
             [1, 2],
         )
 
+    def test_mail_content_search_matches_title_or_body_case_insensitively(self) -> None:
+        cases = [
+            {"id": 1, "subject": "DJ订单变更", "body_text": "请调整交期"},
+            {"id": 2, "subject": "普通通知", "body_text": "客户要求修改数量"},
+            {"id": 3, "subject": "报价", "body_text": "请确认"},
+        ]
+
+        self.assertEqual(
+            [item["id"] for item in _filter_order_cases_by_mail_content(cases, "dj订单")],
+            [1],
+        )
+        self.assertEqual(
+            [item["id"] for item in _filter_order_cases_by_mail_content(cases, "修改数量")],
+            [2],
+        )
+        self.assertEqual(
+            _filter_order_cases_by_mail_content(cases, "  "), cases,
+        )
+
     def test_optimized_templates_render_with_list_and_detail_data(self) -> None:
         app = Flask(__name__, template_folder=str(Path(__file__).parents[1] / "templates"))
         app.secret_key = "test-secret"
@@ -147,6 +167,7 @@ class OrderMailPagePresentationTests(unittest.TestCase):
                 selected_date="2026-08-18",
                 selected_action="all",
                 selected_mail_status="pending_interface_submit",
+                selected_mail_query="确认订单",
                 selected_order_number="SA2608270003",
                 previous_date="2026-08-17",
                 next_date="2026-08-19",
@@ -198,6 +219,7 @@ class OrderMailPagePresentationTests(unittest.TestCase):
         self.assertIn("已匹配客户：测试客户", list_html)
         self.assertIn("NYEOS订单号：SA2608270003", list_html)
         self.assertIn('name="order_no" value="SA2608270003"', list_html)
+        self.assertIn('name="mail_query" value="确认订单"', list_html)
         self.assertIn("业务分流与进度", detail_html)
         self.assertIn("NYEOS订单号", detail_html)
         self.assertIn("SA2608270003", detail_html)
