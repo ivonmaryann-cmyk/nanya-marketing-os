@@ -32,6 +32,7 @@ REQUIRED_HEADERS = {
     "铜箔",
     "尺寸",
     "水印",
+    "等级",
     "数量",
     "单重",
 }
@@ -355,7 +356,7 @@ def _consume_inventory_file(
     stats: dict[str, int],
     job_id: int | None,
 ) -> None:
-    headers, source_rows = _iter_sheet_rows(path)
+    headers, source_rows = _iter_b_grade_sheet_rows(path)
     indexes = _header_indexes(headers)
     missing = sorted(REQUIRED_HEADERS - set(indexes))
     if missing:
@@ -365,6 +366,8 @@ def _consume_inventory_file(
         raise ValueError(f"{path.name} 缺少必要字段：{', '.join(missing)}")
 
     for excel_row, values in source_rows:
+        if not _is_b3_grade(_get(values, indexes, "等级")):
+            continue
         stats["read"] += 1
         spec = _normalize_text(_get(values, indexes, "规格"))
         category = _get(values, indexes, "类别")
@@ -415,11 +418,14 @@ def _save_upload(file_obj, job_dir: Path, prefix: str) -> Path:
     return target
 
 
-def _iter_sheet_rows(path: Path) -> tuple[list[Any], Iterator[tuple[int, list[Any]]]]:
+def _iter_b_grade_sheet_rows(path: Path) -> tuple[list[Any], Iterator[tuple[int, list[Any]]]]:
     if path.suffix.lower() == ".xls":
         workbook = xlrd.open_workbook(str(path), on_demand=True, formatting_info=False)
-        sheet = workbook.sheet_by_index(0)
-        headers = sheet.row_values(0)
+        try:
+            sheet, headers = _select_xlrd_b_grade_sheet(workbook, path)
+        except Exception:
+            workbook.release_resources()
+            raise
 
         def iterator() -> Iterator[tuple[int, list[Any]]]:
             try:
@@ -431,9 +437,13 @@ def _iter_sheet_rows(path: Path) -> tuple[list[Any], Iterator[tuple[int, list[An
         return headers, iterator()
 
     workbook = load_workbook(path, read_only=True, data_only=True)
-    sheet = workbook.worksheets[0]
+    try:
+        sheet, headers = _select_openpyxl_b_grade_sheet(workbook, path)
+    except Exception:
+        workbook.close()
+        raise
     value_rows = sheet.iter_rows(values_only=True)
-    headers = list(next(value_rows, ()))
+    next(value_rows, None)
 
     def iterator() -> Iterator[tuple[int, list[Any]]]:
         try:
@@ -443,6 +453,65 @@ def _iter_sheet_rows(path: Path) -> tuple[list[Any], Iterator[tuple[int, list[An
             workbook.close()
 
     return headers, iterator()
+
+
+def _select_xlrd_b_grade_sheet(workbook, path: Path):
+    candidates = []
+    for sheet in workbook.sheets():
+        headers = sheet.row_values(0)
+        indexes = _header_indexes(headers)
+        if REQUIRED_HEADERS - set(indexes):
+            continue
+        data_count, b3_count = _count_b3_rows(
+            (sheet.row_values(index) for index in range(1, sheet.nrows)),
+            indexes,
+        )
+        candidates.append((sheet, headers, data_count, b3_count))
+    return _choose_b_grade_sheet(candidates, path, workbook.sheet_by_index(0).row_values(0))
+
+
+def _select_openpyxl_b_grade_sheet(workbook, path: Path):
+    candidates = []
+    for sheet in workbook.worksheets:
+        value_rows = sheet.iter_rows(values_only=True)
+        headers = list(next(value_rows, ()))
+        indexes = _header_indexes(headers)
+        if REQUIRED_HEADERS - set(indexes):
+            continue
+        data_count, b3_count = _count_b3_rows(value_rows, indexes)
+        candidates.append((sheet, headers, data_count, b3_count))
+    first_sheet = workbook.worksheets[0]
+    first_headers = list(next(first_sheet.iter_rows(values_only=True), ()))
+    return _choose_b_grade_sheet(candidates, path, first_headers)
+
+
+def _count_b3_rows(rows: Iterable[Iterable[Any]], indexes: dict[str, int]) -> tuple[int, int]:
+    data_count = 0
+    b3_count = 0
+    for values in rows:
+        row = list(values)
+        if not any(_text(value) for value in row):
+            continue
+        data_count += 1
+        if _is_b3_grade(_get(row, indexes, "等级")):
+            b3_count += 1
+    return data_count, b3_count
+
+
+def _choose_b_grade_sheet(candidates, path: Path, first_headers: list[Any]):
+    if not candidates:
+        missing = sorted(REQUIRED_HEADERS - set(_header_indexes(first_headers)))
+        raise ValueError(f"{path.name} 缺少必要字段：{', '.join(missing)}")
+
+    b3_only = [item for item in candidates if item[2] and item[2] == item[3]]
+    if b3_only:
+        sheet, headers, _, _ = b3_only[0]
+        return sheet, headers
+
+    sheet, headers, _, b3_count = max(candidates, key=lambda item: item[3])
+    if not b3_count:
+        raise ValueError(f"{path.name} 未找到等级为 B3 的库存数据")
+    return sheet, headers
 
 
 def _style_bid_sheet(sheet, column_count: int) -> None:
@@ -515,6 +584,10 @@ def _text(value: Any) -> str:
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
     return str(value).strip()
+
+
+def _is_b3_grade(value: Any) -> bool:
+    return _normalize_text(value, compact=True, upper=True) == "B3"
 
 
 def _normalize_text(value: Any, *, compact: bool = False, upper: bool = False) -> str:
