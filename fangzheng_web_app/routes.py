@@ -1392,6 +1392,11 @@ def _template_customer_order_numbers(template: dict[str, Any]) -> list[str]:
     """Collect distinct customer order numbers from one saved template."""
     values = [((template.get("header") or {}).get("customer_order_number"))]
     values.extend(
+        (group.get("header") or {}).get("customer_order_number") or group.get("order_number")
+        for group in template.get("groups") or []
+        if isinstance(group, dict)
+    )
+    values.extend(
         (line.get("values") or {}).get("customer_order_number")
         for line in template.get("lines") or []
         if isinstance(line, dict)
@@ -1503,6 +1508,11 @@ def order_automation_reply(case_id: int):
         order_change_template_progress(case_id, employee_id)
         if is_order_change else order_entry_template_progress(case_id, employee_id)
     )
+    if not is_order_change and not progress.get("completed"):
+        flash("请先完成全部 PO 的录单，再回复邮件。", "error")
+        return redirect(url_for(
+            "main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()
+        ))
     template = None
     if progress.get("created"):
         try:
@@ -1687,27 +1697,44 @@ def order_automation_entry_template(case_id: int):
         _case, template = get_order_entry_template(case_id, employee_id)
     except ValueError:
         abort(404)
+    order_groups = template.get("groups") or []
+    requested_group_key = request.args.get("group_key", "")
+    active_group = next(
+        (group for group in order_groups if group.get("group_key") == requested_group_key),
+        next((group for group in order_groups if not group.get("submitted")), order_groups[0] if order_groups else None),
+    )
+    if active_group:
+        template = {**template, "header": active_group["header"], "lines": active_group["lines"]}
+    visible_line_fields = [
+        field for field in ORDER_ENTRY_LINE_FIELDS
+        if field not in {"material_status", "adhesive_code", "customer_spec_match"}
+    ]
+    visible_line_fields.insert(visible_line_fields.index("product_name") + 1, "old_product_name")
+    grid_column_count = len(visible_line_fields)
     order_details = get_order_detail_records(case_id, employee_id)
     return render_template(
         "order_automation_entry_template.html",
         case=case,
         template=template,
+        order_groups=order_groups,
+        active_group=active_group,
         header_fields=ORDER_ENTRY_HEADER_FIELDS,
         header_labels=ORDER_ENTRY_HEADER_LABELS,
         line_fields=ORDER_ENTRY_LINE_FIELDS,
-        visible_line_fields=[
-            field for field in ORDER_ENTRY_LINE_FIELDS
-            if field not in {"material_status", "adhesive_code", "customer_spec_match"}
-        ],
-        hidden_line_fields=["material_status", "adhesive_code", "customer_spec_match"],
+        visible_line_fields=visible_line_fields,
+        grid_column_count=grid_column_count,
+        grid_column_letters=list("ABCDEFGHIJKLMNOPQRSTUVWXYZ"[:grid_column_count]),
+        hidden_line_fields=["material_status", "adhesive_code", "customer_spec_match", "customer_order_number"],
         line_labels=ORDER_ENTRY_LINE_LABELS,
         customer_choices=list_customer_choices(),
         validation_issues=order_entry_validation_issues(template),
         order_details=order_details,
-        nyeos_order_number=list_nyeos_order_numbers([case_id], employee_id).get(case_id, ""),
-        erp_order_number=list_erp_order_numbers([case_id], employee_id).get(case_id, ""),
+        nyeos_order_number=(active_group or {}).get("nyeos_order_number", "") or list_nyeos_order_numbers([case_id], employee_id).get(case_id, ""),
+        erp_order_number=(active_group or {}).get("erp_order_number", "") or list_erp_order_numbers([case_id], employee_id).get(case_id, ""),
         material_resolutions=get_material_resolution_states(case_id, employee_id),
-        price_review=review_domestic_order_entry_prices(case_id, employee_id),
+        price_review=review_domestic_order_entry_prices(
+            case_id, employee_id, (active_group or {}).get("group_key", "")
+        ),
         show_price_confirmation=request.args.get("price_confirmation") == "1",
         # Share the same workflow state as the mail list and mail detail.
         order_entry_completed=progress["completed"],
@@ -1960,10 +1987,23 @@ def order_automation_material_query(case_id: int):
                 continue
             if line_no > 0:
                 selected_line_nos.add(line_no)
+    group_key = request.form.get("group_key", "").strip()
+    redirect_query = request.args.to_dict()
+    if group_key:
+        redirect_query["group_key"] = group_key
+    if group_key:
+        _case, template = get_order_entry_template(case_id, employee_id)
+        group = next((item for item in template.get("groups") or [] if item.get("group_key") == group_key), None)
+        if not group or group.get("submitted"):
+            flash("当前 PO 不存在或已经提交，不能查询料号。", "error")
+            return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **redirect_query))
+        allowed = {int(line["line_no"]) for line in group.get("lines") or []}
+        selected_line_nos = (selected_line_nos & allowed) if selected_line_nos else allowed
     try:
         result = build_material_query(
             case_id, employee_id, employee_id,
             line_nos=selected_line_nos or None,
+            group_key=group_key,
         )
         mode_label = "真实接口" if result.get("mode") == "real" else "Mock"
         flash(
@@ -1972,7 +2012,7 @@ def order_automation_material_query(case_id: int):
         )
     except ValueError as exc:
         flash(str(exc), "error")
-    return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))
+    return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **redirect_query))
 
 
 @bp.post("/order-automation/cases/<int:case_id>/material-create")
@@ -1984,9 +2024,18 @@ def order_automation_material_create(case_id: int):
     if not get_order_intake_case(case_id, employee_id):
         abort(404)
     payload = request.get_json(silent=True) or {}
+    group_key = str(payload.get("group_key") or "").strip()
     try:
+        if group_key:
+            _case, template = get_order_entry_template(case_id, employee_id)
+            group = next((item for item in template.get("groups") or [] if item.get("group_key") == group_key), None)
+            if not group or group.get("submitted"):
+                raise ValueError("当前 PO 不存在或已经提交，不能新建料号")
+            allowed = {int(line["line_no"]) for line in group.get("lines") or []}
+            if any(int(line.get("line_no") or 0) not in allowed for line in payload.get("lines") or []):
+                raise ValueError("新建料号明细不属于当前 PO")
         result = build_material_creation(
-            case_id, employee_id, employee_id, payload.get("lines") or [],
+            case_id, employee_id, employee_id, payload.get("lines") or [], group_key,
         )
     except ValueError as exc:
         return jsonify({"ok": False, "message": str(exc)}), 400
@@ -2063,11 +2112,13 @@ def order_automation_domestic_entry(case_id: int):
     employee_id = current_employee() or ""
     if not get_order_intake_case(case_id, employee_id):
         abort(404)
+    group_key = request.form.get("group_key", "").strip()
     try:
         result = build_domestic_order_entry(
             case_id,
             employee_id,
             employee_id,
+            group_key=group_key,
             allow_price_mismatch=request.form.get("confirm_price_mismatch") == "1",
         )
         mode_label = "真实接口" if result.get("mode") == "real" else "Mock"
@@ -2075,10 +2126,14 @@ def order_automation_domestic_entry(case_id: int):
     except PriceMismatchConfirmationRequired:
         query = request.args.to_dict()
         query["price_confirmation"] = "1"
+        query["group_key"] = group_key
         return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **query))
     except ValueError as exc:
         flash(str(exc), "error")
-    return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))
+    query = request.args.to_dict()
+    if group_key:
+        query["group_key"] = group_key
+    return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **query))
 
 
 @bp.route("/interface-maintenance", methods=["GET", "POST"])
@@ -2163,7 +2218,9 @@ def order_automation_entry_template_download(case_id: int):
     if redirect_resp:
         return redirect_resp
     try:
-        output, filename = build_order_entry_domestic_export(case_id, current_employee() or "")
+        output, filename = build_order_entry_domestic_export(
+            case_id, current_employee() or "", request.args.get("group_key", "").strip()
+        )
     except ValueError as exc:
         flash(str(exc), "error")
         return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))

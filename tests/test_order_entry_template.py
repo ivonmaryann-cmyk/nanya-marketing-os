@@ -13,16 +13,20 @@ from fangzheng_web_app.mail_transcode_agent import mail_store
 from fangzheng_web_app.order_entry_service import (
     _apply_customer_extraction_mappings,
     _apply_customer_spec_matches,
+    _attachment_rows,
     _line_entry,
     _line_from_pipeline_row,
     _merge_initial_rows,
+    _initial_order_groups,
     _initial_template_data,
+    _split_body_order_rows,
     _rows_from_pdf_or_image,
     build_domestic_export,
     get_or_create_template,
     reextract_template,
     reextract_all_templates,
     save_template,
+    normalize_customer_order_number,
 )
 from fangzheng_web_app.purchase_factory_mapper import FACTORY_DETAIL_HEADERS
 from fangzheng_web_app.order_intake_service import bootstrap_cases, list_cases
@@ -126,6 +130,19 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertIn("button.textContent=String(count)", template)
         self.assertIn(".oe-candidate-open.is-selected{background:#43a66d;color:#fff}", template)
 
+    def test_material_candidates_and_template_show_old_product_name(self) -> None:
+        template = (
+            Path(__file__).resolve().parents[1]
+            / "templates"
+            / "order_automation_entry_template.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("旧品名", template)
+        self.assertIn("old_product_name", template)
+        self.assertIn("grid_column_count", template)
+        self.assertIn("grid_column_letters", template)
+        self.assertNotIn("'ABCDEFGHIJKLMNOP'", template)
+
     def test_create_material_dialog_resolves_adhesive_codes_from_spec_match(self) -> None:
         template = (
             Path(__file__).resolve().parents[1]
@@ -198,6 +215,91 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertIsNone(sheet["E5"].value)
         self.assertIsNone(sheet["J6"].value)
         book.close()
+
+    def test_multiple_purchase_orders_are_normalized_and_grouped_in_first_seen_order(self) -> None:
+        body_lines = ["序号", "PR号", "PO号", "物料编码", "物料描述", "需求数量", "需求交期", "供应商回复", "备注"]
+        for index in range(1, 31):
+            order_number = "建价PO-26F7-044522" if index <= 12 else "PO-26F7-044521"
+            body_lines.extend([
+                str(index), "PR-26F7-004045", order_number, f"AA141007612003{index:04d}",
+                "NY3170LK 0.076mm 1/2 37x49 无卤 RTF2 1x1080",
+                "6.0", "2026/9/22", f"第{index}项备注",
+            ])
+        lines = _split_body_order_rows("\n".join(body_lines), "2026-09-16")
+
+        groups = _initial_order_groups({"customer_order_number": ""}, lines)
+
+        self.assertEqual(len(lines), 30)
+        self.assertEqual(normalize_customer_order_number("建价PO-26F7-044522"), "PO-26F7-044522")
+        self.assertEqual(normalize_customer_order_number("暂无PO号-123"), "")
+        self.assertEqual([group["order_number"] for group in groups], ["PO-26F7-044522", "PO-26F7-044521"])
+        self.assertEqual([len(group["lines"]) for group in groups], [12, 18])
+
+    def test_group_headers_and_current_po_export_are_independent(self) -> None:
+        _case, template = get_or_create_template(self.case_id, "employee-a")
+        saved = save_template(self.case_id, "employee-a", {"groups": [
+            {
+                "group_key": template["groups"][0]["group_key"],
+                "order_number": "PO-A",
+                "header": {"order_type": "220", "bill_to_customer_code": "C001", "ledger": "KL01", "customer_order_number": "PO-A"},
+                "lines": [{"values": {"line_no": "1", "customer_product_code": "A-001", "quantity": "1"}}],
+            },
+            {
+                "group_key": "po-b",
+                "order_number": "PO-B",
+                "header": {"order_type": "331", "bill_to_customer_code": "C002", "ledger": "KL02", "customer_order_number": "PO-B"},
+                "lines": [{"values": {"line_no": "1", "customer_product_code": "B-001", "quantity": "2"}}],
+            },
+        ]})
+
+        self.assertEqual([group["header"]["ledger"] for group in saved["groups"]], ["KL01", "KL02"])
+        self.assertEqual(len({line["line_no"] for line in saved["lines"]}), 2)
+        output, filename = build_domestic_export(self.case_id, "employee-a", "po-b")
+        destination = Path(self.temp_dir.name) / "po-b.xlsx"
+        destination.write_bytes(output.getvalue())
+        book = load_workbook(destination, data_only=True)
+        self.assertEqual(book["内销"]["A2"].value, "331")
+        self.assertEqual(book["内销"]["D2"].value, "C002")
+        self.assertEqual(book["内销"]["F4"].value, "B-001")
+        self.assertIn("PO-B", filename)
+        book.close()
+
+    def test_refresh_preserves_submitted_po_and_replaces_only_pending_groups(self) -> None:
+        _case, template = get_or_create_template(self.case_id, "employee-a")
+        saved = save_template(self.case_id, "employee-a", {"groups": [
+            {
+                "group_key": template["groups"][0]["group_key"], "order_number": "PO-A",
+                "header": {"customer_order_number": "PO-A"},
+                "lines": [{"values": {"line_no": "1", "customer_product_code": "LOCKED", "quantity": "1"}}],
+            },
+            {
+                "group_key": "po-b", "order_number": "PO-B",
+                "header": {"customer_order_number": "PO-B"},
+                "lines": [{"values": {"line_no": "2", "customer_product_code": "OLD-B", "quantity": "1"}}],
+            },
+        ]})
+        with db.db_cursor() as conn:
+            conn.execute(
+                "UPDATE order_entry_template_groups SET status='submitted' WHERE group_key=?",
+                (saved["groups"][0]["group_key"],),
+            )
+        refreshed_lines = [
+            _line_entry({"customer_order_number": "PO-A", "customer_product_code": "NEW-A", "quantity": "1"}, label="测试", reference="刷新", line_no=1),
+            _line_entry({"customer_order_number": "PO-B", "customer_product_code": "NEW-B", "quantity": "1"}, label="测试", reference="刷新", line_no=2),
+        ]
+        snapshot = {"tax_mode": "unknown", "target_field": "", "target_label": "", "by_line": {}, "mismatches": []}
+        with patch(
+            "fangzheng_web_app.order_entry_service._initial_template_data",
+            return_value=({"customer_order_number": ""}, refreshed_lines),
+        ), patch(
+            "fangzheng_web_app.order_entry_service.review_case_template_prices", return_value=snapshot,
+        ):
+            result = reextract_template(self.case_id, "employee-a")
+
+        groups = {group["order_number"]: group for group in result["template"]["groups"]}
+        self.assertEqual(groups["PO-A"]["lines"][0]["values"]["customer_product_code"], "LOCKED")
+        self.assertEqual(groups["PO-B"]["lines"][0]["values"]["customer_product_code"], "NEW-B")
+        self.assertTrue(groups["PO-A"]["submitted"])
 
     def test_price_review_is_calculated_only_on_initial_generation_and_refresh(self) -> None:
         snapshot = {"tax_mode": "unknown", "target_field": "", "target_label": "", "by_line": {}, "mismatches": []}
@@ -459,6 +561,51 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertEqual(matching[0]["values"]["quantity"], "500")
         self.assertEqual(matching[0]["values"]["unit_price"], "12.5")
         self.assertEqual(matching[0]["sources"]["quantity"]["label"], "附件：客户订单.xlsx")
+
+    def test_excel_attachment_takes_priority_over_pdf_regardless_of_attachment_order(self) -> None:
+        excel_path = Path(self.temp_dir.name) / "订单.xlsx"
+        pdf_path = Path(self.temp_dir.name) / "订单.pdf"
+        excel_path.touch()
+        pdf_path.touch()
+        excel_rows = [{"values": {"customer_product_code": "EXCEL-001"}}]
+        case = {
+            "customer_id": None,
+            "attachments": [
+                {"filename": "订单.pdf", "stored_path": str(pdf_path), "is_inline": 0},
+                {"filename": "订单.xlsx", "stored_path": str(excel_path), "is_inline": 0},
+            ],
+        }
+
+        with patch("fangzheng_web_app.order_entry_service._rows_from_excel", return_value=excel_rows) as excel_parser, patch(
+            "fangzheng_web_app.order_entry_service._rows_from_pdf_or_image"
+        ) as pdf_parser:
+            rows = _attachment_rows(case)
+
+        self.assertEqual(rows, excel_rows)
+        excel_parser.assert_called_once()
+        pdf_parser.assert_not_called()
+
+    def test_pdf_attachment_is_used_when_excel_has_no_order_rows(self) -> None:
+        excel_path = Path(self.temp_dir.name) / "空白.xlsx"
+        pdf_path = Path(self.temp_dir.name) / "订单.pdf"
+        excel_path.touch()
+        pdf_path.touch()
+        pdf_rows = [{"values": {"customer_product_code": "PDF-001"}}]
+        case = {
+            "customer_id": None,
+            "attachments": [
+                {"filename": "订单.pdf", "stored_path": str(pdf_path), "is_inline": 0},
+                {"filename": "空白.xlsx", "stored_path": str(excel_path), "is_inline": 0},
+            ],
+        }
+
+        with patch("fangzheng_web_app.order_entry_service._rows_from_excel", return_value=[]), patch(
+            "fangzheng_web_app.order_entry_service._rows_from_pdf_or_image", return_value=pdf_rows
+        ) as pdf_parser:
+            rows = _attachment_rows(case)
+
+        self.assertEqual(rows, pdf_rows)
+        pdf_parser.assert_called_once()
 
     def test_customer_product_type_mapping_normalizes_board_material(self) -> None:
         mappings = [{
