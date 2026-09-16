@@ -222,6 +222,7 @@ from .order_interface_service import (
     submit_aps_order_demand_import,
     is_domestic_order_entry_completed,
     get_order_detail_records,
+    list_erp_order_numbers,
     get_material_resolution_states,
     select_material_candidate,
     list_nyeos_order_numbers,
@@ -244,6 +245,7 @@ from .customer_archive_service import (
     delete_contact,
     delete_extraction_map,
     delete_routing_rule,
+    get_customer,
     get_customer_workspace,
     import_customer_workbook,
     list_customer_choices,
@@ -1621,8 +1623,10 @@ def order_automation_reply_query_order(case_id: int):
         if not template:
             raise ValueError("请先生成并保存录单模板后再查询订单")
         order_numbers = _template_customer_order_numbers(template)
+        customer = get_customer(int(case["customer_id"])) if case.get("customer_id") else None
         result = query_order_info_readonly(
             case_id, int(template["id"]), employee_id, employee_id, order_numbers,
+            transit_days=(customer or {}).get("transit_days"),
         )
     except ValueError as exc:
         return jsonify({"ok": False, "message": str(exc)}), 400
@@ -1701,6 +1705,7 @@ def order_automation_entry_template(case_id: int):
         validation_issues=order_entry_validation_issues(template),
         order_details=order_details,
         nyeos_order_number=list_nyeos_order_numbers([case_id], employee_id).get(case_id, ""),
+        erp_order_number=list_erp_order_numbers([case_id], employee_id).get(case_id, ""),
         material_resolutions=get_material_resolution_states(case_id, employee_id),
         price_review=review_domestic_order_entry_prices(case_id, employee_id),
         show_price_confirmation=request.args.get("price_confirmation") == "1",

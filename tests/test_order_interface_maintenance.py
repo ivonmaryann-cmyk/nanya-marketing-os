@@ -22,6 +22,7 @@ from fangzheng_web_app.order_interface_service import (
     get_order_detail_records,
     get_material_resolution_states,
     get_order_change_matches,
+    list_erp_order_numbers,
     list_nyeos_order_numbers,
     list_interface_configs,
     process_material_created_callback,
@@ -122,6 +123,11 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
             domestic["request_mapping"]["sctoDataList[].spec"],
             "模板明细.客户规格（选填）",
         )
+        self.assertEqual(domestic["response_mapping"]["data.data[].scta39"], "接口交互记录.ERP订单号")
+        self.assertEqual(
+            domestic["response_mapping"]["data.erpOrderMap"],
+            "接口交互记录.NYEOS订单号与ERP订单号映射",
+        )
         order_info = get_interface_config("order_info_query")
         self.assertEqual(
             order_info["endpoint_url"],
@@ -165,12 +171,15 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
 
         result = query_order_info_readonly(
             self.case_id, int(template["id"]), "employee-a", "employee-a", ["PO-REPLY-001"],
+            transit_days="3",
         )
 
         self.assertEqual(result["mode"], "mock")
         self.assertEqual(result["order_count"], 1)
         self.assertEqual(result["orders"][0]["customer_order_number"], "PO-REPLY-001")
         self.assertEqual(result["orders"][0]["details"][0]["customer_part_code"], "CUST-001")
+        self.assertEqual(result["orders"][0]["details"][0]["expected_ship_date"], "2026-09-25")
+        self.assertEqual(result["orders"][0]["details"][0]["expected_arrival_date"], "2026-09-28")
         self.assertEqual(
             get_order_change_matches(self.case_id, int(template["id"]), "employee-a"), {}
         )
@@ -463,9 +472,11 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
             "data": {
                 "data": [{
                     "orderNumber": "PO20260824002", "sctaCode": "SA2608250002",
+                    "scta39": "220-260825002",
                     "message": "", "lineCount": 1, "status": "success",
                 }],
                 "failCount": 0, "successCount": 1,
+                "erpOrderMap": {"SA2608250002": "220-260825002"},
             },
         }
         with patch(
@@ -505,12 +516,17 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
             list_nyeos_order_numbers([self.case_id], "employee-a"),
             {self.case_id: "SA2608250002"},
         )
+        self.assertEqual(
+            list_erp_order_numbers([self.case_id], "employee-a"),
+            {self.case_id: "220-260825002"},
+        )
         with db.db_cursor() as conn:
             conn.execute(
                 "UPDATE order_interface_call_logs SET status='reverted' WHERE case_id=? AND interface_key='domestic_order_entry'",
                 (self.case_id,),
             )
         self.assertEqual(list_nyeos_order_numbers([self.case_id], "employee-a"), {})
+        self.assertEqual(list_erp_order_numbers([self.case_id], "employee-a"), {})
 
     def test_domestic_order_payload_requires_factory_part_code(self) -> None:
         with self.assertRaisesRegex(ValueError, "第 1 行未填写产品编号"):

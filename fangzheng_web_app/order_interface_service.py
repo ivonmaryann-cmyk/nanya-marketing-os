@@ -110,8 +110,10 @@ INTERFACE_DEFAULTS = {
             "data.failCount": "接口交互记录.失败数量",
             "data.data[].orderNumber": "接口交互记录.客户订单号",
             "data.data[].sctaCode": "接口交互记录.生成订单号",
+            "data.data[].scta39": "接口交互记录.ERP订单号",
             "data.data[].status": "接口交互记录.生成状态（success/fail）",
             "data.data[].message": "接口交互记录.失败原因",
+            "data.erpOrderMap": "接口交互记录.NYEOS订单号与ERP订单号映射",
         },
     },
     "order_info_query": {
@@ -1045,6 +1047,39 @@ def list_nyeos_order_numbers(case_ids: list[int], employee_id: str) -> dict[int,
     return result
 
 
+def list_erp_order_numbers(case_ids: list[int], employee_id: str) -> dict[int, str]:
+    """Return ERP order numbers from the latest successful generation response."""
+    ids = sorted({int(case_id) for case_id in case_ids if int(case_id) > 0})
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    with db_cursor() as conn:
+        rows = conn.execute(
+            f"""SELECT case_id,response_json FROM order_interface_call_logs
+                WHERE employee_id=? AND interface_key='domestic_order_entry'
+                  AND status='success' AND case_id IN ({placeholders})
+                ORDER BY id DESC""",
+            (employee_id, *ids),
+        ).fetchall()
+    result: dict[int, str] = {}
+    for row in rows:
+        case_id = int(row["case_id"])
+        if case_id in result:
+            continue
+        response = _json(row["response_json"], {})
+        data = response.get("data") if isinstance(response.get("data"), dict) else {}
+        records = [item for item in data.get("data") or [] if isinstance(item, dict)]
+        erp_map = data.get("erpOrderMap") if isinstance(data.get("erpOrderMap"), dict) else {}
+        numbers = []
+        for item in records:
+            value = str(item.get("scta39") or erp_map.get(str(item.get("sctaCode") or "")) or "").strip()
+            if value and value not in numbers:
+                numbers.append(value)
+        if numbers:
+            result[case_id] = "、".join(numbers)
+    return result
+
+
 MATERIAL_STATUS_LABELS = {
     "pending": "待查询", "waiting_callback": "创建料号中", "requerying": "正在获取新料号",
     "resolved": "已回填", "manual_resolved": "人工已填写", "failed": "查询异常",
@@ -1673,7 +1708,20 @@ def query_order_info(
     )
 
 
-def _order_info_display_result(response_payload: dict[str, Any]) -> dict[str, Any]:
+def _expected_arrival_date(expected_ship_date: Any, transit_days: Any) -> str:
+    shipment_date = normalize_date(expected_ship_date)
+    days_text = str(transit_days or "").strip()
+    if not shipment_date or not re.fullmatch(r"\d+", days_text):
+        return ""
+    try:
+        return (datetime.fromisoformat(shipment_date) + timedelta(days=int(days_text))).date().isoformat()
+    except (OverflowError, ValueError):
+        return ""
+
+
+def _order_info_display_result(
+    response_payload: dict[str, Any], *, transit_days: Any = None,
+) -> dict[str, Any]:
     data = response_payload.get("data") if isinstance(response_payload.get("data"), dict) else {}
     orders: list[dict[str, Any]] = []
     for order in data.get("orderList") or []:
@@ -1696,6 +1744,7 @@ def _order_info_display_result(response_payload: dict[str, Any]) -> dict[str, An
                 "untaxed_price": detail.get("sctb07", ""),
                 "demand_date": detail.get("sctb16", ""),
                 "expected_ship_date": detail.get("sctb17", ""),
+                "expected_arrival_date": _expected_arrival_date(detail.get("sctb17"), transit_days),
                 "closing_code": detail.get("sctb30", ""),
                 "factory": detail.get("sctb43", ""),
             })
@@ -1722,6 +1771,7 @@ def _order_info_display_result(response_payload: dict[str, Any]) -> dict[str, An
 
 def query_order_info_readonly(
     case_id: int, template_id: int, employee_id: str, triggered_by: str, order_numbers: list[Any],
+    *, transit_days: Any = None,
 ) -> dict[str, Any]:
     """Query orders for reply review without changing modification matches."""
     result = _query_order_info(
@@ -1732,7 +1782,7 @@ def query_order_info_readonly(
         "call_id": result["call_id"],
         "status": result["status"],
         "mode": result["mode"],
-        **_order_info_display_result(result["response"]),
+        **_order_info_display_result(result["response"], transit_days=transit_days),
     }
 
 

@@ -80,6 +80,16 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertIn("syncPair", template)
         self.assertIn("NYEOS订单号：{{ nyeos_order_number }}", template)
 
+    def test_generated_erp_order_number_is_displayed_with_nyeos_order_number(self) -> None:
+        template = (
+            Path(__file__).resolve().parents[1]
+            / "templates"
+            / "order_automation_entry_template.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("NYEOS订单号：{{ nyeos_order_number }}", template)
+        self.assertIn("ERP订单号：{{ erp_order_number }}", template)
+
     def test_material_create_dialog_reuses_customer_spec_match_editor(self) -> None:
         template = (
             Path(__file__).resolve().parents[1]

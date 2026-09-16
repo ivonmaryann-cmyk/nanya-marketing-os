@@ -187,6 +187,7 @@ class OrderMailPagePresentationTests(unittest.TestCase):
             )
         self.assertIn('id="orderQueryOpen"', new_order_html)
         self.assertIn('id="orderQueryDrawer"', new_order_html)
+        self.assertIn("预计到货日", new_order_html)
         self.assertNotIn('id="orderQueryOpen"', change_html)
         self.assertNotIn('id="orderQueryDrawer"', change_html)
 
@@ -207,10 +208,13 @@ class OrderMailPagePresentationTests(unittest.TestCase):
             "fangzheng_web_app.routes.current_employee", return_value="employee-a",
         ), patch(
             "fangzheng_web_app.routes.get_order_intake_case",
-            return_value={"id": 7, "action_type": "new_order"},
+            return_value={"id": 7, "action_type": "new_order", "customer_id": 12},
         ), patch(
             "fangzheng_web_app.routes.get_saved_order_entry_template",
             return_value=({"id": 7}, template),
+        ), patch(
+            "fangzheng_web_app.routes.get_customer",
+            return_value={"id": 12, "transit_days": "4"},
         ), patch(
             "fangzheng_web_app.routes.query_order_info_readonly",
             return_value={"mode": "mock", "order_count": 0, "orders": [], "not_found": []},
@@ -218,7 +222,9 @@ class OrderMailPagePresentationTests(unittest.TestCase):
             response = order_automation_reply_query_order(7)
 
         self.assertTrue(response.get_json()["ok"])
-        query.assert_called_once_with(7, 9, "employee-a", "employee-a", ["PO-001", "PO-002"])
+        query.assert_called_once_with(
+            7, 9, "employee-a", "employee-a", ["PO-001", "PO-002"], transit_days="4",
+        )
 
     def test_optimized_templates_render_with_list_and_detail_data(self) -> None:
         app = Flask(__name__, template_folder=str(Path(__file__).parents[1] / "templates"))
