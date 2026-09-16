@@ -66,6 +66,25 @@ class OrderChangeTemplateMarkupTests(unittest.TestCase):
         self.assertIn('.oc-modal-mask[hidden]{display:none}', markup)
         self.assertIn("open.addEventListener('click',()=>{modal.hidden=false", markup)
 
+    def test_order_change_case_offers_reply_after_aps_submission(self) -> None:
+        markup = (
+            Path(__file__).resolve().parents[1]
+            / "templates"
+            / "order_automation_case.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("change_progress.stage == 'pending_reply'", markup)
+        self.assertIn("查看修改订单", markup)
+
+    def test_order_overview_exposes_pending_reply_filter(self) -> None:
+        route_source = (
+            Path(__file__).resolve().parents[1]
+            / "fangzheng_web_app"
+            / "routes.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('"pending_reply": "待回复邮件"', route_source)
+
 
 class OrderChangeTemplateTests(unittest.TestCase):
     def setUp(self) -> None:

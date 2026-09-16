@@ -1778,6 +1778,27 @@ def submit_aps_order_demand_import(
             },
             operated_by=triggered_by,
         )
+        if ok:
+            case = conn.execute(
+                "SELECT status FROM order_intake_cases WHERE id=? AND employee_id=? AND action_type='order_change'",
+                (case_id, employee_id),
+            ).fetchone()
+            if case and str(case["status"] or "") != "pending_reply":
+                now = utcnow()
+                conn.execute(
+                    "UPDATE order_intake_cases SET status='pending_reply',updated_at=? WHERE id=? AND employee_id=?",
+                    (now, case_id, employee_id),
+                )
+                conn.execute(
+                    """INSERT INTO order_intake_case_events
+                       (case_id,employee_id,action,before_json,after_json,created_at)
+                       VALUES (?,?,?,?,?,?)""",
+                    (
+                        case_id, employee_id, "aps_order_change_submitted",
+                        json.dumps({"status": case["status"]}, ensure_ascii=False),
+                        json.dumps({"status": "pending_reply"}, ensure_ascii=False), now,
+                    ),
+                )
     return {
         "call_id": call_id, "status": "success" if ok else "failed", "mode": mode,
         "message": message, "request": request_payload, "response": response_payload,

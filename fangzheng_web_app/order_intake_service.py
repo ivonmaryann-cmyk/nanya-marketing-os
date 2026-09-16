@@ -29,6 +29,7 @@ STATUS_LABELS = {
     "pending_triage": "待处理",
     "pending_review": "处理中",
     "ready_for_erp": "待确认",
+    "pending_reply": "待回复邮件",
     "on_hold": "待补充",
     "archived": "已完成",
 }

@@ -1347,7 +1347,7 @@ ORDER_CHANGE_LINE_FIELDS = (
 
 def order_change_template_progress(case_id: int, employee_id: str) -> dict[str, Any]:
     """Return the lightweight extraction/save state for an order-change mail."""
-    _case_for_template(case_id, employee_id, action_type="order_change")
+    case = _case_for_template(case_id, employee_id, action_type="order_change")
     with db_cursor() as conn:
         row = conn.execute(
             "SELECT current_version FROM order_entry_templates WHERE case_id=? AND employee_id=?",
@@ -1355,6 +1355,12 @@ def order_change_template_progress(case_id: int, employee_id: str) -> dict[str, 
         ).fetchone()
     version = int(row["current_version"] or 0) if row else 0
     if row:
+        if case.get("status") == "pending_reply":
+            return {
+                "created": True, "saved": True, "version": version,
+                "stage": "pending_reply", "label": "待回复邮件",
+                "next_action": "回复邮件", "step": 4,
+            }
         return {
             "created": True, "saved": version > 0, "version": version,
             "stage": "saved" if version > 0 else "pending_template_save",

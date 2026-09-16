@@ -9,6 +9,7 @@ import sqlite3
 import tempfile
 from datetime import date, timedelta
 from email.utils import parseaddr
+from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,7 @@ ORDER_MAIL_STATUS_FILTER_LABELS = {
     "pending_triage": "待处理",
     "pending_review": "处理中",
     "ready_for_erp": "待确认",
+    "pending_reply": "待回复邮件",
     "on_hold": "待补充",
     "completed": "已完成",
 }
@@ -1345,6 +1347,43 @@ def _order_reply_default_body(
     return "\n".join(parts)
 
 
+def _order_change_reply_body(
+    source_html: str,
+    source_text: str,
+    lines: list[dict[str, Any]],
+    order_matches: dict[int, dict[str, Any]],
+) -> str:
+    """Keep a customer-provided body table, or build the change-reply table."""
+    source = str(source_html or source_text or "")
+    if re.search(r"<\s*table\b", source, flags=re.IGNORECASE):
+        from .mail_transcode_agent.mail_html_parser import safe_display_html
+
+        return safe_display_html(source)
+
+    headers = (
+        "客户订单号", "项次", "客户料号", "客户规格",
+        "客户需求日期", "数量", "厂内交期回复",
+    )
+    rows: list[str] = []
+    for line in lines:
+        values = line.get("values") or {}
+        line_no = int(line.get("line_no") or 0)
+        selected = (order_matches.get(line_no) or {}).get("selected_candidate") or {}
+        row = (
+            values.get("customer_order_number", ""), values.get("line_no", ""),
+            values.get("customer_product_code", ""), values.get("customer_spec", ""),
+            values.get("delivery_date", ""), values.get("quantity", ""), selected.get("sctb16", ""),
+        )
+        rows.append("<tr>" + "".join(f"<td>{escape(str(value or ''))}</td>" for value in row) + "</tr>")
+    head = "".join(f"<th>{escape(label)}</th>" for label in headers)
+    body = "".join(rows) or "<tr><td colspan=\"7\"></td></tr>"
+    return (
+        '<table border="1" cellpadding="6" cellspacing="0" '
+        'style="border-collapse:collapse;border-color:#9caec4;font-size:14px">'
+        f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+    )
+
+
 @bp.route("/order-automation/cases/<int:case_id>", methods=["GET", "POST"])
 def order_automation_case(case_id: int):
     redirect_resp = require_login()
@@ -1425,12 +1464,19 @@ def order_automation_reply(case_id: int):
     saved_draft = saved_draft or session.get(draft_key) or {}
     default_body = str(case.get("body_text") or "")
     original_html = str(case.get("body_html") or "") or f"<pre>{escape(default_body)}</pre>"
+    default_body_html = (
+        _order_change_reply_body(
+            str(case.get("body_html") or ""), default_body, lines,
+            get_order_change_matches(case_id, int(template["id"]), employee_id) if template else {},
+        )
+        if is_order_change else original_html
+    )
     draft = {
         "to": str(saved_draft.get("to") or recipient),
         "cc": str(saved_draft.get("cc") or ""),
         "subject": str(saved_draft.get("subject") or subject),
         "body": str(saved_draft.get("body") or default_body),
-        "body_html": safe_display_html(saved_draft.get("body_html") or (f"<pre>{escape(saved_draft['body'])}</pre>" if saved_draft.get("body") else original_html)),
+        "body_html": safe_display_html(saved_draft.get("body_html") or (f"<pre>{escape(saved_draft['body'])}</pre>" if saved_draft.get("body") else default_body_html)),
     }
     smtp_ready = smtp_ready_for_case(case_id, employee_id=employee_id)
     with db_cursor() as conn:
