@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 from fangzheng_web_app import db
 from fangzheng_web_app.mail_transcode_agent import mail_store
-from fangzheng_web_app.order_entry_service import get_or_create_template, reextract_template, save_template
+from fangzheng_web_app.order_entry_service import get_or_create_template, reextract_template, save_template, template_progress
 from fangzheng_web_app.order_interface_service import (
     PriceMismatchConfirmationRequired,
     build_domestic_order_entry,
@@ -21,12 +21,17 @@ from fangzheng_web_app.order_interface_service import (
     is_domestic_order_entry_completed,
     get_order_detail_records,
     get_material_resolution_states,
+    get_order_change_matches,
+    list_erp_order_numbers,
     list_nyeos_order_numbers,
     list_interface_configs,
     process_material_created_callback,
+    query_order_info_reply_rows,
+    query_order_info_readonly,
     _decode_interface_response,
     _domestic_order_request_payload,
     _extract_layout_structure,
+    _order_info_display_result,
     _real_material_request_item,
     select_material_candidate,
     save_interface_config,
@@ -120,6 +125,11 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
             domestic["request_mapping"]["sctoDataList[].spec"],
             "模板明细.客户规格（选填）",
         )
+        self.assertEqual(domestic["response_mapping"]["data.data[].scta39"], "接口交互记录.ERP订单号")
+        self.assertEqual(
+            domestic["response_mapping"]["data.erpOrderMap"],
+            "接口交互记录.NYEOS订单号与ERP订单号映射",
+        )
         order_info = get_interface_config("order_info_query")
         self.assertEqual(
             order_info["endpoint_url"],
@@ -140,6 +150,98 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         }, "23582")
         self.assertEqual(saved["config_version"], 3)
         self.assertEqual(saved["endpoint_url"], material["endpoint_url"])
+
+    def test_reply_order_query_is_readonly_and_returns_display_fields(self) -> None:
+        _case, template = get_or_create_template(self.case_id, "employee-a")
+        save_template(self.case_id, "employee-a", {
+            "header": {"customer_order_number": "PO-REPLY-001"},
+            "lines": [{"values": {
+                "line_no": "1", "customer_order_number": "PO-REPLY-001",
+                "customer_product_code": "CUST-001", "customer_spec": "客户规格",
+                "quantity": "10", "delivery_date": "2026-09-25",
+            }}],
+        })
+        with db.db_cursor() as conn:
+            before_case = dict(conn.execute(
+                "SELECT status,workflow_stage,erp_prepare_status FROM order_intake_cases WHERE id=?",
+                (self.case_id,),
+            ).fetchone())
+            before_template = dict(conn.execute(
+                "SELECT header_json,current_version FROM order_entry_templates WHERE id=?",
+                (int(template["id"]),),
+            ).fetchone())
+
+        result = query_order_info_readonly(
+            self.case_id, int(template["id"]), "employee-a", "employee-a", ["PO-REPLY-001"],
+            transit_days="3",
+        )
+
+        self.assertEqual(result["mode"], "mock")
+        self.assertEqual(result["order_count"], 1)
+        self.assertEqual(result["orders"][0]["customer_order_number"], "PO-REPLY-001")
+        self.assertEqual(result["orders"][0]["details"][0]["customer_part_code"], "CUST-001")
+        self.assertEqual(result["orders"][0]["details"][0]["expected_ship_date"], "2026-09-25")
+        self.assertEqual(result["orders"][0]["details"][0]["expected_arrival_date"], "2026-09-28")
+        self.assertEqual(
+            get_order_change_matches(self.case_id, int(template["id"]), "employee-a"), {}
+        )
+        with db.db_cursor() as conn:
+            call = conn.execute(
+                "SELECT request_json,interface_key FROM order_interface_call_logs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            after_case = dict(conn.execute(
+                "SELECT status,workflow_stage,erp_prepare_status FROM order_intake_cases WHERE id=?",
+                (self.case_id,),
+            ).fetchone())
+            after_template = dict(conn.execute(
+                "SELECT header_json,current_version FROM order_entry_templates WHERE id=?",
+                (int(template["id"]),),
+            ).fetchone())
+        self.assertEqual(json.loads(call["request_json"]), {"orderNumberList": ["PO-REPLY-001"]})
+        self.assertEqual(call["interface_key"], "order_info_query")
+        self.assertEqual(after_case, before_case)
+        self.assertEqual(after_template, before_template)
+
+    def test_reply_table_rows_reuse_order_change_matching_and_arrival_date(self) -> None:
+        _case, template = get_or_create_template(self.case_id, "employee-a")
+        save_template(self.case_id, "employee-a", {
+            "header": {"customer_order_number": "PO-REPLY-TABLE"},
+            "lines": [{"values": {
+                "line_no": "7", "customer_order_number": "PO-REPLY-TABLE",
+                "customer_product_code": "CUST-007", "customer_spec": "客户规格",
+                "quantity": "10", "delivery_date": "2026-09-25",
+            }}],
+        })
+
+        result = query_order_info_reply_rows(
+            self.case_id, int(template["id"]), "employee-a", "employee-a", [{
+                "row_id": "reply-0-0", "customer_order_number": "建价PO-REPLY-TABLE",
+                "customer_product_code": "CUST-007", "line_no": "7", "quantity": "10",
+            }], transit_days="3",
+        )
+
+        self.assertEqual(result["match_counts"], {
+            "matched": 1, "multiple": 0, "unmatched": 0, "invalid_date": 0,
+        })
+        self.assertEqual(result["row_matches"], [{
+            "row_id": "reply-0-0", "status": "matched", "match_level": "order_part_item",
+            "delivery_reply": "2026-09-28", "reason": "",
+        }])
+        self.assertEqual(get_order_change_matches(self.case_id, int(template["id"]), "employee-a"), {})
+
+    def test_expected_arrival_uses_customer_demand_date_not_expected_ship_date(self) -> None:
+        result = _order_info_display_result({
+            "code": 200,
+            "data": {"orderList": [{
+                "scta38": "PO-ARRIVAL-001",
+                "sctbList": [{"sctb16": "2026-09-21", "sctb17": "2026-09-25"}],
+            }]},
+        }, transit_days="3")
+
+        detail = result["orders"][0]["details"][0]
+        self.assertEqual(detail["demand_date"], "2026-09-21")
+        self.assertEqual(detail["expected_ship_date"], "2026-09-25")
+        self.assertEqual(detail["expected_arrival_date"], "2026-09-24")
 
     def test_nyeos_tls_context_uses_extra_ca_without_disabling_hostname_checks(self) -> None:
         context = object()
@@ -357,7 +459,7 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
     def test_domestic_entry_mock_records_the_submission_without_changing_template(self) -> None:
         get_or_create_template(self.case_id, "employee-a")
         save_template(self.case_id, "employee-a", {
-            "header": {"bill_to_customer_code": "C001"},
+            "header": {"bill_to_customer_code": "C001", "customer_order_number": "PO-MOCK-001"},
             "lines": [{"values": {
                 "line_no": "1", "product_code": "MANUAL-001", "customer_product_code": "CUST-001",
                 "customer_spec": "FR-4 1.6", "quantity": "20",
@@ -384,6 +486,44 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         details = get_order_detail_records(self.case_id, "employee-a")
         self.assertEqual(details["calls"][0]["interface_key"], "domestic_order_entry")
         self.assertTrue(any(item["event_type"] == "domestic_order_entry_mock" for item in details["events"]))
+
+    def test_multiple_po_groups_submit_independently_and_complete_only_after_all_succeed(self) -> None:
+        _case, template = get_or_create_template(self.case_id, "employee-a")
+        saved = save_template(self.case_id, "employee-a", {"groups": [
+            {
+                "group_key": template["groups"][0]["group_key"],
+                "order_number": "PO-A",
+                "header": {"order_type": "220", "bill_to_customer_code": "C001", "ledger": "KL01", "customer_order_number": "PO-A"},
+                "lines": [{"values": {"line_no": "1", "product_code": "P-A", "customer_product_code": "C-A", "quantity": "1"}}],
+            },
+            {
+                "group_key": "po-b",
+                "order_number": "PO-B",
+                "header": {"order_type": "220", "bill_to_customer_code": "C001", "ledger": "KL01", "customer_order_number": "PO-B"},
+                "lines": [{"values": {"line_no": "1", "product_code": "P-B", "customer_product_code": "C-B", "quantity": "2"}}],
+            },
+        ]})
+        first_key, second_key = [group["group_key"] for group in saved["groups"]]
+
+        first = build_domestic_order_entry_mock(self.case_id, "employee-a", "employee-a", first_key)
+        self.assertEqual(first["status"], "success")
+        self.assertFalse(is_domestic_order_entry_completed(self.case_id, "employee-a"))
+        self.assertFalse(template_progress(self.case_id, "employee-a")["completed"])
+        with self.assertRaisesRegex(ValueError, "不能重复提交"):
+            build_domestic_order_entry_mock(self.case_id, "employee-a", "employee-a", first_key)
+        second = build_domestic_order_entry_mock(self.case_id, "employee-a", "employee-a", second_key)
+        self.assertEqual(second["status"], "success")
+        self.assertTrue(is_domestic_order_entry_completed(self.case_id, "employee-a"))
+        self.assertTrue(template_progress(self.case_id, "employee-a")["completed"])
+        with db.db_cursor() as conn:
+            groups = conn.execute(
+                "SELECT order_number,status FROM order_entry_template_groups ORDER BY sort_order"
+            ).fetchall()
+            logs = conn.execute(
+                "SELECT order_group_id FROM order_interface_call_logs WHERE interface_key='domestic_order_entry' ORDER BY id"
+            ).fetchall()
+        self.assertEqual([(row["order_number"], row["status"]) for row in groups], [("PO-A", "submitted"), ("PO-B", "submitted")])
+        self.assertEqual(len({int(row["order_group_id"]) for row in logs}), 2)
 
     def test_real_domestic_entry_posts_scto_payload_and_completes_only_on_success(self) -> None:
         get_or_create_template(self.case_id, "employee-a")
@@ -413,9 +553,11 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
             "data": {
                 "data": [{
                     "orderNumber": "PO20260824002", "sctaCode": "SA2608250002",
+                    "scta39": "220-260825002",
                     "message": "", "lineCount": 1, "status": "success",
                 }],
                 "failCount": 0, "successCount": 1,
+                "erpOrderMap": {"SA2608250002": "220-260825002"},
             },
         }
         with patch(
@@ -455,12 +597,17 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
             list_nyeos_order_numbers([self.case_id], "employee-a"),
             {self.case_id: "SA2608250002"},
         )
+        self.assertEqual(
+            list_erp_order_numbers([self.case_id], "employee-a"),
+            {self.case_id: "220-260825002"},
+        )
         with db.db_cursor() as conn:
             conn.execute(
                 "UPDATE order_interface_call_logs SET status='reverted' WHERE case_id=? AND interface_key='domestic_order_entry'",
                 (self.case_id,),
             )
         self.assertEqual(list_nyeos_order_numbers([self.case_id], "employee-a"), {})
+        self.assertEqual(list_erp_order_numbers([self.case_id], "employee-a"), {})
 
     def test_domestic_order_payload_requires_factory_part_code(self) -> None:
         with self.assertRaisesRegex(ValueError, "第 1 行未填写产品编号"):
@@ -558,7 +705,7 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
     def test_multiple_candidates_require_explicit_selection_and_persist_pair(self) -> None:
         get_or_create_template(self.case_id, "employee-a")
         save_template(self.case_id, "employee-a", {
-            "header": {"bill_to_customer_code": "C001"},
+            "header": {"bill_to_customer_code": "C001", "customer_order_number": "PO-CANDIDATES-001"},
             "lines": [{"values": {
                 "line_no": "1", "customer_product_code": "CUST-001", "customer_spec": "规格一",
                 "quantity": "1",
@@ -577,6 +724,7 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
             )
         self.assertEqual(values["product_code"], state["candidates"][0]["product_code"])
         self.assertEqual(values["product_name"], state["candidates"][0]["product_name"])
+        self.assertEqual(values["old_product_name"], state["candidates"][0]["old_product_name"])
         self.assertFalse(validate_domestic_order_entry(self.case_id, "employee-a"))
         with self.assertRaisesRegex(ValueError, "候选列表"):
             select_material_candidate(
@@ -594,6 +742,13 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         confirmed = get_material_resolution_states(self.case_id, "employee-a")["items"][0]
         self.assertFalse(confirmed["selection_required"])
         self.assertEqual(confirmed["selected_candidate"], state["candidates"][1])
+        with db.db_cursor() as conn:
+            values = json.loads(
+                conn.execute(
+                    "SELECT values_json FROM order_entry_template_lines WHERE line_no=1"
+                ).fetchone()["values_json"]
+            )
+        self.assertEqual(values["old_product_name"], state["candidates"][1]["old_product_name"])
         self.assertFalse(validate_domestic_order_entry(self.case_id, "employee-a"))
         details = get_order_detail_records(self.case_id, "employee-a")
         self.assertTrue(any(item["event_type"] == "material_candidate_selected" for item in details["events"]))
@@ -612,6 +767,32 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
 
         self.assertEqual([item["line_no"] for item in result["items"]], [2])
         self.assertEqual([item["line_no"] for item in get_material_resolution_states(self.case_id, "employee-a")["items"]], [2])
+
+    def test_material_query_is_scoped_and_logged_to_the_selected_po_group(self) -> None:
+        _case, template = get_or_create_template(self.case_id, "employee-a")
+        saved = save_template(self.case_id, "employee-a", {"groups": [
+            {
+                "group_key": template["groups"][0]["group_key"], "order_number": "PO-A",
+                "header": {"bill_to_customer_code": "C001", "customer_order_number": "PO-A"},
+                "lines": [{"values": {"line_no": "1", "customer_product_code": "CUST-A", "customer_spec": "规格A", "quantity": "1"}}],
+            },
+            {
+                "group_key": "po-b", "order_number": "PO-B",
+                "header": {"bill_to_customer_code": "C001", "customer_order_number": "PO-B"},
+                "lines": [{"values": {"line_no": "1", "customer_product_code": "CUST-B", "customer_spec": "规格B", "quantity": "1"}}],
+            },
+        ]})
+        second = saved["groups"][1]
+        result = build_material_query_mock(
+            self.case_id, "employee-a", "employee-a", group_key=second["group_key"],
+        )
+
+        self.assertEqual([item["line_no"] for item in result["items"]], [second["lines"][0]["line_no"]])
+        with db.db_cursor() as conn:
+            call = conn.execute(
+                "SELECT order_group_id FROM order_interface_call_logs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual(int(call["order_group_id"]), int(second["id"]))
 
     def test_clearing_query_result_then_saving_allows_material_creation(self) -> None:
         get_or_create_template(self.case_id, "employee-a")
@@ -668,6 +849,7 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         reextract_event = next(item for item in details["events"] if item["event_type"] == "template_reextracted")
         self.assertEqual(len(reextract_event["detail"]["cleared_material_resolution_tasks"]), 1)
         self.assertTrue(details["calls"])
+        self.assertTrue(all(item["order_group_id"] is None for item in details["calls"]))
 
     def test_real_mode_posts_official_payload_and_keeps_multiple_candidates_linked(self) -> None:
         get_or_create_template(self.case_id, "employee-a")
@@ -731,10 +913,15 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         self.assertEqual(
             states[0]["candidates"],
             [
-                {"product_code": "6900013796", "product_name": "新品名一"},
-                {"product_code": "6900013797", "product_name": "新品名二"},
+                {"product_code": "6900013796", "product_name": "新品名一", "old_product_name": "旧品名一"},
+                {"product_code": "6900013797", "product_name": "新品名二", "old_product_name": "旧品名二"},
             ],
         )
+        with db.db_cursor() as conn:
+            line = conn.execute(
+                "SELECT values_json FROM order_entry_template_lines ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual(json.loads(line["values_json"])["old_product_name"], "旧品名一")
         with db.db_cursor() as conn:
             call = conn.execute(
                 "SELECT is_mock,http_status,duration_ms FROM order_interface_call_logs ORDER BY id DESC LIMIT 1"

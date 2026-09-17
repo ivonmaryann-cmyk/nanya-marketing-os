@@ -110,8 +110,10 @@ INTERFACE_DEFAULTS = {
             "data.failCount": "接口交互记录.失败数量",
             "data.data[].orderNumber": "接口交互记录.客户订单号",
             "data.data[].sctaCode": "接口交互记录.生成订单号",
+            "data.data[].scta39": "接口交互记录.ERP订单号",
             "data.data[].status": "接口交互记录.生成状态（success/fail）",
             "data.data[].message": "接口交互记录.失败原因",
+            "data.erpOrderMap": "接口交互记录.NYEOS订单号与ERP订单号映射",
         },
     },
     "order_info_query": {
@@ -955,6 +957,13 @@ def get_order_detail_records(case_id: int, employee_id: str) -> dict[str, list[d
         ).fetchall()
         configs = conn.execute("SELECT * FROM order_interface_configs").fetchall()
         config_versions = conn.execute("SELECT * FROM order_interface_config_versions").fetchall()
+        order_groups = conn.execute(
+            """SELECT groups.id,groups.order_number
+               FROM order_entry_template_groups groups
+               JOIN order_entry_templates template ON template.id=groups.template_id
+               WHERE template.case_id=? AND template.employee_id=?""",
+            (case_id, employee_id),
+        ).fetchall()
     event_rows = []
     changes = []
     for row in events:
@@ -982,6 +991,7 @@ def get_order_detail_records(case_id: int, employee_id: str) -> dict[str, list[d
             })
     call_rows = []
     config_by_id = {int(row["id"]): _row(row) for row in configs}
+    order_number_by_group_id = {int(row["id"]): str(row["order_number"] or "待分配") for row in order_groups}
     config_snapshots: dict[tuple[int, int], dict[str, Any]] = {}
     for row in config_versions:
         version = _row(row)
@@ -1001,7 +1011,10 @@ def get_order_detail_records(case_id: int, employee_id: str) -> dict[str, list[d
         }.get(str(item.get("interface_key") or ""), "接口调用")
         item["mode_label"] = "Mock" if item.get("is_mock") else "真实接口"
         item["outcome_label"] = "成功" if item.get("status") == "success" else "失败"
+        item["order_group_number"] = order_number_by_group_id.get(int(item.get("order_group_id") or 0), "")
         item["summary"] = _call_summary(item)
+        if item["order_group_number"]:
+            item["summary"] = f"{item['order_group_number']}：{item['summary']}"
         item["request"] = _redact_audit_payload(item["request"])
         item["response"] = _redact_audit_payload(item["response"])
         config_id = item.get("interface_config_id")
@@ -1042,6 +1055,39 @@ def list_nyeos_order_numbers(case_ids: list[int], employee_id: str) -> dict[int,
         entry_no = str(detail.get("entry_no") or "").strip()
         if entry_no:
             result.setdefault(case_id, entry_no)
+    return result
+
+
+def list_erp_order_numbers(case_ids: list[int], employee_id: str) -> dict[int, str]:
+    """Return ERP order numbers from the latest successful generation response."""
+    ids = sorted({int(case_id) for case_id in case_ids if int(case_id) > 0})
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    with db_cursor() as conn:
+        rows = conn.execute(
+            f"""SELECT case_id,response_json FROM order_interface_call_logs
+                WHERE employee_id=? AND interface_key='domestic_order_entry'
+                  AND status='success' AND case_id IN ({placeholders})
+                ORDER BY id DESC""",
+            (employee_id, *ids),
+        ).fetchall()
+    result: dict[int, str] = {}
+    for row in rows:
+        case_id = int(row["case_id"])
+        if case_id in result:
+            continue
+        response = _json(row["response_json"], {})
+        data = response.get("data") if isinstance(response.get("data"), dict) else {}
+        records = [item for item in data.get("data") or [] if isinstance(item, dict)]
+        erp_map = data.get("erpOrderMap") if isinstance(data.get("erpOrderMap"), dict) else {}
+        numbers = []
+        for item in records:
+            value = str(item.get("scta39") or erp_map.get(str(item.get("sctaCode") or "")) or "").strip()
+            if value and value not in numbers:
+                numbers.append(value)
+        if numbers:
+            result[case_id] = "、".join(numbers)
     return result
 
 
@@ -1094,15 +1140,16 @@ def _insert_call_log(conn: Any, *, case_id: int, template_id: int, employee_id: 
                      config: dict[str, Any], status: str, request_payload: dict[str, Any],
                      response_payload: dict[str, Any], triggered_by: str, error_message: str = "",
                      is_mock: bool = True, http_status: int | None = None,
-                     duration_ms: int | None = 1, interface_key: str = "material_batch_query") -> int:
+                     duration_ms: int | None = 1, interface_key: str = "material_batch_query",
+                     order_group_id: int | None = None) -> int:
     if is_mock and http_status is None:
         http_status = 200 if status == "success" else 422
     cursor = conn.execute(
         """INSERT INTO order_interface_call_logs
-           (case_id,template_id,employee_id,interface_config_id,interface_key,config_version,is_mock,
+           (case_id,template_id,order_group_id,employee_id,interface_config_id,interface_key,config_version,is_mock,
             status,http_status,duration_ms,request_json,response_json,error_message,triggered_by,created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (case_id, template_id, employee_id, int(config["id"]), interface_key,
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (case_id, template_id, order_group_id, employee_id, int(config["id"]), interface_key,
          int(config["config_version"]), int(is_mock), status, http_status, duration_ms,
          json.dumps(request_payload, ensure_ascii=False), json.dumps(response_payload, ensure_ascii=False),
          error_message, triggered_by, utcnow()),
@@ -1140,7 +1187,7 @@ def _upsert_resolution_task(conn: Any, *, case_id: int, template_id: int, employ
 
 
 def _backfill_material_line(conn: Any, *, template_id: int, line_no: int, values: dict[str, Any],
-                            factory_part_no: str, product_name: str, correlation_id: str,
+                            factory_part_no: str, product_name: str, correlation_id: str, old_product_name: str = "",
                             source_label: str = "料号查询接口（Mock）") -> list[dict[str, Any]]:
     """Fill blanks and replace the interface's temporary creation message."""
     before = dict(values)
@@ -1149,7 +1196,11 @@ def _backfill_material_line(conn: Any, *, template_id: int, line_no: int, values
     ).fetchone()
     sources = _json(sources_row["sources_json"] if sources_row else "", {})
     changes: list[dict[str, Any]] = []
-    for field, value in (("product_code", factory_part_no), ("product_name", product_name)):
+    for field, value in (
+        ("product_code", factory_part_no),
+        ("product_name", product_name),
+        ("old_product_name", old_product_name),
+    ):
         if value and str(values.get(field) or "").strip() in {"", "创建料号中"}:
             values[field] = value
             sources[field] = {"label": source_label, "reference": f"关联号 {correlation_id}"}
@@ -1171,8 +1222,8 @@ def _mock_material_response(item: dict[str, Any], *, callback_requery: bool = Fa
         return {"line_no": line_no, "status": "failed", "message": "缺少客户产品编号，无法查询料号。"}
     if callback_requery or line_no % 3 == 1:
         candidates = [
-            {"factory_part_no": f"MOCK-{code[-6:]}", "product_name": f"Mock 品名 {code[-4:]}"},
-            {"factory_part_no": f"MOCK-{code[-6:]}-ALT", "product_name": f"Mock 品名 {code[-4:]} 备选"},
+            {"factory_part_no": f"MOCK-{code[-6:]}", "product_name": f"Mock 品名 {code[-4:]}", "old_product_name": f"Mock 旧品名 {code[-4:]}"},
+            {"factory_part_no": f"MOCK-{code[-6:]}-ALT", "product_name": f"Mock 品名 {code[-4:]} 备选", "old_product_name": f"Mock 旧品名 {code[-4:]} 备选"},
         ]
         return {"line_no": line_no, "status": "matched", **candidates[0], "candidates": candidates,
                 "matched_spec": item["customer_spec_match"] or item["customer_spec"],
@@ -1185,17 +1236,23 @@ def _mock_material_response(item: dict[str, Any], *, callback_requery: bool = Fa
 
 def build_material_query(
     case_id: int, employee_id: str, triggered_by: str, *, line_nos: set[int] | None = None,
+    group_key: str = "",
 ) -> dict[str, Any]:
     config = get_interface_config("material_batch_query")
     if not config or not config.get("enabled"):
         raise ValueError("批量料号查询接口未启用")
     if str(config.get("mode") or "mock") == "real":
-        return build_material_query_real(case_id, employee_id, triggered_by, config=config, line_nos=line_nos)
-    return build_material_query_mock(case_id, employee_id, triggered_by, line_nos=line_nos)
+        return build_material_query_real(
+            case_id, employee_id, triggered_by, config=config, line_nos=line_nos, group_key=group_key,
+        )
+    return build_material_query_mock(
+        case_id, employee_id, triggered_by, line_nos=line_nos, group_key=group_key,
+    )
 
 
 def _save_material_creation_lines(
     case_id: int, employee_id: str, triggered_by: str, lines: list[dict[str, Any]],
+    group_key: str = "",
 ) -> tuple[int, set[int]]:
     template_id = _case_template_id(case_id, employee_id)
     if not template_id:
@@ -1214,14 +1271,18 @@ def _save_material_creation_lines(
     changes: list[dict[str, Any]] = []
     now = utcnow()
     with db_cursor() as conn:
-        template = conn.execute(
-            "SELECT header_json FROM order_entry_templates WHERE id=?", (template_id,)
-        ).fetchone()
-        header = _json(template["header_json"] if template else "", {})
+        group, group_rows = _domestic_group_data(conn, template_id, group_key)
+        if str(group.get("status") or "") == "submitted":
+            raise ValueError("当前 PO 已提交，不能新建料号")
+        header = group["header"]
         customer_code = str(header.get("bill_to_customer_code") or "").strip()
+        allowed_line_nos = {int(row["line_no"]) for row in group_rows}
         rows = conn.execute(
-            "SELECT line_no,values_json,sources_json FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no",
-            (template_id,),
+            """SELECT line_no,values_json,sources_json FROM order_entry_template_lines
+               WHERE template_id=? AND line_no IN ({}) ORDER BY line_no""".format(
+                ",".join("?" for _ in allowed_line_nos) or "NULL"
+            ),
+            (template_id, *sorted(allowed_line_nos)),
         ).fetchall()
         stored = {int(row["line_no"]): row for row in rows}
         for line_no, raw in submitted.items():
@@ -1290,6 +1351,7 @@ def _save_material_creation_lines(
 
 def build_material_creation(
     case_id: int, employee_id: str, triggered_by: str, lines: list[dict[str, Any]],
+    group_key: str = "",
 ) -> dict[str, Any]:
     """Persist the creation dialog and submit only blank material rows."""
     if is_domestic_order_entry_completed(case_id, employee_id):
@@ -1297,13 +1359,17 @@ def build_material_creation(
     config = get_interface_config("material_batch_query")
     if not config or not config.get("enabled"):
         raise ValueError("料号查询接口未启用")
-    _template_id, line_nos = _save_material_creation_lines(case_id, employee_id, triggered_by, lines)
+    _template_id, line_nos = _save_material_creation_lines(
+        case_id, employee_id, triggered_by, lines, group_key,
+    )
     if str(config.get("mode") or "mock") == "real":
         return build_material_query_real(
-            case_id, employee_id, triggered_by, config=config, line_nos=line_nos, create_mode=True,
+            case_id, employee_id, triggered_by, config=config, line_nos=line_nos,
+            create_mode=True, group_key=group_key,
         )
     result = build_material_query_mock(
         case_id, employee_id, triggered_by, line_nos=line_nos, force_create=True,
+        group_key=group_key,
     )
     result["mode"] = "mock"
     return result
@@ -1544,10 +1610,11 @@ def select_order_change_candidate(
     return selected
 
 
-def query_order_info(
+def _query_order_info(
     case_id: int, template_id: int, employee_id: str, triggered_by: str, order_numbers: list[Any],
+    *, persist_matches: bool,
 ) -> dict[str, Any]:
-    """Query existing orders using only the customer order-number list.
+    """Query existing orders and optionally persist modification-line matches.
 
     The modification-template page deliberately does not send its other
     columns as filters. They remain editable business data, while this lookup
@@ -1564,10 +1631,15 @@ def query_order_info(
 
     if mode == "mock":
         with db_cursor() as conn:
+            template_row = conn.execute(
+                "SELECT header_json FROM order_entry_templates WHERE id=?", (template_id,),
+            ).fetchone()
             template_rows = conn.execute(
                 "SELECT values_json FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no",
                 (template_id,),
             ).fetchall()
+        template_header = _json(template_row["header_json"], {}) if template_row else {}
+        header_order_number = _match_text(template_header.get("customer_order_number"))
         template_values = [_json(row["values_json"], {}) for row in template_rows]
         order_list = [
             {
@@ -1584,7 +1656,13 @@ def query_order_info(
                         "sctb05": values.get("quantity", ""), "sctb23": values.get("quantity", ""),
                     }
                     for line_index, values in enumerate(template_values, start=1)
-                    if _match_text(values.get("customer_order_number")) == _match_text(number)
+                    if (
+                        _match_text(values.get("customer_order_number")) == _match_text(number)
+                        or (
+                            not _match_text(values.get("customer_order_number"))
+                            and header_order_number == _match_text(number)
+                        )
+                    )
                 ],
             }
             for index, number in enumerate(numbers, start=1)
@@ -1603,10 +1681,11 @@ def query_order_info(
             matches = _store_order_change_matches(
                 conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
                 call_id=call_id, response_payload=response_payload,
-            )
+            ) if persist_matches else []
             record_order_detail_event(
                 conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
-                event_type="order_info_query_mock", title="查询订单信息（Mock）完成",
+                event_type=("order_info_query_mock" if persist_matches else "order_reply_info_query_mock"),
+                title=("查询订单信息（Mock）完成" if persist_matches else "回复邮件查询订单信息（Mock）完成"),
                 detail={"call_id": call_id, "order_count": len(order_list), "order_numbers": numbers,
                         "matched_count": sum(item["status"] == "matched" for item in matches)},
                 operated_by=triggered_by,
@@ -1632,10 +1711,15 @@ def query_order_info(
         matches = _store_order_change_matches(
             conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
             call_id=call_id, response_payload=response_payload,
-        ) if status == "success" else []
+        ) if status == "success" and persist_matches else []
         record_order_detail_event(
             conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
-            event_type="order_info_query_real", title=f"查询订单信息（真实接口）{'完成' if status == 'success' else '失败'}",
+            event_type=("order_info_query_real" if persist_matches else "order_reply_info_query_real"),
+            title=(
+                f"查询订单信息（真实接口）{'完成' if status == 'success' else '失败'}"
+                if persist_matches else
+                f"回复邮件查询订单信息（真实接口）{'完成' if status == 'success' else '失败'}"
+            ),
             detail={"call_id": call_id, "order_numbers": numbers, "error_message": error_message},
             operated_by=triggered_by,
         )
@@ -1643,6 +1727,160 @@ def query_order_info(
         raise ValueError(error_message)
     return {"call_id": call_id, "status": status, "mode": "real", "response": response_payload,
             "matches": matches}
+
+
+def query_order_info(
+    case_id: int, template_id: int, employee_id: str, triggered_by: str, order_numbers: list[Any],
+) -> dict[str, Any]:
+    """Query orders for the modification workflow and persist line matches."""
+    return _query_order_info(
+        case_id, template_id, employee_id, triggered_by, order_numbers,
+        persist_matches=True,
+    )
+
+
+def _expected_arrival_date(customer_demand_date: Any, transit_days: Any) -> str:
+    demand_date = normalize_date(customer_demand_date)
+    days_text = str(transit_days or "").strip()
+    if not demand_date or not re.fullmatch(r"\d+", days_text):
+        return ""
+    try:
+        return (datetime.fromisoformat(demand_date) + timedelta(days=int(days_text))).date().isoformat()
+    except (OverflowError, ValueError):
+        return ""
+
+
+def _order_info_display_result(
+    response_payload: dict[str, Any], *, transit_days: Any = None,
+) -> dict[str, Any]:
+    data = response_payload.get("data") if isinstance(response_payload.get("data"), dict) else {}
+    orders: list[dict[str, Any]] = []
+    for order in data.get("orderList") or []:
+        if not isinstance(order, dict):
+            continue
+        details = []
+        for detail in order.get("sctbList") or []:
+            if not isinstance(detail, dict):
+                continue
+            details.append({
+                "item_no": detail.get("sctb35", ""),
+                "factory_part_code": detail.get("sctb02", ""),
+                "product_spec": detail.get("sctb03", ""),
+                "customer_part_code": detail.get("sctb14", ""),
+                "customer_order_number": detail.get("sctb15", ""),
+                "customer_spec": detail.get("sctb36", ""),
+                "quantity": detail.get("sctb05", ""),
+                "outstanding_quantity": detail.get("sctb23", ""),
+                "tax_price": detail.get("sctb06", ""),
+                "untaxed_price": detail.get("sctb07", ""),
+                "demand_date": detail.get("sctb16", ""),
+                "expected_ship_date": detail.get("sctb17", ""),
+                "expected_arrival_date": _expected_arrival_date(detail.get("sctb16"), transit_days),
+                "closing_code": detail.get("sctb30", ""),
+                "factory": detail.get("sctb43", ""),
+            })
+        orders.append({
+            "order_number": order.get("scta01", ""),
+            "erp_order_number": order.get("scta39", ""),
+            "customer_order_number": order.get("scta38", ""),
+            "ship_to_customer_id": order.get("scta11", ""),
+            "organization": order.get("acsn", ""),
+            "details": details,
+        })
+    not_found = [str(value) for value in data.get("notFoundList") or [] if str(value).strip()]
+    try:
+        order_count = int(data.get("orderCount"))
+    except (TypeError, ValueError):
+        order_count = len(orders)
+    return {
+        "message": str(response_payload.get("msg") or "查询完成"),
+        "order_count": order_count,
+        "orders": orders,
+        "not_found": not_found,
+    }
+
+
+def query_order_info_readonly(
+    case_id: int, template_id: int, employee_id: str, triggered_by: str, order_numbers: list[Any],
+    *, transit_days: Any = None,
+) -> dict[str, Any]:
+    """Query orders for reply review without changing modification matches."""
+    result = _query_order_info(
+        case_id, template_id, employee_id, triggered_by, order_numbers,
+        persist_matches=False,
+    )
+    return {
+        "call_id": result["call_id"],
+        "status": result["status"],
+        "mode": result["mode"],
+        **_order_info_display_result(result["response"], transit_days=transit_days),
+    }
+
+
+def query_order_info_reply_rows(
+    case_id: int, template_id: int, employee_id: str, triggered_by: str, rows: list[dict[str, Any]],
+    *, transit_days: Any = None,
+) -> dict[str, Any]:
+    """Look up reply-table rows without changing templates or change-order matches."""
+    normalized_rows = []
+    for index, raw in enumerate(rows):
+        if not isinstance(raw, dict):
+            continue
+        values = {
+            "row_id": str(raw.get("row_id") or index),
+            "customer_order_number": _normalize_reply_order_number(raw.get("customer_order_number")),
+            "customer_product_code": str(raw.get("customer_product_code") or "").strip(),
+            "line_no": str(raw.get("line_no") or "").strip(),
+            "quantity": str(raw.get("quantity") or "").strip(),
+        }
+        if values["customer_order_number"]:
+            normalized_rows.append(values)
+    if not normalized_rows:
+        raise ValueError("回复表格中未找到客户 PO 号")
+
+    result = _query_order_info(
+        case_id, template_id, employee_id, triggered_by,
+        [item["customer_order_number"] for item in normalized_rows],
+        persist_matches=False,
+    )
+    candidates = _flatten_order_info_candidates(result["response"])
+    row_matches = []
+    counts = {"matched": 0, "multiple": 0, "unmatched": 0, "invalid_date": 0}
+    for values in normalized_rows:
+        matched = _match_order_change_line(values, candidates)
+        selected = matched["selected"]
+        delivery_reply = _expected_arrival_date(selected.get("sctb16"), transit_days) if selected else ""
+        status = matched["status"]
+        if status == "matched" and not delivery_reply:
+            status = "invalid_date"
+            reason = "未能根据客户需求日和运输天数计算交期"
+        elif status == "matched":
+            reason = ""
+        elif status == "multiple":
+            reason = f"匹配到 {len(matched['candidates'])} 条订单明细，无法自动回填"
+        else:
+            reason = "未找到匹配的订单明细"
+        counts[status] += 1
+        row_matches.append({
+            "row_id": values["row_id"], "status": status,
+            "match_level": matched["match_level"], "delivery_reply": delivery_reply,
+            "reason": reason,
+        })
+    return {
+        "call_id": result["call_id"], "status": result["status"], "mode": result["mode"],
+        **_order_info_display_result(result["response"], transit_days=transit_days),
+        "row_matches": row_matches, "match_counts": counts,
+    }
+
+
+def _normalize_reply_order_number(value: Any) -> str:
+    """Match the PO cleanup used by entry extraction without importing its service."""
+    text = str(value or "").strip()
+    if not text or text.startswith("暂无PO号-"):
+        return ""
+    text = re.sub(r"^(?:建价|估价|报价|询价)\s*[:：-]?\s*", "", text, flags=re.I)
+    match = re.search(r"(?i)(PO(?:[-_][A-Z0-9]+)+)", text)
+    return match.group(1).upper().replace("_", "-") if match else text
 
 
 def _aps_order_demand_request_payload(
@@ -1714,51 +1952,80 @@ def submit_aps_order_demand_import(
     alter_type: str, require_specification: str = "",
 ) -> dict[str, Any]:
     """Submit all confirmed order-change lines to APS and keep a complete audit trail."""
+    with db_cursor() as conn:
+        case = conn.execute(
+            "SELECT status,workflow_stage FROM order_intake_cases WHERE id=? AND employee_id=? AND action_type='order_change'",
+            (case_id, employee_id),
+        ).fetchone()
+        if not case:
+            raise ValueError("修改订单案件不存在或无权操作")
+        if str(case["status"] or "") == "pending_reply":
+            raise ValueError("修改订单已提交 APS，不能重复提交")
+        original_stage = str(case["workflow_stage"] or "")
+        claimed = conn.execute(
+            """UPDATE order_intake_cases SET workflow_stage='aps_submitting',updated_at=?
+               WHERE id=? AND employee_id=? AND action_type='order_change'
+                 AND status<>'pending_reply' AND workflow_stage<> 'aps_submitting'""",
+            (utcnow(), case_id, employee_id),
+        )
+        if not claimed.rowcount:
+            raise ValueError("APS 正在提交，请勿重复操作")
+
+    def release_submission_claim() -> None:
+        with db_cursor() as conn:
+            conn.execute(
+                """UPDATE order_intake_cases SET workflow_stage=?,updated_at=?
+                   WHERE id=? AND employee_id=? AND action_type='order_change' AND status<>'pending_reply'""",
+                (original_stage, utcnow(), case_id, employee_id),
+            )
+
     config = get_interface_config("aps_order_demand_import")
     if not config or not config.get("enabled"):
+        release_submission_claim()
         raise ValueError("APS订单需求导入接口未启用")
-    with db_cursor() as conn:
-        rows = conn.execute(
-            "SELECT line_no,values_json FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no",
-            (template_id,),
-        ).fetchall()
-    matches = get_order_change_matches(case_id, template_id, employee_id)
-    account = get_user(employee_id)
-    creator_name = str(account["display_name"] or "").strip() if account else ""
-    created_at = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
-    request_payload = _aps_order_demand_request_payload(
-        list(rows), matches, alter_type, require_specification, creator_name, created_at,
-    )
-    mode = str(config.get("mode") or "mock")
+    try:
+        with db_cursor() as conn:
+            rows = conn.execute(
+                "SELECT line_no,values_json FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no",
+                (template_id,),
+            ).fetchall()
+        matches = get_order_change_matches(case_id, template_id, employee_id)
+        account = get_user(employee_id)
+        creator_name = str(account["display_name"] or "").strip() if account else ""
+        created_at = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
+        request_payload = _aps_order_demand_request_payload(
+            list(rows), matches, alter_type, require_specification, creator_name, created_at,
+        )
+        mode = str(config.get("mode") or "mock")
 
-    if mode == "mock":
-        response_payload = {
-            "code": 200,
-            "message": f"处理完成。成功接收 {len(request_payload['data'])} 条，失败 0 条",
-            "success_count": len(request_payload["data"]),
-            "fail_count": 0,
-            "failed_details": [],
-        }
-        http_status, duration_ms = 200, 0
-    else:
-        try:
+        if mode == "mock":
+            response_payload = {
+                "code": 200,
+                "message": f"处理完成。成功接收 {len(request_payload['data'])} 条，失败 0 条",
+                "success_count": len(request_payload["data"]),
+                "fail_count": 0,
+                "failed_details": [],
+            }
+            http_status, duration_ms = 200, 0
+        else:
             http_status, response_payload, duration_ms = _post_json_endpoint(
                 config, request_payload, "APS订单需求导入",
             )
-        except ValueError as exc:
-            with db_cursor() as conn:
-                call_id = _insert_call_log(
-                    conn, case_id=case_id, template_id=template_id, employee_id=employee_id, config=config,
-                    status="failed", request_payload=request_payload, response_payload={}, triggered_by=triggered_by,
-                    error_message=str(exc), is_mock=False, http_status=None, duration_ms=None,
-                    interface_key="aps_order_demand_import",
-                )
-                record_order_detail_event(
-                    conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
-                    event_type="aps_order_demand_import_real", title="APS订单需求导入（真实接口）失败",
-                    detail={"call_id": call_id, "error_message": str(exc)}, operated_by=triggered_by,
-                )
-            raise
+    except ValueError as exc:
+        with db_cursor() as conn:
+            call_id = _insert_call_log(
+                conn, case_id=case_id, template_id=template_id, employee_id=employee_id, config=config,
+                status="failed", request_payload=locals().get("request_payload", {}), response_payload={}, triggered_by=triggered_by,
+                error_message=str(exc), is_mock=False, http_status=None, duration_ms=None,
+                interface_key="aps_order_demand_import",
+            )
+            record_order_detail_event(
+                conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
+                event_type="aps_order_demand_import_real", title="APS订单需求导入（真实接口）失败",
+                detail={"call_id": call_id, "error_message": str(exc)}, operated_by=triggered_by,
+            )
+        release_submission_claim()
+        raise
 
     ok, message = _aps_order_demand_result(response_payload, http_status, len(request_payload["data"]))
     with db_cursor() as conn:
@@ -1786,8 +2053,8 @@ def submit_aps_order_demand_import(
             if case and str(case["status"] or "") != "pending_reply":
                 now = utcnow()
                 conn.execute(
-                    "UPDATE order_intake_cases SET status='pending_reply',updated_at=? WHERE id=? AND employee_id=?",
-                    (now, case_id, employee_id),
+                    "UPDATE order_intake_cases SET status='pending_reply',workflow_stage=?,updated_at=? WHERE id=? AND employee_id=?",
+                    (original_stage, now, case_id, employee_id),
                 )
                 conn.execute(
                     """INSERT INTO order_intake_case_events
@@ -1799,6 +2066,12 @@ def submit_aps_order_demand_import(
                         json.dumps({"status": "pending_reply"}, ensure_ascii=False), now,
                     ),
                 )
+        else:
+            conn.execute(
+                """UPDATE order_intake_cases SET workflow_stage=?,updated_at=?
+                   WHERE id=? AND employee_id=? AND action_type='order_change' AND status<>'pending_reply'""",
+                (original_stage, utcnow(), case_id, employee_id),
+            )
     return {
         "call_id": call_id, "status": "success" if ok else "failed", "mode": mode,
         "message": message, "request": request_payload, "response": response_payload,
@@ -1828,6 +2101,7 @@ def _real_material_response_items(
             {
                 "factory_part_no": str(hit.get("peag01") or "").strip(),
                 "product_name": str(hit.get("peag08") or "").strip(),
+                "old_product_name": str(hit.get("peag09") or "").strip(),
             }
             for hit in matched_hits
             if str(hit.get("peag01") or "").strip()
@@ -1858,7 +2132,7 @@ def _real_material_response_items(
 
 def build_material_query_real(
     case_id: int, employee_id: str, triggered_by: str, *, config: dict[str, Any] | None = None,
-    line_nos: set[int] | None = None, create_mode: bool = False,
+    line_nos: set[int] | None = None, create_mode: bool = False, group_key: str = "",
 ) -> dict[str, Any]:
     if is_domestic_order_entry_completed(case_id, employee_id):
         raise ValueError("内销录单已完成，不能再次请求料号查询接口")
@@ -1869,12 +2143,10 @@ def build_material_query_real(
     if not template_id:
         raise ValueError("请先生成录单模板")
     with db_cursor() as conn:
-        template = conn.execute("SELECT header_json FROM order_entry_templates WHERE id=?", (template_id,)).fetchone()
-        rows = conn.execute(
-            "SELECT line_no,values_json FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no",
-            (template_id,),
-        ).fetchall()
-    header = _json(template["header_json"] if template else "", {})
+        group, rows = _domestic_group_data(conn, template_id, group_key)
+    if str(group.get("status") or "") == "submitted":
+        raise ValueError("当前 PO 已提交，不能再次请求料号查询接口")
+    header = group["header"]
     customer_code = str(header.get("bill_to_customer_code") or "").strip()
     if not customer_code:
         raise ValueError("请先填写并保存账款客户编号")
@@ -1900,6 +2172,7 @@ def build_material_query_real(
                 conn, case_id=case_id, template_id=template_id, employee_id=employee_id, config=config,
                 status="failed", request_payload=request_payload, response_payload={}, triggered_by=triggered_by,
                 error_message=str(exc), is_mock=False, http_status=None, duration_ms=None,
+                order_group_id=int(group["id"]) if group.get("id") else None,
             )
             record_order_detail_event(
                 conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
@@ -1917,6 +2190,7 @@ def build_material_query_real(
             status=call_status, request_payload=request_payload, response_payload=response_body,
             triggered_by=triggered_by, error_message="" if call_status == "success" else str(response_body.get("msg") or "查询失败"),
             is_mock=False, http_status=http_status, duration_ms=duration_ms,
+            order_group_id=int(group["id"]) if group.get("id") else None,
         )
         rows_by_line = {int(row["line_no"]): row for row in rows}
         for item, response in zip(request_items, response_items):
@@ -1933,6 +2207,7 @@ def build_material_query_real(
                     conn, template_id=template_id, line_no=item["line_no"], values=values,
                     factory_part_no=str(response.get("factory_part_no") or ""),
                     product_name=str(response.get("product_name") or ""),
+                    old_product_name=str(response.get("old_product_name") or ""),
                     correlation_id=task["correlation_id"],
                     source_label=str(response.get("product_name_source_label") or "料号查询接口（真实）"),
                 )
@@ -1967,7 +2242,8 @@ def build_material_query_real(
 
 def build_material_query_mock(case_id: int, employee_id: str, triggered_by: str, scenario: str = "success",
                               *, line_nos: set[int] | None = None,
-                              callback_requery: bool = False, force_create: bool = False) -> dict[str, Any]:
+                              callback_requery: bool = False, force_create: bool = False,
+                              group_key: str = "") -> dict[str, Any]:
     """Run the production-shaped Mock: hit, creation callback, then automatic backfill."""
     if is_domestic_order_entry_completed(case_id, employee_id):
         raise ValueError("内销录单已完成，不能再次请求料号查询接口")
@@ -1980,14 +2256,17 @@ def build_material_query_mock(case_id: int, employee_id: str, triggered_by: str,
     if not template_id:
         raise ValueError("请先生成录单模板")
     with db_cursor() as conn:
-        rows = conn.execute("SELECT line_no,values_json FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no", (template_id,)).fetchall()
+        group, rows = _domestic_group_data(conn, template_id, group_key)
+        if str(group.get("status") or "") == "submitted":
+            raise ValueError("当前 PO 已提交，不能再次请求料号查询接口")
         selected = [row for row in rows if line_nos is None or int(row["line_no"]) in line_nos]
         request_items = [_material_request_item(int(row["line_no"]), _json(row["values_json"], {})) for row in selected]
         if scenario in {"business_error", "timeout"}:
             message = "Mock 业务错误：订单明细校验未通过。" if scenario == "business_error" else "Mock 超时：请求未返回。"
             call_id = _insert_call_log(conn, case_id=case_id, template_id=template_id, employee_id=employee_id, config=config,
                                         status="failed", request_payload={"items": request_items}, response_payload={"items": [], "message": message},
-                                        triggered_by=triggered_by, error_message=message)
+                                        triggered_by=triggered_by, error_message=message,
+                                        order_group_id=int(group["id"]) if group.get("id") else None)
             record_order_detail_event(conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
                                       event_type="material_query_mock", title="批量料号查询（Mock）失败",
                                       detail={"call_id": call_id, "error_message": message}, operated_by=triggered_by)
@@ -2003,7 +2282,9 @@ def build_material_query_mock(case_id: int, employee_id: str, triggered_by: str,
             for item in request_items
         ]
         call_id = _insert_call_log(conn, case_id=case_id, template_id=template_id, employee_id=employee_id, config=config,
-                                    status="success", request_payload={"items": request_items}, response_payload={"items": response_items}, triggered_by=triggered_by)
+                                    status="success", request_payload={"items": request_items}, response_payload={"items": response_items},
+                                    triggered_by=triggered_by,
+                                    order_group_id=int(group["id"]) if group.get("id") else None)
         all_changes: list[dict[str, Any]] = []
         for row, item, response in zip(selected, request_items, response_items):
             values = _json(row["values_json"], {})
@@ -2017,7 +2298,8 @@ def build_material_query_mock(case_id: int, employee_id: str, triggered_by: str,
                 changes = _backfill_material_line(conn, template_id=template_id, line_no=item["line_no"], values=values,
                                                    factory_part_no=response["factory_part_no"],
                                                    product_name=response["product_name"],
-                                                   correlation_id=task["correlation_id"])
+                                                   correlation_id=task["correlation_id"],
+                                                   old_product_name=str(response.get("old_product_name") or ""))
                 all_changes.extend(changes)
                 conn.execute("UPDATE order_material_resolution_tasks SET resolved_at=?,updated_at=? WHERE id=?", (utcnow(), utcnow(), task["id"]))
             elif status == "creating":
@@ -2107,12 +2389,13 @@ def _material_candidates(result: dict[str, Any]) -> list[dict[str, str]]:
             continue
         candidate = {
             "product_code": str(raw.get("factory_part_no") or raw.get("peag01") or "").strip(),
-            "product_name": str(raw.get("product_name") or raw.get("peag09") or "").strip(),
+            "product_name": str(raw.get("product_name") or raw.get("peag08") or "").strip(),
+            "old_product_name": str(raw.get("old_product_name") or raw.get("peag09") or "").strip(),
         }
         if not candidate["product_code"] or candidate["product_code"] in {"创建料号中", "创建品名中"}:
             continue
-        key = (candidate["product_code"], candidate["product_name"])
-        if key == ("", "") or key in seen:
+        key = (candidate["product_code"], candidate["product_name"], candidate["old_product_name"])
+        if key == ("", "", "") or key in seen:
             continue
         seen.add(key)
         candidates.append(candidate)
@@ -2128,6 +2411,7 @@ def _selected_material_candidate(
     selected = {
         "product_code": str(raw.get("product_code") or "").strip(),
         "product_name": str(raw.get("product_name") or "").strip(),
+        "old_product_name": str(raw.get("old_product_name") or "").strip(),
     }
     if not selected["product_code"] and not selected["product_name"]:
         return None
@@ -2147,10 +2431,6 @@ def select_material_candidate(
     template_id = _case_template_id(case_id, employee_id)
     if not template_id:
         raise ValueError("请先生成录单模板")
-    selected = {
-        "product_code": str(product_code or "").strip(),
-        "product_name": str(product_name or "").strip(),
-    }
     with db_cursor() as conn:
         task = conn.execute(
             """SELECT * FROM order_material_resolution_tasks
@@ -2164,7 +2444,15 @@ def select_material_candidate(
         candidates = _material_candidates(result)
         if len(candidates) < 2:
             raise ValueError("本行没有需要确认的多个候选料号")
-        if selected not in candidates:
+        selected = next(
+            (
+                candidate for candidate in candidates
+                if candidate["product_code"] == str(product_code or "").strip()
+                and candidate["product_name"] == str(product_name or "").strip()
+            ),
+            None,
+        )
+        if selected is None:
             raise ValueError("所选料号不在本次接口返回的候选列表中")
         line = conn.execute(
             "SELECT values_json,sources_json FROM order_entry_template_lines WHERE template_id=? AND line_no=?",
@@ -2211,18 +2499,61 @@ def select_material_candidate(
     return {"line_no": int(line_no), "selected_candidate": selected, "changes": changes}
 
 
-def validate_domestic_order_entry(case_id: int, employee_id: str) -> list[str]:
+def _domestic_group_data(conn: Any, template_id: int, group_key: str = "") -> tuple[dict[str, Any], list[Any]]:
+    groups = conn.execute(
+        "SELECT * FROM order_entry_template_groups WHERE template_id=? ORDER BY sort_order,id",
+        (template_id,),
+    ).fetchall()
+    if not groups:
+        template = conn.execute("SELECT header_json FROM order_entry_templates WHERE id=?", (template_id,)).fetchone()
+        rows = conn.execute(
+            "SELECT line_no,values_json FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no",
+            (template_id,),
+        ).fetchall()
+        return {
+            "id": None, "group_key": "", "status": "pending",
+            "header": _json(template["header_json"] if template else "", {}),
+        }, list(rows)
+    selected = next((row for row in groups if str(row["group_key"]) == str(group_key or "")), None)
+    if selected is None and len(groups) == 1 and not group_key:
+        selected = groups[0]
+    if selected is None:
+        raise ValueError("请选择需要处理的 PO 分组")
+    rows = conn.execute(
+        """SELECT line_no,values_json FROM order_entry_template_lines
+           WHERE template_id=? AND group_id=? ORDER BY line_no""",
+        (template_id, int(selected["id"])),
+    ).fetchall()
+    group_header = _json(selected["header_json"], {})
+    if len(groups) == 1 and not group_key:
+        legacy_template = conn.execute(
+            "SELECT header_json FROM order_entry_templates WHERE id=?", (template_id,)
+        ).fetchone()
+        group_header = {**group_header, **_json(legacy_template["header_json"] if legacy_template else "", {})}
+    return {
+        **_row(selected),
+        "header": group_header,
+    }, list(rows)
+
+
+def validate_domestic_order_entry(case_id: int, employee_id: str, group_key: str = "") -> list[str]:
     template_id = _case_template_id(case_id, employee_id)
     if not template_id:
         return ["请先生成并保存录单模板"]
     with db_cursor() as conn:
-        lines = conn.execute("SELECT line_no,values_json FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no", (template_id,)).fetchall()
+        group, lines = _domestic_group_data(conn, template_id, group_key)
         tasks = conn.execute(
             "SELECT line_no,status,result_json FROM order_material_resolution_tasks WHERE template_id=?",
             (template_id,),
         ).fetchall()
     states = {int(row["line_no"]): _row(row) for row in tasks}
     issues = []
+    if str(group.get("status") or "") == "submitted":
+        issues.append("当前 PO 已提交，不能重复提交")
+    if not str((group.get("header") or {}).get("customer_order_number") or "").strip():
+        issues.append("当前分组尚未填写客户订单号")
+    if not lines:
+        issues.append("当前 PO 没有订单明细")
     for row in lines:
         line_no, values = int(row["line_no"]), _json(row["values_json"], {})
         task = states.get(line_no, {})
@@ -2236,7 +2567,7 @@ def validate_domestic_order_entry(case_id: int, employee_id: str) -> list[str]:
     return issues
 
 
-def prepare_domestic_order_entry(case_id: int, employee_id: str) -> dict[str, Any]:
+def prepare_domestic_order_entry(case_id: int, employee_id: str, group_key: str = "") -> dict[str, Any]:
     """Build the existing NYEOS domestic-entry payload without submitting it.
 
     This is deliberately a service-layer operation, so Connector/API clients
@@ -2250,15 +2581,12 @@ def prepare_domestic_order_entry(case_id: int, employee_id: str) -> dict[str, An
     template_id = _case_template_id(case_id, employee_id)
     if not template_id:
         raise ValueError("请先生成并保存录单模板")
-    issues = validate_domestic_order_entry(case_id, employee_id)
+    issues = validate_domestic_order_entry(case_id, employee_id, group_key)
     with db_cursor() as conn:
-        template = conn.execute("SELECT header_json FROM order_entry_templates WHERE id=?", (template_id,)).fetchone()
-        rows = conn.execute(
-            "SELECT line_no,values_json FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no", (template_id,)
-        ).fetchall()
+        group, rows = _domestic_group_data(conn, template_id, group_key)
     try:
         payload = _domestic_order_request_payload(
-            _json(template["header_json"] if template else "", {}), list(rows), employee_id
+            group["header"], list(rows), employee_id
         )
     except ValueError as exc:
         # A preview must show all business blockers rather than pretending the
@@ -2288,21 +2616,45 @@ def is_domestic_order_entry_completed(case_id: int, employee_id: str) -> bool:
     review after entry, but it must not submit the same order a second time.
     """
     with db_cursor() as conn:
+        groups = conn.execute(
+            """SELECT groups.status,groups.order_number
+               FROM order_entry_template_groups groups
+               JOIN order_entry_templates template ON template.id=groups.template_id
+               WHERE template.case_id=? AND template.employee_id=?""",
+            (case_id, employee_id),
+        ).fetchall()
+        if groups:
+            return all(
+                str(row["status"] or "") == "submitted" and str(row["order_number"] or "").strip()
+                for row in groups
+            )
         row = conn.execute(
             """SELECT 1 FROM order_interface_call_logs
                WHERE case_id=? AND employee_id=? AND interface_key='domestic_order_entry'
-                 AND status='success'
-               LIMIT 1""",
+                 AND status='success' LIMIT 1""",
             (case_id, employee_id),
         ).fetchone()
-    return bool(row)
+        return bool(row)
 
 
-def build_domestic_order_entry_mock(case_id: int, employee_id: str, triggered_by: str) -> dict[str, Any]:
+def _complete_case_after_group_submissions(case_id: int, employee_id: str) -> None:
+    if not is_domestic_order_entry_completed(case_id, employee_id):
+        return
+    now = utcnow()
+    with db_cursor() as conn:
+        conn.execute(
+            """UPDATE order_intake_cases
+               SET status='archived',workflow_stage='completed',erp_prepare_status='submitted',
+                   completed_at=?,updated_at=? WHERE id=? AND employee_id=?""",
+            (now, now, case_id, employee_id),
+        )
+
+
+def build_domestic_order_entry_mock(
+    case_id: int, employee_id: str, triggered_by: str, group_key: str = "",
+) -> dict[str, Any]:
     """Record a manual domestic-order submission Mock without changing the template."""
-    if is_domestic_order_entry_completed(case_id, employee_id):
-        raise ValueError("内销录单已完成，不能重复提交")
-    issues = validate_domestic_order_entry(case_id, employee_id)
+    issues = validate_domestic_order_entry(case_id, employee_id, group_key)
     if issues:
         raise ValueError("暂不能提交录单：" + "；".join(issues))
     config = get_interface_config("domestic_order_entry")
@@ -2312,15 +2664,9 @@ def build_domestic_order_entry_mock(case_id: int, employee_id: str, triggered_by
     if not template_id:
         raise ValueError("请先生成并保存录单模板")
     with db_cursor() as conn:
-        template = conn.execute(
-            "SELECT header_json,current_version FROM order_entry_templates WHERE id=?", (template_id,)
-        ).fetchone()
-        lines = conn.execute(
-            "SELECT line_no,values_json FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no",
-            (template_id,),
-        ).fetchall()
+        group, lines = _domestic_group_data(conn, template_id, group_key)
         request_payload = {
-            "header": _json(template["header_json"], {}),
+            "header": group["header"],
             "items": [{"line_no": int(row["line_no"]), **_json(row["values_json"], {})} for row in lines],
         }
         response_payload = {
@@ -2330,63 +2676,63 @@ def build_domestic_order_entry_mock(case_id: int, employee_id: str, triggered_by
         now = utcnow()
         cursor = conn.execute(
             """INSERT INTO order_interface_call_logs
-               (case_id,template_id,employee_id,interface_config_id,interface_key,config_version,is_mock,
+               (case_id,template_id,order_group_id,employee_id,interface_config_id,interface_key,config_version,is_mock,
                 status,http_status,duration_ms,request_json,response_json,error_message,triggered_by,created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
-                case_id, template_id, employee_id, int(config["id"]), "domestic_order_entry",
+                case_id, template_id, group.get("id"), employee_id, int(config["id"]), "domestic_order_entry",
                 int(config["config_version"]), 1, "success", 200, 1,
                 json.dumps(request_payload, ensure_ascii=False), json.dumps(response_payload, ensure_ascii=False),
                 "", triggered_by, now,
             ),
         )
         call_id = int(cursor.lastrowid)
-        conn.execute(
-            """UPDATE order_intake_cases
-               SET status='archived', workflow_stage='completed', erp_prepare_status='submitted',
-                   completed_at=?, updated_at=?
-               WHERE id=? AND employee_id=?""",
-            (now, now, case_id, employee_id),
-        )
+        if group.get("id"):
+            conn.execute(
+                """UPDATE order_entry_template_groups
+                   SET status='submitted',nyeos_order_number=?,submitted_at=?,updated_at=? WHERE id=?""",
+                (response_payload["entry_no"], now, now, int(group["id"])),
+            )
         record_order_detail_event(
             conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
             event_type="domestic_order_entry_mock", title="提交内销录单（Mock）完成",
-            detail={"call_id": call_id, "line_count": len(lines), "entry_no": response_payload["entry_no"]},
+            detail={"call_id": call_id, "group_key": group.get("group_key"), "line_count": len(lines), "entry_no": response_payload["entry_no"]},
             operated_by=triggered_by,
         )
-    return {"call_id": call_id, "entry_no": response_payload["entry_no"], "status": "success", "mode": "mock"}
+    _complete_case_after_group_submissions(case_id, employee_id)
+    return {"call_id": call_id, "entry_no": response_payload["entry_no"], "status": "success", "mode": "mock", "group_key": group.get("group_key")}
 
 
-def review_domestic_order_entry_prices(case_id: int, employee_id: str) -> dict[str, Any]:
+def review_domestic_order_entry_prices(
+    case_id: int, employee_id: str, group_key: str = "",
+) -> dict[str, Any]:
     """Check current template values against the saved price-review snapshot."""
     template_id = _case_template_id(case_id, employee_id)
     if not template_id:
         return {"association": {}, "tax_mode": "unknown", "by_line": {}, "mismatches": []}
     with db_cursor() as conn:
-        template = conn.execute("SELECT header_json FROM order_entry_templates WHERE id=?", (template_id,)).fetchone()
-        rows = conn.execute(
-            "SELECT line_no,values_json FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no", (template_id,)
-        ).fetchall()
+        group, rows = _domestic_group_data(conn, template_id, group_key)
     lines = [
         {"line_no": int(row["line_no"]), "values": _json(row["values_json"], {})}
         for row in rows
     ]
-    header = _json(template["header_json"] if template else "", {})
+    header = group["header"]
     return review_cached_template_prices(header.get(PRICE_REVIEW_SNAPSHOT_KEY), lines)
 
 
 def build_domestic_order_entry(
-    case_id: int, employee_id: str, triggered_by: str, *, allow_price_mismatch: bool = False,
+    case_id: int, employee_id: str, triggered_by: str, *, group_key: str = "",
+    allow_price_mismatch: bool = False,
 ) -> dict[str, Any]:
-    price_review = review_domestic_order_entry_prices(case_id, employee_id)
+    price_review = review_domestic_order_entry_prices(case_id, employee_id, group_key)
     if price_review["mismatches"] and not allow_price_mismatch:
         raise PriceMismatchConfirmationRequired(price_review)
     config = get_interface_config("domestic_order_entry")
     if not config or not config.get("enabled"):
         raise ValueError("生成订单接口未启用")
     if str(config.get("mode") or "mock") == "real":
-        return build_domestic_order_entry_real(case_id, employee_id, triggered_by, config=config)
-    return build_domestic_order_entry_mock(case_id, employee_id, triggered_by)
+        return build_domestic_order_entry_real(case_id, employee_id, triggered_by, group_key=group_key, config=config)
+    return build_domestic_order_entry_mock(case_id, employee_id, triggered_by, group_key)
 
 
 def _domestic_order_request_payload(
@@ -2425,6 +2771,7 @@ def _domestic_order_request_payload(
             line_issues.append(f"第 {line_no} 行未填写出货日期")
         if not tax_price and not untaxed_price:
             line_issues.append(f"第 {line_no} 行单价和税前单价至少填写一项")
+        sequence = str(values.get("customer_order_seq") or line_no).strip()
         items.append({
             "customerCode": customer_code,
             "orderType": order_type,
@@ -2434,11 +2781,11 @@ def _domestic_order_request_payload(
             "untaxedPrice": untaxed_price,
             "factoryPartCode": factory_part_code,
             "materialCode": material_code,
-            "lineNumber": str(line_no),
+            "lineNumber": sequence,
             "demandDate": demand_date,
             "orderNumber": order_number,
             "custOrderId": order_number,
-            "lineId": str(values.get("customer_order_seq") or "").strip(),
+            "lineId": sequence,
             "lineRemark": str(values.get("remark") or "").strip(),
             "taxType": str(header.get("tax_type") or "").strip(),
             "materialName": str(values.get("product_name") or "").strip(),
@@ -2451,17 +2798,18 @@ def _domestic_order_request_payload(
 
 def _insert_domestic_call_log(
     conn: Any, *, case_id: int, template_id: int, employee_id: str, config: dict[str, Any],
+    order_group_id: int | None,
     status: str, request_payload: dict[str, Any], response_payload: dict[str, Any],
     triggered_by: str, http_status: int | None, duration_ms: int | None,
     error_message: str = "",
 ) -> int:
     cursor = conn.execute(
         """INSERT INTO order_interface_call_logs
-           (case_id,template_id,employee_id,interface_config_id,interface_key,config_version,is_mock,
+           (case_id,template_id,order_group_id,employee_id,interface_config_id,interface_key,config_version,is_mock,
             status,http_status,duration_ms,request_json,response_json,error_message,triggered_by,created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
-            case_id, template_id, employee_id, int(config["id"]), "domestic_order_entry",
+            case_id, template_id, order_group_id, employee_id, int(config["id"]), "domestic_order_entry",
             int(config["config_version"]), 0, status, http_status, duration_ms,
             json.dumps(request_payload, ensure_ascii=False), json.dumps(response_payload, ensure_ascii=False),
             error_message, triggered_by, utcnow(),
@@ -2493,11 +2841,10 @@ def _domestic_response_result(response_body: dict[str, Any], http_status: int) -
 
 
 def build_domestic_order_entry_real(
-    case_id: int, employee_id: str, triggered_by: str, *, config: dict[str, Any] | None = None,
+    case_id: int, employee_id: str, triggered_by: str, *, group_key: str = "",
+    config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if is_domestic_order_entry_completed(case_id, employee_id):
-        raise ValueError("录单已完成，不能重复提交")
-    issues = validate_domestic_order_entry(case_id, employee_id)
+    issues = validate_domestic_order_entry(case_id, employee_id, group_key)
     if issues:
         raise ValueError("暂不能提交录单：" + "；".join(issues))
     config = config or get_interface_config("domestic_order_entry")
@@ -2507,12 +2854,8 @@ def build_domestic_order_entry_real(
     if not template_id:
         raise ValueError("请先生成并保存录单模板")
     with db_cursor() as conn:
-        template = conn.execute("SELECT header_json FROM order_entry_templates WHERE id=?", (template_id,)).fetchone()
-        rows = conn.execute(
-            "SELECT line_no,values_json FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no",
-            (template_id,),
-        ).fetchall()
-    header = _json(template["header_json"] if template else "", {})
+        group, rows = _domestic_group_data(conn, template_id, group_key)
+    header = group["header"]
     request_payload = _domestic_order_request_payload(header, list(rows), employee_id)
     try:
         http_status, response_body, duration_ms = _post_json_endpoint(config, request_payload, "真实生成订单")
@@ -2520,6 +2863,7 @@ def build_domestic_order_entry_real(
         with db_cursor() as conn:
             call_id = _insert_domestic_call_log(
                 conn, case_id=case_id, template_id=template_id, employee_id=employee_id, config=config,
+                order_group_id=int(group["id"]) if group.get("id") else None,
                 status="failed", request_payload=request_payload, response_payload={}, triggered_by=triggered_by,
                 http_status=None, duration_ms=None, error_message=str(exc),
             )
@@ -2534,24 +2878,35 @@ def build_domestic_order_entry_real(
     with db_cursor() as conn:
         call_id = _insert_domestic_call_log(
             conn, case_id=case_id, template_id=template_id, employee_id=employee_id, config=config,
+            order_group_id=int(group["id"]) if group.get("id") else None,
             status="success" if ok else "failed", request_payload=request_payload,
             response_payload=response_body, triggered_by=triggered_by, http_status=http_status,
             duration_ms=duration_ms, error_message="" if ok else message,
         )
         if ok:
-            conn.execute(
-                """UPDATE order_intake_cases
-                   SET status='archived',workflow_stage='completed',erp_prepare_status='submitted',
-                       completed_at=?,updated_at=? WHERE id=? AND employee_id=?""",
-                (now, now, case_id, employee_id),
-            )
+            response_data = response_body.get("data") if isinstance(response_body.get("data"), dict) else {}
+            records = [item for item in response_data.get("data") or [] if isinstance(item, dict)]
+            erp_map = response_data.get("erpOrderMap") if isinstance(response_data.get("erpOrderMap"), dict) else {}
+            erp_numbers = []
+            for item in records:
+                erp_number = str(item.get("scta39") or erp_map.get(str(item.get("sctaCode") or "")) or "").strip()
+                if erp_number and erp_number not in erp_numbers:
+                    erp_numbers.append(erp_number)
+            if group.get("id"):
+                conn.execute(
+                    """UPDATE order_entry_template_groups
+                       SET status='submitted',nyeos_order_number=?,erp_order_number=?,submitted_at=?,updated_at=?
+                       WHERE id=?""",
+                    (entry_no, "、".join(erp_numbers), now, now, int(group["id"])),
+                )
         record_order_detail_event(
             conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
             event_type="domestic_order_entry_real",
             title="提交录单（真实接口）完成" if ok else "提交录单（真实接口）失败",
-            detail={"call_id": call_id, "line_count": len(rows), "entry_no": entry_no, "error_message": "" if ok else message},
+            detail={"call_id": call_id, "group_key": group.get("group_key"), "line_count": len(rows), "entry_no": entry_no, "error_message": "" if ok else message},
             operated_by=triggered_by,
         )
     if not ok:
         raise ValueError(message)
-    return {"call_id": call_id, "entry_no": entry_no, "status": "success", "mode": "real", "message": message}
+    _complete_case_after_group_submissions(case_id, employee_id)
+    return {"call_id": call_id, "entry_no": entry_no, "status": "success", "mode": "real", "message": message, "group_key": group.get("group_key")}

@@ -646,6 +646,32 @@ def init_db() -> None:
                 enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 100, note TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(customer_id) REFERENCES automation_customers(id) ON DELETE CASCADE
             );
+            CREATE TABLE IF NOT EXISTS automation_customer_spec_mappings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                customer_code TEXT NOT NULL,
+                customer_name TEXT NOT NULL DEFAULT '',
+                product_type TEXT NOT NULL,
+                delimiter TEXT NOT NULL DEFAULT '',
+                glue_system_position INTEGER,
+                thickness_position INTEGER,
+                core_thickness_position INTEGER,
+                dimension_position INTEGER,
+                copper_foil_type_position INTEGER,
+                copper_thickness_position INTEGER,
+                structure_position INTEGER,
+                watermark_position INTEGER,
+                halogen_position INTEGER,
+                rc_position INTEGER,
+                cloth_type_position INTEGER,
+                size_position INTEGER,
+                note TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                source_json TEXT NOT NULL DEFAULT '{}',
+                updated_by TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(customer_code, product_type)
+            );
             CREATE TABLE IF NOT EXISTS automation_customer_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id INTEGER NOT NULL, action TEXT NOT NULL,
                 before_json TEXT NOT NULL DEFAULT '{}', after_json TEXT NOT NULL DEFAULT '{}', operated_by TEXT NOT NULL DEFAULT '',
@@ -656,6 +682,7 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_automation_customer_rules_customer ON automation_customer_routing_rules(customer_id, enabled, priority, id);
             CREATE INDEX IF NOT EXISTS idx_automation_customer_conditions_rule ON automation_customer_routing_conditions(rule_id, scope);
             CREATE INDEX IF NOT EXISTS idx_automation_customer_maps_customer ON automation_customer_extraction_maps(customer_id, enabled, sort_order);
+            CREATE INDEX IF NOT EXISTS idx_customer_spec_mappings_lookup ON automation_customer_spec_mappings(customer_code, product_type, enabled);
 
             -- One domestic order-entry workbook belongs to exactly one routed
             -- mail case. The current editable values live in the header/line
@@ -672,16 +699,35 @@ def init_db() -> None:
                 FOREIGN KEY(case_id) REFERENCES order_intake_cases(id)
             );
 
+            CREATE TABLE IF NOT EXISTS order_entry_template_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                template_id INTEGER NOT NULL,
+                group_key TEXT NOT NULL,
+                order_number TEXT NOT NULL DEFAULT '',
+                header_json TEXT NOT NULL DEFAULT '{}',
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'pending',
+                nyeos_order_number TEXT NOT NULL DEFAULT '',
+                erp_order_number TEXT NOT NULL DEFAULT '',
+                submitted_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(template_id, group_key),
+                FOREIGN KEY(template_id) REFERENCES order_entry_templates(id)
+            );
+
             CREATE TABLE IF NOT EXISTS order_entry_template_lines (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 template_id INTEGER NOT NULL,
+                group_id INTEGER,
                 line_no INTEGER NOT NULL,
                 values_json TEXT NOT NULL DEFAULT '{}',
                 sources_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 UNIQUE(template_id, line_no),
-                FOREIGN KEY(template_id) REFERENCES order_entry_templates(id)
+                FOREIGN KEY(template_id) REFERENCES order_entry_templates(id),
+                FOREIGN KEY(group_id) REFERENCES order_entry_template_groups(id)
             );
 
             CREATE TABLE IF NOT EXISTS order_entry_template_versions (
@@ -756,6 +802,7 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 case_id INTEGER NOT NULL,
                 template_id INTEGER,
+                order_group_id INTEGER,
                 employee_id TEXT NOT NULL,
                 interface_config_id INTEGER,
                 interface_key TEXT NOT NULL,
@@ -771,6 +818,7 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(case_id) REFERENCES order_intake_cases(id),
                 FOREIGN KEY(template_id) REFERENCES order_entry_templates(id),
+                FOREIGN KEY(order_group_id) REFERENCES order_entry_template_groups(id),
                 FOREIGN KEY(interface_config_id) REFERENCES order_interface_configs(id)
             );
             CREATE TABLE IF NOT EXISTS order_material_query_suggestions (
@@ -832,6 +880,8 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_order_entry_templates_case
                 ON order_entry_templates(case_id, employee_id);
+            CREATE INDEX IF NOT EXISTS idx_order_entry_groups_template
+                ON order_entry_template_groups(template_id, sort_order, id);
             CREATE INDEX IF NOT EXISTS idx_order_entry_lines_template
                 ON order_entry_template_lines(template_id, line_no);
             CREATE INDEX IF NOT EXISTS idx_order_entry_template_tasks_case
@@ -847,6 +897,23 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_order_change_line_matches_case
                 ON order_change_line_matches(case_id, employee_id, line_no);
             """
+        )
+
+        order_line_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(order_entry_template_lines)").fetchall()
+        }
+        if "group_id" not in order_line_cols:
+            conn.execute("ALTER TABLE order_entry_template_lines ADD COLUMN group_id INTEGER")
+        call_log_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(order_interface_call_logs)").fetchall()
+        }
+        if "order_group_id" not in call_log_cols:
+            conn.execute("ALTER TABLE order_interface_call_logs ADD COLUMN order_group_id INTEGER")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_order_entry_lines_group ON order_entry_template_lines(group_id, line_no)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_order_interface_logs_group ON order_interface_call_logs(order_group_id, id DESC)"
         )
 
         order_intake_cols = {

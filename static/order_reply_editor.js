@@ -107,6 +107,150 @@
     reply.append(copy);
     reply.scrollIntoView({block:'start'});
   }
+  const compact=value=>String(value||'').toLowerCase().replace(/[\s\-_.:：()（）]/g,'');
+  const headerField=value=>{
+    const text=compact(value);
+    if(/^(po|pono|ponumber|po号|客户订单号|订单号|采购订单号)$/.test(text)) return 'customer_order_number';
+    if(/^(项次|序号|客户项次|item|itemno|linenumber)$/.test(text)) return 'line_no';
+    if(/^(客户料号|客户产品编号|客户产品料号|物料编码|物料代码|料号|customerpart|customermaterial|materialcode)$/.test(text)) return 'customer_product_code';
+    if(/^(客户规格|规格|品名规格|customerspec|specification|description)$/.test(text)) return 'customer_spec';
+    if(/^(数量|采购量|订购数量|订单数量|qty|quantity)$/.test(text)) return 'quantity';
+    if(/^(单价|含税单价|未税单价|税前单价|unitprice|price)$/.test(text)) return 'unit_price';
+    if(/要求交货期|要求交期|客户需求日|需求交期/.test(text)) return '';
+    if(/供应商复期|供应商回复|交期回复|交货回复|交期|交货期|deliveryreply/.test(text)) return 'delivery_reply';
+    return '';
+  };
+  const directCells=row=>[...row.cells].filter(cell=>!cell.querySelector('table'));
+  const textAt=(cells,index)=>index===undefined?'':String(cells[index]?.textContent||'').trim();
+  const poFromText=text=>{
+    const found=[...String(text||'').matchAll(/(?:建价\s*)?\bPO[-\s]?[A-Z0-9][A-Z0-9-]{3,}\b/ig)]
+      .map(item=>item[0].replace(/^建价\s*/i,'').replace(/\s+/g,''));
+    return [...new Set(found)];
+  };
+  function tableInfo(table) {
+    const tableRows=[...table.rows], tableGrid=grid(table);
+    let headerIndex=-1, fields={};
+    // Customer tables often reserve the first rows for form numbers or titles.
+    // Use the row with the most recognizable fields as the header.
+    tableRows.slice(0,8).forEach((row,index)=>{
+      const candidate={};
+      (tableGrid.map[index]||[]).forEach((cell,cellIndex)=>{
+        const field=headerField(cell.textContent);
+        if(field&&!candidate[field]) candidate[field]=cellIndex;
+      });
+      if(Object.keys(candidate).length>Object.keys(fields).length) {
+        fields=candidate;headerIndex=index;
+      }
+    });
+    const tablePos=poFromText(table.textContent);
+    const fallbackPo=fields.customer_order_number===undefined&&tablePos.length===1?tablePos[0]:'';
+    const hasPo=fields.customer_order_number!==undefined||fallbackPo;
+    const hasMaterial=fields.customer_product_code!==undefined;
+    const hasQuantity=fields.quantity!==undefined;
+    const score=(hasPo?3:0)+(hasMaterial?2:0)+(hasQuantity?2:0)
+      +(fields.customer_spec!==undefined?1:0)+(fields.delivery_reply!==undefined?1:0);
+    return {
+      table,tableRows,tableGrid,headerIndex,fields,fallbackPo,score,
+      valid:headerIndex>=0&&hasPo&&hasMaterial&&hasQuantity,
+    };
+  }
+  let replyRowsById=new Map();
+  function replyTables() {
+    initialize();
+    const current=doc();
+    if(!current) return {rows:[],tableCount:0,hasPossibleOrderTable:false};
+    const infos=[...current.querySelectorAll('table')].map(tableInfo);
+    const selected=infos.find(info=>info.valid);
+    if(!selected) return {
+      rows:[],tableCount:0,
+      hasPossibleOrderTable:infos.some(info=>info.score>=3),
+    };
+    const rows=[];
+    let currentPo=selected.fallbackPo;
+    selected.tableRows.slice(selected.headerIndex+1).forEach((row,rowIndex)=>{
+      const sourceIndex=selected.headerIndex+rowIndex+1,cells=selected.tableGrid.map[sourceIndex]||[];
+      if(!cells.length) return;
+      const values={
+        customer_order_number:textAt(cells,selected.fields.customer_order_number)||currentPo,
+        line_no:textAt(cells,selected.fields.line_no),
+        customer_product_code:textAt(cells,selected.fields.customer_product_code),
+        customer_spec:textAt(cells,selected.fields.customer_spec),
+        quantity:textAt(cells,selected.fields.quantity), unit_price:textAt(cells,selected.fields.unit_price),
+      };
+      if(!values.customer_order_number||!values.customer_product_code||!values.quantity) return;
+      currentPo=values.customer_order_number;
+      const rowId=row.dataset.nouyaReplyRowId||`reply-0-${rowIndex}`;
+      row.dataset.nouyaReplyRowId=rowId;
+      rows.push({row_id:rowId,...values});
+      replyRowsById.set(rowId,{
+        row,table:selected.table,headerRow:selected.tableRows[selected.headerIndex],
+        headerIndex:selected.headerIndex,fields:selected.fields,
+      });
+    });
+    return {rows,tableCount:1,hasPossibleOrderTable:true};
+  }
+  function deliveryCell(info,index) {
+    const rowIndex=[...info.table.rows].indexOf(info.row);
+    return (grid(info.table).map[rowIndex]||[])[index];
+  }
+  function appendTableCell(row, tagName) {
+    const reference=directCells(row).at(-1);
+    const cell=reference?reference.cloneNode(false):doc().createElement(tagName);
+    cell.removeAttribute('id');cell.removeAttribute('data-nouya-delivery-reply');
+    cell.rowSpan=1;cell.colSpan=1;cell.textContent='';
+    return cell;
+  }
+  function ensureReplyColumn(info,useExisting=false) {
+    const marked=[...info.headerRow.cells].find(cell=>cell.dataset.nouyaDeliveryReply==='true');
+    if(marked) {
+      const index=grid(info.table).positions.get(marked)?.c;
+      if(index!==undefined) { info.fields.delivery_reply=index; return index; }
+    }
+    let index=info.fields.delivery_reply;
+    if(index!==undefined&&useExisting) return index;
+    index=(grid(info.table).map[info.headerIndex]||[]).length;
+    const head=appendTableCell(info.headerRow,'th');head.textContent='交期回复';head.dataset.nouyaDeliveryReply='true';info.headerRow.append(head);
+    info.fields.delivery_reply=index;
+    [...info.table.rows].slice(info.headerIndex+1).forEach(row=>{
+      if(directCells(row).length)row.append(appendTableCell(row,'td'));
+    });
+    return index;
+  }
+  function replyCell(info) {
+    return deliveryCell(info,info.fields.delivery_reply);
+  }
+  function createReplyTable(rows) {
+    const current=doc(), reply=current?.getElementById('nouya-current-reply');
+    if(!reply) return;
+    reply.querySelector('table[data-nouya-generated-order-table="true"]')?.remove();
+    const table=current.createElement('table');table.style.cssText='border-collapse:collapse;border-color:#9caec4;font-size:14px';
+    table.dataset.nouyaGeneratedOrderTable='true';
+    const headers=[['customer_order_number','PO号'],['line_no','项次'],['customer_product_code','客户料号'],['customer_spec','客户规格'],['quantity','数量'],['unit_price','单价'],['delivery_reply','交期回复']];
+    const head=current.createElement('thead'),headRow=current.createElement('tr');headers.forEach(([,label])=>{const cell=current.createElement('th');cell.textContent=label;headRow.append(cell)});head.append(headRow);table.append(head);
+    const body=current.createElement('tbody');rows.forEach(item=>{const row=current.createElement('tr');row.dataset.nouyaReplyRowId=item.row_id;headers.forEach(([field])=>{const cell=current.createElement('td');cell.textContent=item[field]||'';row.append(cell)});body.append(row)});table.append(body);reply.append(table);reply.scrollIntoView({block:'start'});
+  }
+  function applyReplyMatches(data) {
+    if(data.generated_table) createReplyTable(data.generated_rows||[]);
+    replyRowsById=new Map();replyTables();
+    const infosByTable=new Map();
+    replyRowsById.forEach(info=>{
+      const infos=infosByTable.get(info.table)||[];
+      infos.push(info);infosByTable.set(info.table,infos);
+    });
+    infosByTable.forEach(infos=>{
+      const fieldIndex=infos[0].fields.delivery_reply;
+      const useExisting=fieldIndex!==undefined&&infos.some(info=>!textAt([deliveryCell(info,fieldIndex)],0));
+      const index=ensureReplyColumn(infos[0],useExisting);
+      infos.forEach(info=>{info.fields.delivery_reply=index;});
+    });
+    (data.row_matches||[]).forEach(match=>{
+      const info=replyRowsById.get(String(match.row_id));if(!info) return;
+      const cell=replyCell(info);
+      if(match.status==='matched'&&match.delivery_reply&&!String(cell?.textContent||'').trim()){cell.textContent=match.delivery_reply;cell.removeAttribute('title');}
+      else if(match.reason) cell.title=match.reason;
+    });
+  }
+  globalThis.nouyaReplyTables={collect:replyTables,apply:applyReplyMatches};
   function initialize() {
     const current = doc();
     if (!current || !current.body || current === boundDocument) return;
@@ -127,17 +271,6 @@
     }
     reply.style.minHeight = '';
     reply.setAttribute('aria-label', '本次回复内容');
-    if (!reply.querySelector('table')) {
-      const candidates=[...current.querySelectorAll('table')].filter(table=>{
-        if(reply.contains(table)) return false;
-        // Match direct cells only, not an outer email layout wrapping another table.
-        const text=[...table.rows].slice(0,8).flatMap(row=>[...row.cells])
-          .filter(td=>!td.querySelector('table')).map(td=>td.textContent).join(' ');
-        return /物料|产品|品名|料号|material|description/i.test(text)
-          && /数量|quantity|qty/i.test(text) && /交期|交货|delivery|备注|单价/i.test(text);
-      });
-      if(candidates.length===1) copyOrderTable(candidates[0],reply);
-    }
     const selectCell = node => {
       const element = node && (node.nodeType === 1 ? node : node.parentElement);
       const selected = element?.closest('td,th');

@@ -9,6 +9,7 @@ _IDENTITY_TABLES = {
     "order_mail_routing_rules", "order_mail_routing_rule_events", "order_mail_rule_groups",
     "order_mail_rule_keywords", "order_change_tags", "order_change_tag_keywords",
     "order_entry_templates", "order_entry_template_lines", "order_entry_template_versions",
+    "order_entry_template_groups",
     "order_entry_template_tasks", "order_interface_configs", "order_interface_config_versions",
     "order_entry_detail_events", "order_interface_call_logs", "order_material_query_suggestions",
     "order_material_resolution_tasks", "order_change_line_matches",

@@ -53,6 +53,7 @@ LINE_FIELDS = (
     "quantity", "price_before_tax", "unit_price", "origin",
     "customer_order_seq", "one_to_many", "remark",
 )
+PERSISTED_LINE_FIELDS = (*LINE_FIELDS, "old_product_name", "customer_order_number")
 HEADER_LABELS = {
     "order_type": "单别", "type_1": "类型1", "type_2": "类型2",
     "bill_to_customer_code": "账款客户编号", "ship_to_customer_code": "送货客户编号",
@@ -61,7 +62,7 @@ HEADER_LABELS = {
     "commission_rate": "佣金比率",
 }
 LINE_LABELS = {
-    "line_no": "项次", "material_status": "料号状态", "product_code": "产品编号", "product_name": "品名", "adhesive_code": "胶系编码",
+    "line_no": "项次", "customer_order_number": "客户订单号", "material_status": "料号状态", "product_code": "产品编号", "product_name": "品名", "old_product_name": "旧品名", "adhesive_code": "胶系编码",
     "customer_product_code": "客户产品编号", "customer_spec": "客户规格",
     "customer_spec_match": "客户规格匹配", "product_type": "产品类型（PP、基板）",
     "delivery_date": "出货日期", "quantity": "数量", "price_before_tax": "税前单价",
@@ -96,6 +97,7 @@ MANUAL_ONLY_LINE_FIELDS = {"product_code", "product_name", "origin", "one_to_man
 # of forcing business users to normalise their customers' Excel files first.
 _ATTACHMENT_HEADERS = {
     "line_no": {"序号", "项次", "项目", "行号", "item", "no"},
+    "customer_order_number": {"PO号", "PO单号", "客户订单号", "采购订单号", "订单号", "po no", "po number"},
     "product_code": {"产品编号", "物料编号", "物料编码", "料号", "品号", "厂内料号"},
     "product_name": {"品名", "物料名称", "名称", "产品名称"},
     "customer_product_code": {"客户产品编号", "客户料号", "客户物料编号", "客户产品码", "part no", "p/n"},
@@ -132,6 +134,20 @@ def _json(value: str, fallback: Any) -> Any:
         return fallback
 
 
+def normalize_customer_order_number(value: Any) -> str:
+    """Normalize display prefixes while preserving the customer's real PO."""
+    text = clean_text(value)
+    if not text:
+        return ""
+    if text.startswith("暂无PO号-"):
+        return ""
+    text = re.sub(r"^(?:建价|估价|报价|询价)\s*[:：-]?\s*", "", text, flags=re.I)
+    match = re.search(r"(?i)(PO(?:[-_][A-Z0-9]+)+)", text)
+    if match:
+        return match.group(1).upper().replace("_", "-")
+    return text
+
+
 def _case_for_template(
     case_id: int, employee_id: str, *, action_type: str = "new_order",
 ) -> dict[str, Any]:
@@ -151,7 +167,7 @@ def _blank_line(line_no: int) -> dict[str, str]:
         else "查询"
         if field == "material_status"
         else ""
-        for field in LINE_FIELDS
+        for field in PERSISTED_LINE_FIELDS
     }
 
 
@@ -311,12 +327,56 @@ def _split_demand_delivery_rows(body_text: str, reference_date: Any = "") -> lis
     return result
 
 
+def _split_po_purchase_table_rows(body_text: str, reference_date: Any = "") -> list[dict[str, Any]]:
+    """Parse line-broken mail tables containing PR/PO/material columns."""
+    lines = [" ".join(item.split()) for item in str(body_text or "").splitlines() if item.strip()]
+    required_headers = {"序号", "PR号", "PO号", "物料编码", "物料描述", "需求数量", "需求交期"}
+    if not required_headers.issubset(set(lines)):
+        return []
+    row_starts = [
+        index for index in range(len(lines) - 4)
+        if re.fullmatch(r"[1-9]\d*", lines[index])
+        and re.fullmatch(r"PR[-_A-Z0-9]+", lines[index + 1], re.IGNORECASE)
+        and "PO" in lines[index + 2].upper()
+        and re.fullmatch(r"[A-Z0-9_-]{8,}", lines[index + 3], re.IGNORECASE)
+    ]
+    result: list[dict[str, Any]] = []
+    for position, start in enumerate(row_starts):
+        end = row_starts[position + 1] if position + 1 < len(row_starts) else len(lines)
+        chunk = lines[start:end]
+        date_index = next((
+            index for index, value in enumerate(chunk[4:], start=4)
+            if normalize_date(value) or re.fullmatch(r"\d{1,2}月\d{1,2}日?", value)
+        ), -1)
+        if date_index <= 4 or not re.fullmatch(r"-?\d+(?:\.\d+)?", chunk[date_index - 1].replace(",", "")):
+            continue
+        description = clean_text(" ".join(chunk[4:date_index - 1]))
+        values = {
+            **_blank_line(len(result) + 1),
+            "customer_order_seq": chunk[0],
+            "customer_order_number": normalize_customer_order_number(chunk[2]),
+            "customer_product_code": chunk[3],
+            "customer_spec": description,
+            "quantity": chunk[date_index - 1].replace(",", ""),
+            "delivery_date": _normalize_body_delivery_date(chunk[date_index], reference_date),
+            "remark": clean_text(" ".join(chunk[date_index + 1:])),
+        }
+        result.append(_line_entry(
+            values, label="邮件正文采购表", reference=f"序号 {chunk[0]}",
+            line_no=len(result) + 1, product_context=description,
+        ))
+    return result
+
+
 def _split_body_order_rows(body_text: str, reference_date: Any = "") -> list[dict[str, Any]]:
     """Extract simple ERP-style rows from the line-oriented mail body.
 
     This is a safe first path for HTML mail tables. Attachment-specific parsers
     will feed the same structure in the next extraction layer.
     """
+    po_purchase_rows = _split_po_purchase_table_rows(body_text, reference_date)
+    if po_purchase_rows:
+        return po_purchase_rows
     demand_delivery_rows = _split_demand_delivery_rows(body_text, reference_date)
     if demand_delivery_rows:
         return demand_delivery_rows
@@ -359,7 +419,7 @@ def _line_entry(
     values: dict[str, Any], *, label: str, reference: str, line_no: int = 1, quantity_unit: Any = "", product_context: Any = "",
 ) -> dict[str, Any]:
     line = _blank_line(line_no)
-    for field in LINE_FIELDS:
+    for field in PERSISTED_LINE_FIELDS:
         value = values.get(field)
         if value not in (None, ""):
             line[field] = clean_text(value)
@@ -463,7 +523,7 @@ def _apply_customer_extraction_mappings(
             continue
         target = str(mapping.get("target_field") or "")
         transform = str(mapping.get("transform_type") or "")
-        if target not in LINE_FIELDS:
+        if target not in PERSISTED_LINE_FIELDS:
             continue
         if transform == "manual":
             result[target] = ""
@@ -608,7 +668,10 @@ def _line_from_pipeline_row(
         "quantity": standard.get("数量") or _value_by_alias(original, "数量", "Quantity", "Qty") or "",
         "price_before_tax": raw_before_tax_price or standard.get("不含税单价") or "",
         "unit_price": raw_unit_price or "",
-        "customer_order_number": order_number,
+        "customer_order_number": normalize_customer_order_number(
+            _value_by_alias(original, "PO号", "PO单号", "客户订单号", "采购订单号", "订单号", "PO No", "PO Number")
+            or order_number
+        ),
         "remark": standard.get("备注") or _value_by_alias(original, "备注", "说明", "订单备注") or "",
     }
     values = _apply_customer_extraction_mappings(values, original, customer_mappings or [])
@@ -668,10 +731,15 @@ def _rows_from_shared_purchase_document(
     for index, (line, source_row) in enumerate(
         zip(domestic_data["lines"], source_rows), start=1
     ):
-        values = {field: clean_text(line.get(field)) for field in LINE_FIELDS}
+        values = {field: clean_text(line.get(field)) for field in PERSISTED_LINE_FIELDS}
         values["line_no"] = str(index)
         original = source_row.get("original") or {}
         standard = source_row.get("standard") or {}
+        values["customer_order_number"] = normalize_customer_order_number(
+            _value_by_alias(
+                original, "PO号", "PO单号", "客户订单号", "采购订单号", "订单号", "PO No", "PO Number",
+            ) or values.get("customer_order_number")
+        )
         values = _apply_customer_extraction_mappings(
             values,
             original,
@@ -757,25 +825,44 @@ def _rows_from_word(path: Path, filename: str, customer_mappings: list[dict[str,
 
 
 def _attachment_rows(case: dict[str, Any]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
     customer_mappings = get_enabled_extraction_maps(case.get("customer_id"))
+    attachment_groups: dict[str, list[dict[str, Any]]] = {
+        "excel": [], "pdf_or_image": [], "word": [],
+    }
     for attachment in case.get("attachments") or []:
         if attachment.get("is_inline"):
             continue
-        try:
-            path = resolve_attachment_path(str(attachment.get("stored_path") or ""))
-        except FileNotFoundError:
-            continue
-        if not path.is_file():
-            continue
-        filename, suffix = str(attachment.get("filename") or path.name), path.suffix.lower()
+        filename = str(attachment.get("filename") or "")
+        suffix = Path(filename or str(attachment.get("stored_path") or "")).suffix.lower()
         if suffix in {".xlsx", ".xlsm", ".xls"}:
-            rows.extend(_rows_from_excel(path, filename, customer_mappings=customer_mappings))
+            attachment_groups["excel"].append(attachment)
         elif suffix in {".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}:
-            rows.extend(_rows_from_pdf_or_image(path, filename, customer_mappings=customer_mappings))
+            attachment_groups["pdf_or_image"].append(attachment)
         elif suffix in {".doc", ".docx"}:
-            rows.extend(_rows_from_word(path, filename, customer_mappings=customer_mappings))
-    return rows
+            attachment_groups["word"].append(attachment)
+
+    # Structured Excel data is both faster and more reliable than PDF/OCR.
+    # Only fall back to a lower-priority attachment type when the preferred
+    # tier contains no usable order rows.
+    for group_name in ("excel", "pdf_or_image", "word"):
+        rows: list[dict[str, Any]] = []
+        for attachment in attachment_groups[group_name]:
+            try:
+                path = resolve_attachment_path(str(attachment.get("stored_path") or ""))
+            except FileNotFoundError:
+                continue
+            if not path.is_file():
+                continue
+            filename = str(attachment.get("filename") or path.name)
+            if group_name == "excel":
+                rows.extend(_rows_from_excel(path, filename, customer_mappings=customer_mappings))
+            elif group_name == "pdf_or_image":
+                rows.extend(_rows_from_pdf_or_image(path, filename, customer_mappings=customer_mappings))
+            else:
+                rows.extend(_rows_from_word(path, filename, customer_mappings=customer_mappings))
+        if rows:
+            return rows
+    return []
 
 
 def _line_signature(entry: dict[str, Any]) -> tuple[str, ...]:
@@ -785,7 +872,7 @@ def _line_signature(entry: dict[str, Any]) -> tuple[str, ...]:
     values = entry["values"]
     return tuple(
         _compact_key(values.get(field))
-        for field in ("customer_order_seq", "customer_product_code", "customer_spec", "quantity")
+        for field in ("customer_order_number", "customer_order_seq", "customer_product_code", "customer_spec", "quantity")
     )
 
 
@@ -952,27 +1039,135 @@ def _initial_order_change_template_data(case: dict[str, Any]) -> tuple[dict[str,
     return header, lines or [{"values": _blank_line(1), "sources": {}}]
 
 
+def _initial_order_groups(
+    header: dict[str, Any], lines: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Group extracted lines by their normalized PO in first-seen order."""
+    header_order_number = normalize_customer_order_number(header.get("customer_order_number"))
+    detected = [
+        normalize_customer_order_number((entry.get("values") or {}).get("customer_order_number"))
+        for entry in lines
+    ]
+    known_numbers = list(dict.fromkeys(value for value in detected if value))
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for entry, detected_number in zip(lines, detected):
+        order_number = detected_number
+        if not order_number and len(known_numbers) <= 1:
+            order_number = known_numbers[0] if known_numbers else header_order_number
+        values = entry.get("values") or {}
+        values["customer_order_number"] = order_number
+        buckets.setdefault(order_number, []).append(entry)
+    if not buckets:
+        buckets[header_order_number] = [{"values": _blank_line(1), "sources": {}}]
+
+    groups: list[dict[str, Any]] = []
+    for sort_order, (order_number, group_lines) in enumerate(buckets.items()):
+        group_header = {**DEFAULT_HEADER_VALUES, **header}
+        group_header["customer_order_number"] = order_number
+        groups.append({
+            "group_key": uuid.uuid4().hex,
+            "order_number": order_number,
+            "header": group_header,
+            "sort_order": sort_order,
+            "status": "pending",
+            "lines": group_lines,
+        })
+    return groups
+
+
+def _ensure_template_groups(conn: Any, template: Any) -> list[Any]:
+    """Lazily upgrade a legacy single-header template to one order group."""
+    template_id = int(template["id"])
+    groups = conn.execute(
+        "SELECT * FROM order_entry_template_groups WHERE template_id=? ORDER BY sort_order,id",
+        (template_id,),
+    ).fetchall()
+    if groups:
+        return list(groups)
+    header = {**DEFAULT_HEADER_VALUES, **_json(template["header_json"], {})}
+    order_number = normalize_customer_order_number(header.get("customer_order_number"))
+    header["customer_order_number"] = order_number
+    submitted = conn.execute(
+        """SELECT 1 FROM order_interface_call_logs
+           WHERE template_id=? AND interface_key='domestic_order_entry' AND status='success' LIMIT 1""",
+        (template_id,),
+    ).fetchone()
+    now = utcnow()
+    cursor = conn.execute(
+        """INSERT INTO order_entry_template_groups
+           (template_id,group_key,order_number,header_json,sort_order,status,nyeos_order_number,
+            erp_order_number,submitted_at,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            template_id, f"legacy-{template_id}", order_number,
+            json.dumps(header, ensure_ascii=False), 0,
+            "submitted" if submitted else "pending", "", "", now if submitted else None,
+            str(template["created_at"]), str(template["updated_at"]),
+        ),
+    )
+    group_id = int(cursor.lastrowid)
+    conn.execute(
+        "UPDATE order_entry_template_lines SET group_id=? WHERE template_id=? AND group_id IS NULL",
+        (group_id, template_id),
+    )
+    conn.execute(
+        """UPDATE order_interface_call_logs SET order_group_id=?
+           WHERE template_id=? AND interface_key='domestic_order_entry' AND order_group_id IS NULL""",
+        (group_id, template_id),
+    )
+    return list(conn.execute(
+        "SELECT * FROM order_entry_template_groups WHERE template_id=? ORDER BY sort_order,id",
+        (template_id,),
+    ).fetchall())
+
+
 def _serialize_template(conn, template_id: int) -> dict[str, Any]:
     template = conn.execute("SELECT * FROM order_entry_templates WHERE id=?", (template_id,)).fetchone()
     if not template:
         raise ValueError("录单模板不存在")
+    groups = _ensure_template_groups(conn, template)
     rows = conn.execute(
         "SELECT * FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no,id", (template_id,)
     ).fetchall()
+    serialized_lines = [
+        {
+            "id": row["id"],
+            "group_id": row["group_id"],
+            "line_no": row["line_no"],
+            "values": {**_blank_line(int(row["line_no"])), **_json(row["values_json"], {})},
+            "sources": _json(row["sources_json"], {}),
+        }
+        for row in rows
+    ]
+    group_items = []
+    for group in groups:
+        group_header = {**DEFAULT_HEADER_VALUES, **_json(group["header_json"], {})}
+        group_header["customer_order_number"] = str(group["order_number"] or "")
+        group_lines = [line for line in serialized_lines if int(line.get("group_id") or 0) == int(group["id"])]
+        group_items.append({
+            "id": int(group["id"]),
+            "group_key": str(group["group_key"]),
+            "order_number": str(group["order_number"] or ""),
+            "header": group_header,
+            "sort_order": int(group["sort_order"] or 0),
+            "status": str(group["status"] or "pending"),
+            "submitted": str(group["status"] or "") == "submitted",
+            "nyeos_order_number": str(group["nyeos_order_number"] or ""),
+            "erp_order_number": str(group["erp_order_number"] or ""),
+            "submitted_at": group["submitted_at"],
+            "lines": group_lines,
+        })
+    primary_header = group_items[0]["header"] if group_items else {**DEFAULT_HEADER_VALUES, **_json(template["header_json"], {})}
     result = {
         **dict(template),
-        "header": {**DEFAULT_HEADER_VALUES, **_json(template["header_json"], {})},
-        "lines": [
-            {
-                "id": row["id"],
-                "line_no": row["line_no"],
-                "values": {**_blank_line(int(row["line_no"])), **_json(row["values_json"], {})},
-                "sources": _json(row["sources_json"], {}),
-            }
-            for row in rows
-        ],
+        "header": primary_header,
+        "lines": serialized_lines,
+        "groups": group_items,
     }
     result["lines"] = _apply_customer_spec_matches(result["header"], result["lines"])
+    lines_by_id = {int(line["id"]): line for line in result["lines"]}
+    for group in result["groups"]:
+        group["lines"] = [lines_by_id[int(line["id"])] for line in group["lines"]]
     return result
 
 
@@ -987,13 +1182,34 @@ def get_or_create_template(
         if existing:
             template_id = int(existing["id"])
             template = _serialize_template(conn, template_id)
+            legacy_row = conn.execute(
+                "SELECT header_json FROM order_entry_templates WHERE id=?", (template_id,)
+            ).fetchone()
+            legacy_header = _json(legacy_row["header_json"] if legacy_row else "", {})
+            if len(template.get("groups") or []) == 1:
+                for field in HEADER_FIELDS:
+                    if field == "customer_order_number" and not normalize_customer_order_number(legacy_header.get(field)):
+                        continue
+                    if clean_text(legacy_header.get(field)):
+                        template["header"][field] = clean_text(legacy_header.get(field))
             previous_header = dict(template["header"])
             _apply_matched_customer_code(template["header"], case, overwrite=False)
-            if template["header"] != previous_header:
+            if template["header"] != previous_header or template["header"] != legacy_header:
                 conn.execute(
                     "UPDATE order_entry_templates SET header_json=?,updated_at=? WHERE id=?",
                     (json.dumps(template["header"], ensure_ascii=False), utcnow(), template_id),
                 )
+                for group in template.get("groups") or []:
+                    if group.get("submitted"):
+                        continue
+                    group_header = dict(group.get("header") or {})
+                    for field in ("bill_to_customer_code", "ship_to_customer_code"):
+                        if not clean_text(group_header.get(field)):
+                            group_header[field] = clean_text(template["header"].get(field))
+                    conn.execute(
+                        "UPDATE order_entry_template_groups SET header_json=?,updated_at=? WHERE id=?",
+                        (json.dumps(group_header, ensure_ascii=False), utcnow(), int(group["id"])),
+                    )
                 template = _serialize_template(conn, template_id)
             return case, template
         now = utcnow()
@@ -1002,21 +1218,62 @@ def get_or_create_template(
             if action_type == "new_order"
             else _initial_order_change_template_data(case)
         )
+        initial_groups = _initial_order_groups(initial_header, initial_lines)
+        used_line_nos: set[int] = set()
+        next_line_no = 1
+        for group in initial_groups:
+            for entry in group["lines"]:
+                values = entry["values"]
+                requested = (
+                    clean_text(values.get("customer_order_seq"))
+                    if action_type == "new_order"
+                    else clean_text(values.get("line_no"))
+                ) or clean_text(values.get("line_no"))
+                line_no = int(requested) if re.fullmatch(r"[1-9]\d*", requested or "") else next_line_no
+                if line_no in used_line_nos:
+                    line_no = next_line_no
+                used_line_nos.add(line_no)
+                next_line_no = max(next_line_no, line_no + 1)
+                values["line_no"] = str(line_no)
+                values["customer_order_seq"] = clean_text(values.get("customer_order_seq")) or str(line_no)
         if action_type == "new_order":
-            initial_header[PRICE_REVIEW_SNAPSHOT_KEY] = review_case_template_prices(
-                case, {"header": initial_header, "lines": initial_lines}
+            price_snapshot = review_case_template_prices(
+                case, {"header": initial_header, "lines": [
+                    entry for group in initial_groups for entry in group["lines"]
+                ]}
             )
+            initial_header[PRICE_REVIEW_SNAPSHOT_KEY] = price_snapshot
+            for group in initial_groups:
+                group["header"][PRICE_REVIEW_SNAPSHOT_KEY] = price_snapshot
         cursor = conn.execute(
             "INSERT INTO order_entry_templates(case_id,employee_id,header_json,created_at,updated_at) VALUES (?,?,?,?,?)",
             (case_id, employee_id, json.dumps(initial_header, ensure_ascii=False), now, now),
         )
         template_id = int(cursor.lastrowid)
-        for entry in initial_lines:
-            values = entry["values"]
-            conn.execute(
-                "INSERT INTO order_entry_template_lines(template_id,line_no,values_json,sources_json,created_at,updated_at) VALUES (?,?,?,?,?,?)",
-                (template_id, int(values["line_no"] or 0), json.dumps(values, ensure_ascii=False), json.dumps(entry["sources"], ensure_ascii=False), now, now),
+        for group in initial_groups:
+            group_cursor = conn.execute(
+                """INSERT INTO order_entry_template_groups
+                   (template_id,group_key,order_number,header_json,sort_order,status,nyeos_order_number,
+                    erp_order_number,submitted_at,created_at,updated_at)
+                   VALUES (?,?,?,?,?,'pending','','',NULL,?,?)""",
+                (
+                    template_id, group["group_key"], group["order_number"],
+                    json.dumps(group["header"], ensure_ascii=False), group["sort_order"], now, now,
+                ),
             )
+            group_id = int(group_cursor.lastrowid)
+            for entry in group["lines"]:
+                values = entry["values"]
+                line_no = int(values["line_no"])
+                conn.execute(
+                    """INSERT INTO order_entry_template_lines
+                       (template_id,group_id,line_no,values_json,sources_json,created_at,updated_at)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    (
+                        template_id, group_id, line_no,
+                        json.dumps(values, ensure_ascii=False), json.dumps(entry["sources"], ensure_ascii=False), now, now,
+                    ),
+                )
         record_order_detail_event(
             conn,
             case_id=case_id,
@@ -1024,7 +1281,7 @@ def get_or_create_template(
             employee_id=employee_id,
             event_type="template_extracted" if action_type == "new_order" else "order_change_template_extracted",
             title="已提取内销录单模板" if action_type == "new_order" else "已提取修改订单模板",
-            detail={"line_count": len(initial_lines), "source": "邮件正文和附件"},
+            detail={"line_count": len(initial_lines), "group_count": len(initial_groups), "source": "邮件正文和附件"},
             operated_by=employee_id,
         )
         return case, _serialize_template(conn, template_id)
@@ -1197,30 +1454,34 @@ def _replace_backup(
     )
 
 
-def reextract_template(case_id: int, employee_id: str) -> dict[str, Any]:
+def reextract_template(
+    case_id: int, employee_id: str, *, action_type: str = "new_order",
+) -> dict[str, Any]:
     """Rebuild one saved template's detail rows with the current extraction rules.
 
     The customer/header section is business-maintained and is intentionally left
     untouched. Before replacing the current detail rows, the immediately prior
     contents replace the single backup snapshot.
     """
-    case = _case_for_template(case_id, employee_id)
+    case = _case_for_template(case_id, employee_id, action_type=action_type)
     with db_cursor() as conn:
         row = conn.execute(
             "SELECT id,current_version FROM order_entry_templates WHERE case_id=? AND employee_id=?",
             (case_id, employee_id),
         ).fetchone()
         if not row:
-            raise ValueError("请先打开录单模板")
+            raise ValueError("请先打开修改订单模板" if action_type == "order_change" else "请先打开录单模板")
         template_id = int(row["id"])
         previous = _serialize_template(conn, template_id)
 
     # Recognition can involve OCR and file conversion, so do it outside of the
     # database transaction.  It only reads the original mail and attachments.
-    regenerated_header, regenerated_lines = _initial_template_data(case)
-    price_review_snapshot = review_case_template_prices(
-        case, {"header": regenerated_header, "lines": regenerated_lines}
-    )
+    if action_type == "order_change":
+        regenerated_header, regenerated_lines = _initial_order_change_template_data(case)
+        price_review_snapshot = None
+    else:
+        regenerated_header, regenerated_lines = _initial_template_data(case)
+        price_review_snapshot = None
     now = utcnow()
     previous_lines = [
         {"values": line.get("values") or {}, "sources": line.get("sources") or {}}
@@ -1238,18 +1499,28 @@ def reextract_template(case_id: int, employee_id: str) -> dict[str, Any]:
             if field != PRICE_REVIEW_SNAPSHOT_KEY and clean_text(value)
         },
     }
-    next_header[PRICE_REVIEW_SNAPSHOT_KEY] = price_review_snapshot
+    if price_review_snapshot is not None:
+        next_header[PRICE_REVIEW_SNAPSHOT_KEY] = price_review_snapshot
     backup_version = 1
     current_version = 1
+    submitted_line_nos = {
+        int(line["line_no"])
+        for group in previous.get("groups") or [] if group.get("submitted")
+        for line in group.get("lines") or []
+    } if action_type == "new_order" else set()
 
     with db_cursor() as conn:
         stale_resolution_tasks = conn.execute(
-            """SELECT line_no,status,correlation_id,external_task_id
+            """SELECT id,line_no,status,correlation_id,external_task_id
                FROM order_material_resolution_tasks
                WHERE template_id=?
                ORDER BY line_no""",
             (template_id,),
         ).fetchall()
+        stale_resolution_tasks = [
+            task for task in stale_resolution_tasks
+            if int(task["line_no"]) not in submitted_line_nos
+        ]
         _replace_backup(
             conn,
             template_id=template_id,
@@ -1261,32 +1532,135 @@ def reextract_template(case_id: int, employee_id: str) -> dict[str, Any]:
         # The regenerated detail rows no longer represent the material query
         # input that produced these candidates. Keep the call/event history,
         # but remove the active state so it cannot be selected or backfilled.
-        conn.execute("DELETE FROM order_material_resolution_tasks WHERE template_id=?", (template_id,))
+        for task in stale_resolution_tasks:
+            conn.execute("DELETE FROM order_material_resolution_tasks WHERE id=?", (int(task["id"]),))
         conn.execute(
             "UPDATE order_entry_templates SET header_json=?,current_version=?,updated_at=? WHERE id=?",
             (json.dumps(next_header, ensure_ascii=False), current_version, now, template_id),
         )
-        conn.execute("DELETE FROM order_entry_template_lines WHERE template_id=?", (template_id,))
-        for entry in regenerated_lines:
-            values = entry["values"]
-            conn.execute(
-                "INSERT INTO order_entry_template_lines(template_id,line_no,values_json,sources_json,created_at,updated_at) VALUES (?,?,?,?,?,?)",
-                (
-                    template_id,
-                    int(values["line_no"] or 0),
-                    json.dumps(values, ensure_ascii=False),
-                    json.dumps(entry["sources"], ensure_ascii=False),
-                    now,
-                    now,
-                ),
-            )
+        if action_type == "order_change":
+            conn.execute("DELETE FROM order_entry_template_lines WHERE template_id=?", (template_id,))
+            for entry in regenerated_lines:
+                values = entry["values"]
+                conn.execute(
+                    "INSERT INTO order_entry_template_lines(template_id,line_no,values_json,sources_json,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+                    (
+                        template_id,
+                        int(values["line_no"] or 0),
+                        json.dumps(values, ensure_ascii=False),
+                        json.dumps(entry["sources"], ensure_ascii=False),
+                        now,
+                        now,
+                    ),
+                )
+            invalidate_changed_order_matches(conn, template_id, regenerated_lines)
+        else:
+            submitted_groups = [group for group in previous.get("groups") or [] if group.get("submitted")]
+            submitted_by_order = {
+                normalize_customer_order_number(group.get("order_number")): group
+                for group in submitted_groups if normalize_customer_order_number(group.get("order_number"))
+            }
+            fresh_groups: list[dict[str, Any]] = []
+            ordered_submitted_ids: set[int] = set()
+            next_sort_order = 0
+            for group in _initial_order_groups(next_header, regenerated_lines):
+                submitted_group = submitted_by_order.get(group.get("order_number"))
+                if submitted_group:
+                    submitted_group["next_sort_order"] = next_sort_order
+                    ordered_submitted_ids.add(int(submitted_group["id"]))
+                else:
+                    group["next_sort_order"] = next_sort_order
+                    fresh_groups.append(group)
+                next_sort_order += 1
+            for submitted_group in submitted_groups:
+                if int(submitted_group["id"]) not in ordered_submitted_ids:
+                    submitted_group["next_sort_order"] = next_sort_order
+                    next_sort_order += 1
+            for submitted_group in submitted_groups:
+                conn.execute(
+                    "UPDATE order_entry_template_groups SET sort_order=?,updated_at=? WHERE id=?",
+                    (submitted_group["next_sort_order"], now, int(submitted_group["id"])),
+                )
+            pending_ids = [
+                int(group["id"]) for group in previous.get("groups") or []
+                if not group.get("submitted") and group.get("id")
+            ]
+            if pending_ids:
+                placeholders = ",".join("?" for _ in pending_ids)
+                conn.execute(
+                    f"DELETE FROM order_entry_template_lines WHERE template_id=? AND group_id IN ({placeholders})",
+                    (template_id, *pending_ids),
+                )
+                conn.execute(
+                    f"UPDATE order_interface_call_logs SET order_group_id=NULL "
+                    f"WHERE template_id=? AND order_group_id IN ({placeholders})",
+                    (template_id, *pending_ids),
+                )
+                conn.execute(
+                    f"DELETE FROM order_entry_template_groups WHERE template_id=? AND id IN ({placeholders})",
+                    (template_id, *pending_ids),
+                )
+            used_line_nos = {
+                int(line["line_no"])
+                for group in submitted_groups for line in group.get("lines") or []
+            }
+            next_line_no = max(used_line_nos, default=0) + 1
+            for group in fresh_groups:
+                for entry in group.get("lines") or []:
+                    values = entry["values"]
+                    requested = clean_text(values.get("customer_order_seq")) or clean_text(values.get("line_no"))
+                    line_no = int(requested) if re.fullmatch(r"[1-9]\d*", requested or "") else next_line_no
+                    if line_no in used_line_nos:
+                        line_no = next_line_no
+                    used_line_nos.add(line_no)
+                    next_line_no = max(next_line_no, line_no + 1)
+                    values["line_no"] = str(line_no)
+                    values["customer_order_seq"] = clean_text(values.get("customer_order_seq")) or str(line_no)
+                group_header = {**next_header, **(group.get("header") or {})}
+                group_header[PRICE_REVIEW_SNAPSHOT_KEY] = review_case_template_prices(
+                    case, {"header": group_header, "lines": group.get("lines") or []}
+                )
+                cursor = conn.execute(
+                    """INSERT INTO order_entry_template_groups
+                       (template_id,group_key,order_number,header_json,sort_order,status,
+                        nyeos_order_number,erp_order_number,submitted_at,created_at,updated_at)
+                       VALUES (?,?,?,?,?,'pending','','',NULL,?,?)""",
+                    (
+                        template_id, group["group_key"], group.get("order_number") or "",
+                        json.dumps(group_header, ensure_ascii=False), group["next_sort_order"], now, now,
+                    ),
+                )
+                group_id = int(cursor.lastrowid)
+                for entry in group.get("lines") or []:
+                    values = entry["values"]
+                    line_no = int(values["line_no"])
+                    conn.execute(
+                        """INSERT INTO order_entry_template_lines
+                           (template_id,group_id,line_no,values_json,sources_json,created_at,updated_at)
+                           VALUES (?,?,?,?,?,?,?)""",
+                        (
+                            template_id, group_id, line_no,
+                            json.dumps(values, ensure_ascii=False),
+                            json.dumps(entry["sources"], ensure_ascii=False), now, now,
+                        ),
+                    )
+            primary_group = conn.execute(
+                """SELECT header_json FROM order_entry_template_groups
+                   WHERE template_id=? ORDER BY sort_order,id LIMIT 1""",
+                (template_id,),
+            ).fetchone()
+            if primary_group:
+                conn.execute(
+                    "UPDATE order_entry_templates SET header_json=? WHERE id=?",
+                    (str(primary_group["header_json"]), template_id),
+                )
         record_order_detail_event(
             conn,
             case_id=case_id,
             template_id=template_id,
             employee_id=employee_id,
-            event_type="template_reextracted",
-            title="已重新提取订单明细",
+            event_type=("order_change_template_reextracted" if action_type == "order_change" else "template_reextracted"),
+            title=("已重新提取修改订单明细" if action_type == "order_change" else "已重新提取订单明细"),
             detail={
                 "previous_line_count": len(previous_lines),
                 "line_count": len(regenerated_lines),
@@ -1313,6 +1687,10 @@ def reextract_template(case_id: int, employee_id: str) -> dict[str, Any]:
         "current_version": current_version,
         "template": template,
     }
+
+
+def reextract_order_change_template(case_id: int, employee_id: str) -> dict[str, Any]:
+    return reextract_template(case_id, employee_id, action_type="order_change")
 
 
 def reextract_all_templates(employee_id: str) -> dict[str, Any]:
@@ -1407,7 +1785,9 @@ def get_order_change_template(case_id: int, employee_id: str) -> tuple[dict[str,
 
 def save_order_change_template(case_id: int, employee_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Save the six user-facing fields without entering the domestic order flow."""
-    _case_for_template(case_id, employee_id, action_type="order_change")
+    case = _case_for_template(case_id, employee_id, action_type="order_change")
+    if case.get("status") == "pending_reply":
+        raise ValueError("修改订单已提交 APS，不能再修改模板。")
     raw_lines = payload.get("lines") or []
     if not isinstance(raw_lines, list):
         raise ValueError("修改订单明细格式无效")
@@ -1482,13 +1862,24 @@ def _entry_progress(case_id: int, employee_id: str) -> dict[str, Any]:
             "SELECT current_version FROM order_entry_templates WHERE case_id=? AND employee_id=?",
             (case_id, employee_id),
         ).fetchone()
-        completed = conn.execute(
-            """SELECT 1 FROM order_interface_call_logs
-               WHERE case_id=? AND employee_id=? AND interface_key='domestic_order_entry'
-                 AND status='success'
-               LIMIT 1""",
+        group_counts = conn.execute(
+            """SELECT COUNT(*) AS total,
+                      SUM(CASE WHEN g.status='submitted' THEN 1 ELSE 0 END) AS submitted
+               FROM order_entry_template_groups g
+               JOIN order_entry_templates t ON t.id=g.template_id
+               WHERE t.case_id=? AND t.employee_id=?""",
             (case_id, employee_id),
         ).fetchone()
+        if group_counts and int(group_counts["total"] or 0) > 0:
+            completed = int(group_counts["submitted"] or 0) == int(group_counts["total"])
+        else:
+            completed = bool(conn.execute(
+                """SELECT 1 FROM order_interface_call_logs
+                   WHERE case_id=? AND employee_id=? AND interface_key='domestic_order_entry'
+                     AND status='success'
+                   LIMIT 1""",
+                (case_id, employee_id),
+            ).fetchone())
     version = int(row["current_version"] or 0) if row else 0
     if completed:
         return {
@@ -1570,35 +1961,58 @@ def _template_changes(
 
 def save_template(case_id: int, employee_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     _case_for_template(case_id, employee_id)
-    raw_header = payload.get("header") or {}
-    if not isinstance(raw_header, dict):
-        raise ValueError("表头格式无效")
-    header = dict(DEFAULT_HEADER_VALUES)
-    # The browser submits every header field, so an explicitly cleared input
-    # remains blank.  Programmatic callers that omit a field keep the PDF
-    # template default instead of silently replacing it with an empty value.
-    for field in HEADER_FIELDS:
-        if field in raw_header:
-            header[field] = str(raw_header.get(field) or "").strip()
-    raw_lines = payload.get("lines") or []
-    if not isinstance(raw_lines, list):
-        raise ValueError("明细行格式无效")
-    lines: list[dict[str, Any]] = []
-    for index, raw in enumerate(raw_lines, start=1):
-        values = _clean_values((raw or {}).get("values") or raw or {}, LINE_FIELDS)
-        if not any(values[field] for field in LINE_FIELDS if field not in {"line_no", "material_status"}):
-            continue
-        sequence = _line_sequence(values, index)
-        values["line_no"] = sequence
-        values["customer_order_seq"] = sequence
-        values["material_status"] = values["material_status"] or "查询"
-        if values["material_status"] not in MATERIAL_STATUS_VALUES:
-            raise ValueError(f"第 {index} 行料号状态只能选择“查询”或“新增”")
-        sources = (raw or {}).get("sources") or {}
-        lines.append({"values": values, "sources": sources if isinstance(sources, dict) else {}})
-    if not lines:
-        lines = [{"values": _blank_line(1), "sources": {}}]
-    lines = _apply_customer_spec_matches(header, lines)
+    raw_groups = payload.get("groups")
+    legacy_payload = not isinstance(raw_groups, list)
+    if legacy_payload:
+        raw_groups = [{
+            "group_key": "",
+            "header": payload.get("header") or {},
+            "lines": payload.get("lines") or [],
+        }]
+    if not raw_groups:
+        raise ValueError("至少保留一个 PO 分组")
+
+    prepared_groups: list[dict[str, Any]] = []
+    used_order_numbers: set[str] = set()
+    for group_index, raw_group in enumerate(raw_groups, start=1):
+        if not isinstance(raw_group, dict):
+            raise ValueError("PO 分组格式无效")
+        raw_header = raw_group.get("header") or {}
+        raw_lines = raw_group.get("lines") or []
+        if not isinstance(raw_header, dict) or not isinstance(raw_lines, list):
+            raise ValueError(f"第 {group_index} 个 PO 分组格式无效")
+        header = dict(DEFAULT_HEADER_VALUES)
+        for field in HEADER_FIELDS:
+            if field in raw_header:
+                header[field] = str(raw_header.get(field) or "").strip()
+        order_number = normalize_customer_order_number(
+            raw_group.get("order_number") or header.get("customer_order_number")
+        )
+        header["customer_order_number"] = order_number
+        if order_number and order_number in used_order_numbers:
+            raise ValueError(f"客户订单号 {order_number} 存在重复分组")
+        if order_number:
+            used_order_numbers.add(order_number)
+        group_lines: list[dict[str, Any]] = []
+        for line_index, raw in enumerate(raw_lines, start=1):
+            values = _clean_values((raw or {}).get("values") or raw or {}, PERSISTED_LINE_FIELDS)
+            if not any(values[field] for field in PERSISTED_LINE_FIELDS if field not in {"line_no", "material_status", "customer_order_number"}):
+                continue
+            values["customer_order_number"] = order_number
+            values["material_status"] = values["material_status"] or "查询"
+            if values["material_status"] not in MATERIAL_STATUS_VALUES:
+                raise ValueError(f"第 {line_index} 行料号状态只能选择“查询”或“新增”")
+            sources = (raw or {}).get("sources") or {}
+            group_lines.append({"values": values, "sources": sources if isinstance(sources, dict) else {}})
+        prepared_groups.append({
+            "group_key": str(raw_group.get("group_key") or "").strip() or uuid.uuid4().hex,
+            "order_number": order_number,
+            "header": header,
+            "lines": group_lines,
+            "sort_order": group_index - 1,
+            "provided_header_fields": set(raw_header),
+        })
+
     now = utcnow()
     with db_cursor() as conn:
         template = conn.execute(
@@ -1608,15 +2022,43 @@ def save_template(case_id: int, employee_id: str, payload: dict[str, Any]) -> di
             raise ValueError("请先打开录单模板")
         template_id = int(template["id"])
         previous = _serialize_template(conn, template_id)
+        existing_groups = {group["group_key"]: group for group in previous.get("groups") or []}
+        if legacy_payload and previous.get("groups"):
+            prepared_groups[0]["group_key"] = previous["groups"][0]["group_key"]
+        incoming_keys = {group["group_key"] for group in prepared_groups}
+        submitted_groups = [group for group in previous.get("groups") or [] if group.get("submitted")]
+        missing_submitted = [group["order_number"] or "待分配" for group in submitted_groups if group["group_key"] not in incoming_keys]
+        if missing_submitted:
+            raise ValueError("已提交 PO 不允许删除：" + "、".join(missing_submitted))
+
+        for group in prepared_groups:
+            existing = existing_groups.get(group["group_key"])
+            if legacy_payload and existing:
+                for field in HEADER_FIELDS:
+                    if field not in group["provided_header_fields"]:
+                        group["header"][field] = clean_text(existing["header"].get(field))
+                group["order_number"] = normalize_customer_order_number(group["header"].get("customer_order_number"))
+            if existing and existing.get("submitted"):
+                submitted_header = {field: clean_text(existing["header"].get(field)) for field in HEADER_FIELDS}
+                incoming_header = {field: clean_text(group["header"].get(field)) for field in HEADER_FIELDS}
+                submitted_lines = [line.get("values") or {} for line in existing["lines"]]
+                incoming_lines = [line.get("values") or {} for line in group["lines"]]
+                if incoming_header != submitted_header or incoming_lines != submitted_lines:
+                    raise ValueError(f"PO {existing['order_number']} 已提交，不允许修改")
+                continue
+            snapshot = ((existing or {}).get("header") or {}).get(PRICE_REVIEW_SNAPSHOT_KEY)
+            if isinstance(snapshot, dict):
+                group["header"][PRICE_REVIEW_SNAPSHOT_KEY] = snapshot
+
         previous_header = {**DEFAULT_HEADER_VALUES, **(previous.get("header") or {})}
-        price_review_snapshot = previous_header.get(PRICE_REVIEW_SNAPSHOT_KEY)
-        if isinstance(price_review_snapshot, dict):
-            header[PRICE_REVIEW_SNAPSHOT_KEY] = price_review_snapshot
         previous_lines = [
             {"values": line.get("values") or {}, "sources": line.get("sources") or {}}
             for line in previous.get("lines") or []
         ]
-        changes = _template_changes(previous_header, previous_lines, header, lines)
+        editable_groups = [group for group in prepared_groups if not (existing_groups.get(group["group_key"]) or {}).get("submitted")]
+        editable_lines = [line for group in editable_groups for line in group["lines"]]
+        primary_header = prepared_groups[0]["header"]
+        changes = _template_changes(previous_header, previous_lines, primary_header, editable_lines)
         _replace_backup(
             conn,
             template_id=template_id,
@@ -1625,48 +2067,95 @@ def save_template(case_id: int, employee_id: str, payload: dict[str, Any]) -> di
             employee_id=employee_id,
             saved_at=now,
         )
-        cleared_material_resolution_tasks = []
-        for entry in lines:
-            values = entry["values"]
-            if str(values.get("product_code") or "").strip() or str(values.get("product_name") or "").strip():
-                continue
-            task = conn.execute(
-                """SELECT line_no,status,correlation_id,external_task_id
-                   FROM order_material_resolution_tasks
-                   WHERE template_id=? AND line_no=?""",
-                (template_id, int(values["line_no"])),
-            ).fetchone()
-            if task:
-                cleared_material_resolution_tasks.append({
-                    "line_no": int(task["line_no"]),
-                    "status": str(task["status"]),
-                    "correlation_id": str(task["correlation_id"]),
-                    "external_task_id": str(task["external_task_id"] or ""),
-                })
-        if cleared_material_resolution_tasks:
-            conn.executemany(
-                "DELETE FROM order_material_resolution_tasks WHERE template_id=? AND line_no=?",
-                [(template_id, task["line_no"]) for task in cleared_material_resolution_tasks],
-            )
-        conn.execute("UPDATE order_entry_templates SET header_json=?,current_version=?,updated_at=? WHERE id=?", (json.dumps(header, ensure_ascii=False), 1, now, template_id))
-        conn.execute("DELETE FROM order_entry_template_lines WHERE template_id=?", (template_id,))
-        for entry in lines:
-            values = entry["values"]
+        pending_group_ids = [int(group["id"]) for group in previous.get("groups") or [] if not group.get("submitted")]
+        if pending_group_ids:
+            placeholders = ",".join("?" for _ in pending_group_ids)
             conn.execute(
-                "INSERT INTO order_entry_template_lines(template_id,line_no,values_json,sources_json,created_at,updated_at) VALUES (?,?,?,?,?,?)",
-                (template_id, int(values["line_no"]), json.dumps(values, ensure_ascii=False), json.dumps(entry["sources"], ensure_ascii=False), now, now),
+                f"DELETE FROM order_entry_template_lines WHERE template_id=? AND group_id IN ({placeholders})",
+                (template_id, *pending_group_ids),
             )
-            # A business user can explicitly complete a problematic material
-            # number. That decision wins over a pending/failed external task,
-            # and makes the later recording validation meaningful.
-            if str(values.get("product_code") or "").strip() not in {"", "创建料号中"}:
+        if pending_group_ids:
+            placeholders = ",".join("?" for _ in pending_group_ids)
+            conn.execute(
+                f"UPDATE order_interface_call_logs SET order_group_id=NULL "
+                f"WHERE template_id=? AND order_group_id IN ({placeholders})",
+                (template_id, *pending_group_ids),
+            )
+        conn.execute(
+            "DELETE FROM order_entry_template_groups WHERE template_id=? AND status<>'submitted'",
+            (template_id,),
+        )
+
+        used_line_nos = {
+            int(line["line_no"])
+            for group in submitted_groups for line in group.get("lines") or []
+        }
+        next_line_no = max(used_line_nos, default=0) + 1
+        for group in prepared_groups:
+            existing = existing_groups.get(group["group_key"])
+            if existing and existing.get("submitted"):
+                continue
+            group_cursor = conn.execute(
+                """INSERT INTO order_entry_template_groups
+                   (template_id,group_key,order_number,header_json,sort_order,status,nyeos_order_number,
+                    erp_order_number,submitted_at,created_at,updated_at)
+                   VALUES (?,?,?,?,?,'pending','','',NULL,?,?)""",
+                (
+                    template_id, group["group_key"], group["order_number"],
+                    json.dumps(group["header"], ensure_ascii=False), group["sort_order"], now, now,
+                ),
+            )
+            group_id = int(group_cursor.lastrowid)
+            group["lines"] = _apply_customer_spec_matches(group["header"], group["lines"])
+            for entry in group["lines"]:
+                values = entry["values"]
+                requested = clean_text(values.get("customer_order_seq")) or clean_text(values.get("line_no"))
+                line_no = int(requested) if re.fullmatch(r"[1-9]\d*", requested or "") else next_line_no
+                if line_no in used_line_nos:
+                    line_no = next_line_no
+                used_line_nos.add(line_no)
+                next_line_no = max(next_line_no, line_no + 1)
+                values["line_no"] = str(line_no)
+                values["customer_order_seq"] = clean_text(values.get("customer_order_seq")) or str(line_no)
                 conn.execute(
-                    """UPDATE order_material_resolution_tasks
-                       SET status='manual_resolved',updated_at=?
-                       WHERE template_id=? AND line_no=?
-                         AND status IN ('waiting_callback','requerying','failed')""",
-                    (now, template_id, int(values["line_no"])),
+                    """INSERT INTO order_entry_template_lines
+                       (template_id,group_id,line_no,values_json,sources_json,created_at,updated_at)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    (
+                        template_id, group_id, line_no, json.dumps(values, ensure_ascii=False),
+                        json.dumps(entry["sources"], ensure_ascii=False), now, now,
+                    ),
                 )
+
+        remaining_line_nos = {
+            int(row["line_no"]) for row in conn.execute(
+                "SELECT line_no FROM order_entry_template_lines WHERE template_id=?", (template_id,)
+            ).fetchall()
+        }
+        saved_line_values = {
+            int(row["line_no"]): _json(row["values_json"], {})
+            for row in conn.execute(
+                "SELECT line_no,values_json FROM order_entry_template_lines WHERE template_id=?", (template_id,)
+            ).fetchall()
+        }
+        stale_tasks = conn.execute(
+            "SELECT line_no FROM order_material_resolution_tasks WHERE template_id=?", (template_id,)
+        ).fetchall()
+        cleared_material_resolution_tasks = [
+            int(row["line_no"]) for row in stale_tasks
+            if int(row["line_no"]) not in remaining_line_nos
+            or not any(clean_text(saved_line_values[int(row["line_no"])].get(field)) for field in ("product_code", "product_name"))
+        ]
+        for line_no in cleared_material_resolution_tasks:
+            conn.execute(
+                "DELETE FROM order_material_resolution_tasks WHERE template_id=? AND line_no=?",
+                (template_id, line_no),
+            )
+
+        conn.execute(
+            "UPDATE order_entry_templates SET header_json=?,current_version=?,updated_at=? WHERE id=?",
+            (json.dumps(primary_header, ensure_ascii=False), 1, now, template_id),
+        )
         record_order_detail_event(
             conn,
             case_id=case_id,
@@ -1676,7 +2165,8 @@ def save_template(case_id: int, employee_id: str, payload: dict[str, Any]) -> di
             title="保存内销录单模板",
             detail={
                 "changes": changes,
-                "line_count": len(lines),
+                "line_count": len(remaining_line_nos),
+                "group_count": len(prepared_groups),
                 "cleared_material_resolution_tasks": cleared_material_resolution_tasks,
             },
             operated_by=employee_id,
@@ -1693,7 +2183,9 @@ def validation_issues(template: dict[str, Any]) -> list[str]:
     return issues
 
 
-def build_domestic_export(case_id: int, employee_id: str) -> tuple[BytesIO, str]:
+def build_domestic_export(
+    case_id: int, employee_id: str, group_key: str = "",
+) -> tuple[BytesIO, str]:
     _case_for_template(case_id, employee_id)
     with db_cursor() as conn:
         row = conn.execute(
@@ -1702,6 +2194,12 @@ def build_domestic_export(case_id: int, employee_id: str) -> tuple[BytesIO, str]
         if not row:
             raise ValueError("请先保存模板内容后再下载")
         template = _serialize_template(conn, int(row["id"]))
+    groups = template.get("groups") or []
+    if group_key:
+        group = next((item for item in groups if item.get("group_key") == group_key), None)
+        if not group:
+            raise ValueError("当前 PO 分组不存在")
+        template = {**template, "header": group["header"], "lines": group["lines"]}
     if int(template.get("current_version") or 0) <= 0:
         raise ValueError("请先保存模板内容后再下载")
     if not DOMESTIC_TEMPLATE_PATH.is_file():
@@ -1742,4 +2240,7 @@ def build_domestic_export(case_id: int, employee_id: str) -> tuple[BytesIO, str]
     book.save(data)
     book.close()
     data.seek(0)
-    return data, f"内销录单_邮件{case_id}_v{template['current_version']}.xlsx"
+    order_number = normalize_customer_order_number(template["header"].get("customer_order_number"))
+    suffix = re.sub(r"[^0-9A-Za-z_-]+", "_", order_number).strip("_")
+    suffix = f"_{suffix}" if suffix else ""
+    return data, f"内销录单_邮件{case_id}{suffix}_v{template['current_version']}.xlsx"

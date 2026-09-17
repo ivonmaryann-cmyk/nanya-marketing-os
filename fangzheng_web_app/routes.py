@@ -93,6 +93,17 @@ def _filter_order_cases_by_mail_content(
         or needle in str(item.get("body_text") or "").casefold()
     ]
 
+
+def _order_automation_list_progress(case: dict[str, Any], employee_id: str) -> dict[str, Any] | None:
+    """Expose only reply-ready order-change cases through the common list controls."""
+    if case.get("action_type") == "new_order":
+        return order_entry_template_progress(int(case["id"]), employee_id)
+    if case.get("action_type") == "order_change":
+        progress = order_change_template_progress(int(case["id"]), employee_id)
+        if progress.get("stage") == "pending_reply":
+            return {**progress, "completed": True, "replied": False}
+    return None
+
 from .bomin_rules import (
     get_active_bomin_rule_version,
     get_bomin_rule_file_path,
@@ -199,10 +210,12 @@ from .order_entry_service import (
     LINE_LABELS as ORDER_ENTRY_LINE_LABELS,
     build_domestic_export as build_order_entry_domestic_export,
     get_or_create_template as get_order_entry_template,
+    get_saved_template as get_saved_order_entry_template,
     get_order_change_template,
     order_change_template_progress,
     queue_template_extraction as queue_order_entry_template_extraction,
     queue_order_change_template_extraction,
+    reextract_order_change_template,
     reextract_template as reextract_order_entry_template,
     save_order_change_template,
     save_template as save_order_entry_template,
@@ -216,11 +229,15 @@ from .order_interface_service import (
     build_material_creation,
     build_material_query,
     get_order_change_matches,
+    _expected_arrival_date,
     query_order_info,
+    query_order_info_readonly,
+    query_order_info_reply_rows,
     select_order_change_candidate,
     submit_aps_order_demand_import,
     is_domestic_order_entry_completed,
     get_order_detail_records,
+    list_erp_order_numbers,
     get_material_resolution_states,
     select_material_candidate,
     list_nyeos_order_numbers,
@@ -243,6 +260,7 @@ from .customer_archive_service import (
     delete_contact,
     delete_extraction_map,
     delete_routing_rule,
+    get_customer,
     get_customer_workspace,
     import_customer_workbook,
     list_customer_choices,
@@ -1045,10 +1063,10 @@ def order_automation():
     )
     all_entry_progresses: dict[int, dict[str, Any]] = {}
     if selected_mail_status != "all":
-        all_entry_progresses = {
-            int(item["id"]): order_entry_template_progress(int(item["id"]), employee_id)
-            for item in filtered_cases if item.get("action_type") == "new_order"
-        }
+        for item in filtered_cases:
+            progress = _order_automation_list_progress(item, employee_id)
+            if progress:
+                all_entry_progresses[int(item["id"])] = progress
         filtered_cases = _filter_order_cases_by_status(
             filtered_cases, all_entry_progresses, selected_mail_status
         )
@@ -1063,11 +1081,13 @@ def order_automation():
     page = min(page, total_pages)
     page_start = (page - 1) * per_page
     cases = filtered_cases[page_start:page_start + per_page]
-    entry_progresses = {
-        int(item["id"]): all_entry_progresses.get(int(item["id"]))
-        or order_entry_template_progress(int(item["id"]), employee_id)
-        for item in cases if item.get("action_type") == "new_order"
-    }
+    entry_progresses: dict[int, dict[str, Any]] = {}
+    for item in cases:
+        progress = all_entry_progresses.get(int(item["id"])) or _order_automation_list_progress(
+            item, employee_id
+        )
+        if progress:
+            entry_progresses[int(item["id"])] = progress
     date_counts = list_order_intake_date_counts(employee_id, selected_account_id, prepare=False) if selected_account_id else []
     return render_template(
         "order_automation.html",
@@ -1396,18 +1416,61 @@ def _order_reply_default_body(
     return "\n".join(parts)
 
 
+def _template_customer_order_numbers(template: dict[str, Any]) -> list[str]:
+    """Collect distinct customer order numbers from one saved template."""
+    values = [((template.get("header") or {}).get("customer_order_number"))]
+    values.extend(
+        (group.get("header") or {}).get("customer_order_number") or group.get("order_number")
+        for group in template.get("groups") or []
+        if isinstance(group, dict)
+    )
+    values.extend(
+        (line.get("values") or {}).get("customer_order_number")
+        for line in template.get("lines") or []
+        if isinstance(line, dict)
+    )
+    return list(dict.fromkeys(
+        str(value or "").strip() for value in values if str(value or "").strip()
+    ))
+
+
+def _reply_template_table_rows(template: dict[str, Any]) -> list[dict[str, str]]:
+    """Build the standard reply table from saved entry groups without mutating them."""
+    groups = [item for item in template.get("groups") or [] if isinstance(item, dict)]
+    if not groups:
+        groups = [{"header": template.get("header") or {}, "lines": template.get("lines") or []}]
+    rows: list[dict[str, str]] = []
+    for group in groups:
+        header = group.get("header") or {}
+        group_po = str(header.get("customer_order_number") or group.get("order_number") or "").strip()
+        for line in group.get("lines") or []:
+            values = line.get("values") or {}
+            remark = str(values.get("remark") or "").partition("&")[0]
+            roll = re.search(r"(?:^|[；;\n])\s*(\d+(?:\.\d+)?)卷", remark)
+            rows.append({
+                "row_id": f"generated-{len(rows) + 1}",
+                "customer_order_number": str(values.get("customer_order_number") or group_po).strip(),
+                "line_no": str(values.get("line_no") or "").strip(),
+                "customer_product_code": str(values.get("customer_product_code") or "").strip(),
+                "customer_spec": str(values.get("customer_spec") or "").strip(),
+                "quantity": f"{roll.group(1)}卷" if roll else str(values.get("quantity") or "").strip(),
+                "unit_price": str(values.get("unit_price") or values.get("price_before_tax") or "").strip(),
+            })
+    return rows
+
+
 def _order_change_reply_body(
     source_html: str,
     source_text: str,
     lines: list[dict[str, Any]],
     order_matches: dict[int, dict[str, Any]],
+    *,
+    transit_days: Any = None,
+    sender: str = "",
+    occurred_at: str = "",
+    subject: str = "",
 ) -> str:
-    """Keep a customer-provided body table, or build the change-reply table."""
-    source = str(source_html or source_text or "")
-    if re.search(r"<\s*table\b", source, flags=re.IGNORECASE):
-        from .mail_transcode_agent.mail_html_parser import safe_display_html
-
-        return safe_display_html(source)
+    """Put the generated table above the standard quoted original-mail block."""
 
     headers = (
         "客户订单号", "项次", "客户料号", "客户规格",
@@ -1421,15 +1484,29 @@ def _order_change_reply_body(
         row = (
             values.get("customer_order_number", ""), values.get("line_no", ""),
             values.get("customer_product_code", ""), values.get("customer_spec", ""),
-            values.get("delivery_date", ""), values.get("quantity", ""), selected.get("sctb16", ""),
+            values.get("delivery_date", ""), values.get("quantity", ""),
+            _expected_arrival_date(selected.get("sctb16"), transit_days),
         )
         rows.append("<tr>" + "".join(f"<td>{escape(str(value or ''))}</td>" for value in row) + "</tr>")
     head = "".join(f"<th>{escape(label)}</th>" for label in headers)
     body = "".join(rows) or "<tr><td colspan=\"7\"></td></tr>"
-    return (
+    change_table = (
         '<table border="1" cellpadding="6" cellspacing="0" '
         'style="border-collapse:collapse;border-color:#9caec4;font-size:14px">'
         f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+    )
+    from .mail_transcode_agent.mail_html_parser import safe_display_html
+
+    original_body = safe_display_html(str(source_html or ""), str(source_text or ""))
+    if not original_body:
+        return change_table
+    return (
+        f"{change_table}<br><br><div style=\"color:#666\">----- 原邮件 -----<br>"
+        f"发件人：{escape(str(sender or '未提供'))}<br>"
+        f"发送时间：{escape(str(occurred_at or '未提供'))}<br>"
+        f"主题：{escape(str(subject or '（无主题）'))}</div>"
+        f"<blockquote style=\"margin:12px 0 0;padding-left:12px;border-left:2px solid #ccc\">"
+        f"{original_body}</blockquote>"
     )
 
 
@@ -1513,6 +1590,11 @@ def order_automation_reply(case_id: int):
         order_change_template_progress(case_id, employee_id)
         if is_order_change else order_entry_template_progress(case_id, employee_id)
     )
+    if not is_order_change and not progress.get("completed"):
+        flash("请先完成全部 PO 的录单，再回复邮件。", "error")
+        return redirect(url_for(
+            "main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()
+        ))
     template = None
     if progress.get("created"):
         try:
@@ -1540,10 +1622,15 @@ def order_automation_reply(case_id: int):
     saved_draft = saved_draft or session.get(draft_key) or {}
     default_body = str(case.get("body_text") or "")
     original_html = str(case.get("body_html") or "") or f"<pre>{escape(default_body)}</pre>"
+    customer = get_customer(int(case["customer_id"])) if case.get("customer_id") else None
     default_body_html = (
         _order_change_reply_body(
             str(case.get("body_html") or ""), default_body, lines,
             get_order_change_matches(case_id, int(template["id"]), employee_id) if template else {},
+            transit_days=(customer or {}).get("transit_days"),
+            sender=str(case.get("sender") or ""),
+            occurred_at=str(case.get("sent_at") or case.get("received_at") or ""),
+            subject=str(case.get("subject") or ""),
         )
         if is_order_change else original_html
     )
@@ -1615,6 +1702,64 @@ def order_automation_reply(case_id: int):
     )
 
 
+@bp.post("/order-automation/cases/<int:case_id>/reply/query-order")
+def order_automation_reply_query_order(case_id: int):
+    """Read saved-template ERP orders without changing the reply or template."""
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    case = get_order_intake_case(case_id, employee_id)
+    if not case or case.get("action_type") != "new_order":
+        abort(404)
+    try:
+        _case, template = get_saved_order_entry_template(case_id, employee_id)
+        if not template:
+            raise ValueError("请先生成并保存录单模板后再查询订单")
+        order_numbers = _template_customer_order_numbers(template)
+        customer = get_customer(int(case["customer_id"])) if case.get("customer_id") else None
+        result = query_order_info_readonly(
+            case_id, int(template["id"]), employee_id, employee_id, order_numbers,
+            transit_days=(customer or {}).get("transit_days"),
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
+    return jsonify({"ok": True, **result})
+
+
+@bp.post("/order-automation/cases/<int:case_id>/reply/fill-delivery")
+def order_automation_reply_fill_delivery(case_id: int):
+    """Match one reply-table and return delivery dates without changing saved data."""
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    case = get_order_intake_case(case_id, employee_id)
+    if not case or case.get("action_type") != "new_order":
+        abort(404)
+    try:
+        _case, template = get_saved_order_entry_template(case_id, employee_id)
+        if not template:
+            raise ValueError("请先生成并保存录单模板后再回填交期")
+        payload = request.get_json(silent=True) or {}
+        requested_rows = payload.get("rows") if isinstance(payload, dict) else None
+        if requested_rows is not None and not isinstance(requested_rows, list):
+            raise ValueError("回复表格数据格式无效")
+        if isinstance(requested_rows, list) and len(requested_rows) > 500:
+            raise ValueError("回复表格明细不能超过 500 行")
+        generated_table = not requested_rows
+        reply_rows = requested_rows if requested_rows else _reply_template_table_rows(template)
+        customer = get_customer(int(case["customer_id"])) if case.get("customer_id") else None
+        result = query_order_info_reply_rows(
+            case_id, int(template["id"]), employee_id, employee_id, reply_rows,
+            transit_days=(customer or {}).get("transit_days"),
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
+    return jsonify({"ok": True, "generated_table": generated_table,
+                    "generated_rows": reply_rows if generated_table else [], **result})
+
+
 @bp.post("/order-automation/cases/<int:case_id>/entry-template/start")
 def order_automation_entry_template_start(case_id: int):
     """Queue first-time document extraction and return to the mail at once."""
@@ -1669,26 +1814,44 @@ def order_automation_entry_template(case_id: int):
         _case, template = get_order_entry_template(case_id, employee_id)
     except ValueError:
         abort(404)
+    order_groups = template.get("groups") or []
+    requested_group_key = request.args.get("group_key", "")
+    active_group = next(
+        (group for group in order_groups if group.get("group_key") == requested_group_key),
+        next((group for group in order_groups if not group.get("submitted")), order_groups[0] if order_groups else None),
+    )
+    if active_group:
+        template = {**template, "header": active_group["header"], "lines": active_group["lines"]}
+    visible_line_fields = [
+        field for field in ORDER_ENTRY_LINE_FIELDS
+        if field not in {"material_status", "adhesive_code", "customer_spec_match"}
+    ]
+    visible_line_fields.insert(visible_line_fields.index("product_name") + 1, "old_product_name")
+    grid_column_count = len(visible_line_fields)
     order_details = get_order_detail_records(case_id, employee_id)
     return render_template(
         "order_automation_entry_template.html",
         case=case,
         template=template,
+        order_groups=order_groups,
+        active_group=active_group,
         header_fields=ORDER_ENTRY_HEADER_FIELDS,
         header_labels=ORDER_ENTRY_HEADER_LABELS,
         line_fields=ORDER_ENTRY_LINE_FIELDS,
-        visible_line_fields=[
-            field for field in ORDER_ENTRY_LINE_FIELDS
-            if field not in {"material_status", "adhesive_code", "customer_spec_match"}
-        ],
-        hidden_line_fields=["material_status", "adhesive_code", "customer_spec_match"],
+        visible_line_fields=visible_line_fields,
+        grid_column_count=grid_column_count,
+        grid_column_letters=list("ABCDEFGHIJKLMNOPQRSTUVWXYZ"[:grid_column_count]),
+        hidden_line_fields=["material_status", "adhesive_code", "customer_spec_match", "customer_order_number"],
         line_labels=ORDER_ENTRY_LINE_LABELS,
         customer_choices=list_customer_choices(),
         validation_issues=order_entry_validation_issues(template),
         order_details=order_details,
-        nyeos_order_number=list_nyeos_order_numbers([case_id], employee_id).get(case_id, ""),
+        nyeos_order_number=(active_group or {}).get("nyeos_order_number", "") or list_nyeos_order_numbers([case_id], employee_id).get(case_id, ""),
+        erp_order_number=(active_group or {}).get("erp_order_number", "") or list_erp_order_numbers([case_id], employee_id).get(case_id, ""),
         material_resolutions=get_material_resolution_states(case_id, employee_id),
-        price_review=review_domestic_order_entry_prices(case_id, employee_id),
+        price_review=review_domestic_order_entry_prices(
+            case_id, employee_id, (active_group or {}).get("group_key", "")
+        ),
         show_price_confirmation=request.args.get("price_confirmation") == "1",
         # Share the same workflow state as the mail list and mail detail.
         order_entry_completed=progress["completed"],
@@ -1768,6 +1931,31 @@ def order_automation_order_change_template(case_id: int):
     )
 
 
+@bp.post("/order-automation/cases/<int:case_id>/order-change-template/refresh")
+def order_automation_order_change_template_refresh(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    case = get_order_intake_case(case_id, employee_id)
+    if not case or case.get("action_type") != "order_change":
+        abort(404)
+    if case.get("status") == "pending_reply":
+        flash("修改订单已提交 APS，不能重新提取或覆盖模板。", "error")
+    else:
+        try:
+            result = reextract_order_change_template(case_id, employee_id)
+            flash(
+                f"已重新提取邮件修改订单内容，共生成 {result['line_count']} 条明细；原明细已保留在历史版本中。",
+                "success",
+            )
+        except ValueError as exc:
+            flash(str(exc), "error")
+    return redirect(url_for(
+        "main.order_automation_order_change_template", case_id=case_id, **request.args.to_dict()
+    ))
+
+
 @bp.post("/order-automation/cases/<int:case_id>/order-change-template/query-order")
 def order_automation_order_change_template_query(case_id: int):
     redirect_resp = require_login()
@@ -1777,6 +1965,9 @@ def order_automation_order_change_template_query(case_id: int):
     case = get_order_intake_case(case_id, employee_id)
     if not case or case.get("action_type") != "order_change":
         abort(404)
+    if case.get("status") == "pending_reply":
+        flash("修改订单已提交 APS，不能再查询或修改模板。", "error")
+        return redirect(url_for("main.order_automation_order_change_template", case_id=case_id, **request.args.to_dict()))
     try:
         payload = json.loads(request.form.get("template_payload") or "{}")
         template = save_order_change_template(case_id, employee_id, payload)
@@ -1807,6 +1998,9 @@ def order_automation_order_change_template_select_match(case_id: int):
     case = get_order_intake_case(case_id, employee_id)
     if not case or case.get("action_type") != "order_change":
         abort(404)
+    if case.get("status") == "pending_reply":
+        flash("修改订单已提交 APS，不能再变更 ERP 匹配。", "error")
+        return redirect(url_for("main.order_automation_order_change_template", case_id=case_id, **request.args.to_dict()))
     try:
         _case, template = get_order_change_template(case_id, employee_id)
         if not template:
@@ -1831,6 +2025,9 @@ def order_automation_order_change_template_submit_change(case_id: int):
     case = get_order_intake_case(case_id, employee_id)
     if not case or case.get("action_type") != "order_change":
         abort(404)
+    if case.get("status") == "pending_reply":
+        flash("修改订单已提交 APS，不能重复提交。", "error")
+        return redirect(url_for("main.order_automation_order_change_template", case_id=case_id, **request.args.to_dict()))
     try:
         payload = json.loads(request.form.get("template_payload") or "{}")
         template = save_order_change_template(case_id, employee_id, payload)
@@ -1918,10 +2115,23 @@ def order_automation_material_query(case_id: int):
                 continue
             if line_no > 0:
                 selected_line_nos.add(line_no)
+    group_key = request.form.get("group_key", "").strip()
+    redirect_query = request.args.to_dict()
+    if group_key:
+        redirect_query["group_key"] = group_key
+    if group_key:
+        _case, template = get_order_entry_template(case_id, employee_id)
+        group = next((item for item in template.get("groups") or [] if item.get("group_key") == group_key), None)
+        if not group or group.get("submitted"):
+            flash("当前 PO 不存在或已经提交，不能查询料号。", "error")
+            return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **redirect_query))
+        allowed = {int(line["line_no"]) for line in group.get("lines") or []}
+        selected_line_nos = (selected_line_nos & allowed) if selected_line_nos else allowed
     try:
         result = build_material_query(
             case_id, employee_id, employee_id,
             line_nos=selected_line_nos or None,
+            group_key=group_key,
         )
         mode_label = "真实接口" if result.get("mode") == "real" else "Mock"
         flash(
@@ -1930,7 +2140,7 @@ def order_automation_material_query(case_id: int):
         )
     except ValueError as exc:
         flash(str(exc), "error")
-    return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))
+    return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **redirect_query))
 
 
 @bp.post("/order-automation/cases/<int:case_id>/material-create")
@@ -1942,9 +2152,18 @@ def order_automation_material_create(case_id: int):
     if not get_order_intake_case(case_id, employee_id):
         abort(404)
     payload = request.get_json(silent=True) or {}
+    group_key = str(payload.get("group_key") or "").strip()
     try:
+        if group_key:
+            _case, template = get_order_entry_template(case_id, employee_id)
+            group = next((item for item in template.get("groups") or [] if item.get("group_key") == group_key), None)
+            if not group or group.get("submitted"):
+                raise ValueError("当前 PO 不存在或已经提交，不能新建料号")
+            allowed = {int(line["line_no"]) for line in group.get("lines") or []}
+            if any(int(line.get("line_no") or 0) not in allowed for line in payload.get("lines") or []):
+                raise ValueError("新建料号明细不属于当前 PO")
         result = build_material_creation(
-            case_id, employee_id, employee_id, payload.get("lines") or [],
+            case_id, employee_id, employee_id, payload.get("lines") or [], group_key,
         )
     except ValueError as exc:
         return jsonify({"ok": False, "message": str(exc)}), 400
@@ -2021,11 +2240,13 @@ def order_automation_domestic_entry(case_id: int):
     employee_id = current_employee() or ""
     if not get_order_intake_case(case_id, employee_id):
         abort(404)
+    group_key = request.form.get("group_key", "").strip()
     try:
         result = build_domestic_order_entry(
             case_id,
             employee_id,
             employee_id,
+            group_key=group_key,
             allow_price_mismatch=request.form.get("confirm_price_mismatch") == "1",
         )
         mode_label = "真实接口" if result.get("mode") == "real" else "Mock"
@@ -2033,10 +2254,14 @@ def order_automation_domestic_entry(case_id: int):
     except PriceMismatchConfirmationRequired:
         query = request.args.to_dict()
         query["price_confirmation"] = "1"
+        query["group_key"] = group_key
         return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **query))
     except ValueError as exc:
         flash(str(exc), "error")
-    return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))
+    query = request.args.to_dict()
+    if group_key:
+        query["group_key"] = group_key
+    return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **query))
 
 
 @bp.route("/interface-maintenance", methods=["GET", "POST"])
@@ -2121,7 +2346,9 @@ def order_automation_entry_template_download(case_id: int):
     if redirect_resp:
         return redirect_resp
     try:
-        output, filename = build_order_entry_domestic_export(case_id, current_employee() or "")
+        output, filename = build_order_entry_domestic_export(
+            case_id, current_employee() or "", request.args.get("group_key", "").strip()
+        )
     except ValueError as exc:
         flash(str(exc), "error")
         return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))

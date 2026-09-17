@@ -10,7 +10,7 @@ STANDARD_HEADERS = ["序号", "物料编码", "物料名称", "说明", "数量"
 
 DETAIL_ALIASES = {
     "序号": ["序号", "项次", "项目", "行号", "PO项目号", "PO项目", "Project No", "Project Number", "item", "item no", "no.", "no"],
-    "物料编码": ["物料编码", "物料编号", "物料代码", "原料编码", "料件编号", "料号", "品号", "goods no", "goodsno", "part no", "part no.", "part", "p/n"],
+    "物料编码": ["物料编码", "物料编号", "物料代码", "原料编码", "料件编号", "料号", "品号", "编码", "goods no", "goodsno", "part no", "part no.", "part", "p/n"],
     "物料名称": ["物料名称", "物料品名", "原料名称", "品名", "名称", "型号", "规格", "名称规格", "型号/规格", "description", "desc"],
     "说明": ["说明", "描述", "物料描述", "环保要求", "rohs", "remark", "comments", "comment"],
     "数量": ["数量", "采购量", "订购数量", "quantity", "qty"],

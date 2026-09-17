@@ -7,7 +7,8 @@ TABLES = (
     "mail_transcode_jobs", "order_intake_cases", "order_intake_case_events",
     "order_mail_routing_rules", "order_mail_routing_rule_events", "order_mail_rule_groups",
     "order_mail_rule_keywords", "order_change_tags", "order_change_tag_keywords",
-    "order_entry_templates", "order_entry_template_lines", "order_entry_template_versions",
+    "order_entry_templates", "order_entry_template_groups", "order_entry_template_lines",
+    "order_entry_template_versions",
 )
 
 PRIMARY_KEYS = {table: ("id",) for table in TABLES}

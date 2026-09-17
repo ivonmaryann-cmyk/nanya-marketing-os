@@ -113,7 +113,7 @@ def _header_key(value: Any) -> str:
 
 def _order_number_from_tables(tables: list[list[list[str]]]) -> str:
     aliases = {
-        "订单号", "采购单号", "采购订单号", "po单号", "po编号", "pono", "ponumber", "pono",
+        "订单号", "采购单号", "采购订单号", "合同号", "合同编号", "po单号", "po编号", "pono", "ponumber", "pono",
     }
     for rows in tables:
         header_index, _mapping = find_detail_header_row(rows)
