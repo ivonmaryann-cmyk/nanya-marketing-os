@@ -79,6 +79,19 @@ class OrderChangeTemplateMarkupTests(unittest.TestCase):
         self.assertIn("重新提取", markup)
         self.assertIn("order_automation_order_change_template_refresh", markup)
 
+    def test_change_template_exposes_bulk_spreadsheet_controls(self) -> None:
+        markup = (
+            Path(__file__).resolve().parents[1]
+            / "templates"
+            / "order_automation_order_change_template.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('id="orderChangeBulkTools"', markup)
+        self.assertIn('data-bulk-fill-down', markup)
+        self.assertIn('data-bulk-edit', markup)
+        self.assertIn("excludedFields: ['line_no']", markup)
+        self.assertIn("{% if template_locked %}disabled{% endif %}", markup)
+
     def test_order_change_case_offers_reply_after_aps_submission(self) -> None:
         markup = (
             Path(__file__).resolve().parents[1]

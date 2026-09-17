@@ -26,6 +26,7 @@
       <button class="oc-tool secondary" type="submit" formaction="{{ url_for('main.order_automation_order_change_template_refresh', case_id=case.id, **return_context.query) }}" formmethod="post" onclick="return window.confirm('确认重新提取邮件中的修改订单明细吗？未保存的手工编辑会被覆盖，当前明细会保留在历史版本中。')" {% if template_locked %}disabled{% endif %}>重新提取</button>
       <button class="oc-tool secondary" type="submit" formaction="{{ url_for('main.order_automation_order_change_template_query', case_id=case.id, **return_context.query) }}" formmethod="post" {% if template_locked %}disabled{% endif %}>查询订单</button>
       <button class="oc-tool secondary" id="submitOrderChange" type="button" {% if template_locked %}disabled{% endif %}>提交APS</button>
+      <span id="orderChangeBulkTools"><button class="oc-tool secondary" type="button" data-bulk-fill-down {% if template_locked %}disabled{% endif %}>向下填充</button><button class="oc-tool secondary" type="button" data-bulk-edit {% if template_locked %}disabled{% endif %}>批量填写</button></span>
       <button class="oc-tool danger" id="deleteSelected" type="button" disabled>删除所选</button>
       <button class="oc-add" id="addLine" type="button" title="新增明细行" {% if template_locked %}disabled{% endif %}>+ 新增明细行</button>
     </div></div>
@@ -49,5 +50,15 @@
 </script>
 <script>
 (()=>{const tabs=[...document.querySelectorAll('.oe-detail-tab')],panes=[...document.querySelectorAll('.oe-detail-pane')],audit={{ order_details|tojson }},drawer=document.querySelector('#auditDrawer'),mask=document.querySelector('#drawerMask'),body=document.querySelector('#drawerBody');tabs.forEach(tab=>tab.onclick=()=>{tabs.forEach(item=>item.classList.toggle('active',item===tab));panes.forEach(pane=>pane.classList.toggle('active',pane.dataset.pane===tab.dataset.tab))});const close=()=>{drawer.classList.remove('open');mask.hidden=true};document.querySelector('#drawerClose').onclick=close;mask.onclick=close;document.querySelectorAll('.oe-audit-item').forEach(row=>{const open=()=>{const kind=row.dataset.kind,list=kind==='event'?audit.events:kind==='call'?audit.calls:audit.changes,item=list.find(candidate=>String(candidate.id)===row.dataset.id)||list[Number(row.dataset.index)];document.querySelector('#drawerKicker').textContent=kind==='event'?'流程记录':kind==='call'?'接口交互':'数据变更';document.querySelector('#drawerTitle').textContent=item.title||item.interface_label||item.field;body.textContent=JSON.stringify(item,null,2);drawer.classList.add('open');mask.hidden=false};row.onclick=open;row.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();open()}}})})();
+</script>
+<script src="{{ url_for('static', filename='order_template_bulk_editor.js') }}"></script>
+<script>
+(() => {
+  window.nouyaTemplateBulkEditor?.init({
+    rowsSelector: '#lineRows', rowSelector: '[data-line]', cellSelector: 'td',
+    selectionSelector: '[data-line-select]', toolbarSelector: '#orderChangeBulkTools',
+    fieldLabels: {{ line_labels|tojson }}, excludedFields: ['line_no'],
+  });
+})();
 </script>
 {% endblock %}

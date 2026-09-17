@@ -223,11 +223,11 @@
     const current=doc(), reply=current?.getElementById('nouya-current-reply');
     if(!reply) return;
     reply.querySelector('table[data-nouya-generated-order-table="true"]')?.remove();
-    const table=current.createElement('table');table.style.cssText='border-collapse:collapse;border-color:#9caec4;font-size:14px';
+    const table=current.createElement('table');table.style.cssText='border-collapse:collapse;border:1px solid #9caec4;font-size:14px';
     table.dataset.nouyaGeneratedOrderTable='true';
-    const headers=[['customer_order_number','PO号'],['line_no','项次'],['customer_product_code','客户料号'],['customer_spec','客户规格'],['quantity','数量'],['unit_price','单价'],['delivery_reply','交期回复']];
-    const head=current.createElement('thead'),headRow=current.createElement('tr');headers.forEach(([,label])=>{const cell=current.createElement('th');cell.textContent=label;headRow.append(cell)});head.append(headRow);table.append(head);
-    const body=current.createElement('tbody');rows.forEach(item=>{const row=current.createElement('tr');row.dataset.nouyaReplyRowId=item.row_id;headers.forEach(([field])=>{const cell=current.createElement('td');cell.textContent=item[field]||'';row.append(cell)});body.append(row)});table.append(body);reply.append(table);reply.scrollIntoView({block:'start'});
+    const headers=[['customer_order_number','PO号'],['line_no','项次'],['customer_product_code','客户料号'],['customer_spec','客户规格'],['quantity','数量'],['delivery_reply','交期回复']];
+    const head=current.createElement('thead'),headRow=current.createElement('tr');headers.forEach(([,label])=>{const cell=current.createElement('th');cell.style.cssText='border:1px solid #9caec4;padding:6px 8px;background:#eef4fb;text-align:left';cell.textContent=label;headRow.append(cell)});head.append(headRow);table.append(head);
+    const body=current.createElement('tbody');rows.forEach(item=>{const row=current.createElement('tr');row.dataset.nouyaReplyRowId=item.row_id;headers.forEach(([field])=>{const cell=current.createElement('td');cell.style.cssText='border:1px solid #9caec4;padding:6px 8px;vertical-align:top';cell.textContent=item[field]||'';row.append(cell)});body.append(row)});table.append(body);reply.append(table);reply.scrollIntoView({block:'start'});
   }
   function applyReplyMatches(data) {
     if(data.generated_table) createReplyTable(data.generated_rows||[]);

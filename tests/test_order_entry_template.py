@@ -143,6 +143,26 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertIn("grid_column_letters", template)
         self.assertNotIn("'ABCDEFGHIJKLMNOP'", template)
 
+    def test_entry_template_exposes_bulk_spreadsheet_controls(self) -> None:
+        template = (
+            Path(__file__).resolve().parents[1]
+            / "templates"
+            / "order_automation_entry_template.html"
+        ).read_text(encoding="utf-8")
+        editor = (
+            Path(__file__).resolve().parents[1]
+            / "static"
+            / "order_template_bulk_editor.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('id="entryBulkTools"', template)
+        self.assertIn('data-bulk-fill-down', template)
+        self.assertIn('data-bulk-edit', template)
+        self.assertIn("excludedFields: ['line_no', 'old_product_name']", template)
+        self.assertIn("matrixFromClipboard", editor)
+        self.assertIn("event.key.toLowerCase() === 'd'", editor)
+        self.assertIn("selectedBounds", editor)
+
     def test_create_material_dialog_resolves_adhesive_codes_from_spec_match(self) -> None:
         template = (
             Path(__file__).resolve().parents[1]
