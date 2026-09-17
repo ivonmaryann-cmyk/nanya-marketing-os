@@ -1817,6 +1817,72 @@ def query_order_info_readonly(
     }
 
 
+def query_order_info_reply_rows(
+    case_id: int, template_id: int, employee_id: str, triggered_by: str, rows: list[dict[str, Any]],
+    *, transit_days: Any = None,
+) -> dict[str, Any]:
+    """Look up reply-table rows without changing templates or change-order matches."""
+    normalized_rows = []
+    for index, raw in enumerate(rows):
+        if not isinstance(raw, dict):
+            continue
+        values = {
+            "row_id": str(raw.get("row_id") or index),
+            "customer_order_number": _normalize_reply_order_number(raw.get("customer_order_number")),
+            "customer_product_code": str(raw.get("customer_product_code") or "").strip(),
+            "line_no": str(raw.get("line_no") or "").strip(),
+            "quantity": str(raw.get("quantity") or "").strip(),
+        }
+        if values["customer_order_number"]:
+            normalized_rows.append(values)
+    if not normalized_rows:
+        raise ValueError("回复表格中未找到客户 PO 号")
+
+    result = _query_order_info(
+        case_id, template_id, employee_id, triggered_by,
+        [item["customer_order_number"] for item in normalized_rows],
+        persist_matches=False,
+    )
+    candidates = _flatten_order_info_candidates(result["response"])
+    row_matches = []
+    counts = {"matched": 0, "multiple": 0, "unmatched": 0, "invalid_date": 0}
+    for values in normalized_rows:
+        matched = _match_order_change_line(values, candidates)
+        selected = matched["selected"]
+        delivery_reply = _expected_arrival_date(selected.get("sctb16"), transit_days) if selected else ""
+        status = matched["status"]
+        if status == "matched" and not delivery_reply:
+            status = "invalid_date"
+            reason = "未能根据客户需求日和运输天数计算交期"
+        elif status == "matched":
+            reason = ""
+        elif status == "multiple":
+            reason = f"匹配到 {len(matched['candidates'])} 条订单明细，无法自动回填"
+        else:
+            reason = "未找到匹配的订单明细"
+        counts[status] += 1
+        row_matches.append({
+            "row_id": values["row_id"], "status": status,
+            "match_level": matched["match_level"], "delivery_reply": delivery_reply,
+            "reason": reason,
+        })
+    return {
+        "call_id": result["call_id"], "status": result["status"], "mode": result["mode"],
+        **_order_info_display_result(result["response"], transit_days=transit_days),
+        "row_matches": row_matches, "match_counts": counts,
+    }
+
+
+def _normalize_reply_order_number(value: Any) -> str:
+    """Match the PO cleanup used by entry extraction without importing its service."""
+    text = str(value or "").strip()
+    if not text or text.startswith("暂无PO号-"):
+        return ""
+    text = re.sub(r"^(?:建价|估价|报价|询价)\s*[:：-]?\s*", "", text, flags=re.I)
+    match = re.search(r"(?i)(PO(?:[-_][A-Z0-9]+)+)", text)
+    return match.group(1).upper().replace("_", "-") if match else text
+
+
 def _aps_order_demand_request_payload(
     lines: list[dict[str, Any]], matches: dict[int, dict[str, Any]],
     alter_type: str, require_specification: str, creator_name: str, created_at: str,
@@ -1886,51 +1952,80 @@ def submit_aps_order_demand_import(
     alter_type: str, require_specification: str = "",
 ) -> dict[str, Any]:
     """Submit all confirmed order-change lines to APS and keep a complete audit trail."""
+    with db_cursor() as conn:
+        case = conn.execute(
+            "SELECT status,workflow_stage FROM order_intake_cases WHERE id=? AND employee_id=? AND action_type='order_change'",
+            (case_id, employee_id),
+        ).fetchone()
+        if not case:
+            raise ValueError("修改订单案件不存在或无权操作")
+        if str(case["status"] or "") == "pending_reply":
+            raise ValueError("修改订单已提交 APS，不能重复提交")
+        original_stage = str(case["workflow_stage"] or "")
+        claimed = conn.execute(
+            """UPDATE order_intake_cases SET workflow_stage='aps_submitting',updated_at=?
+               WHERE id=? AND employee_id=? AND action_type='order_change'
+                 AND status<>'pending_reply' AND workflow_stage<> 'aps_submitting'""",
+            (utcnow(), case_id, employee_id),
+        )
+        if not claimed.rowcount:
+            raise ValueError("APS 正在提交，请勿重复操作")
+
+    def release_submission_claim() -> None:
+        with db_cursor() as conn:
+            conn.execute(
+                """UPDATE order_intake_cases SET workflow_stage=?,updated_at=?
+                   WHERE id=? AND employee_id=? AND action_type='order_change' AND status<>'pending_reply'""",
+                (original_stage, utcnow(), case_id, employee_id),
+            )
+
     config = get_interface_config("aps_order_demand_import")
     if not config or not config.get("enabled"):
+        release_submission_claim()
         raise ValueError("APS订单需求导入接口未启用")
-    with db_cursor() as conn:
-        rows = conn.execute(
-            "SELECT line_no,values_json FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no",
-            (template_id,),
-        ).fetchall()
-    matches = get_order_change_matches(case_id, template_id, employee_id)
-    account = get_user(employee_id)
-    creator_name = str(account["display_name"] or "").strip() if account else ""
-    created_at = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
-    request_payload = _aps_order_demand_request_payload(
-        list(rows), matches, alter_type, require_specification, creator_name, created_at,
-    )
-    mode = str(config.get("mode") or "mock")
+    try:
+        with db_cursor() as conn:
+            rows = conn.execute(
+                "SELECT line_no,values_json FROM order_entry_template_lines WHERE template_id=? ORDER BY line_no",
+                (template_id,),
+            ).fetchall()
+        matches = get_order_change_matches(case_id, template_id, employee_id)
+        account = get_user(employee_id)
+        creator_name = str(account["display_name"] or "").strip() if account else ""
+        created_at = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
+        request_payload = _aps_order_demand_request_payload(
+            list(rows), matches, alter_type, require_specification, creator_name, created_at,
+        )
+        mode = str(config.get("mode") or "mock")
 
-    if mode == "mock":
-        response_payload = {
-            "code": 200,
-            "message": f"处理完成。成功接收 {len(request_payload['data'])} 条，失败 0 条",
-            "success_count": len(request_payload["data"]),
-            "fail_count": 0,
-            "failed_details": [],
-        }
-        http_status, duration_ms = 200, 0
-    else:
-        try:
+        if mode == "mock":
+            response_payload = {
+                "code": 200,
+                "message": f"处理完成。成功接收 {len(request_payload['data'])} 条，失败 0 条",
+                "success_count": len(request_payload["data"]),
+                "fail_count": 0,
+                "failed_details": [],
+            }
+            http_status, duration_ms = 200, 0
+        else:
             http_status, response_payload, duration_ms = _post_json_endpoint(
                 config, request_payload, "APS订单需求导入",
             )
-        except ValueError as exc:
-            with db_cursor() as conn:
-                call_id = _insert_call_log(
-                    conn, case_id=case_id, template_id=template_id, employee_id=employee_id, config=config,
-                    status="failed", request_payload=request_payload, response_payload={}, triggered_by=triggered_by,
-                    error_message=str(exc), is_mock=False, http_status=None, duration_ms=None,
-                    interface_key="aps_order_demand_import",
-                )
-                record_order_detail_event(
-                    conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
-                    event_type="aps_order_demand_import_real", title="APS订单需求导入（真实接口）失败",
-                    detail={"call_id": call_id, "error_message": str(exc)}, operated_by=triggered_by,
-                )
-            raise
+    except ValueError as exc:
+        with db_cursor() as conn:
+            call_id = _insert_call_log(
+                conn, case_id=case_id, template_id=template_id, employee_id=employee_id, config=config,
+                status="failed", request_payload=locals().get("request_payload", {}), response_payload={}, triggered_by=triggered_by,
+                error_message=str(exc), is_mock=False, http_status=None, duration_ms=None,
+                interface_key="aps_order_demand_import",
+            )
+            record_order_detail_event(
+                conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
+                event_type="aps_order_demand_import_real", title="APS订单需求导入（真实接口）失败",
+                detail={"call_id": call_id, "error_message": str(exc)}, operated_by=triggered_by,
+            )
+        release_submission_claim()
+        raise
 
     ok, message = _aps_order_demand_result(response_payload, http_status, len(request_payload["data"]))
     with db_cursor() as conn:
@@ -1958,8 +2053,8 @@ def submit_aps_order_demand_import(
             if case and str(case["status"] or "") != "pending_reply":
                 now = utcnow()
                 conn.execute(
-                    "UPDATE order_intake_cases SET status='pending_reply',updated_at=? WHERE id=? AND employee_id=?",
-                    (now, case_id, employee_id),
+                    "UPDATE order_intake_cases SET status='pending_reply',workflow_stage=?,updated_at=? WHERE id=? AND employee_id=?",
+                    (original_stage, now, case_id, employee_id),
                 )
                 conn.execute(
                     """INSERT INTO order_intake_case_events
@@ -1971,6 +2066,12 @@ def submit_aps_order_demand_import(
                         json.dumps({"status": "pending_reply"}, ensure_ascii=False), now,
                     ),
                 )
+        else:
+            conn.execute(
+                """UPDATE order_intake_cases SET workflow_stage=?,updated_at=?
+                   WHERE id=? AND employee_id=? AND action_type='order_change' AND status<>'pending_reply'""",
+                (original_stage, utcnow(), case_id, employee_id),
+            )
     return {
         "call_id": call_id, "status": "success" if ok else "failed", "mode": mode,
         "message": message, "request": request_payload, "response": response_payload,

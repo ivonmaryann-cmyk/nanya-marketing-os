@@ -216,8 +216,10 @@ from .order_interface_service import (
     build_material_creation,
     build_material_query,
     get_order_change_matches,
+    _expected_arrival_date,
     query_order_info,
     query_order_info_readonly,
+    query_order_info_reply_rows,
     select_order_change_candidate,
     submit_aps_order_demand_import,
     is_domestic_order_entry_completed,
@@ -1406,12 +1408,38 @@ def _template_customer_order_numbers(template: dict[str, Any]) -> list[str]:
     ))
 
 
+def _reply_template_table_rows(template: dict[str, Any]) -> list[dict[str, str]]:
+    """Build the standard reply table from saved entry groups without mutating them."""
+    groups = [item for item in template.get("groups") or [] if isinstance(item, dict)]
+    if not groups:
+        groups = [{"header": template.get("header") or {}, "lines": template.get("lines") or []}]
+    rows: list[dict[str, str]] = []
+    for group in groups:
+        header = group.get("header") or {}
+        group_po = str(header.get("customer_order_number") or group.get("order_number") or "").strip()
+        for line in group.get("lines") or []:
+            values = line.get("values") or {}
+            remark = str(values.get("remark") or "").partition("&")[0]
+            roll = re.search(r"(?:^|[；;\n])\s*(\d+(?:\.\d+)?)卷", remark)
+            rows.append({
+                "row_id": f"generated-{len(rows) + 1}",
+                "customer_order_number": str(values.get("customer_order_number") or group_po).strip(),
+                "line_no": str(values.get("line_no") or "").strip(),
+                "customer_product_code": str(values.get("customer_product_code") or "").strip(),
+                "customer_spec": str(values.get("customer_spec") or "").strip(),
+                "quantity": f"{roll.group(1)}卷" if roll else str(values.get("quantity") or "").strip(),
+                "unit_price": str(values.get("unit_price") or values.get("price_before_tax") or "").strip(),
+            })
+    return rows
+
+
 def _order_change_reply_body(
     source_html: str,
     source_text: str,
     lines: list[dict[str, Any]],
     order_matches: dict[int, dict[str, Any]],
     *,
+    transit_days: Any = None,
     sender: str = "",
     occurred_at: str = "",
     subject: str = "",
@@ -1430,7 +1458,8 @@ def _order_change_reply_body(
         row = (
             values.get("customer_order_number", ""), values.get("line_no", ""),
             values.get("customer_product_code", ""), values.get("customer_spec", ""),
-            values.get("delivery_date", ""), values.get("quantity", ""), selected.get("sctb16", ""),
+            values.get("delivery_date", ""), values.get("quantity", ""),
+            _expected_arrival_date(selected.get("sctb16"), transit_days),
         )
         rows.append("<tr>" + "".join(f"<td>{escape(str(value or ''))}</td>" for value in row) + "</tr>")
     head = "".join(f"<th>{escape(label)}</th>" for label in headers)
@@ -1540,10 +1569,12 @@ def order_automation_reply(case_id: int):
     saved_draft = saved_draft or session.get(draft_key) or {}
     default_body = str(case.get("body_text") or "")
     original_html = str(case.get("body_html") or "") or f"<pre>{escape(default_body)}</pre>"
+    customer = get_customer(int(case["customer_id"])) if case.get("customer_id") else None
     default_body_html = (
         _order_change_reply_body(
             str(case.get("body_html") or ""), default_body, lines,
             get_order_change_matches(case_id, int(template["id"]), employee_id) if template else {},
+            transit_days=(customer or {}).get("transit_days"),
             sender=str(case.get("sender") or ""),
             occurred_at=str(case.get("sent_at") or case.get("received_at") or ""),
             subject=str(case.get("subject") or ""),
@@ -1620,7 +1651,7 @@ def order_automation_reply(case_id: int):
 
 @bp.post("/order-automation/cases/<int:case_id>/reply/query-order")
 def order_automation_reply_query_order(case_id: int):
-    """Read existing ERP orders for a new-order reply without changing its template."""
+    """Read saved-template ERP orders without changing the reply or template."""
     redirect_resp = require_login()
     if redirect_resp:
         return redirect_resp
@@ -1641,6 +1672,39 @@ def order_automation_reply_query_order(case_id: int):
     except ValueError as exc:
         return jsonify({"ok": False, "message": str(exc)}), 400
     return jsonify({"ok": True, **result})
+
+
+@bp.post("/order-automation/cases/<int:case_id>/reply/fill-delivery")
+def order_automation_reply_fill_delivery(case_id: int):
+    """Match one reply-table and return delivery dates without changing saved data."""
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    case = get_order_intake_case(case_id, employee_id)
+    if not case or case.get("action_type") != "new_order":
+        abort(404)
+    try:
+        _case, template = get_saved_order_entry_template(case_id, employee_id)
+        if not template:
+            raise ValueError("请先生成并保存录单模板后再回填交期")
+        payload = request.get_json(silent=True) or {}
+        requested_rows = payload.get("rows") if isinstance(payload, dict) else None
+        if requested_rows is not None and not isinstance(requested_rows, list):
+            raise ValueError("回复表格数据格式无效")
+        if isinstance(requested_rows, list) and len(requested_rows) > 500:
+            raise ValueError("回复表格明细不能超过 500 行")
+        generated_table = not requested_rows
+        reply_rows = requested_rows if requested_rows else _reply_template_table_rows(template)
+        customer = get_customer(int(case["customer_id"])) if case.get("customer_id") else None
+        result = query_order_info_reply_rows(
+            case_id, int(template["id"]), employee_id, employee_id, reply_rows,
+            transit_days=(customer or {}).get("transit_days"),
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
+    return jsonify({"ok": True, "generated_table": generated_table,
+                    "generated_rows": reply_rows if generated_table else [], **result})
 
 
 @bp.post("/order-automation/cases/<int:case_id>/entry-template/start")
@@ -1846,6 +1910,9 @@ def order_automation_order_change_template_query(case_id: int):
     case = get_order_intake_case(case_id, employee_id)
     if not case or case.get("action_type") != "order_change":
         abort(404)
+    if case.get("status") == "pending_reply":
+        flash("修改订单已提交 APS，不能再查询或修改模板。", "error")
+        return redirect(url_for("main.order_automation_order_change_template", case_id=case_id, **request.args.to_dict()))
     try:
         payload = json.loads(request.form.get("template_payload") or "{}")
         template = save_order_change_template(case_id, employee_id, payload)
@@ -1876,6 +1943,9 @@ def order_automation_order_change_template_select_match(case_id: int):
     case = get_order_intake_case(case_id, employee_id)
     if not case or case.get("action_type") != "order_change":
         abort(404)
+    if case.get("status") == "pending_reply":
+        flash("修改订单已提交 APS，不能再变更 ERP 匹配。", "error")
+        return redirect(url_for("main.order_automation_order_change_template", case_id=case_id, **request.args.to_dict()))
     try:
         _case, template = get_order_change_template(case_id, employee_id)
         if not template:
@@ -1900,6 +1970,9 @@ def order_automation_order_change_template_submit_change(case_id: int):
     case = get_order_intake_case(case_id, employee_id)
     if not case or case.get("action_type") != "order_change":
         abort(404)
+    if case.get("status") == "pending_reply":
+        flash("修改订单已提交 APS，不能重复提交。", "error")
+        return redirect(url_for("main.order_automation_order_change_template", case_id=case_id, **request.args.to_dict()))
     try:
         payload = json.loads(request.form.get("template_payload") or "{}")
         template = save_order_change_template(case_id, employee_id, payload)

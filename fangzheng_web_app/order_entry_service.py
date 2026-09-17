@@ -1224,7 +1224,11 @@ def get_or_create_template(
         for group in initial_groups:
             for entry in group["lines"]:
                 values = entry["values"]
-                requested = clean_text(values.get("customer_order_seq")) or clean_text(values.get("line_no"))
+                requested = (
+                    clean_text(values.get("customer_order_seq"))
+                    if action_type == "new_order"
+                    else clean_text(values.get("line_no"))
+                ) or clean_text(values.get("line_no"))
                 line_no = int(requested) if re.fullmatch(r"[1-9]\d*", requested or "") else next_line_no
                 if line_no in used_line_nos:
                     line_no = next_line_no
@@ -1772,7 +1776,9 @@ def get_order_change_template(case_id: int, employee_id: str) -> tuple[dict[str,
 
 def save_order_change_template(case_id: int, employee_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Save the six user-facing fields without entering the domestic order flow."""
-    _case_for_template(case_id, employee_id, action_type="order_change")
+    case = _case_for_template(case_id, employee_id, action_type="order_change")
+    if case.get("status") == "pending_reply":
+        raise ValueError("修改订单已提交 APS，不能再修改模板。")
     raw_lines = payload.get("lines") or []
     if not isinstance(raw_lines, list):
         raise ValueError("修改订单明细格式无效")

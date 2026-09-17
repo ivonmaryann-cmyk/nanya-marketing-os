@@ -26,6 +26,7 @@ from fangzheng_web_app.order_interface_service import (
     list_nyeos_order_numbers,
     list_interface_configs,
     process_material_created_callback,
+    query_order_info_reply_rows,
     query_order_info_readonly,
     _decode_interface_response,
     _domestic_order_request_payload,
@@ -200,6 +201,33 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         self.assertEqual(call["interface_key"], "order_info_query")
         self.assertEqual(after_case, before_case)
         self.assertEqual(after_template, before_template)
+
+    def test_reply_table_rows_reuse_order_change_matching_and_arrival_date(self) -> None:
+        _case, template = get_or_create_template(self.case_id, "employee-a")
+        save_template(self.case_id, "employee-a", {
+            "header": {"customer_order_number": "PO-REPLY-TABLE"},
+            "lines": [{"values": {
+                "line_no": "7", "customer_order_number": "PO-REPLY-TABLE",
+                "customer_product_code": "CUST-007", "customer_spec": "客户规格",
+                "quantity": "10", "delivery_date": "2026-09-25",
+            }}],
+        })
+
+        result = query_order_info_reply_rows(
+            self.case_id, int(template["id"]), "employee-a", "employee-a", [{
+                "row_id": "reply-0-0", "customer_order_number": "建价PO-REPLY-TABLE",
+                "customer_product_code": "CUST-007", "line_no": "7", "quantity": "10",
+            }], transit_days="3",
+        )
+
+        self.assertEqual(result["match_counts"], {
+            "matched": 1, "multiple": 0, "unmatched": 0, "invalid_date": 0,
+        })
+        self.assertEqual(result["row_matches"], [{
+            "row_id": "reply-0-0", "status": "matched", "match_level": "order_part_item",
+            "delivery_reply": "2026-09-28", "reason": "",
+        }])
+        self.assertEqual(get_order_change_matches(self.case_id, int(template["id"]), "employee-a"), {})
 
     def test_expected_arrival_uses_customer_demand_date_not_expected_ship_date(self) -> None:
         result = _order_info_display_result({

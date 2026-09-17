@@ -16,7 +16,9 @@ from fangzheng_web_app.routes import (
     _filter_order_cases_by_status,
     _order_automation_list_progress,
     _order_mail_status_key,
+    _reply_template_table_rows,
     _template_customer_order_numbers,
+    order_automation_reply_fill_delivery,
     order_automation_reply_query_order,
 )
 
@@ -187,9 +189,15 @@ class OrderMailPagePresentationTests(unittest.TestCase):
             )
         self.assertIn('id="orderQueryOpen"', new_order_html)
         self.assertIn('id="orderQueryDrawer"', new_order_html)
+        self.assertIn('id="deliveryFill"', new_order_html)
         self.assertIn("预计到货日", new_order_html)
+        self.assertIn("const tableState=window.nouyaReplyTables?.collect()", new_order_html)
+        self.assertIn("tableState.hasPossibleOrderTable", new_order_html)
+        self.assertIn("Content-Type':'application/json", new_order_html)
+        self.assertNotIn("window.fetch=", new_order_html)
         self.assertNotIn('id="orderQueryOpen"', change_html)
         self.assertNotIn('id="orderQueryDrawer"', change_html)
+        self.assertNotIn('id="deliveryFill"', change_html)
 
     def test_reply_query_route_uses_saved_template_order_numbers(self) -> None:
         app = Flask(__name__)
@@ -202,7 +210,9 @@ class OrderMailPagePresentationTests(unittest.TestCase):
                 {"values": {"customer_order_number": "PO-002"}},
             ],
         }
-        with app.test_request_context("/order-automation/cases/7/reply/query-order", method="POST"), patch(
+        with app.test_request_context(
+            "/order-automation/cases/7/reply/query-order", method="POST",
+        ), patch(
             "fangzheng_web_app.routes.require_login", return_value=None,
         ), patch(
             "fangzheng_web_app.routes.current_employee", return_value="employee-a",
@@ -223,8 +233,56 @@ class OrderMailPagePresentationTests(unittest.TestCase):
 
         self.assertTrue(response.get_json()["ok"])
         query.assert_called_once_with(
-            7, 9, "employee-a", "employee-a", ["PO-001", "PO-002"], transit_days="4",
+            7, 9, "employee-a", "employee-a",
+            ["PO-001", "PO-002"],
+            transit_days="4",
         )
+
+    def test_reply_delivery_fill_route_uses_reply_table_rows(self) -> None:
+        app = Flask(__name__)
+        app.secret_key = "test-secret"
+        template = {"id": 9, "header": {"customer_order_number": "PO-001"}, "lines": []}
+        rows = [{"row_id": "reply-1", "customer_order_number": "PO-002", "line_no": "2"}]
+        with app.test_request_context(
+            "/order-automation/cases/7/reply/fill-delivery", method="POST", json={"rows": rows},
+        ), patch(
+            "fangzheng_web_app.routes.require_login", return_value=None,
+        ), patch(
+            "fangzheng_web_app.routes.current_employee", return_value="employee-a",
+        ), patch(
+            "fangzheng_web_app.routes.get_order_intake_case",
+            return_value={"id": 7, "action_type": "new_order", "customer_id": 12},
+        ), patch(
+            "fangzheng_web_app.routes.get_saved_order_entry_template",
+            return_value=({"id": 7}, template),
+        ), patch(
+            "fangzheng_web_app.routes.get_customer",
+            return_value={"id": 12, "transit_days": "4"},
+        ), patch(
+            "fangzheng_web_app.routes.query_order_info_reply_rows",
+            return_value={"mode": "mock", "order_count": 0, "orders": [], "not_found": [], "row_matches": []},
+        ) as query:
+            response = order_automation_reply_fill_delivery(7)
+
+        self.assertTrue(response.get_json()["ok"])
+        self.assertFalse(response.get_json()["generated_table"])
+        query.assert_called_once_with(
+            7, 9, "employee-a", "employee-a", rows,
+            transit_days="4",
+        )
+
+    def test_reply_generated_table_uses_template_rows_and_restores_roll_quantity(self) -> None:
+        rows = _reply_template_table_rows({
+            "groups": [{"order_number": "PO-ROLL", "header": {}, "lines": [{"values": {
+                "line_no": "1", "customer_product_code": "CUST-ROLL", "customer_spec": "PP 300M/卷",
+                "quantity": "210", "unit_price": "27.72", "remark": "0.7卷&客户备注",
+            }}]}],
+        })
+        self.assertEqual(rows, [{
+            "row_id": "generated-1", "customer_order_number": "PO-ROLL", "line_no": "1",
+            "customer_product_code": "CUST-ROLL", "customer_spec": "PP 300M/卷",
+            "quantity": "0.7卷", "unit_price": "27.72",
+        }])
 
     def test_optimized_templates_render_with_list_and_detail_data(self) -> None:
         app = Flask(__name__, template_folder=str(Path(__file__).parents[1] / "templates"))

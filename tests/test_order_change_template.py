@@ -24,6 +24,7 @@ from fangzheng_web_app.order_interface_service import (
     get_order_detail_records,
     query_order_info,
     select_order_change_candidate,
+    submit_aps_order_demand_import,
 )
 from fangzheng_web_app.order_intake_service import bootstrap_cases, list_cases
 
@@ -64,7 +65,7 @@ class OrderChangeTemplateMarkupTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn('id="orderChangeModal" hidden', markup)
-        self.assertIn('id="submitOrderChange" type="button">提交APS</button>', markup)
+        self.assertIn('id="submitOrderChange" type="button" {% if template_locked %}disabled{% endif %}>提交APS</button>', markup)
         self.assertIn('.oc-modal-mask[hidden]{display:none}', markup)
         self.assertIn("open.addEventListener('click',()=>{modal.hidden=false", markup)
 
@@ -142,6 +143,7 @@ class OrderChangeTemplateTests(unittest.TestCase):
 
         _case, extracted = get_order_change_template(self.case_id, "employee-a")
         self.assertEqual(extracted["header"]["customer_order_number"], "PO-CHANGE-001")
+        self.assertEqual(extracted["lines"][0]["values"]["line_no"], "8")
         self.assertEqual(extracted["lines"][0]["values"]["customer_product_code"], "CUST-8")
         self.assertEqual(extracted["lines"][0]["values"]["unit_price"], "")
         extracted_details = get_order_detail_records(self.case_id, "employee-a")
@@ -315,3 +317,24 @@ class OrderChangeTemplateTests(unittest.TestCase):
         persisted = get_order_change_matches(self.case_id, int(template["id"]), "employee-a")[9]
         self.assertEqual(persisted["status"], "matched")
         self.assertEqual(persisted["selected_candidate"]["sctb02"], "PART-2")
+
+    def test_pending_reply_change_cannot_be_saved_or_submitted_again(self) -> None:
+        with patch("fangzheng_web_app.order_entry_service.subprocess.Popen"):
+            queued = queue_order_change_template_extraction(self.case_id, "employee-a")
+        with patch("fangzheng_web_app.order_entry_service._initial_template_data", return_value=(
+            {"customer_order_number": "PO-LOCK"},
+            [{"values": {
+                "line_no": "1", "customer_order_number": "PO-LOCK",
+                "customer_product_code": "CUST-LOCK", "quantity": "10",
+            }, "sources": {}}],
+        )):
+            run_template_extraction_task(queued["task_id"], self.case_id, "employee-a", action_type="order_change")
+        _case, template = get_order_change_template(self.case_id, "employee-a")
+        with db.db_cursor() as conn:
+            conn.execute("UPDATE order_intake_cases SET status='pending_reply' WHERE id=?", (self.case_id,))
+        with self.assertRaisesRegex(ValueError, "不能重复提交"):
+            submit_aps_order_demand_import(
+                self.case_id, int(template["id"]), "employee-a", "employee-a", "交期变更",
+            )
+        with self.assertRaisesRegex(ValueError, "不能再修改模板"):
+            save_order_change_template(self.case_id, "employee-a", {"lines": []})

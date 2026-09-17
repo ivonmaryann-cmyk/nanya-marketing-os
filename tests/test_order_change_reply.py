@@ -31,7 +31,7 @@ class OrderChangeReplyBodyTests(unittest.TestCase):
         self.assertIn("主题：订单变更", body)
         self.assertLess(body.index("客户订单号"), body.index("----- 原邮件 -----"))
 
-    def test_builds_change_table_from_template_and_erp_demand_date(self) -> None:
+    def test_builds_change_table_from_template_and_erp_demand_date_plus_transit_days(self) -> None:
         body = _order_change_reply_body(
             "", "无表格正文",
             [{"line_no": 3, "values": {
@@ -39,11 +39,11 @@ class OrderChangeReplyBodyTests(unittest.TestCase):
                 "customer_product_code": "CUST-001", "customer_spec": "FR-4 <1.0mm>",
                 "delivery_date": "2026-09-25", "quantity": "100",
             }}],
-            {3: {"selected_candidate": {"sctb16": "2026-09-22"}}},
+            {3: {"selected_candidate": {"sctb16": "2026-09-22"}}}, transit_days="3",
         )
 
         self.assertIn("厂内交期回复", body)
-        self.assertIn("2026-09-22", body)
+        self.assertIn("2026-09-25", body)
         self.assertIn("FR-4 &lt;1.0mm&gt;", body)
         self.assertIn("无表格正文", body)
 
