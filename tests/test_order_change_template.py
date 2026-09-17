@@ -76,6 +76,17 @@ class OrderChangeTemplateMarkupTests(unittest.TestCase):
         self.assertIn("change_progress.stage == 'pending_reply'", markup)
         self.assertIn("查看修改订单", markup)
 
+    def test_change_extraction_auto_open_refreshes_then_redirects_to_template(self) -> None:
+        route_source = (
+            Path(__file__).resolve().parents[1] / "fangzheng_web_app" / "routes.py"
+        ).read_text(encoding="utf-8")
+        markup = (
+            Path(__file__).resolve().parents[1] / "templates" / "order_automation_case.html"
+        ).read_text(encoding="utf-8")
+        self.assertIn('query["auto_open_change"] = "1"', route_source)
+        self.assertIn('"main.order_automation_order_change_template"', route_source)
+        self.assertIn("change_progress.stage == 'extracting' and auto_open_change", markup)
+
     def test_order_overview_exposes_pending_reply_filter(self) -> None:
         route_source = (
             Path(__file__).resolve().parents[1]

@@ -58,6 +58,17 @@ def is_order_email(subject: str, sender: str) -> bool:
     return False
 
 
+def _is_seen_flag(fetch_metadata: bytes | str) -> bool:
+    """Read the IMAP FLAGS response without changing any server-side state."""
+    metadata = (
+        fetch_metadata.decode("utf-8", errors="replace")
+        if isinstance(fetch_metadata, bytes)
+        else str(fetch_metadata)
+    )
+    flags = re.search(r"FLAGS\s+\(([^)]*)\)", metadata, flags=re.IGNORECASE)
+    return bool(flags and "\\SEEN" in flags.group(1).upper().split())
+
+
 def _connect(account: dict[str, Any]) -> imaplib.IMAP4_SSL:
     # 邮箱授权码和订单内容均为敏感信息，始终校验 IMAP 服务端证书。
     context = ssl.create_default_context()
@@ -213,13 +224,14 @@ def fetch_latest_order_mails(
         duplicate_count = 0
         mail_ids: list[int] = []
         for num in matched:
-            typ, body_data = client.fetch(num, "(UID BODY.PEEK[])")
+            typ, body_data = client.fetch(num, "(UID FLAGS BODY.PEEK[])")
             if not body_data or not isinstance(body_data[0], tuple):
                 continue
             raw = body_data[0][1]
             uid_part = body_data[0][0].decode("utf-8", errors="replace")
             uid_match = re.search(r"UID\s+(\d+)", uid_part, flags=re.IGNORECASE)
             uid = uid_match.group(1) if uid_match else str(num.decode())
+            is_seen = _is_seen_flag(body_data[0][0])
             message = email.message_from_bytes(raw)
             subject = _decode_header_value(message.get("Subject"))
             sender = _decode_header_value(message.get("From"))
@@ -243,6 +255,7 @@ def fetch_latest_order_mails(
                 body_text=text,
                 eml_path=str(eml_path),
                 is_order=1,
+                is_seen=is_seen,
                 fetch_task_id=fetch_task_id,
             )
             mail_store.record_fetch_task_message(fetch_task_id, mail_id, is_new=is_new)
@@ -311,6 +324,42 @@ def fetch_latest_order_mails(
         try:
             if client is not None:
                 client.logout()
+        except Exception:
+            pass
+
+
+def mark_message_seen_remotely(mail_id: int, *, owner_employee_id: str) -> bool:
+    """Mark a platform-opened message as read in IMAP, then mirror it locally.
+
+    This is deliberately called only after a user opens a mail detail page;
+    background synchronization remains read-only and never marks mail as read.
+    """
+    message = mail_store.get_message(mail_id, owner_employee_id=owner_employee_id)
+    if not message:
+        return False
+    if bool(message.get("is_seen")):
+        return True
+    uid = str(message.get("uid") or "").strip()
+    folder = str(message.get("folder") or "INBOX").strip() or "INBOX"
+    if not uid:
+        return False
+    account = mail_store.get_account(int(message["account_id"]), owner_employee_id=owner_employee_id)
+    if not account or not account.get("auth_code_ciphertext"):
+        return False
+    client = _connect(account)
+    try:
+        selected, _ = client.select(folder, readonly=False)
+        if str(selected).upper() != "OK":
+            return False
+        result, _ = client.uid("STORE", uid, "+FLAGS.SILENT", r"(\Seen)")
+        if str(result).upper() != "OK":
+            return False
+        return mail_store.set_message_seen(
+            mail_id, owner_employee_id=owner_employee_id, is_seen=True
+        )
+    finally:
+        try:
+            client.logout()
         except Exception:
             pass
 

@@ -8,6 +8,8 @@
     <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='brand/favicon-32.png') }}">
     <link rel="apple-touch-icon" href="{{ url_for('static', filename='brand/favicon-180.png') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=20260819-sidebar-icon">
+  {% if task_boards_available %}<link rel="stylesheet" href="{{ url_for('static',filename='task_boards.css') }}?v=1">{% endif %}
+  {% if product_names_available %}<link rel="stylesheet" href="{{ url_for('static',filename='product_names.css') }}?v=1">{% endif %}
   {% block extra_head %}{% endblock %}
   </head>
   <body>
@@ -35,6 +37,16 @@
               <span class="nav-icon nav-icon-workplan" aria-hidden="true"></span>
               <span class="nav-label">订单自动化</span>
             </a>
+            {% if task_boards_available %}<details class="board-nav" {% if request.endpoint and request.endpoint.startswith('task_boards.') %}open{% endif %}>
+              <summary><span class="nav-icon nav-icon-dashboard" aria-hidden="true"></span><span class="nav-label">看板</span></summary>
+              <a href="{{ url_for('task_boards.overview', scope='mine') }}" title="我的任务看板" class="{% if request.endpoint == 'task_boards.overview' and request.view_args.scope == 'mine' %}active{% endif %}"><span class="nav-label">我的任务看板</span></a>
+              {% if can_view_team_board %}<a href="{{ url_for('task_boards.overview', scope='team') }}" title="团队任务看板" class="{% if request.endpoint == 'task_boards.overview' and request.view_args.scope == 'team' %}active{% endif %}"><span class="nav-label">团队任务看板</span></a>{% endif %}
+            </details>{% endif %}
+            {% if product_names_available %}<details class="product-name-nav" {% if request.endpoint and request.endpoint.startswith('product_names.') %}open{% endif %}>
+              <summary><span class="nav-icon nav-icon-workplan" aria-hidden="true"></span><span class="nav-label">品名转换</span></summary>
+              <a href="{{ url_for('product_names.overview',product='board') }}" title="基板新品名转换" class="{% if request.endpoint == 'product_names.overview' and request.view_args.product == 'board' %}active{% endif %}"><span class="nav-label">基板新品名转换</span></a>
+              <a href="{{ url_for('product_names.overview',product='pp') }}" title="PP新品名转换" class="{% if request.endpoint == 'product_names.overview' and request.view_args.product == 'pp' %}active{% endif %}"><span class="nav-label">PP新品名转换</span></a>
+            </details>{% endif %}
             {% if is_interface_admin %}
             <a href="{{ url_for('main.interface_maintenance') }}" title="接口维护" class="{% if request.endpoint == 'main.interface_maintenance' %}active{% endif %}">
               <span class="nav-icon nav-icon-admin" aria-hidden="true"></span>
@@ -45,6 +57,10 @@
               <span class="nav-icon nav-icon-workplan" aria-hidden="true"></span>
               <span class="nav-label">客户信息维护</span>
             </a>
+          </nav>
+        </div>
+        <div class="sidebar-footer" aria-label="当前账户">
+          <nav class="nav" aria-label="个人菜单">
             <a href="{{ url_for('main.history') }}" title="历史记录" class="{% if request.endpoint == 'main.history' %}active{% endif %}">
               <span class="nav-icon nav-icon-history" aria-hidden="true"></span>
               <span class="nav-label">历史记录</span>
@@ -54,8 +70,6 @@
         <span class="nav-label">我的</span>
       </a>
           </nav>
-        </div>
-        <div class="sidebar-footer" aria-label="当前账户">
           <div class="user-card">
             <div class="user-avatar" aria-hidden="true">{{ session.employee_id[:1] }}</div>
             <div class="user-info">

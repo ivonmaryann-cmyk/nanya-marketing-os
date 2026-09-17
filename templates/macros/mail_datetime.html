@@ -1,0 +1,8 @@
+{% macro mail_datetime(value) -%}
+  {%- set text = (value|string)|trim if value else '' -%}
+  {%- if text|length >= 16 and text[4:5] == '-' and text[7:8] == '-' and text[10:11] in ['T', ' '] -%}
+    {{- (text[:19]|replace('T', ' ')) if text|length >= 19 else (text|replace('T', ' ')) ~ ':00' -}}
+  {%- else -%}
+    {{- text -}}
+  {%- endif -%}
+{%- endmacro %}

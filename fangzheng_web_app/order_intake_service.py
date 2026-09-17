@@ -1164,7 +1164,7 @@ def list_cases(
     with db_cursor() as conn:
         rows = conn.execute(
             f"""
-            SELECT c.*, m.subject, m.sender, m.sent_at, m.received_at, m.body_text, a.email AS mailbox_email,
+            SELECT c.*, m.subject, m.sender, m.sent_at, m.received_at, m.body_text, m.is_seen, a.email AS mailbox_email,
                    rr.name AS routing_rule_name,
                    (SELECT COUNT(*) FROM mail_attachments a WHERE a.mail_id = m.id AND a.is_inline = 0) AS attachment_count,
                    (SELECT a.filename FROM mail_attachments a WHERE a.mail_id = m.id AND a.is_inline = 0 ORDER BY a.id LIMIT 1) AS first_attachment_name,
@@ -1221,7 +1221,7 @@ def get_case(case_id: int, employee_id: str) -> dict[str, Any] | None:
         row = conn.execute(
             """
             SELECT c.*, m.account_id, m.message_id, m.subject, m.sender, m.sent_at, m.received_at,
-                   m.body_html, m.body_text, m.eml_path,
+                   m.body_html, m.body_text, m.eml_path, m.is_seen,
                    rr.name AS routing_rule_name
             FROM order_intake_cases c
             JOIN mail_messages m ON m.id = c.mail_id

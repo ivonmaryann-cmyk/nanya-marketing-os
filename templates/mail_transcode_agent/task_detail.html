@@ -1,3 +1,4 @@
+{% from 'macros/mail_datetime.html' import mail_datetime %}
 {% extends "base.html" %}
 {% block title %}邮件订单详情 | 邮件自动化转码Agent{% endblock %}
 {% block content %}
@@ -11,7 +12,7 @@
   <div class="feature-hero-copy">
     <div class="panel-tag">任务内邮件</div>
     <h1>{{ message.subject }}</h1>
-    <p>{{ message.sender or '-' }} · {{ message.sent_at or '-' }}</p>
+    <p>{{ message.sender or '-' }} · {{ mail_datetime(message.sent_at or '-') }}</p>
   </div>
   <div class="feature-metrics">
     <div>

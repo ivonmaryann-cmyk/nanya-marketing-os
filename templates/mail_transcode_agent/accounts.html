@@ -1,3 +1,4 @@
+{% from 'macros/mail_datetime.html' import mail_datetime %}
 {% extends "base.html" %}
 {% block title %}邮箱配置 | {{ platform_name }} {{ platform_version }}{% endblock %}
 {% block content %}
@@ -165,7 +166,7 @@
         <div class="result-actions">
           <button type="submit">保存 SMTP 配置</button>
           <button id="test-smtp-connection" type="button" class="mail-outline-action" data-url="{{ url_for('mail_transcode.test_account_smtp_connection', account_id=edit_account.id) }}">测试 SMTP 连接</button>
-          <span id="smtp-connection-result" class="muted-text" aria-live="polite">{{ '上次测试成功：' ~ smtp_config.last_test_at if smtp_config.last_test_status == 'success' else '测试只验证登录，不会发送邮件。' }}</span>
+          <span id="smtp-connection-result" class="muted-text" aria-live="polite">{{ '上次测试成功：' ~ mail_datetime(smtp_config.last_test_at) if smtp_config.last_test_status == 'success' else '测试只验证登录，不会发送邮件。' }}</span>
         </div>
       </form>
       {% endif %}
@@ -186,7 +187,7 @@
               <td>{{ account.email }}</td>
               <td><span class="status">{{ '已启用' if account.enabled else '已停用' }}</span><br><small>{{ account.imap_host }}:{{ account.imap_port }}</small></td>
               <td><span class="status">{{ '已启用' if account.smtp_enabled else ('已配置待启用' if account.smtp_auth_code_ciphertext else '未配置') }}</span></td>
-              <td>{{ account.last_fetch_at or '从未抓取' }}</td>
+              <td>{{ mail_datetime(account.last_fetch_at or '从未抓取') }}</td>
               <td>
                 <div class="mail-account-actions">
                   <a href="{{ url_for('mail_transcode.accounts_page', edit=account.id) }}">编辑</a>

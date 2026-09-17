@@ -1,0 +1,2258 @@
+[
+  {
+    "code": "1ANN",
+    "name": "NY1140 N料",
+    "details": {
+      "classification": "NY1140(1140)",
+      "legacy": "1A"
+    }
+  },
+  {
+    "code": "1AON",
+    "name": "NY1140 O料 UL专用",
+    "details": {
+      "classification": "NY1140(1140)",
+      "legacy": "1A"
+    }
+  },
+  {
+    "code": "1LAA",
+    "name": "NY3150HC封面汽车布+NY2140内布汽车布",
+    "details": {
+      "classification": "NY1600(1600)",
+      "legacy": "1L"
+    }
+  },
+  {
+    "code": "1LAC",
+    "name": "NY3150HC封面+NY2140内布",
+    "details": {
+      "classification": "NY1600(1600)",
+      "legacy": "1L"
+    }
+  },
+  {
+    "code": "1LBB",
+    "name": "NY3150HC封面+NY2140 B级内布",
+    "details": {
+      "classification": "NY1600(1600)",
+      "legacy": "1L"
+    }
+  },
+  {
+    "code": "1LBN",
+    "name": "NY1600",
+    "details": {
+      "classification": "NY1600(1600)",
+      "legacy": "1L"
+    }
+  },
+  {
+    "code": "1LCN",
+    "name": "NY3150HC封面+NY2150内布",
+    "details": {
+      "classification": "NY1600(1600)",
+      "legacy": "1L"
+    }
+  },
+  {
+    "code": "1LDN",
+    "name": "NY3150HC封面+NY2140L内布",
+    "details": {
+      "classification": "NY1600(1600)",
+      "legacy": "1L"
+    }
+  },
+  {
+    "code": "1LNB",
+    "name": "NY1600面+NY2140L内",
+    "details": {
+      "classification": "NY1600(1600)",
+      "legacy": "1L"
+    }
+  },
+  {
+    "code": "1LNC",
+    "name": "NY1600面+NY2140 B级布",
+    "details": {
+      "classification": "NY1600(1600)",
+      "legacy": "1L"
+    }
+  },
+  {
+    "code": "1LNN",
+    "name": "NY1600 封面+NY2140内布",
+    "details": {
+      "classification": "NY1600(1600)",
+      "legacy": "1L"
+    }
+  },
+  {
+    "code": "2AAN",
+    "name": "NY2140降本",
+    "details": {
+      "classification": "NY2140(2140)",
+      "legacy": "2P"
+    }
+  },
+  {
+    "code": "2AKB",
+    "name": "NY2140面+NY2140L内 双面板",
+    "details": {
+      "classification": "NY2140(2140)",
+      "legacy": "2K"
+    }
+  },
+  {
+    "code": "2AKC",
+    "name": "NY2140L C级布",
+    "details": {
+      "classification": "NY2140(2140)",
+      "legacy": "2K"
+    }
+  },
+  {
+    "code": "2AKN",
+    "name": "NY2140L B级布 双面板",
+    "details": {
+      "classification": "NY2140(2140)",
+      "legacy": "2K"
+    }
+  },
+  {
+    "code": "2ANA",
+    "name": "NY2140 汽车板",
+    "details": {
+      "classification": "NY2140(2140)",
+      "legacy": "2A"
+    }
+  },
+  {
+    "code": "2ANB",
+    "name": "NY2140 B级布双面板",
+    "details": {
+      "classification": "NY2140(2140)",
+      "legacy": "2A"
+    }
+  },
+  {
+    "code": "2ANM",
+    "name": "NY2140 Min LED",
+    "details": {
+      "classification": "NY2140(2140)",
+      "legacy": "2A"
+    }
+  },
+  {
+    "code": "2ANN",
+    "name": "NY2140",
+    "details": {
+      "classification": "NY2140(2140)",
+      "legacy": "2A"
+    }
+  },
+  {
+    "code": "2BAA",
+    "name": "NY2150 S 汽车板",
+    "details": {
+      "classification": "NY2150(2150)",
+      "legacy": "2S"
+    }
+  },
+  {
+    "code": "2BAM",
+    "name": "NY2150 S Min LED",
+    "details": {
+      "classification": "NY2150(2150)",
+      "legacy": "2S"
+    }
+  },
+  {
+    "code": "2BAN",
+    "name": "NY2150 S",
+    "details": {
+      "classification": "NY2150(2150)",
+      "legacy": "2S"
+    }
+  },
+  {
+    "code": "2BAU",
+    "name": "NY2150  UL用途",
+    "details": {
+      "classification": "NY2150(2150)",
+      "legacy": "2S"
+    }
+  },
+  {
+    "code": "2BBN",
+    "name": "NY2150（珠海景旺用NY-A1（RC）代）",
+    "details": {
+      "classification": "NY2150(2150)",
+      "legacy": "RC"
+    }
+  },
+  {
+    "code": "2BNA",
+    "name": "NY2150 汽车板",
+    "details": {
+      "classification": "NY2150(2150)",
+      "legacy": "2B"
+    }
+  },
+  {
+    "code": "2BNM",
+    "name": "NY2150 MIn LED",
+    "details": {
+      "classification": "NY2150(2150)",
+      "legacy": "2B"
+    }
+  },
+  {
+    "code": "2BNN",
+    "name": "NY2150",
+    "details": {
+      "classification": "NY2150(2150)",
+      "legacy": "2B"
+    }
+  },
+  {
+    "code": "2BUC",
+    "name": "NY2150 S UL配方",
+    "details": {
+      "classification": "NY2150(2150)",
+      "legacy": "2S"
+    }
+  },
+  {
+    "code": "2BUN",
+    "name": "NY2150 UL配方",
+    "details": {
+      "classification": "NY2150(2150)",
+      "legacy": "2B"
+    }
+  },
+  {
+    "code": "2BZN",
+    "name": "NY2150 胶水同RC",
+    "details": {
+      "classification": "NY2150(2150)",
+      "legacy": "2T"
+    }
+  },
+  {
+    "code": "2CNA",
+    "name": "NY2170 汽车板",
+    "details": {
+      "classification": "NY2170(2170)",
+      "legacy": "2C"
+    }
+  },
+  {
+    "code": "2CNM",
+    "name": "NY2170 Min LED",
+    "details": {
+      "classification": "NY2170(2170)",
+      "legacy": "2C"
+    }
+  },
+  {
+    "code": "2CNN",
+    "name": "NY2170",
+    "details": {
+      "classification": "NY2170(2170)",
+      "legacy": "2C"
+    }
+  },
+  {
+    "code": "2ENA",
+    "name": "NY2170H 汽车板",
+    "details": {
+      "classification": "NY2170H(2170H)",
+      "legacy": "2E"
+    }
+  },
+  {
+    "code": "2ENM",
+    "name": "NY2170H Min LED",
+    "details": {
+      "classification": "NY2170H(2170H)",
+      "legacy": "2E"
+    }
+  },
+  {
+    "code": "2ENN",
+    "name": "NY2170H",
+    "details": {
+      "classification": "NY2170H(2170H)",
+      "legacy": "2E"
+    }
+  },
+  {
+    "code": "2FNB",
+    "name": "NY6180HF",
+    "details": {
+      "classification": "NY6180(6180)",
+      "legacy": "AZ"
+    }
+  },
+  {
+    "code": "2FNC",
+    "name": "NY6288",
+    "details": {
+      "classification": "NY6180(6180)",
+      "legacy": "AG"
+    }
+  },
+  {
+    "code": "2FNN",
+    "name": "NY6180",
+    "details": {
+      "classification": "NY6180(6180)",
+      "legacy": "2F"
+    }
+  },
+  {
+    "code": "2FUN",
+    "name": "NY6180 UL专用配方",
+    "details": {
+      "classification": "NY6180(6180)",
+      "legacy": "U4"
+    }
+  },
+  {
+    "code": "2GGN",
+    "name": "NY-A2 非汽车板用途",
+    "details": {
+      "classification": "NY-A2(A2)",
+      "legacy": "2G"
+    }
+  },
+  {
+    "code": "2GNA",
+    "name": "NY-A2",
+    "details": {
+      "classification": "NY-A2(A2)",
+      "legacy": "AL"
+    }
+  },
+  {
+    "code": "2GNM",
+    "name": "NY-A2 Min LED",
+    "details": {
+      "classification": "NY-A2(A2)",
+      "legacy": "AL"
+    }
+  },
+  {
+    "code": "2GNN",
+    "name": "NY-A2 非汽车板用途",
+    "details": {
+      "classification": "NY-A2(A2)",
+      "legacy": "AL"
+    }
+  },
+  {
+    "code": "2GNY",
+    "name": "NY-A2 研发专用",
+    "details": {
+      "classification": "NY-A2(A2)",
+      "legacy": "AL"
+    }
+  },
+  {
+    "code": "2HAN",
+    "name": "NY2150H(RC胶水)",
+    "details": {
+      "classification": "NY2150H(2150H)",
+      "legacy": "2H"
+    }
+  },
+  {
+    "code": "2HEA",
+    "name": "NY2150H （中富NY2170H代）汽车板",
+    "details": {
+      "classification": "NY2150H(2150H)",
+      "legacy": "2W"
+    }
+  },
+  {
+    "code": "2HEN",
+    "name": "NY2150H （中富NY2170H代）",
+    "details": {
+      "classification": "NY2150H(2150H)",
+      "legacy": "2W"
+    }
+  },
+  {
+    "code": "2HNA",
+    "name": "NY2150H 汽车板",
+    "details": {
+      "classification": "NY2150H(2150H)",
+      "legacy": "2H"
+    }
+  },
+  {
+    "code": "2HNM",
+    "name": "NY2150H Min LED",
+    "details": {
+      "classification": "NY2150H(2150H)",
+      "legacy": "2H"
+    }
+  },
+  {
+    "code": "2HNN",
+    "name": "NY2150H",
+    "details": {
+      "classification": "NY2150H(2150H)",
+      "legacy": "2H"
+    }
+  },
+  {
+    "code": "2KNN",
+    "name": "NY2140L 丹凤/巨石B级布",
+    "details": {
+      "classification": "NY2140(2140)",
+      "legacy": "2K"
+    }
+  },
+  {
+    "code": "2LNA",
+    "name": "NY2600 汽车板",
+    "details": {
+      "classification": "NY2600(2600)",
+      "legacy": "2L"
+    }
+  },
+  {
+    "code": "2LNN",
+    "name": "NY2600 CTI600",
+    "details": {
+      "classification": "NY2600(2600)",
+      "legacy": "2L"
+    }
+  },
+  {
+    "code": "2MNN",
+    "name": "NY6200M",
+    "details": {
+      "classification": "NY6200(6200)",
+      "legacy": "2M"
+    }
+  },
+  {
+    "code": "2ZNA",
+    "name": "NY-A1",
+    "details": {
+      "classification": "NY-A1(A1)",
+      "legacy": "RC"
+    }
+  },
+  {
+    "code": "2ZNN",
+    "name": "NY-A1",
+    "details": {
+      "classification": "NY-A1(A1)",
+      "legacy": "RC"
+    }
+  },
+  {
+    "code": "2ZZN",
+    "name": "NY-A1",
+    "details": {
+      "classification": "NY-A1(A1)",
+      "legacy": "2Z"
+    }
+  },
+  {
+    "code": "3BEA",
+    "name": "NY3150HF CTI600 汽车板",
+    "details": {
+      "classification": "NY3150HF(3150)",
+      "legacy": "3B"
+    }
+  },
+  {
+    "code": "3BEN",
+    "name": "NY3150HF CTI600",
+    "details": {
+      "classification": "NY3150HF(3150)",
+      "legacy": "3B"
+    }
+  },
+  {
+    "code": "3BNA",
+    "name": "NY3150HF 汽车板",
+    "details": {
+      "classification": "NY3150HF(3150)",
+      "legacy": "3B"
+    }
+  },
+  {
+    "code": "3BNM",
+    "name": "NY3150HF Min LED",
+    "details": {
+      "classification": "NY3150HF(3150)",
+      "legacy": "3B"
+    }
+  },
+  {
+    "code": "3BNN",
+    "name": "NY3150HF",
+    "details": {
+      "classification": "NY3150HF(3150)",
+      "legacy": "3B"
+    }
+  },
+  {
+    "code": "3BUN",
+    "name": "NY3150HF UL配方",
+    "details": {
+      "classification": "NY3150HF(3150)",
+      "legacy": "U2"
+    }
+  },
+  {
+    "code": "3CNA",
+    "name": "NY3170HF 汽车板",
+    "details": {
+      "classification": "NY3170HF(3170)",
+      "legacy": "3C"
+    }
+  },
+  {
+    "code": "3CNC",
+    "name": "NY3176HF",
+    "details": {
+      "classification": "NY3170HF(3170)",
+      "legacy": "AT"
+    }
+  },
+  {
+    "code": "3CNN",
+    "name": "NY3170HF(HDI)",
+    "details": {
+      "classification": "NY3170HF(3170)",
+      "legacy": "3C"
+    }
+  },
+  {
+    "code": "3DNA",
+    "name": "NY3170LK 汽车板",
+    "details": {
+      "classification": "NY3170LK(3170LK)",
+      "legacy": "3D"
+    }
+  },
+  {
+    "code": "3DNN",
+    "name": "NY3170LK",
+    "details": {
+      "classification": "NY3170LK(3170LK)",
+      "legacy": "3D"
+    }
+  },
+  {
+    "code": "3ENA",
+    "name": "NY-A5HF",
+    "details": {
+      "classification": "NY3170LK(3170LK)",
+      "legacy": "RU"
+    }
+  },
+  {
+    "code": "3HEA",
+    "name": "NY3150HC CTI600 (NY3150HF-E料)汽车板",
+    "details": {
+      "classification": "NY3150HF(3150)",
+      "legacy": "3B"
+    }
+  },
+  {
+    "code": "3HEN",
+    "name": "NY3150HC CTI600(NY3150HF-E料)",
+    "details": {
+      "classification": "NY3150HF(3150)",
+      "legacy": "3B"
+    }
+  },
+  {
+    "code": "3HNA",
+    "name": "NY3150HC CTI汽车板",
+    "details": {
+      "classification": "NY3150HF(3150)",
+      "legacy": "3H"
+    }
+  },
+  {
+    "code": "3HNN",
+    "name": "NY3150HC CTI600",
+    "details": {
+      "classification": "NY3150HF(3150)",
+      "legacy": "3H"
+    }
+  },
+  {
+    "code": "3HNY",
+    "name": "NY3150HC 研发专用",
+    "details": {
+      "classification": "NY3150HF(3150)",
+      "legacy": "3H"
+    }
+  },
+  {
+    "code": "3HU1",
+    "name": "NY3150HC UL配方",
+    "details": {
+      "classification": "NY3150HF(3150)",
+      "legacy": "U3"
+    }
+  },
+  {
+    "code": "3HVA",
+    "name": "NY3150HC（RV）汽车板",
+    "details": {
+      "classification": "NY3150HF(3150)",
+      "legacy": "RV"
+    }
+  },
+  {
+    "code": "3HVN",
+    "name": "NY3150HC（RV）",
+    "details": {
+      "classification": "NY3150HF(3150)",
+      "legacy": "RV"
+    }
+  },
+  {
+    "code": "3KNA",
+    "name": "NY-A3HC （胶水同NY3170HC）",
+    "details": {
+      "classification": "NY-A3HC(A3HC)",
+      "legacy": "3K"
+    }
+  },
+  {
+    "code": "3LNA",
+    "name": "NY3170HC 汽车板",
+    "details": {
+      "classification": "NY3170HF(3170)",
+      "legacy": "3L"
+    }
+  },
+  {
+    "code": "3LNM",
+    "name": "NY3170HC Min LED",
+    "details": {
+      "classification": "NY3170HF(3170)",
+      "legacy": "3L"
+    }
+  },
+  {
+    "code": "3LNN",
+    "name": "NY3170HC",
+    "details": {
+      "classification": "NY3170HF(3170)",
+      "legacy": "3L"
+    }
+  },
+  {
+    "code": "3MNA",
+    "name": "NY3170M 汽车板",
+    "details": {
+      "classification": "NY3170M(3170M)",
+      "legacy": "3M"
+    }
+  },
+  {
+    "code": "3MNB",
+    "name": "NY6180L",
+    "details": {
+      "classification": "NY6180(6180)",
+      "legacy": "3Q"
+    }
+  },
+  {
+    "code": "3MNC",
+    "name": "NY3170M ANT",
+    "details": {
+      "classification": "NY3170M(3170M)",
+      "legacy": "RF"
+    }
+  },
+  {
+    "code": "3MNN",
+    "name": "NY3170M",
+    "details": {
+      "classification": "NY3170M(3170M)",
+      "legacy": "3M"
+    }
+  },
+  {
+    "code": "3MNR",
+    "name": "NY6180L 研发专用",
+    "details": {
+      "classification": "NY6180(6180)",
+      "legacy": "3Q"
+    }
+  },
+  {
+    "code": "3MNY",
+    "name": "NY3170M 研发专用",
+    "details": {
+      "classification": "NY3170M(3170M)",
+      "legacy": "3M"
+    }
+  },
+  {
+    "code": "3MUN",
+    "name": "NY3170M UL配方",
+    "details": {
+      "classification": "NY3170M(3170M)",
+      "legacy": "U5"
+    }
+  },
+  {
+    "code": "3NNA",
+    "name": "NY3170M2 汽车板",
+    "details": {
+      "classification": "NY3170M2(3170M2)",
+      "legacy": "3N"
+    }
+  },
+  {
+    "code": "3NNN",
+    "name": "NY3170M2",
+    "details": {
+      "classification": "NY3170M2(3170M2)",
+      "legacy": "3N"
+    }
+  },
+  {
+    "code": "3NNY",
+    "name": "NY3170M2 研发专用",
+    "details": {
+      "classification": "NY3170M2(3170M2)",
+      "legacy": "3N"
+    }
+  },
+  {
+    "code": "6CNF",
+    "name": "NY6300S TFT板",
+    "details": {
+      "classification": "NY6300(6300)",
+      "legacy": "6C"
+    }
+  },
+  {
+    "code": "6CNL",
+    "name": "NY6300SN",
+    "details": {
+      "classification": "NY6300(6300)",
+      "legacy": "RB"
+    }
+  },
+  {
+    "code": "6CNN",
+    "name": "NY6300S",
+    "details": {
+      "classification": "NY6300(6300)",
+      "legacy": "6C"
+    }
+  },
+  {
+    "code": "6CUL",
+    "name": "NY6300SN UL专用",
+    "details": {
+      "classification": "NY6300(6300)",
+      "legacy": "U8"
+    }
+  },
+  {
+    "code": "6CUN",
+    "name": "NY6300S UL专用",
+    "details": {
+      "classification": "NY6300(6300)",
+      "legacy": "U6"
+    }
+  },
+  {
+    "code": "6DNB",
+    "name": "NY-P4",
+    "details": {
+      "classification": "NY-P4(P4)",
+      "legacy": "B7"
+    }
+  },
+  {
+    "code": "6DNC",
+    "name": "NY-P4",
+    "details": {
+      "classification": "NY-P4(P4)",
+      "legacy": "RA"
+    }
+  },
+  {
+    "code": "6DNL",
+    "name": "NY-P4N",
+    "details": {
+      "classification": "NY-P4(P4)",
+      "legacy": "B2"
+    }
+  },
+  {
+    "code": "6DNN",
+    "name": "NY-P4(C)",
+    "details": {
+      "classification": "NY-P4(P4)",
+      "legacy": "AB"
+    }
+  },
+  {
+    "code": "6HNB",
+    "name": "NY-P3N2 LOW DK2布（试验）",
+    "details": {
+      "classification": "NY-P3(P3)",
+      "legacy": "CL"
+    }
+  },
+  {
+    "code": "6HNC",
+    "name": "NY-P3",
+    "details": {
+      "classification": "NY-P3(P3)",
+      "legacy": "6H"
+    }
+  },
+  {
+    "code": "6HNN",
+    "name": "NY-P3(C)",
+    "details": {
+      "classification": "NY-P3(P3)",
+      "legacy": "RE"
+    }
+  },
+  {
+    "code": "6MNC",
+    "name": "NY-P2",
+    "details": {
+      "classification": "NY-P2(P2)",
+      "legacy": "6V"
+    }
+  },
+  {
+    "code": "6MNN",
+    "name": "NY-P2(C)",
+    "details": {
+      "classification": "NY-P2(P2)",
+      "legacy": "R2"
+    }
+  },
+  {
+    "code": "6SNL",
+    "name": "NY6300SL(N)",
+    "details": {
+      "classification": "NY6300(6300)",
+      "legacy": "6D"
+    }
+  },
+  {
+    "code": "6SNN",
+    "name": "NY6300SL",
+    "details": {
+      "classification": "NY6300(6300)",
+      "legacy": "6S"
+    }
+  },
+  {
+    "code": "6WNC",
+    "name": "NY6300",
+    "details": {
+      "classification": "NY6300(6300)",
+      "legacy": "6W"
+    }
+  },
+  {
+    "code": "6WNN",
+    "name": "NY6300(C)",
+    "details": {
+      "classification": "NY6300(6300)",
+      "legacy": "R1"
+    }
+  },
+  {
+    "code": "6YNC",
+    "name": "NY-P1",
+    "details": {
+      "classification": "NY-P1(P1)",
+      "legacy": "6Y"
+    }
+  },
+  {
+    "code": "6YNN",
+    "name": "NY-P1(C)",
+    "details": {
+      "classification": "NY-P1(P1)",
+      "legacy": "RD"
+    }
+  },
+  {
+    "code": "7BNA",
+    "name": "NYHP-7300",
+    "details": {
+      "classification": "NYHP-7300(7300)",
+      "legacy": "7B"
+    }
+  },
+  {
+    "code": "7BNN",
+    "name": "NYHP-7300",
+    "details": {
+      "classification": "NYHP-7300(7300)",
+      "legacy": "7B"
+    }
+  },
+  {
+    "code": "7LCN",
+    "name": "NYHP-7350 LNB330",
+    "details": {
+      "classification": "NYHP-7350(7350)",
+      "legacy": "7C"
+    }
+  },
+  {
+    "code": "7LJN",
+    "name": "NYHP-7350 PA(X)",
+    "details": {
+      "classification": "NYHP-7350(7350)",
+      "legacy": "7J"
+    }
+  },
+  {
+    "code": "7LNN",
+    "name": "NYHP-7350",
+    "details": {
+      "classification": "NYHP-7350(7350)",
+      "legacy": "7L"
+    }
+  },
+  {
+    "code": "7MMN",
+    "name": "NY6600 橡树布",
+    "details": {
+      "classification": "NY6600(6600)",
+      "legacy": "7M"
+    }
+  },
+  {
+    "code": "7MNN",
+    "name": "NY6600 泰山布",
+    "details": {
+      "classification": "NY6600(6600)",
+      "legacy": "7M"
+    }
+  },
+  {
+    "code": "7MUN",
+    "name": "NY6600 UL专用(NY6300SNU)",
+    "details": {
+      "classification": "NY6600(6600)",
+      "legacy": "7M"
+    }
+  },
+  {
+    "code": "7QNN",
+    "name": "NY6200ANT",
+    "details": {
+      "classification": "NY6200(6200)",
+      "legacy": "7Q"
+    }
+  },
+  {
+    "code": "7UNN",
+    "name": "NYHP-7350D",
+    "details": {
+      "classification": "NYHP-7350(7350)",
+      "legacy": "7U"
+    }
+  },
+  {
+    "code": "8BBN",
+    "name": "NY8320 NS 黑料",
+    "details": {
+      "classification": "NY8320 NS(8320)",
+      "legacy": "8B"
+    }
+  },
+  {
+    "code": "8BBT",
+    "name": "NY8320 NS黑料 LOW CTE布",
+    "details": {
+      "classification": "NY8320 NS(8320)",
+      "legacy": "8T"
+    }
+  },
+  {
+    "code": "8BCB",
+    "name": "NY8320 NK 白料",
+    "details": {
+      "classification": "NY8320 NS(8320)",
+      "legacy": "8E"
+    }
+  },
+  {
+    "code": "8BGN",
+    "name": "NY8320 NSB 棕色",
+    "details": {
+      "classification": "NY8320 NS(8320)",
+      "legacy": "8G"
+    }
+  },
+  {
+    "code": "8BYN",
+    "name": "NY8320 NS外卖PP",
+    "details": {
+      "classification": "NY8320 NS(8320)",
+      "legacy": "8B"
+    }
+  },
+  {
+    "code": "DG02",
+    "name": "DS-7402",
+    "details": {
+      "classification": "DS-7402(DG02)",
+      "legacy": "DA"
+    }
+  },
+  {
+    "code": "DGLC",
+    "name": "DS-7402LC",
+    "details": {
+      "classification": "DS-7402LC(DGLC)",
+      "legacy": "DB"
+    }
+  },
+  {
+    "code": "F1AN",
+    "name": "NF196",
+    "details": {
+      "classification": "NF196(F196)",
+      "legacy": "F1"
+    }
+  },
+  {
+    "code": "F1FN",
+    "name": "NF196(非改性)",
+    "details": {
+      "classification": "NF196(F196)",
+      "legacy": "F1"
+    }
+  },
+  {
+    "code": "R1L1",
+    "name": "NY1600 降本",
+    "details": {
+      "classification": "NY1600(1600)",
+      "legacy": "BH"
+    }
+  },
+  {
+    "code": "R2A1",
+    "name": "NY2140H 超低成本",
+    "details": {
+      "classification": "NY2140(2140)",
+      "legacy": "AD"
+    }
+  },
+  {
+    "code": "R2A2",
+    "name": "NY2140 芯板",
+    "details": {
+      "classification": "NY2140(2140)",
+      "legacy": "2P"
+    }
+  },
+  {
+    "code": "R2B1",
+    "name": "NY2150博世汽车考试板",
+    "details": {
+      "classification": "NY2150(2150)",
+      "legacy": "BB"
+    }
+  },
+  {
+    "code": "R2B2",
+    "name": "NY2150S1+ AS改善配方汽车板用途",
+    "details": {
+      "classification": "NY2150(2150)",
+      "legacy": "AS"
+    }
+  },
+  {
+    "code": "R2B3",
+    "name": "NY2150S1+ AS改善配方",
+    "details": {
+      "classification": "NY2150(2150)",
+      "legacy": "AS"
+    }
+  },
+  {
+    "code": "R2B4",
+    "name": "NY2150 联锦成改善气泡",
+    "details": {
+      "classification": "NY2150(2150)",
+      "legacy": "BU"
+    }
+  },
+  {
+    "code": "R2C1",
+    "name": "NY2170 窗口优化",
+    "details": {
+      "classification": "NY2170(2170)",
+      "legacy": "R5"
+    }
+  },
+  {
+    "code": "R2C2",
+    "name": "NY2170 气泡改善",
+    "details": {
+      "classification": "NY2170(2170)",
+      "legacy": "BY"
+    }
+  },
+  {
+    "code": "R2D1",
+    "name": "NY2150M",
+    "details": {
+      "classification": "NY2150(2150)",
+      "legacy": "BJ"
+    }
+  },
+  {
+    "code": "R2E1",
+    "name": "NY2170H 生益电子钻孔改善",
+    "details": {
+      "classification": "NY2170H(2170H)",
+      "legacy": "RK"
+    }
+  },
+  {
+    "code": "R2E2",
+    "name": "NY2170H降本A1方案",
+    "details": {
+      "classification": "NY2170H(2170H)",
+      "legacy": "A1"
+    }
+  },
+  {
+    "code": "R2G1",
+    "name": "NY-A2 钻孔改善",
+    "details": {
+      "classification": "NY-A2(A2)",
+      "legacy": "RY"
+    }
+  },
+  {
+    "code": "R2G2",
+    "name": "NY-A2 改良",
+    "details": {
+      "classification": "NY-A2(A2)",
+      "legacy": "AL"
+    }
+  },
+  {
+    "code": "R2G3",
+    "name": "NY-A2博世汽车考试板",
+    "details": {
+      "classification": "NY-A2(A2)",
+      "legacy": "AX"
+    }
+  },
+  {
+    "code": "R2G4",
+    "name": "NY-A2 联电高压考试板",
+    "details": {
+      "classification": "NY-A2(A2)",
+      "legacy": "C3"
+    }
+  },
+  {
+    "code": "R2GY",
+    "name": "NY-A2 研发专用",
+    "details": {
+      "classification": "NY-A2(A2)",
+      "legacy": "AL"
+    }
+  },
+  {
+    "code": "R2H1",
+    "name": "NY2150H 降本D1-1",
+    "details": {
+      "classification": "NY2150H(2150H)",
+      "legacy": "BV"
+    }
+  },
+  {
+    "code": "R2HN",
+    "name": "NY2150H 研发专用",
+    "details": {
+      "classification": "NY2150H(2150H)",
+      "legacy": "2H"
+    }
+  },
+  {
+    "code": "R2J1",
+    "name": "NY6180LL",
+    "details": {
+      "classification": "NY6180LL(6180LL)",
+      "legacy": "RL"
+    }
+  },
+  {
+    "code": "R2L1",
+    "name": "NY2600降本",
+    "details": {
+      "classification": "NY2600(2600)",
+      "legacy": "C1"
+    }
+  },
+  {
+    "code": "R2M1",
+    "name": "NY6200M 评估",
+    "details": {
+      "classification": "NY6200(6200)",
+      "legacy": "RN"
+    }
+  },
+  {
+    "code": "R2N1",
+    "name": "NY2150M 导热 0.8w",
+    "details": {
+      "classification": "NY2150M(2150M)",
+      "legacy": "R7"
+    }
+  },
+  {
+    "code": "R2N2",
+    "name": "NY-TC10G 导热1.0w",
+    "details": {
+      "classification": "NY-TC10G(DR)",
+      "legacy": "2N"
+    }
+  },
+  {
+    "code": "R2N3",
+    "name": "NY-TC10G 导热1.0W",
+    "details": {
+      "classification": "NY-TC10G(DR)",
+      "legacy": "2N"
+    }
+  },
+  {
+    "code": "R2N4",
+    "name": "NY-TC10G 导热1.0W",
+    "details": {
+      "classification": "NY-TC10G(DR)",
+      "legacy": "2N"
+    }
+  },
+  {
+    "code": "R2N5",
+    "name": "NY-TC10G 导热1.0W",
+    "details": {
+      "classification": "NY-TC10G(DR)",
+      "legacy": "2N"
+    }
+  },
+  {
+    "code": "R2N6",
+    "name": "NY-TC10G  D1-32-7",
+    "details": {
+      "classification": "NY-TC10G(DR)",
+      "legacy": "2N"
+    }
+  },
+  {
+    "code": "R2NK",
+    "name": "NY-TC10G J-45",
+    "details": {
+      "classification": "NY-TC10G(DR)",
+      "legacy": "2N"
+    }
+  },
+  {
+    "code": "R2NL",
+    "name": "NY-TC10G J-49",
+    "details": {
+      "classification": "NY-TC10G(DR)",
+      "legacy": "2N"
+    }
+  },
+  {
+    "code": "R2P1",
+    "name": "NY6188LC",
+    "details": {
+      "classification": "NY6188LC(6188LC)",
+      "legacy": "CM"
+    }
+  },
+  {
+    "code": "R2Q1",
+    "name": "NY5136BP",
+    "details": {
+      "classification": "NY5136BP(5136)",
+      "legacy": "A2"
+    }
+  },
+  {
+    "code": "R2Z1",
+    "name": "NY-A1 白纹改善",
+    "details": {
+      "classification": "NY-A1(A1)",
+      "legacy": "RC"
+    }
+  },
+  {
+    "code": "R2Z2",
+    "name": "NY-A1博世汽车考试板",
+    "details": {
+      "classification": "NY-A1(A1)",
+      "legacy": "AW"
+    }
+  },
+  {
+    "code": "R2ZB",
+    "name": "NY-A1白纹改善非汽车板",
+    "details": {
+      "classification": "NY-A1(A1)",
+      "legacy": "RC"
+    }
+  },
+  {
+    "code": "R2ZY",
+    "name": "NY-A1 研发专用",
+    "details": {
+      "classification": "NY-A1(A1)",
+      "legacy": "RC"
+    }
+  },
+  {
+    "code": "R3B1",
+    "name": "NY3150HF IST改善压合窗口",
+    "details": {
+      "classification": "NY3150HF(3150)",
+      "legacy": "AH"
+    }
+  },
+  {
+    "code": "R3B2",
+    "name": "NY3150HF IST改善",
+    "details": {
+      "classification": "NY3150HF(3150)",
+      "legacy": "RP"
+    }
+  },
+  {
+    "code": "R3B3",
+    "name": "NY3150HF IST改善压合窗口汽车板",
+    "details": {
+      "classification": "NY3150HF(3150)",
+      "legacy": "AH"
+    }
+  },
+  {
+    "code": "R3BA",
+    "name": "NY3150HF 研发专用",
+    "details": {
+      "classification": "NY3150HF(3150)",
+      "legacy": "3B"
+    }
+  },
+  {
+    "code": "R3BN",
+    "name": "NY3150HC研发专用",
+    "details": {
+      "classification": "NY3150HF(3150)",
+      "legacy": "3B"
+    }
+  },
+  {
+    "code": "R3BZ",
+    "name": "NY3150HF 研发专用",
+    "details": {
+      "classification": "NY3150HF(3150)",
+      "legacy": "3B"
+    }
+  },
+  {
+    "code": "R3C1",
+    "name": "NY3150HF FR15",
+    "details": {
+      "classification": "NY3150HF(3150)",
+      "legacy": "BC"
+    }
+  },
+  {
+    "code": "R3D1",
+    "name": "NY3170LK 降本B1-1",
+    "details": {
+      "classification": "NY3170LK(3170LK)",
+      "legacy": "C7"
+    }
+  },
+  {
+    "code": "R3DA",
+    "name": "NY3170LK 研发专用",
+    "details": {
+      "classification": "NY3170LK(3170LK)",
+      "legacy": "3D"
+    }
+  },
+  {
+    "code": "R3DB",
+    "name": "NY3170LK  研发专用",
+    "details": {
+      "classification": "NY3170LK(3170LK)",
+      "legacy": "3D"
+    }
+  },
+  {
+    "code": "R3E1",
+    "name": "NY3170HF",
+    "details": {
+      "classification": "NY3170HF(3170)",
+      "legacy": "BD"
+    }
+  },
+  {
+    "code": "R3E2",
+    "name": "NY3170M(H)",
+    "details": {
+      "classification": "NY3170HF(3170)",
+      "legacy": "BT"
+    }
+  },
+  {
+    "code": "R3E3",
+    "name": "NY3170HF 汽车板",
+    "details": {
+      "classification": "NY3170HF(3170)",
+      "legacy": "BD"
+    }
+  },
+  {
+    "code": "R3E4",
+    "name": "NY3170HF 色差改善",
+    "details": {
+      "classification": "NY3170HF(3170)",
+      "legacy": "CF"
+    }
+  },
+  {
+    "code": "R3E5",
+    "name": "NY3170HF 色差改善汽车板",
+    "details": {
+      "classification": "NY3170HF(3170)",
+      "legacy": "CF"
+    }
+  },
+  {
+    "code": "R3EA",
+    "name": "NY-A3HF (同NY3170HF  CF)",
+    "details": {
+      "classification": "NY-A3HF(A3)",
+      "legacy": "C6"
+    }
+  },
+  {
+    "code": "R3EB",
+    "name": "NY3170HF 色差改善 汽车板",
+    "details": {
+      "classification": "NY3170HF(3170)",
+      "legacy": "CF"
+    }
+  },
+  {
+    "code": "R3EC",
+    "name": "NY3170HF FR-15（超颖）",
+    "details": {
+      "classification": "NY3170HF(3170)",
+      "legacy": "CV"
+    }
+  },
+  {
+    "code": "R3EH",
+    "name": "NY3170HF 色差改善(HDI用途)",
+    "details": {
+      "classification": "NY3170HF(3170)",
+      "legacy": "CF"
+    }
+  },
+  {
+    "code": "R3EY",
+    "name": "NY3170HF  研发专用",
+    "details": {
+      "classification": "NY3170HF(3170)",
+      "legacy": "BD"
+    }
+  },
+  {
+    "code": "R3G1",
+    "name": "NY-A3HF",
+    "details": {
+      "classification": "NY-A3HF(A3)",
+      "legacy": "RQ"
+    }
+  },
+  {
+    "code": "R3G2",
+    "name": "NY-A3HF 博世考试板",
+    "details": {
+      "classification": "NY-A3HF(A3)",
+      "legacy": "BZ"
+    }
+  },
+  {
+    "code": "R3GY",
+    "name": "NY-A3HF 博世考试板（研发专用）",
+    "details": {
+      "classification": "NY-A3HF(A3)",
+      "legacy": "BZ"
+    }
+  },
+  {
+    "code": "R3H1",
+    "name": "NY3150HC 踪化拖尾改善2",
+    "details": {
+      "classification": "NY3150HC(3150HC)",
+      "legacy": "AE"
+    }
+  },
+  {
+    "code": "R3H3",
+    "name": "NY3150HC UL3.0厚板方案",
+    "details": {
+      "classification": "NY3150HC(3150HC)",
+      "legacy": "U7"
+    }
+  },
+  {
+    "code": "R3L1",
+    "name": "NY3170HC 博世考试板专用",
+    "details": {
+      "classification": "NY3170HC(3170HC)",
+      "legacy": "BS"
+    }
+  },
+  {
+    "code": "R3M1",
+    "name": "NY6180L 24L考试板",
+    "details": {
+      "classification": "NY6180L(6180L)",
+      "legacy": "R4"
+    }
+  },
+  {
+    "code": "R3MY",
+    "name": "NY3170M-1 研发专用",
+    "details": {
+      "classification": "NY3170M(3170M)",
+      "legacy": "3M"
+    }
+  },
+  {
+    "code": "R3MZ",
+    "name": "NY3170M-2 研发专用",
+    "details": {
+      "classification": "NY3170M(3170M)",
+      "legacy": "3M"
+    }
+  },
+  {
+    "code": "R3N1",
+    "name": "NY3170M2 深南改善",
+    "details": {
+      "classification": "NY3170HF(3170)",
+      "legacy": "RJ"
+    }
+  },
+  {
+    "code": "R3N4",
+    "name": "NY-TC10G",
+    "details": {
+      "classification": "NY-TC10G(DR)",
+      "legacy": "2N"
+    }
+  },
+  {
+    "code": "R3UA",
+    "name": "NY3150HC 板厚3.0mmUL配方(汽车板）",
+    "details": {
+      "classification": "NY3150HF(3150)",
+      "legacy": "U7"
+    }
+  },
+  {
+    "code": "R3UN",
+    "name": "NY3150HC 板厚3.0mmUL配方",
+    "details": {
+      "classification": "NY3150HF(3150)",
+      "legacy": "U7"
+    }
+  },
+  {
+    "code": "R3UU",
+    "name": "NY3140 UL胶水",
+    "details": {
+      "classification": "NY3140U(3140)",
+      "legacy": "U1"
+    }
+  },
+  {
+    "code": "R6A1",
+    "name": "NY9999Q",
+    "details": {
+      "classification": "NY9999Q(9999)",
+      "legacy": "B3"
+    }
+  },
+  {
+    "code": "R6A2",
+    "name": "NY9999Q  电性能改善配方1",
+    "details": {
+      "classification": "NY9999Q(9999)",
+      "legacy": "B3"
+    }
+  },
+  {
+    "code": "R6B1",
+    "name": "NY9999N",
+    "details": {
+      "classification": "NY9999Q(9999)",
+      "legacy": "B4"
+    }
+  },
+  {
+    "code": "R6B2",
+    "name": "NY9999N2 LOW DK2布",
+    "details": {
+      "classification": "NY9999Q(9999)",
+      "legacy": "CB"
+    }
+  },
+  {
+    "code": "R6C1",
+    "name": "NY6300S 缺胶改善",
+    "details": {
+      "classification": "NY6300S(6300S)",
+      "legacy": "C4"
+    }
+  },
+  {
+    "code": "R6C3",
+    "name": "NY6300S",
+    "details": {
+      "classification": "NY6300S(6300S)",
+      "legacy": "B1"
+    }
+  },
+  {
+    "code": "R6CN",
+    "name": "NY6300SN 缺胶改善",
+    "details": {
+      "classification": "NY6300S(6300S)",
+      "legacy": "C5"
+    }
+  },
+  {
+    "code": "R6D4",
+    "name": "NY-P4 树脂评估",
+    "details": {
+      "classification": "NY-P4(P4)",
+      "legacy": "BL"
+    }
+  },
+  {
+    "code": "R6D8",
+    "name": "NY-P4(C)",
+    "details": {
+      "classification": "NY-P4(P4)",
+      "legacy": "6K"
+    }
+  },
+  {
+    "code": "R6D9",
+    "name": "NY-P4(D)",
+    "details": {
+      "classification": "NY-P4(P4)",
+      "legacy": "AF"
+    }
+  },
+  {
+    "code": "R6DA",
+    "name": "NY-P4 研发专用",
+    "details": {
+      "classification": "NY-P4(P4)",
+      "legacy": "AB"
+    }
+  },
+  {
+    "code": "R6E1",
+    "name": "NY6666N CTE 13ppm",
+    "details": {
+      "classification": "NY6666N(6666N)",
+      "legacy": "6L"
+    }
+  },
+  {
+    "code": "R6E2",
+    "name": "NY6666SE CTE 17ppm",
+    "details": {
+      "classification": "NY6666SE(6666SE)",
+      "legacy": "BE"
+    }
+  },
+  {
+    "code": "R6E3",
+    "name": "NY6666SE CTE 15ppm",
+    "details": {
+      "classification": "NY6666SE(6666SE)",
+      "legacy": "BK"
+    }
+  },
+  {
+    "code": "R6E4",
+    "name": "NY6666N CTE 17ppm",
+    "details": {
+      "classification": "NY6666N(6666N)",
+      "legacy": "B6"
+    }
+  },
+  {
+    "code": "R6E5",
+    "name": "NY6666SE 华为可靠性考试板",
+    "details": {
+      "classification": "NY6666SE(6666SE)",
+      "legacy": "BN"
+    }
+  },
+  {
+    "code": "R6E6",
+    "name": "NY6666SE 华为电性能考试板",
+    "details": {
+      "classification": "NY6666SE(6666SE)",
+      "legacy": "BM"
+    }
+  },
+  {
+    "code": "R6E7",
+    "name": "NY6666SE 整合配方",
+    "details": {
+      "classification": "NY6666SE(6666SE)",
+      "legacy": "C8"
+    }
+  },
+  {
+    "code": "R6E8",
+    "name": "NY6666SE 流动性提升",
+    "details": {
+      "classification": "NY6666SE(6666SE)",
+      "legacy": "CW"
+    }
+  },
+  {
+    "code": "R6EA",
+    "name": "NY-A6HF （胶水同NY6666SE）",
+    "details": {
+      "classification": "NY-A6HF(A6)",
+      "legacy": "CP"
+    }
+  },
+  {
+    "code": "R6EB",
+    "name": "NY6666 整合配方",
+    "details": {
+      "classification": "NY6666(6666)",
+      "legacy": "CE"
+    }
+  },
+  {
+    "code": "R6EC",
+    "name": "NY6666SE 华为电性能高低温改善考试板A",
+    "details": {
+      "classification": "NY6666SE(6666SE)",
+      "legacy": "BM"
+    }
+  },
+  {
+    "code": "R6ED",
+    "name": "NY6666SE 华为电性能高低温改善考试板B",
+    "details": {
+      "classification": "NY6666SE(6666SE)",
+      "legacy": "BM"
+    }
+  },
+  {
+    "code": "R6EH",
+    "name": "NY6666N 整合配方",
+    "details": {
+      "classification": "NY6666N(6666N)",
+      "legacy": "CD"
+    }
+  },
+  {
+    "code": "R6EN",
+    "name": "NY6666N 整合配方",
+    "details": {
+      "classification": "NY6666N(6666N)",
+      "legacy": "CD"
+    }
+  },
+  {
+    "code": "R6EU",
+    "name": "NY6666 UL配方",
+    "details": {
+      "classification": "NY6666(6666)",
+      "legacy": "U9"
+    }
+  },
+  {
+    "code": "R6F1",
+    "name": "NY6666 CTE 13ppm",
+    "details": {
+      "classification": "NY6666(6666)",
+      "legacy": "B5"
+    }
+  },
+  {
+    "code": "R6F2",
+    "name": "NY6666S 17ppm",
+    "details": {
+      "classification": "NY6666(6666)",
+      "legacy": "BA"
+    }
+  },
+  {
+    "code": "R6F3",
+    "name": "NY6666 CTE 17ppm",
+    "details": {
+      "classification": "NY6666(6666)",
+      "legacy": "B5"
+    }
+  },
+  {
+    "code": "R6F4",
+    "name": "NY6666N 华为可靠性考试板",
+    "details": {
+      "classification": "NY6666N(6666N)",
+      "legacy": "BP"
+    }
+  },
+  {
+    "code": "R6F6",
+    "name": "NY6666N 华为电性能考试板15ppm",
+    "details": {
+      "classification": "NY6666N(6666N)",
+      "legacy": "C2"
+    }
+  },
+  {
+    "code": "R6F7",
+    "name": "NY6666N 华为高低温电性能考试板15ppm",
+    "details": {
+      "classification": "NY6666N(6666N)",
+      "legacy": "C2"
+    }
+  },
+  {
+    "code": "R6F8",
+    "name": "NY6666N 华为高低温电性能考试板15ppm--B",
+    "details": {
+      "classification": "NY6666N(6666N)",
+      "legacy": "C2"
+    }
+  },
+  {
+    "code": "R6G1",
+    "name": "NY-PX",
+    "details": {
+      "classification": "NY-P1(P1)",
+      "legacy": "BF"
+    }
+  },
+  {
+    "code": "R6J1",
+    "name": "NY-P6研发配方1",
+    "details": {
+      "classification": "NY-P6HF(P6)",
+      "legacy": "CC"
+    }
+  },
+  {
+    "code": "R6J2",
+    "name": "NY-P6HF",
+    "details": {
+      "classification": "NY-P6HF(P6)",
+      "legacy": "CK"
+    }
+  },
+  {
+    "code": "R6JM",
+    "name": "NY-P6HF BM",
+    "details": {
+      "classification": "NY-P6HF(P6)",
+      "legacy": "CT"
+    }
+  },
+  {
+    "code": "R6JN",
+    "name": "NY-P6HF （N）搭配LOW DK布",
+    "details": {
+      "classification": "NY-P6HF（N）(P6HFN)",
+      "legacy": "CU"
+    }
+  },
+  {
+    "code": "R6L1",
+    "name": "NY-P5N",
+    "details": {
+      "classification": "NY-P5N(P5N)",
+      "legacy": "B9"
+    }
+  },
+  {
+    "code": "R6L2",
+    "name": "NY-P5N 华为可靠性",
+    "details": {
+      "classification": "NY-P5N(P5N)",
+      "legacy": "BQ"
+    }
+  },
+  {
+    "code": "R6L3",
+    "name": "NY-P5N 发粘改善",
+    "details": {
+      "classification": "NY-P5N(P5N)",
+      "legacy": "CJ"
+    }
+  },
+  {
+    "code": "R6L4",
+    "name": "NY-P5N 华为A16",
+    "details": {
+      "classification": "NY-P5N(P5N)",
+      "legacy": "CX"
+    }
+  },
+  {
+    "code": "R6LN",
+    "name": "NY-P5N2 LOW DK2布",
+    "details": {
+      "classification": "NY-P5N2(P5N2)",
+      "legacy": "CA"
+    }
+  },
+  {
+    "code": "R6LQ",
+    "name": "NY-P5Q  发粘改善",
+    "details": {
+      "classification": "NY-P5Q(P5)",
+      "legacy": "CG"
+    }
+  },
+  {
+    "code": "R6N1",
+    "name": "NY-P5Q 华为电性能",
+    "details": {
+      "classification": "NY-P5Q(P5)",
+      "legacy": "BG"
+    }
+  },
+  {
+    "code": "R6N2",
+    "name": "NY-P5Q 华为可靠性",
+    "details": {
+      "classification": "NY-P5Q(P5)",
+      "legacy": "BR"
+    }
+  },
+  {
+    "code": "R6N3",
+    "name": "NY-P5Q 华为可靠性",
+    "details": {
+      "classification": "NY-P5Q(P5)",
+      "legacy": "BX"
+    }
+  },
+  {
+    "code": "R6N4",
+    "name": "NY-P5Q 华为可靠性考试板2",
+    "details": {
+      "classification": "NY-P5Q(P5)",
+      "legacy": "BR"
+    }
+  },
+  {
+    "code": "R6N5",
+    "name": "NY-P5 华为电性能",
+    "details": {
+      "classification": "NY-P5Q(P5)",
+      "legacy": "BG"
+    }
+  },
+  {
+    "code": "R6S1",
+    "name": "NY6300SL 降本C5-3",
+    "details": {
+      "classification": "NY6300SL(6300SL)",
+      "legacy": "C9"
+    }
+  },
+  {
+    "code": "R6S2",
+    "name": "NY6300SL 物料评估",
+    "details": {
+      "classification": "NY6300SL(6300SL)",
+      "legacy": "6S"
+    }
+  },
+  {
+    "code": "R6SA",
+    "name": "NY6300SL 研发专用",
+    "details": {
+      "classification": "NY6300SL(6300SL)",
+      "legacy": "6S"
+    }
+  },
+  {
+    "code": "R6U1",
+    "name": "NY8888N2",
+    "details": {
+      "classification": "NY8888N2(8888)",
+      "legacy": "6U"
+    }
+  },
+  {
+    "code": "R6U2",
+    "name": "NY8888Q(RL)",
+    "details": {
+      "classification": "NY8888Q(8888Q)",
+      "legacy": "6R"
+    }
+  },
+  {
+    "code": "R6U3",
+    "name": "NY8888Q",
+    "details": {
+      "classification": "NY8888Q(8888Q)",
+      "legacy": "6M"
+    }
+  },
+  {
+    "code": "R6U4",
+    "name": "NY8888N",
+    "details": {
+      "classification": "NY8888N(8888N)",
+      "legacy": "6P"
+    }
+  },
+  {
+    "code": "R6U5",
+    "name": "NY8888N2优化",
+    "details": {
+      "classification": "NY8888N2(8888)",
+      "legacy": "6U"
+    }
+  },
+  {
+    "code": "R6U6",
+    "name": "NY8888N 改善",
+    "details": {
+      "classification": "NY8888N(8888N)",
+      "legacy": "6P"
+    }
+  },
+  {
+    "code": "R6U7",
+    "name": "NY8888Q 改善",
+    "details": {
+      "classification": "NY8888Q(8888Q)",
+      "legacy": "6M"
+    }
+  },
+  {
+    "code": "R6UD",
+    "name": "NY8888N2流动性改善",
+    "details": {
+      "classification": "NY8888N2(8888)",
+      "legacy": "6U"
+    }
+  },
+  {
+    "code": "R6UL",
+    "name": "NY8888N 流动性改善",
+    "details": {
+      "classification": "NY8888N(8888N)",
+      "legacy": "6P"
+    }
+  },
+  {
+    "code": "R6W1",
+    "name": "NY6300(C) ICD改善",
+    "details": {
+      "classification": "NY6300（C）(6300C)",
+      "legacy": "RW"
+    }
+  },
+  {
+    "code": "R6W2",
+    "name": "NY6300(C) TY评估",
+    "details": {
+      "classification": "NY6300（C）(6300C)",
+      "legacy": "AA"
+    }
+  },
+  {
+    "code": "R6W3",
+    "name": "NY6300(C) JX评估",
+    "details": {
+      "classification": "NY6300（C）(6300C)",
+      "legacy": "AC"
+    }
+  },
+  {
+    "code": "R6WA",
+    "name": "NY6300 研发专用",
+    "details": {
+      "classification": "NY6300(6300)",
+      "legacy": "6W"
+    }
+  },
+  {
+    "code": "R6Y1",
+    "name": "NY-P1 JX评估",
+    "details": {
+      "classification": "NY-P1(P1)",
+      "legacy": "A5"
+    }
+  },
+  {
+    "code": "R6Y2",
+    "name": "NY-P1(C) TY评估",
+    "details": {
+      "classification": "NY-P1(P1)",
+      "legacy": "A6"
+    }
+  },
+  {
+    "code": "R7L1",
+    "name": "NYHP-7350 研发",
+    "details": {
+      "classification": "NYHP-7350(7350)",
+      "legacy": "CH"
+    }
+  },
+  {
+    "code": "R7M1",
+    "name": "NY6600",
+    "details": {
+      "classification": "NY6600(6600)",
+      "legacy": "RT"
+    }
+  },
+  {
+    "code": "R7Q1",
+    "name": "NY6200ANT 物料评估",
+    "details": {
+      "classification": "NY6200(6200)",
+      "legacy": "7Q"
+    }
+  },
+  {
+    "code": "R7QA",
+    "name": "NY6200ANT 研发专用",
+    "details": {
+      "classification": "NY6200(6200)",
+      "legacy": "7Q"
+    }
+  },
+  {
+    "code": "R8B1",
+    "name": "NY8320 NS 黑料 剥离改善",
+    "details": {
+      "classification": "NY8320 NS(8320)",
+      "legacy": "CN"
+    }
+  },
+  {
+    "code": "R8B2",
+    "name": "NY8320 NS 黑料 浆料评估",
+    "details": {
+      "classification": "NY8320 NS(8320)",
+      "legacy": "CQ"
+    }
+  },
+  {
+    "code": "R8C1",
+    "name": "NY8320 ED 白料",
+    "details": {
+      "classification": "NY8320 ED(8320ED)",
+      "legacy": "8C"
+    }
+  },
+  {
+    "code": "R8H1",
+    "name": "NY8320 NSC 棕色",
+    "details": {
+      "classification": "NY8320 NSC(8320NSC)",
+      "legacy": "8H"
+    }
+  },
+  {
+    "code": "R8K1",
+    "name": "NY8320 LD 黑色",
+    "details": {
+      "classification": "NY8320 LD(8320LD)",
+      "legacy": "8K"
+    }
+  },
+  {
+    "code": "R8K2",
+    "name": "NY8320 LD 黑色 改善1",
+    "details": {
+      "classification": "NY8320 LD(8320LD)",
+      "legacy": "CR"
+    }
+  },
+  {
+    "code": "R8K3",
+    "name": "NY8320 LD（E） 黑色 LD改善1+E布",
+    "details": {
+      "classification": "NY8320 LD（E）(8320LDE)",
+      "legacy": "CS"
+    }
+  },
+  {
+    "code": "R8L1",
+    "name": "NY3188HF",
+    "details": {
+      "classification": "NY3188HF(3188)",
+      "legacy": "8L"
+    }
+  },
+  {
+    "code": "R8M1",
+    "name": "NY8320 NSF",
+    "details": {
+      "classification": "NY8320 NSF(8320NSF)",
+      "legacy": "8M"
+    }
+  },
+  {
+    "code": "RK19",
+    "name": "研发NY-K19",
+    "details": {
+      "classification": "NF196(F196)",
+      "legacy": "6E"
+    }
+  }
+]

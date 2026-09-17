@@ -29,6 +29,9 @@ document.addEventListener('DOMContentLoaded',()=>{
 {% if entry_progress and entry_progress.stage == 'extracting' %}
 <script>window.setTimeout(function(){ window.location.reload(); }, 3000);</script>
 {% endif %}
+{% if change_progress and change_progress.stage == 'extracting' and auto_open_change %}
+<script>window.setTimeout(function(){ window.location.reload(); }, 1500);</script>
+{% endif %}
 {% if entry_progress and case.action_type == 'new_order' %}
 <script>
   (function () {

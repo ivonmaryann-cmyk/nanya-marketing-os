@@ -19,6 +19,8 @@ from .transcode_rule_center import ensure_daily_backup, ensure_rule_center_table
 from .pp_transcode_rules import ensure_pp_transcode_daily_backup, ensure_pp_transcode_tables, seed_pp_transcode_rules
 from .mail_transcode_agent import bp as mail_transcode_bp
 from .connector_api import bp as connector_api_bp
+from .task_board_routes import bp as task_board_bp
+from .product_name_routes import bp as product_name_bp
 
 
 def create_app() -> Flask:
@@ -32,6 +34,9 @@ def create_app() -> Flask:
     init_db()
     # Shared-database clients must not recover another host's jobs or reseed rules.
     if os.getenv("APP_STARTUP_MAINTENANCE_ENABLED", "true").strip().lower() in {"1", "true", "yes"}:
+        from . import product_name_service
+        product_name_service.init_schema()
+        product_name_service.seed()
         ensure_rule_center_tables()
         ensure_pp_transcode_tables()
         reconcile_interrupted_jobs()
@@ -50,4 +55,6 @@ def create_app() -> Flask:
     app.register_blueprint(bp)
     app.register_blueprint(mail_transcode_bp, url_prefix="/mail-transcode")
     app.register_blueprint(connector_api_bp)
+    app.register_blueprint(task_board_bp)
+    app.register_blueprint(product_name_bp)
     return app

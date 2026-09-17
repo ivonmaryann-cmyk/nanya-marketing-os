@@ -334,6 +334,7 @@ def upsert_message(
     body_text: str,
     eml_path: str,
     is_order: int,
+    is_seen: bool = False,
     fetch_task_id: int = 0,
 ) -> tuple[int, bool]:
     now = now_iso()
@@ -355,6 +356,8 @@ def upsert_message(
             body_text,
             eml_path,
             int(is_order),
+            1 if is_seen else 0,
+            now,
             int(fetch_task_id),
             now,
         )
@@ -364,6 +367,7 @@ def upsert_message(
                 UPDATE mail_messages SET
                     message_id = ?, subject = ?, sender = ?, sent_at = ?, received_at = ?,
                     body_html = ?, body_text = ?, eml_path = ?, is_order = ?,
+                    is_seen = ?, seen_updated_at = ?,
                     created_at = created_at
                 WHERE id = ?
                 """,
@@ -377,6 +381,8 @@ def upsert_message(
                     values[9],
                     values[10],
                     values[11],
+                    values[12],
+                    values[13],
                     existing["id"],
                 ),
             )
@@ -385,12 +391,29 @@ def upsert_message(
             """
             INSERT INTO mail_messages (
                 account_id, folder, uid, message_id, subject, sender, sent_at, received_at,
-                body_html, body_text, eml_path, is_order, fetch_task_id, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                body_html, body_text, eml_path, is_order, is_seen, seen_updated_at, fetch_task_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
         return int(cursor.lastrowid), True
+
+
+def set_message_seen(mail_id: int, *, owner_employee_id: str, is_seen: bool) -> bool:
+    """Persist an IMAP read-state only for a message owned by this user."""
+    with db_cursor() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE mail_messages
+            SET is_seen = ?, seen_updated_at = ?
+            WHERE id = ?
+              AND account_id IN (
+                SELECT id FROM mail_accounts WHERE owner_employee_id = ?
+              )
+            """,
+            (1 if is_seen else 0, now_iso(), mail_id, owner_employee_id),
+        )
+        return bool(cursor.rowcount)
 
 
 def record_fetch_task_message(fetch_task_id: int, mail_id: int, *, is_new: bool) -> None:

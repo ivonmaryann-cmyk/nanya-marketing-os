@@ -30,6 +30,19 @@ ORDER_MAIL_STATUS_FILTER_LABELS = {
     "completed": "已完成",
 }
 
+ORDER_MAIL_READ_STATE_LABELS = {
+    "all": "全部已读状态",
+    "unread": "仅看未读",
+    "read": "仅看已读",
+}
+
+
+def _filter_order_cases_by_read_state(cases: list[dict[str, Any]], selected_state: str) -> list[dict[str, Any]]:
+    if selected_state == "all":
+        return cases
+    expected_seen = selected_state == "read"
+    return [item for item in cases if bool(item.get("is_seen")) is expected_seen]
+
 
 def _order_mail_status_key(case: dict[str, Any], entry_progress: dict[str, Any] | None) -> str:
     if entry_progress:
@@ -904,6 +917,7 @@ def inject_platform_meta():
         # Some focused route tests register only the main blueprint. Keep optional
         # navigation links from requiring feature blueprints in those app instances.
         "mail_config_available": "mail_transcode.accounts_page" in current_app.view_functions,
+        "task_boards_available": "task_boards.overview" in current_app.view_functions,
         "is_interface_admin": is_admin_user(current_employee()),
     }
 
@@ -986,10 +1000,13 @@ def order_automation():
     employee_id = current_employee() or ""
     selected_action = request.args.get("category", "all")
     selected_mail_status = request.args.get("mail_status", "all")
+    selected_read_state = request.args.get("read_state", "all")
     selected_mail_query = request.args.get("mail_query", "").strip()
     selected_order_number = request.args.get("order_no", "").strip()
     if selected_mail_status not in ORDER_MAIL_STATUS_FILTER_LABELS:
         selected_mail_status = "all"
+    if selected_read_state not in ORDER_MAIL_READ_STATE_LABELS:
+        selected_read_state = "all"
     selected_date = request.args.get("date", order_intake_business_today().isoformat())
     try:
         selected_date_value = date.fromisoformat(selected_date)
@@ -1035,6 +1052,12 @@ def order_automation():
         filtered_cases = _filter_order_cases_by_status(
             filtered_cases, all_entry_progresses, selected_mail_status
         )
+    read_state_counts = {
+        "total": len(overview_cases),
+        "unread": sum(1 for item in overview_cases if not bool(item.get("is_seen"))),
+        "read": sum(1 for item in overview_cases if bool(item.get("is_seen"))),
+    }
+    filtered_cases = _filter_order_cases_by_read_state(filtered_cases, selected_read_state)
     total_cases = len(filtered_cases)
     total_pages = max(1, (total_cases + per_page - 1) // per_page)
     page = min(page, total_pages)
@@ -1060,6 +1083,9 @@ def order_automation():
         scope_labels=ORDER_SCOPE_LABELS,
         selected_action=selected_action,
         selected_mail_status=selected_mail_status,
+        selected_read_state=selected_read_state,
+        read_state_labels=ORDER_MAIL_READ_STATE_LABELS,
+        read_state_counts=read_state_counts,
         selected_mail_query=selected_mail_query,
         selected_order_number=selected_order_number,
         selected_date=selected_date,
@@ -1423,12 +1449,39 @@ def order_automation_case(case_id: int):
     case = get_order_intake_case(case_id, employee_id)
     if not case:
         abort(404)
+    # Opening a mail is the explicit user action that marks it read.  Keep the
+    # detail page available if the mail server is temporarily unreachable.
+    if not bool(case.get("is_seen")):
+        from .mail_transcode_agent.mail_fetch_service import mark_message_seen_remotely
+
+        try:
+            if mark_message_seen_remotely(int(case["mail_id"]), owner_employee_id=employee_id):
+                case["is_seen"] = True
+        except Exception:
+            current_app.logger.warning(
+                "Unable to mirror IMAP read state for order-intake case %s", case_id,
+                exc_info=True,
+            )
     return_context = _order_automation_return_context(case)
+    entry_progress = order_entry_template_progress(case_id, employee_id) if case["action_type"] == "new_order" else None
+    change_progress = order_change_template_progress(case_id, employee_id) if case["action_type"] == "order_change" else None
+    # A change-order extraction is asynchronous.  When this request originated
+    # from its start button, keep the user on this page only while the worker is
+    # running, then take them straight to the template that needs their review.
+    if (
+        request.args.get("auto_open_change") == "1"
+        and change_progress
+        and change_progress["created"]
+    ):
+        template_query = request.args.to_dict()
+        template_query.pop("auto_open_change", None)
+        return redirect(url_for("main.order_automation_order_change_template", case_id=case_id, **template_query))
     return render_template(
         "order_automation_case.html",
         case=case,
-        entry_progress=order_entry_template_progress(case_id, employee_id) if case["action_type"] == "new_order" else None,
-        change_progress=order_change_template_progress(case_id, employee_id) if case["action_type"] == "order_change" else None,
+        entry_progress=entry_progress,
+        change_progress=change_progress,
+        auto_open_change=request.args.get("auto_open_change") == "1",
         nyeos_order_number=list_nyeos_order_numbers([case_id], employee_id).get(case_id, ""),
         return_context=return_context,
         status_labels=ORDER_INTAKE_STATUS_LABELS,
@@ -1655,7 +1708,9 @@ def order_automation_order_change_template_start(case_id: int):
         flash(result["message"], "success" if result["status"] != "error" else "error")
     except ValueError as exc:
         flash(str(exc), "error")
-    return redirect(url_for("main.order_automation_case", case_id=case_id, **request.args.to_dict()))
+    query = request.args.to_dict()
+    query["auto_open_change"] = "1"
+    return redirect(url_for("main.order_automation_case", case_id=case_id, **query))
 
 
 @bp.route("/order-automation/cases/<int:case_id>/order-change-template", methods=["GET", "POST"])

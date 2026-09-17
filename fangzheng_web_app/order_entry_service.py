@@ -1090,6 +1090,15 @@ def _queue_template_extraction(case_id: int, employee_id: str, *, action_type: s
                 (case_id, employee_id, "queued", f"等待后台提取{template_label}", now),
         )
         task_id = int(cursor.lastrowid)
+        # Preserve the user's first start, independently of worker start/retries.
+        conn.execute(
+            """INSERT INTO order_intake_case_events
+               (case_id,employee_id,action,before_json,after_json,created_at)
+               SELECT ?,?,'processing_started','{}','{}',?
+               WHERE NOT EXISTS (SELECT 1 FROM order_intake_case_events
+                                 WHERE case_id=? AND action='processing_started')""",
+            (case_id, employee_id, now, case_id),
+        )
 
     command = [
         sys.executable, "-m", "fangzheng_web_app.order_entry_template_worker",

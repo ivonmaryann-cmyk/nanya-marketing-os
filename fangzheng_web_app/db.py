@@ -326,6 +326,8 @@ def init_db() -> None:
                 body_text TEXT,
                 eml_path TEXT NOT NULL DEFAULT '',
                 is_order INTEGER NOT NULL DEFAULT 0,
+                is_seen INTEGER NOT NULL DEFAULT 0,
+                seen_updated_at TEXT NOT NULL DEFAULT '',
                 fetch_task_id INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 UNIQUE(account_id, folder, uid)
@@ -427,6 +429,10 @@ def init_db() -> None:
         }
         if "fetch_task_id" not in mail_message_cols:
             conn.execute("ALTER TABLE mail_messages ADD COLUMN fetch_task_id INTEGER NOT NULL DEFAULT 0")
+        if "is_seen" not in mail_message_cols:
+            conn.execute("ALTER TABLE mail_messages ADD COLUMN is_seen INTEGER NOT NULL DEFAULT 0")
+        if "seen_updated_at" not in mail_message_cols:
+            conn.execute("ALTER TABLE mail_messages ADD COLUMN seen_updated_at TEXT NOT NULL DEFAULT ''")
 
         mail_fetch_task_cols = {
             row["name"] for row in conn.execute("PRAGMA table_info(mail_fetch_tasks)").fetchall()
