@@ -3,11 +3,21 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from flask import Blueprint, abort, render_template, request, url_for
 
-from .db import is_admin_user
+from .db import get_user
 from .routes import current_employee, require_login
 from . import task_board_service as service
 
 bp=Blueprint("task_boards",__name__,url_prefix="/task-boards")
+
+# Explicit account grants, independent of general administrator privileges.
+TEAM_BOARD_EMPLOYEE_IDS = frozenset({"23582", "23471"})
+
+
+def can_view_team_board(employee_id):
+    if str(employee_id or "") not in TEAM_BOARD_EMPLOYEE_IDS:
+        return False
+    user = get_user(employee_id)
+    return bool(user and user["enabled"])
 
 
 @bp.before_request
@@ -17,7 +27,7 @@ def authenticate():
 
 @bp.app_context_processor
 def board_navigation():
-    return {"can_view_team_board":is_admin_user(current_employee())}
+    return {"can_view_team_board":can_view_team_board(current_employee())}
 
 
 @bp.cli.command("init-db")
@@ -31,7 +41,7 @@ def init_database():
 def overview(scope):
     if scope not in {"mine","team"}:
         abort(404)
-    if scope=="team" and not is_admin_user(current_employee()):
+    if scope=="team" and not can_view_team_board(current_employee()):
         abort(403)
     today=datetime.now(service.SHANGHAI).date()
     try:
@@ -62,7 +72,7 @@ def overview(scope):
 @bp.get("/task/<int:case_id>")
 def detail(case_id):
     actor=current_employee()
-    cases=service.load_cases(None if is_admin_user(actor) else actor,case_id)
+    cases=service.load_cases(None if can_view_team_board(actor) else actor,case_id)
     if not cases:
         abort(404)
     task=cases[0]

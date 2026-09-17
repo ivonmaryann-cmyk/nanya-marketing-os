@@ -24,7 +24,9 @@ class TaskBoardsTests(unittest.TestCase):
         db.create_user("alice",display_name="内勤甲")
         db.create_user("bob",display_name="内勤乙")
         db.create_user("leader",display_name="主管",role="admin")
-        for emp in ["alice","bob","leader"]:
+        db.create_user("23582",display_name="本人")
+        db.create_user("23471",display_name="傅佳峰",role="admin")
+        for emp in ["alice","bob","leader","23582","23471"]:
             db.change_user_password(emp,"test-only-password")
         self.a=self.insert_case("alice","2026-09-01T01:00:00",completed="2026-09-10T02:00:00")
         self.b=self.insert_case("bob","2026-09-10T01:00:00")
@@ -95,11 +97,26 @@ class TaskBoardsTests(unittest.TestCase):
     def test_team_access_and_detail_cannot_be_bypassed(self):
         self.assertEqual(self.client.get('/task-boards/team').status_code,403)
         self.assertEqual(self.client.get(f'/task-boards/task/{self.b}').status_code,404)
-        self.login("leader")
+        self.login("23582")
         self.assertEqual(self.client.get('/task-boards/team?start=2026-09-10&end=2026-09-10').status_code,200)
         r=self.client.get(f'/task-boards/task/{self.b}')
         self.assertEqual(r.status_code,200)
         self.assertNotIn('进入业务处理'.encode(),r.data)
+
+    def test_team_allowlist_controls_menu_and_routes(self):
+        for actor in ('alice', 'leader', '23582', '23471'):
+            self.login(actor)
+            allowed=actor in {'23582','23471'}
+            page=self.client.get('/task-boards/mine')
+            self.assertEqual(b'href="/task-boards/team"' in page.data, allowed)
+            for tab in ('tracking','efficiency'):
+                self.assertEqual(self.client.get('/task-boards/team?tab='+tab).status_code,200 if allowed else 403)
+            if not allowed:
+                self.assertEqual(self.client.get(f'/task-boards/task/{self.b}').status_code,404)
+        from fangzheng_web_app.task_board_routes import can_view_team_board
+        with db.db_cursor() as conn:
+            conn.execute("UPDATE users SET enabled=0 WHERE employee_id='23471'")
+        self.assertFalse(can_view_team_board('23471'))
 
     def test_views_render_escape_mail_and_reject_invalid_filters(self):
         for tab in ('tracking','efficiency'):
@@ -127,7 +144,7 @@ class TaskBoardsTests(unittest.TestCase):
         self.assertIsNone(people['alice']['avg_minutes'])
         self.assertEqual(people['leader']['received'],0)
         self.assertNotIn('hours',people['leader'])
-        self.login('leader')
+        self.login('23471')
         r=self.client.get('/task-boards/team?tab=efficiency&start=2026-09-10&end=2026-09-10')
         self.assertEqual(r.status_code,200)
         self.assertIn('全员人效统计'.encode(),r.data)
