@@ -69,9 +69,18 @@ def extract(product, specification, requirements, rows):
                 names = re.findall(pattern, normalize(r["name"]))
                 if model in [re.sub(r"\s", "", n) for n in names]:
                     candidates.append(r)
-            formula = "U" if "UL配方" in text+extra else "N"
-            use = "A" if "汽车板" in text+extra else "M" if re.search(r"MINI\s*LED", text+extra) else "N"
-            unique("glue", [r["code"] for r in candidates if r["code"][2:] == formula+use],
+            context=text+' '+extra
+            formulas=set(re.findall(r'配方\s*[:：]?\s*([A-Z])(?![A-Z])',context))
+            if 'UL配方' in context:
+                formulas.add('U')
+            formula=next(iter(formulas)) if len(formulas)==1 else 'N' if not formulas else None
+            uses={code for pattern,code in [(r'汽车板','A'),(r'MINI\s*LED','M'),
+                  (r'LOW\s*DK','L'),(r'石英','Q'),(r'UL\s*认证样品','U')]
+                  if re.search(pattern,context)}
+            use=next(iter(uses)) if len(uses)==1 else 'N' if not uses else None
+            if formula is None or use is None:
+                warnings.append('配方或用途要求冲突，请核对胶系。')
+            unique("glue", [r["code"] for r in candidates if formula and use and r["code"][2:] == formula+use],
                    "型号识别；未注明配方 / 用途使用通用项，请确认")
         aliases = [r["code"] for r in glue_rows for a in r["details"].get("aliases", "").split("|") if a.strip() and normalize(a.strip()) in text+" "+extra]
         if aliases:
@@ -87,7 +96,7 @@ def extract(product, specification, requirements, rows):
         numeric("thickness", r"(?<![\d.])(\d+(?:\.\d+)?)\s*MM\b")
         if "thickness" not in values:
             numeric("thickness", r"(?<![\d.])(\d+(?:\.\d+)?)\s*MIL\b", scale="0.0254")
-        pair = re.search(r"(?<![A-Z0-9.])(H|\d+(?:\.\d+)?)\s*/\s*(H|\d+(?:\.\d+)?)(?![A-Z0-9.])", text)
+        pair = re.search(r"(?<![A-Z0-9.])(H|\d+(?:\.\d+)?)\s*(?:OZ)?\s*/\s*(H|\d+(?:\.\d+)?)(?:\s*OZ)?(?![A-Z0-9.])", text)
         types = [("RTF6","U"),("RTF5","T"),("RTF4","M"),("RTF3","G"),("RTF2","F"),("RTF","R"),("HTE","N")]
         # Chinese text is a Unicode word character; \b incorrectly misses HTE铜箔.
         type_hits = {code for alias,code in types if re.search(r"(?<![A-Z0-9])"+alias+r"(?![A-Z0-9])", text)}
@@ -109,6 +118,11 @@ def extract(product, specification, requirements, rows):
                          (raw==r['name'].split(' ')[0] or raw in r['details'].get('aliases','').split('|'))]
                 return matches[0] if len(matches)==1 else ''
             top,bottom=weight(pair[1]),weight(pair[2])
+            if pair[1] == '1' and pair[2] == 'H' and copper == 'G':
+                top,bottom='H','1'  # Confirmed example only; do not infer general sorting.
+            elif top != bottom:
+                warnings.append('两面铜重不同，排列顺序尚待确认，请核对后选择铜箔组合。')
+                top=bottom=''
             code = top+bottom+copper*2
             if any(r["category"] == "copper_pair" and r["code"] == code for r in active):
                 put("copper_pair",code,"双面铜箔识别")
@@ -118,7 +132,9 @@ def extract(product, specification, requirements, rows):
         elif "copper_pair" in values:
             values["copper_mode"]="standard"
     else:
-        numeric("pp_value", r"RC\s*(\d+(?:\.\d+)?)\s*%?")
+        numeric("pp_value", r"(?<![\d.])(\d+(?:\.\d+)?)\s*%")
+        if "pp_value" not in values:
+            numeric("pp_value", r"RC\s*(\d+(?:\.\d+)?)\s*%?")
         if "pp_value" in values:
             values["pp_mode"]="rc"
         else:
@@ -126,6 +142,24 @@ def extract(product, specification, requirements, rows):
             values["pp_mode"]="thickness"
         if "roll_size" in values:
             values["size_mode"]="roll"
+        combined=text+' '+extra
+        if re.search(r'卷|幅宽|(?<![A-Z])\d+\s*M(?![A-Z])', combined):
+            values['size_mode']='roll'
+            widths=re.findall(r'(?:幅宽|宽度)\s*[:：]?\s*(\d+(?:\.\d+)?)',combined)
+            if not widths:
+                widths=re.findall(r'(\d+(?:\.\d+)?)\s*(?:英寸|INCH|["”])',combined)
+            width_codes={'49.7':'4970','43.8':'4380','49':'XXXX'}
+            widths={str(Decimal(w).normalize()) for w in widths}
+            lengths=set(re.findall(r'(?<![\d.])(\d+)\s*(?:M(?![A-Z])|米)',combined))
+            if len(widths)==1 and next(iter(widths)) in width_codes and len(lengths)<=1 and '羽边' not in combined:
+                length=next(iter(lengths),'0')
+                if int(length)<=999:
+                    put('roll_size','R'+length.zfill(3)+width_codes[next(iter(widths))], '卷长与幅宽识别；未注明卷长使用000')
+                else:
+                    values.pop('roll_size',None)
+                    warnings.append('卷长超过3位编码范围，请核对。')
+            elif 'roll_size' not in values:
+                warnings.append('请核对卷料幅宽；特殊幅宽及羽边规则尚待确认，不自动选择。')
     sizes = re.findall(r'(\d+(?:\.\d+)?)\s*["”]?\s*[X×*]\s*(\d+(?:\.\d+)?)\s*(["”]|INCH|英寸|MM)?', text)
     # Exclude layups such as 1x2116; bare sheet dimensions must both be >= 10.
     sizes = [(a,b,u) for a,b,u in sizes if u or (Decimal(a)>=10 and Decimal(b)>=10)]

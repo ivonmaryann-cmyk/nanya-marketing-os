@@ -87,7 +87,7 @@ class ProductNamesTests(unittest.TestCase):
         self.assertTrue(result['warnings'])
 
     def test_missing_ambiguous_and_boundaries(self):
-        for field,value in [("glue","2B"),("glue","XXXX"),("pp_value","40"),("pp_value","NaN"),("pp_value","Infinity"),("pp_value","100"),("pp_value","41.01"),("pp_mode","bad"),("size_mode","bad")]:
+        for field,value in [("glue","2B"),("glue","XXXX"),("pp_value","NaN"),("pp_value","Infinity"),("pp_value","100"),("pp_value","41.01"),("pp_mode","bad"),("size_mode","bad")]:
             p=self.pp();p[field]=value
             with self.subTest(field=field,value=value),self.assertRaises(ValueError):self.build(p)
         for v in ["300","202","0","-1"]:
@@ -102,6 +102,33 @@ class ProductNamesTests(unittest.TestCase):
         service.save_mapping("glue","2BNN","修改名称",r["details"],1,r["revision"],"admin")
         service.seed()
         self.assertEqual(service.mappings("glue","修改名称")[0]["revision"],2)
+
+    def test_business_confirmed_rules(self):
+        rows=service.mappings()
+        for width,suffix in [('49.7','4970'),('43.8','4380'),('49','XXXX')]:
+            result=extract('pp',f'NY2150P 7628 40% 卷料 300M 幅宽{width}', '', rows)
+            self.assertEqual(result['values']['roll_size'],'R300'+suffix)
+            self.assertIn('C400XXWR300'+suffix,service.build('pp',result['values'],rows)['code'])
+        result=extract('pp','NY2150P 7628 48% 卷料 幅宽49.7','',rows)
+        self.assertEqual(result['values']['roll_size'],'R0004970')
+        result=extract('board','NY2150 0.103mm 1oz/Hoz RTF3 37x49','',rows)
+        self.assertIn('H1GG',service.build('board',result['values'],rows)['code'])
+        result=extract('board','NY2150 0.103mm 2oz/Hoz RTF3 37x49','',rows)
+        with self.assertRaises(ValueError): service.build('board',result['values'],rows)
+        result=extract('pp','NY2150P 7628 400UM 卷料 幅宽49','',rows)
+        with self.assertRaises(ValueError): service.build('pp',result['values'],rows)
+        p=self.pp();p['roll_size']='R300ZZZZ'
+        with self.assertRaises(ValueError): self.build(p)
+
+    def test_seed_upgrades_only_untouched_records(self):
+        with db.db_cursor() as conn:
+            conn.execute("UPDATE product_name_mappings SET name='三级' WHERE category='board_spec' AND code='C3'")
+        service.seed()
+        self.assertEqual(service.mappings('board_spec','C3')[0]['name'],'芯厚 C3')
+        r=service.mappings('board_spec','T3')[0]
+        service.save_mapping('board_spec','T3','业务维护名称',{},1,r['revision'],'admin')
+        service.seed()
+        self.assertEqual(service.mappings('board_spec','T3')[0]['name'],'业务维护名称')
 
     def test_concurrent_save_and_disabled_mapping(self):
         r=service.mappings("glue","2BNN")[0]

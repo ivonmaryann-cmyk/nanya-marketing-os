@@ -35,6 +35,20 @@ def seed():
                 (category,code,name,details,updated_by,updated_at) VALUES (?,?,?,?,?,?)
                 ON CONFLICT(category,code) DO NOTHING""",
                 (cat, code, name, json.dumps(details, ensure_ascii=False), "标准初始化", now()))
+    old_names={
+        ('copper_pair','HHNN'): '文档示例：双面H铜重HTE（H单独重量定义待补）',
+        ('board_spec','C3'): '三级', ('board_spec','T3'): '三级',
+        ('board_spec','C2'): '二级', ('board_spec','T2'): '二级',
+        ('roll_size','R0004970'): '自用49.7英寸',
+        ('roll_size','R0004380'): '自用43.8英寸',
+        ('roll_size','R000XXXX'): '外售常规49.5英寸',
+    }
+    for row in mappings():
+        key=(row['category'],row['code'])
+        if (key in old_names and row['name']==old_names[key] and
+                row['revision']==1 and row['updated_by']=='标准初始化' and not row['details']):
+            save_mapping(*key, SEEDS[key[0]][key[1]], {}, row['enabled'],
+                         row['revision'], '业务规则更新')
 
 
 def categories(product):
@@ -72,8 +86,8 @@ def save_mapping(category, code, name, details, enabled, revision, actor):
         raise ValueError(f"编码必须是{width}位大写字母或数字，名称必填且不超过200字")
     if category=="glass_style" and not code.isdigit():
         raise ValueError("玻布型号必须为4位数字")
-    if category=="roll_size" and not code.startswith("R000"):
-        raise ValueError("卷料编码必须以R000开头")
+    if category=="roll_size" and not re.fullmatch(r"R[0-9]{3}[A-Z0-9]{4}", code):
+        raise ValueError("卷料编码须为R+3位卷长+4位幅宽编码")
     if enabled not in (0,1) or revision<0:
         raise ValueError("状态或版本无效")
     allowed=({"classification","legacy"} if category=="glue" else {"note"}) | {"aliases", "default_for"}
@@ -157,15 +171,22 @@ def build(product, values, rows):
             if n>=300 or n%10 not in (0,3,5,8):
                 raise ValueError("PP厚度须小于300μm且末位为0/3/5/8；其他范围待标准确认")
         elif mode=="rc":
-            if n<410:
-                raise ValueError("RC编码小于410的范围尚未明确，不能自动生成")
+            pass  # Explicit percentage mode, not a numeric-range inference.
         else:
             raise ValueError("请选择PP厚度或RC模式")
         segments.extend([encoded,mapped("pp_spec")])
     segments.append(mapped("marking"))
     size_mode=values.get("size_mode","sheet")
     if size_mode=="roll" and product=="pp":
-        segments.append(mapped("roll_size"))
+        roll=str(values.get("roll_size", "")).strip().upper()
+        if not re.fullmatch(r"R[0-9]{3}[A-Z0-9]{4}", roll):
+            raise ValueError("卷料尺寸须为R+3位卷长+4位幅宽编码")
+        # The maintained R000 record authorizes the width, not a guessed width.
+        record=lookup.get(("roll_size", "R000"+roll[4:]))
+        if not record:
+            raise ValueError("卷料幅宽未维护或已停用，请核对")
+        used.append(record)
+        segments.append(roll)
     elif size_mode=="sheet":
         segments.append(number(values.get("length",""),100,4,"长度(英寸)")+number(values.get("width",""),100,4,"宽度(英寸)"))
     else:
