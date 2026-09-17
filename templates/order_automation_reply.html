@@ -79,6 +79,21 @@ editor.closest('form').addEventListener('submit',function(event){
       const response=await fetch(fill.dataset.url,{method:'POST',credentials:'same-origin',headers:{Accept:'application/json','Content-Type':'application/json'},body:JSON.stringify({rows:tableState.rows})});
       const data=await response.json();
       if(!response.ok||!data.ok)throw new Error(data.message||'交期回填失败');
+      const lastDay=value=>{
+        const match=String(value||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if(!match)return false;
+        const [year,month,day]=match.slice(1).map(Number);
+        return day===new Date(year,month,0).getDate();
+      };
+      const previousDay=value=>{
+        const [year,month,day]=String(value).split('-').map(Number);
+        const date=new Date(year,month-1,day-1);
+        return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+      };
+      const monthEndDates=[...new Set((data.row_matches||[]).filter(item=>item.status==='matched'&&lastDay(item.delivery_reply)).map(item=>item.delivery_reply))];
+      if(monthEndDates.length&&!window.confirm(`检测到交期回复为当月最后一天：${monthEndDates.join('、')}。\n\n是否确认最后一天收货？\n确定：保持原日期；取消：提前一天回复。`)){
+        data.row_matches=(data.row_matches||[]).map(item=>lastDay(item.delivery_reply)?{...item,delivery_reply:previousDay(item.delivery_reply)}:item);
+      }
       window.nouyaReplyTables?.apply(data);
       fill.textContent=`已回填 ${data.match_counts?.matched||0} 项`;
       window.setTimeout(()=>{if(!loading)fill.textContent=originalText;},1800);

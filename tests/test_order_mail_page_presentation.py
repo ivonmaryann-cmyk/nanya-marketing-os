@@ -199,6 +199,18 @@ class OrderMailPagePresentationTests(unittest.TestCase):
         self.assertNotIn('id="orderQueryDrawer"', change_html)
         self.assertNotIn('id="deliveryFill"', change_html)
 
+    def test_reply_delivery_fill_confirms_month_end_receipt_before_writing(self) -> None:
+        markup = (
+            Path(__file__).resolve().parents[1]
+            / "templates"
+            / "order_automation_reply.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("是否确认最后一天收货？", markup)
+        self.assertIn("const previousDay=value", markup)
+        self.assertIn("lastDay(item.delivery_reply)", markup)
+        self.assertIn("delivery_reply:previousDay(item.delivery_reply)", markup)
+
     def test_reply_query_route_uses_saved_template_order_numbers(self) -> None:
         app = Flask(__name__)
         app.secret_key = "test-secret"
