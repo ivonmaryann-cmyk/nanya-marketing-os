@@ -127,6 +127,27 @@ class MailHtmlOrderDocumentTests(unittest.TestCase):
             [row["standard"]["交货日期"] for row in document["mapped_detail_rows"]],
         )
 
+    def test_reply_chain_uses_only_the_first_recognised_order_table(self) -> None:
+        document = build_mail_html_purchase_document("""
+        <p>请安排以下订单：</p>
+        <table>
+          <tr><th>PO单号</th><th>项次</th><th>物料编码</th><th>品名规格</th><th>数量</th><th>单位</th></tr>
+          <tr><td>PO-26F3-009922</td><td>1</td><td>AAN31FH0960EIV0</td><td>NF196 0.960mm</td><td>45</td><td>sheet</td></tr>
+        </table>
+        <p>以下为引用的原邮件：</p>
+        <table>
+          <tr><th>PO单号</th><th>项次</th><th>物料编码</th><th>品名规格</th><th>数量</th><th>单位</th></tr>
+          <tr><td>PO-26F3-009922</td><td>1</td><td>AAN31FH0960EIV0</td><td>NF196 0.960mm</td><td>45</td><td>sheet</td></tr>
+          <tr><td>PO-26F3-009922</td><td>2</td><td>LAN313E373005</td><td>PP NY6200P</td><td>90</td><td>pcs</td></tr>
+        </table>
+        """)
+
+        self.assertIsNotNone(document)
+        assert document is not None
+        self.assertEqual(1, document["source_adapter"]["table_count"])
+        self.assertEqual(1, len(document["mapped_detail_rows"]))
+        self.assertEqual("AAN31FH0960EIV0", document["mapped_detail_rows"][0]["standard"]["物料编码"])
+
     def test_rule_catalogues_are_data_only_and_include_mail_po_headings(self) -> None:
         field_rules = order_field_rule_catalog()
         source_rules = order_source_adapter_catalog()

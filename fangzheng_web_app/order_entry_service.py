@@ -9,7 +9,7 @@ import tempfile
 import uuid
 from copy import copy
 from decimal import Decimal, InvalidOperation
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -968,6 +968,43 @@ def _apply_matched_customer_code(
     return header
 
 
+def _apply_customer_transit_days(
+    case: dict[str, Any], lines: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Turn the customer's requested date into the internal ship date once."""
+    customer_id = case.get("customer_id")
+    if not customer_id:
+        return lines
+    customer = get_customer(int(customer_id))
+    raw_days = clean_text((customer or {}).get("transit_days"))
+    if not re.fullmatch(r"\d+", raw_days):
+        return lines
+    transit_days = int(raw_days)
+    if transit_days <= 0:
+        return lines
+
+    result: list[dict[str, Any]] = []
+    for entry in lines:
+        values = dict(entry.get("values") or {})
+        requested_date = normalize_date(values.get("delivery_date"))
+        if not requested_date:
+            result.append(entry)
+            continue
+        try:
+            ship_date = (date.fromisoformat(requested_date) - timedelta(days=transit_days)).isoformat()
+        except ValueError:
+            result.append(entry)
+            continue
+        sources = dict(entry.get("sources") or {})
+        values["delivery_date"] = ship_date
+        sources["delivery_date"] = {
+            "label": "客户运输天数倒推",
+            "reference": f"客户需求日 {requested_date} - 运输天数 {transit_days} 天",
+        }
+        result.append({**entry, "values": values, "sources": sources})
+    return result
+
+
 def _initial_template_data(case: dict[str, Any]) -> tuple[dict[str, str], list[dict[str, Any]]]:
     attachment_rows = _attachment_rows(case)
     # An order attachment remains authoritative.  When there is no supported
@@ -994,7 +1031,8 @@ def _initial_template_data(case: dict[str, Any]) -> tuple[dict[str, str], list[d
     if not header["customer_order_number"]:
         header["customer_order_number"] = f"暂无PO号-{uuid.uuid4()}"
     if rows:
-        return header, _apply_customer_spec_matches(header, rows)
+        matched_lines = _apply_customer_spec_matches(header, rows)
+        return header, _apply_customer_transit_days(case, matched_lines)
     fields = case.get("detected_fields") or {}
     specs = fields.get("specs") or []
     lines = [
@@ -1007,7 +1045,8 @@ def _initial_template_data(case: dict[str, Any]) -> tuple[dict[str, str], list[d
         }
         for index, spec in enumerate(specs)
     ] or [{"values": _blank_line(1), "sources": {}}]
-    return header, _apply_customer_spec_matches(header, lines)
+    matched_lines = _apply_customer_spec_matches(header, lines)
+    return header, _apply_customer_transit_days(case, matched_lines)
 
 
 def _initial_lines(case: dict[str, Any]) -> list[dict[str, Any]]:

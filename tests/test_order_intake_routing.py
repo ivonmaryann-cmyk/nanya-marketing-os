@@ -220,6 +220,21 @@ class OrderIntakeRoutingTests(unittest.TestCase):
         self.assertEqual("quotation", refreshed["action_type"])
         self.assertEqual("manual", refreshed["routing_source"])
 
+    def test_refresh_customer_recognition_without_date_refreshes_current_mailbox(self) -> None:
+        account_id = mail_store.create_or_update_account(
+            "orders@example.com", owner_employee_id="employee-a", auth_code="auth-code"
+        )
+        mail_store.upsert_message(
+            account_id, folder="INBOX", uid="refresh-all", message_id="<refresh-all@example.com>",
+            subject="订单", sender="buyer@acme.example", sent_at="2026-08-19 09:00:00",
+            received_at="2026-08-19 09:00:00", body_html="", body_text="订单", eml_path="", is_order=1,
+        )
+        bootstrap_cases("employee-a", account_id)
+        customer_id = save_customer({"customer_code": "ACME", "customer_name": "Acme 客户"})
+        save_contact(customer_id, contact_type="sender_domain", contact_value="acme.example")
+
+        self.assertEqual(1, refresh_customer_recognition("employee-a", account_id))
+
     def test_change_item_promotes_mail_to_order_change(self) -> None:
         account_id = mail_store.create_or_update_account(
             "orders@example.com", owner_employee_id="employee-a", auth_code="auth-code"

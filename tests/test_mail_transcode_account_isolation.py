@@ -226,7 +226,7 @@ class MailTranscodeAccountIsolationTests(unittest.TestCase):
             subject="新订单",
             sender="customer@example.com",
             sent_at="2026-08-18 09:00:00",
-            received_at="2026-08-18 09:00:00",
+            received_at="2026-08-19 09:00:00",
             body_html="",
             body_text="PO-001",
             eml_path="/tmp/1001.eml",
@@ -250,6 +250,7 @@ class MailTranscodeAccountIsolationTests(unittest.TestCase):
             eml_path="/tmp/1001.eml",
             is_order=1,
             fetch_task_id=second_batch,
+            preserve_existing_received_at=True,
         )
         mail_store.record_fetch_task_message(second_batch, repeated_id, is_new=repeated_is_new)
 
@@ -257,8 +258,20 @@ class MailTranscodeAccountIsolationTests(unittest.TestCase):
         self.assertFalse(repeated_is_new)
         self.assertEqual(mail_id, repeated_id)
         self.assertEqual(
+            mail_store.get_message(mail_id, owner_employee_id="employee-a")["received_at"],
+            "2026-08-19 09:00:00",
+        )
+        self.assertEqual(
             mail_store.get_messages_by_fetch_task(second_batch, owner_employee_id="employee-a")[0]["is_new"],
             0,
+        )
+
+    def test_internaldate_is_normalized_to_netease_local_time(self) -> None:
+        self.assertEqual(
+            mail_fetch_service._imap_internal_datetime(
+                b'1 (UID 1001 INTERNALDATE "18-Aug-2026 01:30:00 +0000" BODY[] {12}'
+            ),
+            "2026-08-18 09:30:00",
         )
 
     def test_smtp_configuration_is_private_and_testable_without_sending(self) -> None:

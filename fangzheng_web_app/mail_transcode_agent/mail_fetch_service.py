@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta
 from email.header import decode_header
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from zhconv import convert
 
@@ -170,15 +171,34 @@ def _collect_attachments(message: email.message.Message, base_dir: Path) -> list
     return attachments
 
 
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
 def _mail_datetime(message: email.message.Message, header: str) -> str:
     raw = message.get(header)
     if not raw:
         return ""
     try:
         parsed = email.utils.parsedate_to_datetime(raw)
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(_SHANGHAI)
         return parsed.strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return str(raw)
+
+
+def _imap_internal_datetime(metadata: bytes | str) -> str:
+    """Normalize IMAP INTERNALDATE to the same local time used by NetEase."""
+    text = metadata.decode("utf-8", errors="replace") if isinstance(metadata, bytes) else str(metadata)
+    match = re.search(r'INTERNALDATE\s+"([^"]+)"', text, flags=re.IGNORECASE)
+    if not match:
+        return ""
+    try:
+        return datetime.strptime(match.group(1), "%d-%b-%Y %H:%M:%S %z").astimezone(_SHANGHAI).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+    except ValueError:
+        return ""
 
 
 def fetch_latest_order_mails(
@@ -224,7 +244,7 @@ def fetch_latest_order_mails(
         duplicate_count = 0
         mail_ids: list[int] = []
         for num in matched:
-            typ, body_data = client.fetch(num, "(UID FLAGS BODY.PEEK[])")
+            typ, body_data = client.fetch(num, "(UID FLAGS INTERNALDATE BODY.PEEK[])")
             if not body_data or not isinstance(body_data[0], tuple):
                 continue
             raw = body_data[0][1]
@@ -250,13 +270,14 @@ def fetch_latest_order_mails(
                 subject=subject,
                 sender=sender,
                 sent_at=_mail_datetime(message, "Date"),
-                received_at=_mail_datetime(message, "Date"),
+                received_at=_imap_internal_datetime(body_data[0][0]),
                 body_html=html,
                 body_text=text,
                 eml_path=str(eml_path),
                 is_order=1,
                 is_seen=is_seen,
                 fetch_task_id=fetch_task_id,
+                preserve_existing_received_at=True,
             )
             mail_store.record_fetch_task_message(fetch_task_id, mail_id, is_new=is_new)
             fetched += 1

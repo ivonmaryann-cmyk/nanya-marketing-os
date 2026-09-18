@@ -39,7 +39,7 @@
     if (document.getElementById('templateBulkEditorStyle')) return;
     const style = document.createElement('style');
     style.id = 'templateBulkEditorStyle';
-    style.textContent = '.template-bulk-selected{box-shadow:inset 0 0 0 2px #8bb9ff!important;background:#eef6ff!important}.template-bulk-active{box-shadow:inset 0 0 0 2px #2f76df!important;background:#e2efff!important}.template-bulk-status{min-height:18px;color:#597694;font-size:12px;font-weight:700}.template-bulk-dialog{width:min(420px,calc(100vw - 32px));padding:0;border:1px solid #d7e3f1;border-radius:8px;color:#294873;box-shadow:0 18px 50px rgba(18,46,84,.25)}.template-bulk-dialog::backdrop{background:rgba(22,42,71,.34)}.template-bulk-dialog form{padding:0}.template-bulk-dialog header,.template-bulk-dialog footer{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid #e1e9f3}.template-bulk-dialog footer{justify-content:flex-end;gap:9px;border-top:1px solid #e1e9f3;border-bottom:0}.template-bulk-dialog h2{margin:0;font-size:18px}.template-bulk-dialog header button{border:0;background:transparent;color:#6c82a0;font-size:24px;cursor:pointer}.template-bulk-dialog label{display:block;margin:16px 20px 0;color:#3f5d84;font-size:13px;font-weight:800}.template-bulk-dialog select,.template-bulk-dialog textarea{box-sizing:border-box;width:100%;margin-top:7px;border:1px solid #cbd9e9;border-radius:5px;padding:9px;background:#fff;color:#284b77;font:inherit;font-size:13px}.template-bulk-dialog-note{margin:10px 20px 0;color:#71839c;font-size:12px}.template-bulk-dialog footer button{border:0;border-radius:6px;padding:9px 14px;font:inherit;font-size:13px;font-weight:800;cursor:pointer}.template-bulk-cancel{border:1px solid #b9cce3!important;background:#fff;color:#526d8f}.template-bulk-apply{background:#397ce8;color:#fff}';
+    style.textContent = '.template-bulk-selected{box-shadow:inset 0 0 0 2px #8bb9ff!important;background:#eef6ff!important}.template-bulk-active{box-shadow:inset 0 0 0 2px #2f76df!important;background:#e2efff!important}.template-filter-hidden{display:none!important}.template-bulk-status{min-height:18px;color:#597694;font-size:12px;font-weight:700}.template-bulk-dialog,.template-filter-dialog{width:min(420px,calc(100vw - 32px));padding:0;border:1px solid #d7e3f1;border-radius:8px;color:#294873;box-shadow:0 18px 50px rgba(18,46,84,.25)}.template-bulk-dialog::backdrop,.template-filter-dialog::backdrop{background:rgba(22,42,71,.34)}.template-bulk-dialog form,.template-filter-dialog form{padding:0}.template-bulk-dialog header,.template-bulk-dialog footer,.template-filter-dialog header,.template-filter-dialog footer{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid #e1e9f3}.template-bulk-dialog footer,.template-filter-dialog footer{justify-content:flex-end;gap:9px;border-top:1px solid #e1e9f3;border-bottom:0}.template-bulk-dialog h2,.template-filter-dialog h2{margin:0;font-size:18px}.template-bulk-dialog header button,.template-filter-dialog header button{border:0;background:transparent;color:#6c82a0;font-size:24px;cursor:pointer}.template-bulk-dialog label,.template-filter-dialog>form>label{display:block;margin:16px 20px 0;color:#3f5d84;font-size:13px;font-weight:800}.template-bulk-dialog select,.template-bulk-dialog textarea,.template-filter-dialog input[type=search]{box-sizing:border-box;width:100%;margin-top:7px;border:1px solid #cbd9e9;border-radius:5px;padding:9px;background:#fff;color:#284b77;font:inherit;font-size:13px}.template-bulk-dialog-note,.template-filter-note{margin:10px 20px 0;color:#71839c;font-size:12px}.template-bulk-dialog footer button,.template-filter-dialog footer button,.template-filter-clear,.template-filter-trigger{border:0;border-radius:6px;padding:9px 14px;font:inherit;font-size:13px;font-weight:800;cursor:pointer}.template-bulk-cancel,.template-filter-dialog footer button:not([value=apply]),.template-filter-clear,.template-filter-trigger{border:1px solid #b9cce3!important;background:#fff;color:#526d8f}.template-bulk-apply,.template-filter-dialog button[value=apply]{background:#397ce8;color:#fff}.template-filter-values{max-height:250px;overflow:auto;margin:12px 20px 0;border:1px solid #e0e8f2;border-radius:6px}.template-filter-values label{display:flex;gap:8px;align-items:center;margin:0;padding:8px 10px;border-bottom:1px solid #edf1f6;color:#405e84;font-size:13px;font-weight:600}.template-filter-values label:last-child{border-bottom:0}.template-filter-field{box-sizing:border-box!important;flex:0 0 160px!important;width:160px!important;min-width:160px!important;max-width:160px!important;height:36px;border:1px solid #b9cce3;border-radius:6px;padding:0 9px;background:#fff;color:#526d8f;font:inherit;font-size:13px;font-weight:700}.template-filter-trigger:hover{border-color:#397ce8!important;background:#f2f7ff;color:#286fd1}';
     document.head.append(style);
   }
 
@@ -50,8 +50,9 @@
     injectStyle();
     const excluded = new Set(options.excludedFields || []);
     const state = {anchor: null, active: null};
-    const rowNodes = () => [...rowsRoot.querySelectorAll(options.rowSelector)];
-    const controlFor = (row, field) => [...row.querySelectorAll('[data-field]')]
+    const allRows = () => [...rowsRoot.querySelectorAll(options.rowSelector)];
+    const rowNodes = () => allRows().filter(row => !row.hidden);
+    const controlFor = (row, field) => row && [...row.querySelectorAll('[data-field]')]
       .find(control => control.dataset.field === field && control.closest(options.cellSelector));
     const visibleFields = () => {
       const first = rowNodes()[0];
@@ -109,7 +110,7 @@
       editableFields: () => visibleFields().map(field => ({field, label: options.fieldLabels?.[field] || field}))
         .filter(item => editable(controlFor(rowNodes()[0], item.field))),
       applyBatch(field, value) {
-        const rows = rowNodes().filter(row => row.querySelector(options.selectionSelector)?.checked);
+        const rows = allRows().filter(row => row.querySelector(options.selectionSelector)?.checked);
         if (!rows.length) return notice('请先勾选需要批量修改的明细行。');
         const changed = rows.reduce((count, row) => count + Number(setValue(controlFor(row, field), value)), 0);
         notice(changed ? `已批量修改 ${changed} 个单元格，保存后生效。` : '所选字段当前不可编辑。');
@@ -160,6 +161,107 @@
       },
     };
     const dialog = createDialog(instance);
+
+    const filterableFields = () => visibleFields().filter(field => !excluded.has(field));
+    const filters = new Map();
+    const filterStatus = document.createElement('span');
+    filterStatus.className = 'template-bulk-status';
+    const clearFilters = document.createElement('button');
+    clearFilters.type = 'button';
+    clearFilters.className = 'template-filter-clear';
+    clearFilters.textContent = '清除筛选';
+    clearFilters.hidden = true;
+    const filterDialog = document.createElement('dialog');
+    filterDialog.className = 'template-filter-dialog';
+    filterDialog.innerHTML = '<form method="dialog"><header><h2></h2><button value="cancel" aria-label="关闭">×</button></header><label>关键词<input type="search" name="query" placeholder="包含的内容"></label><div class="template-filter-values"></div><p class="template-filter-note">不勾选具体值时，仅按关键词筛选。</p><footer><button type="button" data-filter-clear>清除此列</button><button value="cancel">取消</button><button value="apply">应用</button></footer></form>';
+    document.body.append(filterDialog);
+    const filterForm = filterDialog.querySelector('form');
+    const filterTitle = filterDialog.querySelector('h2');
+    const filterQuery = filterForm.elements.query;
+    const filterValues = filterDialog.querySelector('.template-filter-values');
+    let activeFilterField = '';
+    const valueFor = (row, field) => String(controlFor(row, field)?.value || '').trim();
+    const specialFilterOptions = field => options.specialFilterOptions?.(field) || [];
+    const filterMatches = row => [...filters.entries()].every(([field, filter]) => {
+      const value = valueFor(row, field).toLocaleLowerCase();
+      const specialMatches = [...(filter.specialValues || [])].some(value =>
+        options.specialFilterMatches?.(row, field, value));
+      const hasValueFilters = filter.values.size || (filter.specialValues || new Set()).size;
+      return (!filter.query || value.includes(filter.query))
+        && (!hasValueFilters || filter.values.has(value) || specialMatches);
+    });
+    const applyFilters = () => {
+      let visible = 0;
+      allRows().forEach(row => {
+        const matches = filterMatches(row);
+        row.hidden = !matches;
+        row.classList.toggle('template-filter-hidden', !matches);
+        const detail = row.nextElementSibling;
+        if (detail?.classList.contains('oc-match-detail')) {
+          if (!detail.dataset.templateFilterWasHidden) detail.dataset.templateFilterWasHidden = detail.hidden ? '1' : '0';
+          detail.hidden = !matches || detail.dataset.templateFilterWasHidden === '1';
+        }
+        if (matches) visible += 1;
+      });
+      state.anchor = state.active = null;
+      drawSelection();
+      filterStatus.textContent = `筛选：显示 ${visible}/${allRows().length} 项`;
+      const active = filters.size > 0;
+      clearFilters.hidden = !active;
+    };
+    const openFilter = field => {
+      activeFilterField = field;
+      const current = filters.get(field) || {query: '', values: new Set(), specialValues: new Set()};
+      filterTitle.textContent = `筛选：${options.fieldLabels?.[field] || field}`;
+      filterQuery.value = current.query;
+      const values = [...new Set(allRows().map(row => valueFor(row, field)).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+      const specialValues = specialFilterOptions(field).map(item => {
+        const label = document.createElement('label');
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox'; checkbox.name = 'special-value'; checkbox.value = item.value;
+        checkbox.checked = current.specialValues.has(item.value);
+        label.append(checkbox, document.createTextNode(item.label));
+        return label;
+      });
+      filterValues.replaceChildren(...specialValues, ...values.map(value => {
+        const label = document.createElement('label');
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox'; checkbox.name = 'value'; checkbox.value = value.toLocaleLowerCase();
+        checkbox.checked = current.values.has(checkbox.value);
+        label.append(checkbox, document.createTextNode(value));
+        return label;
+      }));
+      filterDialog.showModal();
+      filterQuery.focus();
+    };
+    filterForm.addEventListener('submit', event => {
+      if (event.submitter?.value !== 'apply') return;
+      event.preventDefault();
+      const query = filterQuery.value.trim().toLocaleLowerCase();
+      const values = new Set([...filterValues.querySelectorAll('input[name="value"]:checked')].map(input => input.value));
+      const specialValues = new Set([...filterValues.querySelectorAll('input[name="special-value"]:checked')].map(input => input.value));
+      if (query || values.size || specialValues.size) filters.set(activeFilterField, {query, values, specialValues}); else filters.delete(activeFilterField);
+      filterDialog.close(); applyFilters();
+    });
+    filterForm.querySelector('[data-filter-clear]').addEventListener('click', () => {
+      filters.delete(activeFilterField); filterDialog.close(); applyFilters();
+    });
+    clearFilters.addEventListener('click', () => { filters.clear(); applyFilters(); });
+    const filterField = document.createElement('select');
+    filterField.className = 'template-filter-field';
+    filterField.setAttribute('aria-label', '选择筛选列');
+    filterField.append(new Option('选择筛选列', ''));
+    filterableFields().forEach(field => filterField.append(new Option(options.fieldLabels?.[field] || field, field)));
+    const filterTrigger = document.createElement('button');
+    filterTrigger.type = 'button';
+    filterTrigger.className = 'template-filter-trigger';
+    filterTrigger.textContent = '筛选';
+    filterTrigger.addEventListener('click', () => {
+      if (!filterField.value) return notice('请先选择需要筛选的列。');
+      openFilter(filterField.value);
+    });
+    toolbar.append(filterField, filterTrigger, filterStatus, clearFilters);
+    rowsRoot.addEventListener('input', () => { if (filters.size) applyFilters(); });
     const fillButton = toolbar.querySelector('[data-bulk-fill-down]');
     const batchButton = toolbar.querySelector('[data-bulk-edit]');
     fillButton?.addEventListener('click', instance.fillDown);
@@ -185,6 +287,7 @@
         instance.fillDown();
       }
     });
+    applyFilters();
     return instance;
   }
 

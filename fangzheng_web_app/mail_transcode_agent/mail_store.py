@@ -336,6 +336,7 @@ def upsert_message(
     is_order: int,
     is_seen: bool = False,
     fetch_task_id: int = 0,
+    preserve_existing_received_at: bool = False,
 ) -> tuple[int, bool]:
     now = now_iso()
     with db_cursor() as conn:
@@ -365,7 +366,8 @@ def upsert_message(
             conn.execute(
                 """
                 UPDATE mail_messages SET
-                    message_id = ?, subject = ?, sender = ?, sent_at = ?, received_at = ?,
+                    message_id = ?, subject = ?, sender = ?, sent_at = ?,
+                    received_at = CASE WHEN ? THEN received_at ELSE ? END,
                     body_html = ?, body_text = ?, eml_path = ?, is_order = ?,
                     is_seen = ?, seen_updated_at = ?,
                     created_at = created_at
@@ -376,6 +378,7 @@ def upsert_message(
                     values[4],
                     values[5],
                     values[6],
+                    1 if preserve_existing_received_at else 0,
                     values[7],
                     values[8],
                     values[9],

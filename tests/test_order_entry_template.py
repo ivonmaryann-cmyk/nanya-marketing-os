@@ -13,6 +13,7 @@ from fangzheng_web_app.mail_transcode_agent import mail_store
 from fangzheng_web_app.order_entry_service import (
     _apply_customer_extraction_mappings,
     _apply_customer_spec_matches,
+    _apply_customer_transit_days,
     _attachment_rows,
     _line_entry,
     _line_from_pipeline_row,
@@ -55,6 +56,33 @@ class OrderEntryTemplateTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.db_patch.stop()
         self.temp_dir.cleanup()
+
+    def test_templates_expose_shared_column_filter_controls(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        entry = (root / "templates" / "order_automation_entry_template.html").read_text(encoding="utf-8")
+        change = (root / "templates" / "order_automation_order_change_template.html").read_text(encoding="utf-8")
+        editor = (root / "static" / "order_template_bulk_editor.js").read_text(encoding="utf-8")
+
+        self.assertIn('data-template-filter-field="{{ field }}"', entry)
+        self.assertIn('data-template-filter-field="{{ field }}"', change)
+        self.assertIn("template-filter-dialog", editor)
+        self.assertIn("筛选：显示", editor)
+        self.assertIn("清除筛选", editor)
+        self.assertIn("specialFilterMatches", editor)
+        self.assertIn("需要新建料号", entry)
+        self.assertIn("需要多选候选料号", entry)
+
+    def test_initial_template_dates_are_backdated_by_customer_transit_days(self) -> None:
+        lines = [{
+            "values": {"delivery_date": "2026-09-25", "customer_spec": "NY2150"},
+            "sources": {"delivery_date": {"label": "邮件正文", "reference": "第 1 行"}},
+        }]
+        with patch("fangzheng_web_app.order_entry_service.get_customer", return_value={"transit_days": "3"}):
+            result = _apply_customer_transit_days({"customer_id": 12}, lines)
+
+        self.assertEqual("2026-09-22", result[0]["values"]["delivery_date"])
+        self.assertEqual("客户运输天数倒推", result[0]["sources"]["delivery_date"]["label"])
+        self.assertIn("客户需求日 2026-09-25 - 运输天数 3 天", result[0]["sources"]["delivery_date"]["reference"])
 
     def test_empty_configured_spec_field_shows_its_position_as_placeholder(self) -> None:
         template = (

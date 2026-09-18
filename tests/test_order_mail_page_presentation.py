@@ -169,7 +169,7 @@ class OrderMailPagePresentationTests(unittest.TestCase):
             ["PO-001", "PO-002"],
         )
 
-    def test_reply_query_control_is_only_rendered_for_new_orders(self) -> None:
+    def test_reply_query_and_delivery_controls_render_for_order_types(self) -> None:
         app = Flask(__name__, template_folder=str(Path(__file__).parents[1] / "templates"))
         app.secret_key = "test-secret"
         app.jinja_env.globals["url_for"] = lambda *_args, **_kwargs: "/test"
@@ -195,9 +195,9 @@ class OrderMailPagePresentationTests(unittest.TestCase):
         self.assertIn("tableState.hasPossibleOrderTable", new_order_html)
         self.assertIn("Content-Type':'application/json", new_order_html)
         self.assertNotIn("window.fetch=", new_order_html)
-        self.assertNotIn('id="orderQueryOpen"', change_html)
-        self.assertNotIn('id="orderQueryDrawer"', change_html)
-        self.assertNotIn('id="deliveryFill"', change_html)
+        self.assertIn('id="orderQueryOpen"', change_html)
+        self.assertIn('id="orderQueryDrawer"', change_html)
+        self.assertIn('id="deliveryFill"', change_html)
 
     def test_reply_delivery_fill_confirms_month_end_receipt_before_writing(self) -> None:
         markup = (
@@ -250,6 +250,40 @@ class OrderMailPagePresentationTests(unittest.TestCase):
             transit_days="4",
         )
 
+    def test_order_change_reply_query_uses_change_template_order_numbers(self) -> None:
+        app = Flask(__name__)
+        app.secret_key = "test-secret"
+        template = {
+            "id": 19,
+            "header": {},
+            "lines": [{"values": {"customer_order_number": "CHANGE-PO-001"}}],
+        }
+        with app.test_request_context(
+            "/order-automation/cases/7/reply/query-order", method="POST",
+        ), patch(
+            "fangzheng_web_app.routes.require_login", return_value=None,
+        ), patch(
+            "fangzheng_web_app.routes.current_employee", return_value="employee-a",
+        ), patch(
+            "fangzheng_web_app.routes.get_order_intake_case",
+            return_value={"id": 7, "action_type": "order_change", "customer_id": 12},
+        ), patch(
+            "fangzheng_web_app.routes.get_order_change_template",
+            return_value=({"id": 7}, template),
+        ), patch(
+            "fangzheng_web_app.routes.get_customer",
+            return_value={"id": 12, "transit_days": "4"},
+        ), patch(
+            "fangzheng_web_app.routes.query_order_info_readonly",
+            return_value={"mode": "mock", "order_count": 0, "orders": [], "not_found": []},
+        ) as query:
+            response = order_automation_reply_query_order(7)
+
+        self.assertTrue(response.get_json()["ok"])
+        query.assert_called_once_with(
+            7, 19, "employee-a", "employee-a", ["CHANGE-PO-001"], transit_days="4",
+        )
+
     def test_reply_delivery_fill_route_uses_reply_table_rows(self) -> None:
         app = Flask(__name__)
         app.secret_key = "test-secret"
@@ -281,6 +315,37 @@ class OrderMailPagePresentationTests(unittest.TestCase):
         query.assert_called_once_with(
             7, 9, "employee-a", "employee-a", rows,
             transit_days="4",
+        )
+
+    def test_order_change_delivery_fill_uses_change_template(self) -> None:
+        app = Flask(__name__)
+        app.secret_key = "test-secret"
+        template = {"id": 19, "header": {}, "lines": []}
+        rows = [{"row_id": "reply-1", "customer_order_number": "CHANGE-PO-001", "line_no": "2"}]
+        with app.test_request_context(
+            "/order-automation/cases/7/reply/fill-delivery", method="POST", json={"rows": rows},
+        ), patch(
+            "fangzheng_web_app.routes.require_login", return_value=None,
+        ), patch(
+            "fangzheng_web_app.routes.current_employee", return_value="employee-a",
+        ), patch(
+            "fangzheng_web_app.routes.get_order_intake_case",
+            return_value={"id": 7, "action_type": "order_change", "customer_id": 12},
+        ), patch(
+            "fangzheng_web_app.routes.get_order_change_template",
+            return_value=({"id": 7}, template),
+        ), patch(
+            "fangzheng_web_app.routes.get_customer",
+            return_value={"id": 12, "transit_days": "4"},
+        ), patch(
+            "fangzheng_web_app.routes.query_order_info_reply_rows",
+            return_value={"mode": "mock", "order_count": 0, "orders": [], "not_found": [], "row_matches": []},
+        ) as query:
+            response = order_automation_reply_fill_delivery(7)
+
+        self.assertTrue(response.get_json()["ok"])
+        query.assert_called_once_with(
+            7, 19, "employee-a", "employee-a", rows, transit_days="4",
         )
 
     def test_reply_generated_table_uses_template_rows_and_restores_roll_quantity(self) -> None:
@@ -331,6 +396,8 @@ class OrderMailPagePresentationTests(unittest.TestCase):
                 selected_date="2026-08-18",
                 selected_action="all",
                 selected_mail_status="pending_interface_submit",
+                selected_read_state="all",
+                read_state_labels={"all": "全部邮件", "unread": "未读", "read": "已读"},
                 selected_mail_query="确认订单",
                 selected_order_number="SA2608270003",
                 previous_date="2026-08-17",
@@ -380,11 +447,13 @@ class OrderMailPagePresentationTests(unittest.TestCase):
         self.assertIn('aria-label="邮件状态"', list_html)
         self.assertIn('<option value="pending_interface_submit" selected>订单信息确认</option>', list_html)
         self.assertIn('name="return_mail_status" value="pending_interface_submit"', list_html)
-        self.assertIn("已匹配客户：测试客户", list_html)
-        self.assertIn("NYEOS订单号：SA2608270003", list_html)
+        self.assertIn("客户：测试客户", list_html)
+        self.assertIn("NYEOS：SA2608270003", list_html)
         self.assertIn('name="order_no" value="SA2608270003"', list_html)
         self.assertIn('name="mail_query" value="确认订单"', list_html)
         self.assertIn("业务分流与进度", detail_html)
+        self.assertIn("网易收件时间", detail_html)
+        self.assertIn("邮件发送时间", detail_html)
         self.assertIn("NYEOS订单号", detail_html)
         self.assertIn("SA2608270003", detail_html)
         self.assertIn("查看纯文本邮件正文", detail_html)

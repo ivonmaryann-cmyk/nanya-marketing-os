@@ -190,7 +190,6 @@ from .order_intake_service import (
     get_attachment as get_order_intake_attachment,
     get_case as get_order_intake_case,
     list_cases as list_order_intake_cases,
-    list_date_counts as list_order_intake_date_counts,
     refresh_customer_recognition as refresh_order_customer_recognition,
     work_summary as order_intake_work_summary,
     list_change_tags as list_order_change_tags,
@@ -1025,12 +1024,12 @@ def order_automation():
         selected_mail_status = "all"
     if selected_read_state not in ORDER_MAIL_READ_STATE_LABELS:
         selected_read_state = "all"
-    selected_date = request.args.get("date", order_intake_business_today().isoformat())
-    try:
-        selected_date_value = date.fromisoformat(selected_date)
-    except ValueError:
-        selected_date_value = order_intake_business_today()
-        selected_date = selected_date_value.isoformat()
+    selected_date = request.args.get("date", "").strip()
+    if selected_date:
+        try:
+            selected_date = date.fromisoformat(selected_date).isoformat()
+        except ValueError:
+            selected_date = ""
     from .mail_transcode_agent import mail_store
 
     accounts = _order_business_accounts(employee_id)
@@ -1088,7 +1087,6 @@ def order_automation():
         )
         if progress:
             entry_progresses[int(item["id"])] = progress
-    date_counts = list_order_intake_date_counts(employee_id, selected_account_id, prepare=False) if selected_account_id else []
     return render_template(
         "order_automation.html",
         cases=cases,
@@ -1109,9 +1107,6 @@ def order_automation():
         selected_mail_query=selected_mail_query,
         selected_order_number=selected_order_number,
         selected_date=selected_date,
-        previous_date=(selected_date_value - timedelta(days=1)).isoformat(),
-        next_date=(selected_date_value + timedelta(days=1)).isoformat(),
-        date_counts=date_counts,
         mail_accounts=accounts,
         selected_account=selected_account,
         fetch_tasks=fetch_tasks,
@@ -1156,19 +1151,21 @@ def order_automation_sync():
         flash(f"邮件同步失败：{exc}", "error")
     return redirect(url_for(
         "main.order_automation",
-        date=request.form.get("return_date") or order_intake_business_today().isoformat(),
+        date=request.form.get("return_date", "").strip() or None,
         category=request.form.get("return_category") or "all",
         per_page=request.form.get("return_per_page", 20, type=int) or 20,
         page=request.form.get("return_page", 1, type=int) or 1,
         mail_status=request.form.get("return_mail_status") or "all",
+        read_state=request.form.get("return_read_state") or "all",
         mail_query=request.form.get("return_mail_query", "").strip(),
+        order_no=request.form.get("return_order_no", "").strip(),
         account_id=account_id,
     ))
 
 
 @bp.post("/order-automation/customer-recognition/refresh")
 def order_automation_refresh_customer_recognition():
-    """Re-evaluate the selected day's active emails against current customer identities."""
+    """Re-evaluate one selected day or the current mailbox's customer identities."""
     redirect_resp = require_login()
     if redirect_resp:
         return redirect_resp
@@ -1176,24 +1173,28 @@ def order_automation_refresh_customer_recognition():
     account_id = request.form.get("account_id", type=int)
     selected_date = str(request.form.get("return_date") or "").strip()
     try:
-        date.fromisoformat(selected_date)
+        if selected_date:
+            date.fromisoformat(selected_date)
         account = _order_business_account(employee_id, account_id)
         if not account:
             raise ValueError("请选择已启用的业务邮箱。")
         refreshed = refresh_order_customer_recognition(
             employee_id, int(account["id"]), selected_date
         )
-        flash(f"已刷新 {refreshed} 封邮件的客户识别结果。不会改写人工确认过的业务分类或处理状态。", "success")
+        scope = f"{selected_date} 的" if selected_date else "当前邮箱全部"
+        flash(f"已刷新 {scope}{refreshed} 封邮件的客户识别结果。不会改写人工确认过的业务分类或处理状态。", "success")
     except ValueError as exc:
         flash(str(exc) or "邮件日期无效。", "error")
     return redirect(url_for(
         "main.order_automation",
-        date=selected_date or order_intake_business_today().isoformat(),
+        date=selected_date or None,
         category=request.form.get("return_category") or "all",
         per_page=request.form.get("return_per_page", 20, type=int) or 20,
         page=request.form.get("return_page", 1, type=int) or 1,
         mail_status=request.form.get("return_mail_status") or "all",
+        read_state=request.form.get("return_read_state") or "all",
         mail_query=request.form.get("return_mail_query", "").strip(),
+        order_no=request.form.get("return_order_no", "").strip(),
         account_id=account_id,
     ))
 
@@ -1222,7 +1223,7 @@ def order_automation_history_sync():
         flash(f"历史邮件同步失败：{exc}", "error")
     return redirect(url_for(
         "main.order_automation",
-        date=request.form.get("return_date") or order_intake_business_today().isoformat(),
+        date=request.form.get("return_date", "").strip() or None,
         account_id=account_id,
     ))
 
@@ -1337,20 +1338,23 @@ def order_automation_case_routing(case_id: int):
 
 def _order_automation_return_context(case: dict[str, Any]) -> dict[str, Any]:
     """Keep a mail detail page anchored to the exact list the user came from."""
-    fallback_date = str(case.get("sent_at") or case.get("received_at") or "")[:10]
-    selected_date = request.args.get("return_date", fallback_date)
-    try:
-        selected_date = date.fromisoformat(selected_date).isoformat()
-    except (TypeError, ValueError):
-        selected_date = fallback_date or order_intake_business_today().isoformat()
+    selected_date = str(request.args.get("return_date") or "").strip()
+    if selected_date:
+        try:
+            selected_date = date.fromisoformat(selected_date).isoformat()
+        except ValueError:
+            selected_date = ""
     selected_action = request.args.get("return_category", "all")
     if selected_action not in {*ORDER_ACTION_LABELS, "needs_business_routing", "all"}:
         selected_action = "all"
     selected_mail_status = request.args.get("return_mail_status", "all")
+    selected_read_state = request.args.get("return_read_state", "all")
     selected_mail_query = request.args.get("return_mail_query", "").strip()
     selected_order_number = request.args.get("return_order_no", "").strip()
     if selected_mail_status not in ORDER_MAIL_STATUS_FILTER_LABELS:
         selected_mail_status = "all"
+    if selected_read_state not in ORDER_MAIL_READ_STATE_LABELS:
+        selected_read_state = "all"
     per_page = request.args.get("return_per_page", 20, type=int) or 20
     if per_page not in {10, 20, 50}:
         per_page = 20
@@ -1358,12 +1362,14 @@ def _order_automation_return_context(case: dict[str, Any]) -> dict[str, Any]:
     batch_id = request.args.get("return_batch", type=int)
     account_id = request.args.get("return_account", type=int) or case.get("account_id")
     values: dict[str, Any] = {
-        "date": selected_date,
         "category": selected_action,
         "per_page": per_page,
         "page": page,
         "mail_status": selected_mail_status,
+        "read_state": selected_read_state,
     }
+    if selected_date:
+        values["date"] = selected_date
     if selected_order_number:
         values["order_no"] = selected_order_number
     if selected_mail_query:
@@ -1381,6 +1387,7 @@ def _order_automation_return_context(case: dict[str, Any]) -> dict[str, Any]:
             "return_per_page": per_page,
             "return_page": page,
             "return_mail_status": selected_mail_status,
+            "return_read_state": selected_read_state,
             "return_mail_query": selected_mail_query,
             "return_order_no": selected_order_number,
             "return_batch": batch_id,
@@ -1710,12 +1717,16 @@ def order_automation_reply_query_order(case_id: int):
         return redirect_resp
     employee_id = current_employee() or ""
     case = get_order_intake_case(case_id, employee_id)
-    if not case or case.get("action_type") != "new_order":
+    if not case or case.get("action_type") not in {"new_order", "order_change"}:
         abort(404)
     try:
-        _case, template = get_saved_order_entry_template(case_id, employee_id)
+        _case, template = (
+            get_order_change_template(case_id, employee_id)
+            if case.get("action_type") == "order_change"
+            else get_saved_order_entry_template(case_id, employee_id)
+        )
         if not template:
-            raise ValueError("请先生成并保存录单模板后再查询订单")
+            raise ValueError("请先生成并保存订单模板后再查询订单")
         order_numbers = _template_customer_order_numbers(template)
         customer = get_customer(int(case["customer_id"])) if case.get("customer_id") else None
         result = query_order_info_readonly(
@@ -1735,12 +1746,16 @@ def order_automation_reply_fill_delivery(case_id: int):
         return redirect_resp
     employee_id = current_employee() or ""
     case = get_order_intake_case(case_id, employee_id)
-    if not case or case.get("action_type") != "new_order":
+    if not case or case.get("action_type") not in {"new_order", "order_change"}:
         abort(404)
     try:
-        _case, template = get_saved_order_entry_template(case_id, employee_id)
+        _case, template = (
+            get_order_change_template(case_id, employee_id)
+            if case.get("action_type") == "order_change"
+            else get_saved_order_entry_template(case_id, employee_id)
+        )
         if not template:
-            raise ValueError("请先生成并保存录单模板后再回填交期")
+            raise ValueError("请先生成并保存订单模板后再回填交期")
         payload = request.get_json(silent=True) or {}
         requested_rows = payload.get("rows") if isinstance(payload, dict) else None
         if requested_rows is not None and not isinstance(requested_rows, list):

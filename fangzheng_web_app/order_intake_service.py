@@ -378,7 +378,7 @@ def simulate_routing_rule(rule: dict[str, Any], employee_id: str, account_id: in
                FROM mail_messages m LEFT JOIN mail_attachments a ON a.mail_id=m.id AND a.is_inline=0
                JOIN mail_accounts ma ON ma.id=m.account_id
                WHERE ma.owner_employee_id=? AND m.account_id=?
-                 AND substr(COALESCE(NULLIF(m.sent_at, ''), NULLIF(m.received_at, ''), m.created_at), 1, 10) >= ?
+                 AND substr(COALESCE(NULLIF(m.received_at, ''), NULLIF(m.sent_at, ''), m.created_at), 1, 10) >= ?
                GROUP BY m.id ORDER BY COALESCE(m.sent_at, m.received_at, m.created_at) DESC""",
             (employee_id, account_id, start_date),
         ).fetchall()
@@ -919,7 +919,7 @@ def reclassify_cases(
     clauses=["c.employee_id=?", "c.routing_source != 'manual'", "c.status != 'archived'"]; params: list[Any]=[employee_id]
     if account_id: clauses.append("m.account_id=?"); params.append(account_id)
     if target_date:
-        clauses.append("substr(COALESCE(NULLIF(m.sent_at, ''), NULLIF(m.received_at, ''), m.created_at), 1, 10)=?")
+        clauses.append("substr(COALESCE(NULLIF(m.received_at, ''), NULLIF(m.sent_at, ''), m.created_at), 1, 10)=?")
         params.append(target_date)
     changed_sql, changed_params = _changed_terms_clause(changed_terms)
     with db_cursor() as conn:
@@ -1011,25 +1011,31 @@ def reclassify_cases(
 def refresh_customer_recognition(
     employee_id: str,
     account_id: int,
-    target_date: str,
+    target_date: str = "",
 ) -> int:
-    """Refresh only customer identity for one visible mail date.
+    """Refresh customer identity for the selected date, or the whole mailbox.
 
     This intentionally does not touch routing, handling state, or any manual
     business decision.  It lets a newly maintained sender email/domain take
     effect for all of that day's mails at once.
     """
     with db_cursor() as conn:
+        clauses = ["c.employee_id=?", "m.account_id=?"]
+        params: list[Any] = [employee_id, account_id]
+        if target_date:
+            clauses.append(
+                "substr(COALESCE(NULLIF(m.received_at, ''), NULLIF(m.sent_at, ''), m.created_at), 1, 10)=?"
+            )
+            params.append(target_date)
         rows = conn.execute(
-            """
+            f"""
             SELECT c.id,c.customer_id,c.customer_code,c.customer_name,
                    c.customer_match_status,c.customer_match_source,c.customer_match_detail,m.sender
             FROM order_intake_cases c
             JOIN mail_messages m ON m.id=c.mail_id
-            WHERE c.employee_id=? AND m.account_id=?
-              AND substr(COALESCE(NULLIF(m.sent_at, ''), NULLIF(m.received_at, ''), m.created_at), 1, 10)=?
+            WHERE {' AND '.join(clauses)}
             """,
-            (employee_id, account_id, target_date),
+            params,
         ).fetchall()
         now = utcnow()
         for raw in rows:
@@ -1159,7 +1165,7 @@ def list_cases(
         clauses.append("c.action_type = ?")
         values.append(action_type)
     if target_date and not fetch_task_id:
-        clauses.append("substr(COALESCE(NULLIF(m.sent_at, ''), NULLIF(m.received_at, ''), m.created_at), 1, 10) = ?")
+        clauses.append("substr(COALESCE(NULLIF(m.received_at, ''), NULLIF(m.sent_at, ''), m.created_at), 1, 10) = ?")
         values.append(target_date)
     with db_cursor() as conn:
         rows = conn.execute(
@@ -1176,7 +1182,7 @@ def list_cases(
             LEFT JOIN order_mail_routing_rules rr ON rr.id = c.routing_rule_id
             WHERE {' AND '.join(clauses)}
             ORDER BY CASE c.routing_state WHEN 'needs_business_routing' THEN 0 WHEN 'unrouted' THEN 4 ELSE 1 END,
-                     COALESCE(m.sent_at, m.created_at) DESC, c.id DESC
+                     COALESCE(NULLIF(m.received_at, ''), NULLIF(m.sent_at, ''), m.created_at) DESC, c.id DESC
             """,
             values,
         ).fetchall()
@@ -1184,7 +1190,7 @@ def list_cases(
     yesterday = (business_today() - timedelta(days=1)).isoformat()
     result = [dict(row) for row in rows]
     for item in result:
-        item["received_day"] = str(item.get("sent_at") or item.get("received_at") or "")[:10]
+        item["received_day"] = str(item.get("received_at") or item.get("sent_at") or "")[:10]
         item["date_label"] = "今天" if item["received_day"] == today else "昨天" if item["received_day"] == yesterday else item["received_day"] or "日期待确认"
         item["routing_matches"] = json.loads(item.get("routing_matches_json") or "[]")
         item["change_tags"] = json.loads(item.get("change_tags_json") or "[]")
@@ -1200,7 +1206,7 @@ def list_date_counts(employee_id: str, account_id: int, days: int = 30, *, prepa
     with db_cursor() as conn:
         rows = conn.execute(
             """
-            SELECT substr(COALESCE(NULLIF(m.sent_at, ''), NULLIF(m.received_at, ''), m.created_at), 1, 10) AS mail_date,
+            SELECT substr(COALESCE(NULLIF(m.received_at, ''), NULLIF(m.sent_at, ''), m.created_at), 1, 10) AS mail_date,
                    COUNT(*) AS total,
                    SUM(CASE WHEN c.action_type = 'new_order' THEN 1 ELSE 0 END) AS new_order_count,
                    SUM(CASE WHEN c.action_type = 'order_change' THEN 1 ELSE 0 END) AS change_count,
@@ -1208,7 +1214,7 @@ def list_date_counts(employee_id: str, account_id: int, days: int = 30, *, prepa
             FROM order_intake_cases c
             JOIN mail_messages m ON m.id = c.mail_id
             WHERE c.employee_id = ? AND m.account_id = ?
-              AND substr(COALESCE(NULLIF(m.sent_at, ''), NULLIF(m.received_at, ''), m.created_at), 1, 10) >= ?
+              AND substr(COALESCE(NULLIF(m.received_at, ''), NULLIF(m.sent_at, ''), m.created_at), 1, 10) >= ?
             GROUP BY mail_date ORDER BY mail_date DESC
             """,
             (employee_id, account_id, start_date),
@@ -1390,7 +1396,7 @@ def work_summary(
         params.append(account_id)
     if target_date:
         clauses.append(
-            "substr(COALESCE(NULLIF(m.sent_at, ''), NULLIF(m.received_at, ''), m.created_at), 1, 10)=?"
+            "substr(COALESCE(NULLIF(m.received_at, ''), NULLIF(m.sent_at, ''), m.created_at), 1, 10)=?"
         )
         params.append(target_date)
     with db_cursor() as conn:

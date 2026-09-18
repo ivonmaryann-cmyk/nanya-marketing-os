@@ -267,6 +267,11 @@ def build_mail_html_purchase_document(
                 "recovery_actions": [],
             }
         )
+        # Reply chains commonly contain the customer's original order table
+        # after a newer reply.  They describe the same order and must not be
+        # appended as duplicate template lines.  A separate delivery-plan
+        # table is still retained in ``tables`` below for date backfilling.
+        break
     if not raw_detail_tables:
         return None
 
