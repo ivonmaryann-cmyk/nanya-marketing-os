@@ -78,6 +78,16 @@ def get_rule_file_paths(version: str | None = None) -> tuple[Path, Path]:
     return version_dir / PRICE_FILENAME, version_dir / ACCOUNT_FILENAME
 
 
+def _latest_available_rule_file(filename: str) -> Path | None:
+    candidates = [
+        path for path in RULES_VERSIONS_DIR.glob(f"*/{filename}")
+        if path.is_file()
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: (path.parent.stat().st_mtime, path.parent.name))
+
+
 def _read_price_excel(path: Path) -> pd.DataFrame:
     excel = pd.ExcelFile(path)
     if "方正价格" in excel.sheet_names:
@@ -142,23 +152,36 @@ def save_new_rule_version(
     updated_by: str,
     remark: str,
 ) -> str:
+    current_price, current_account = get_rule_file_paths()
+    price_source = current_price if current_price.is_file() else _latest_available_rule_file(PRICE_FILENAME)
+    account_source = current_account if current_account.is_file() else _latest_available_rule_file(ACCOUNT_FILENAME)
+    reuse_missing: list[str] = []
+    if not (price_file and price_file.filename) and price_source is None:
+        reuse_missing.append("价格对账表")
+    if not (account_file and account_file.filename) and account_source is None:
+        reuse_missing.append("基板对照表")
+    if reuse_missing:
+        raise ValueError(
+            "当前生效方正规则文件在本机缺失，且找不到可沿用的"
+            + "、".join(reuse_missing)
+            + "。请同时上传价格对账表和基板对照表以恢复规则版本。"
+        )
+
     version = datetime.now().strftime("rules_%Y%m%d_%H%M%S")
     version_dir = RULES_VERSIONS_DIR / version
     version_dir.mkdir(parents=True, exist_ok=True)
-
-    current_price, current_account = get_rule_file_paths()
     price_path = version_dir / PRICE_FILENAME
     account_path = version_dir / ACCOUNT_FILENAME
 
     if price_file and price_file.filename:
         price_file.save(price_path)
     else:
-        shutil.copy2(current_price, price_path)
+        shutil.copy2(price_source, price_path)
 
     if account_file and account_file.filename:
         account_file.save(account_path)
     else:
-        shutil.copy2(current_account, account_path)
+        shutil.copy2(account_source, account_path)
 
     validate_rule_files(price_path, account_path)
     set_setting("active_rule_version", version)

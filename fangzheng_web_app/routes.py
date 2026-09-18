@@ -190,6 +190,7 @@ from .order_intake_service import (
     get_attachment as get_order_intake_attachment,
     get_case as get_order_intake_case,
     list_cases as list_order_intake_cases,
+    list_date_counts as list_order_intake_date_counts,
     refresh_customer_recognition as refresh_order_customer_recognition,
     work_summary as order_intake_work_summary,
     list_change_tags as list_order_change_tags,
@@ -1024,12 +1025,20 @@ def order_automation():
         selected_mail_status = "all"
     if selected_read_state not in ORDER_MAIL_READ_STATE_LABELS:
         selected_read_state = "all"
-    selected_date = request.args.get("date", "").strip()
-    if selected_date:
+    requested_date = request.args.get("date")
+    if requested_date is None:
+        selected_date = order_intake_business_today().isoformat()
+        selected_date_value = order_intake_business_today()
+    elif not requested_date.strip():
+        selected_date = ""
+        selected_date_value = order_intake_business_today()
+    else:
         try:
-            selected_date = date.fromisoformat(selected_date).isoformat()
+            selected_date_value = date.fromisoformat(requested_date.strip())
+            selected_date = selected_date_value.isoformat()
         except ValueError:
-            selected_date = ""
+            selected_date_value = order_intake_business_today()
+            selected_date = selected_date_value.isoformat()
     from .mail_transcode_agent import mail_store
 
     accounts = _order_business_accounts(employee_id)
@@ -1087,6 +1096,10 @@ def order_automation():
         )
         if progress:
             entry_progresses[int(item["id"])] = progress
+    date_counts = (
+        list_order_intake_date_counts(employee_id, selected_account_id, prepare=False)
+        if selected_account_id else []
+    )
     return render_template(
         "order_automation.html",
         cases=cases,
@@ -1107,6 +1120,9 @@ def order_automation():
         selected_mail_query=selected_mail_query,
         selected_order_number=selected_order_number,
         selected_date=selected_date,
+        previous_date=(selected_date_value - timedelta(days=1)).isoformat(),
+        next_date=(selected_date_value + timedelta(days=1)).isoformat(),
+        date_counts=date_counts,
         mail_accounts=accounts,
         selected_account=selected_account,
         fetch_tasks=fetch_tasks,
@@ -5882,9 +5898,14 @@ def admin_rules():
         elif not any(file_obj and file_obj.filename for file_obj in [price_file, account_file]):
             flash("请至少上传一份需要更新的规则文件。", "error")
         else:
-            version = save_new_rule_version(price_file, account_file, updated_by=current_employee(), remark=remark)
-            flash(f"方正规则已更新，当前生效版本：{version}", "success")
-            return redirect(url_for("main.admin_rules"))
+            try:
+                version = save_new_rule_version(
+                    price_file, account_file, updated_by=current_employee(), remark=remark
+                )
+                flash(f"方正规则已更新，当前生效版本：{version}", "success")
+                return redirect(url_for("main.admin_rules"))
+            except Exception as exc:
+                flash(f"方正规则更新失败：{exc}", "error")
     price_path, account_path = get_rule_file_paths()
     return render_template(
         "admin_rules.html",
