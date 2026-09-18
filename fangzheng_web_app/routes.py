@@ -1743,12 +1743,19 @@ def order_automation_reply_query_order(case_id: int):
         )
         if not template:
             raise ValueError("请先生成并保存订单模板后再查询订单")
-        order_numbers = _template_customer_order_numbers(template)
         customer = get_customer(int(case["customer_id"])) if case.get("customer_id") else None
-        result = query_order_info_readonly(
-            case_id, int(template["id"]), employee_id, employee_id, order_numbers,
-            transit_days=(customer or {}).get("transit_days"),
-        )
+        if case.get("action_type") == "order_change":
+            result = query_order_info_reply_rows(
+                case_id, int(template["id"]), employee_id, employee_id,
+                _reply_template_table_rows(template),
+                transit_days=(customer or {}).get("transit_days"),
+            )
+        else:
+            result = query_order_info_readonly(
+                case_id, int(template["id"]), employee_id, employee_id,
+                _template_customer_order_numbers(template),
+                transit_days=(customer or {}).get("transit_days"),
+            )
     except ValueError as exc:
         return jsonify({"ok": False, "message": str(exc)}), 400
     return jsonify({"ok": True, **result})

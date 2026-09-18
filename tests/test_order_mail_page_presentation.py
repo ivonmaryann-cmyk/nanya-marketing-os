@@ -274,14 +274,18 @@ class OrderMailPagePresentationTests(unittest.TestCase):
             "fangzheng_web_app.routes.get_customer",
             return_value={"id": 12, "transit_days": "4"},
         ), patch(
-            "fangzheng_web_app.routes.query_order_info_readonly",
-            return_value={"mode": "mock", "order_count": 0, "orders": [], "not_found": []},
+            "fangzheng_web_app.routes.query_order_info_reply_rows",
+            return_value={"mode": "mock", "order_count": 0, "orders": [], "not_found": [], "row_matches": []},
         ) as query:
             response = order_automation_reply_query_order(7)
 
         self.assertTrue(response.get_json()["ok"])
         query.assert_called_once_with(
-            7, 19, "employee-a", "employee-a", ["CHANGE-PO-001"], transit_days="4",
+            7, 19, "employee-a", "employee-a", [{
+                "row_id": "generated-1", "customer_order_number": "CHANGE-PO-001",
+                "line_no": "", "customer_product_code": "", "customer_spec": "",
+                "quantity": "", "unit_price": "",
+            }], transit_days="4",
         )
 
     def test_reply_delivery_fill_route_uses_reply_table_rows(self) -> None:
