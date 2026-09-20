@@ -1759,8 +1759,17 @@ def template_progress(case_id: int, employee_id: str) -> dict[str, Any]:
     progress['replied'] = bool(sent)
     progress['closed'] = bool(progress['completed'])
     progress['operation_label'] = progress['label']
-    progress['task_status'] = ('entry_replied' if sent else 'entry_pending_reply') if progress['completed'] else 'pending_entry'
-    progress['label'] = {'pending_entry': '待录单', 'entry_pending_reply': '录单完成待回复', 'entry_replied': '录单完成已回复'}[progress['task_status']]
+    progress['task_status'] = (
+        ('entry_replied' if sent else 'entry_pending_reply')
+        if progress['completed']
+        else ('pending_entry' if progress['created'] else 'pending_template_generation')
+    )
+    progress['label'] = {
+        'pending_template_generation': '待生成模板',
+        'pending_entry': '待录单',
+        'entry_pending_reply': '录单完成待回复',
+        'entry_replied': '录单完成已回复',
+    }[progress['task_status']]
     progress['next_action'] = ('查看订单' if sent else '回复邮件') if progress['completed'] else '去录单'
     return progress
 

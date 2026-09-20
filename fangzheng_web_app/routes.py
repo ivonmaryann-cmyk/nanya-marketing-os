@@ -19,6 +19,7 @@ from openpyxl import load_workbook
 PDF_EXCEL_FEATURE = "pdf_excel"
 
 ORDER_MAIL_STATUS_FILTER_LABELS = {
+    "pending_template_generation": "待生成模板",
     "pending_entry": "待录单",
     "entry_pending_reply": "录单完成待回复",
     "entry_replied": "录单完成已回复",
@@ -1111,7 +1112,7 @@ def order_automation():
         ),
         action_labels=ORDER_ACTION_LABELS,
         status_labels=ORDER_INTAKE_STATUS_LABELS,
-        mail_status_filter_labels=({k: ORDER_MAIL_STATUS_FILTER_LABELS[k] for k in ('pending_entry', 'entry_pending_reply', 'entry_replied')} if selected_action == 'new_order' else ORDER_MAIL_STATUS_FILTER_LABELS),
+        mail_status_filter_labels=({k: ORDER_MAIL_STATUS_FILTER_LABELS[k] for k in ('pending_template_generation', 'pending_entry', 'entry_pending_reply', 'entry_replied')} if selected_action == 'new_order' else ORDER_MAIL_STATUS_FILTER_LABELS),
         scope_labels=ORDER_SCOPE_LABELS,
         selected_action=selected_action,
         selected_mail_status=selected_mail_status,

@@ -11,6 +11,7 @@ from fangzheng_web_app import db
 from fangzheng_web_app.mail_transcode_agent import mail_store
 from fangzheng_web_app.order_intake_service import bootstrap_cases, get_case, list_cases
 from fangzheng_web_app.routes import (
+    ORDER_MAIL_STATUS_FILTER_LABELS,
     _filter_order_cases_by_mail_content,
     _filter_order_cases_by_nyeos_order_number,
     _filter_order_cases_by_status,
@@ -79,6 +80,9 @@ class OrderMailPagePresentationTests(unittest.TestCase):
 
     def test_display_status_key_uses_entry_progress_and_merges_archived_into_completed(self) -> None:
         self.assertEqual(
+            ORDER_MAIL_STATUS_FILTER_LABELS["pending_template_generation"], "待生成模板",
+        )
+        self.assertEqual(
             _order_mail_status_key(
                 {"status": "pending_review"},
                 {"stage": "pending_interface_submit"},
@@ -87,6 +91,13 @@ class OrderMailPagePresentationTests(unittest.TestCase):
         )
         self.assertEqual(_order_mail_status_key({"status": "archived"}, None), "completed")
         self.assertEqual(_order_mail_status_key({"status": "on_hold"}, None), "on_hold")
+        self.assertEqual(
+            _order_mail_status_key(
+                {"status": "pending_review"},
+                {"task_status": "pending_template_generation"},
+            ),
+            "pending_template_generation",
+        )
 
         cases = [
             {"id": 1, "status": "pending_review"},
