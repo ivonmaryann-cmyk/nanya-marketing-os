@@ -11,6 +11,7 @@ from fangzheng_web_app import db
 from fangzheng_web_app.mail_transcode_agent import mail_store
 from fangzheng_web_app.order_entry_service import get_or_create_template, reextract_template, save_template, template_progress
 from fangzheng_web_app.order_interface_service import (
+    MaterialNameValidationRequired,
     PriceMismatchConfirmationRequired,
     build_domestic_order_entry,
     build_domestic_order_entry_mock,
@@ -38,6 +39,7 @@ from fangzheng_web_app.order_interface_service import (
     save_interface_config,
     _ssl_context_for_endpoint,
     test_interface_config,
+    validate_material_creation_names,
     validate_domestic_order_entry,
 )
 from fangzheng_web_app.price_calculation_customer_mapping import (
@@ -817,11 +819,120 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         })
 
         self.assertEqual(get_material_resolution_states(self.case_id, "employee-a")["items"], [])
-        result = build_material_creation(self.case_id, "employee-a", "employee-a", [{
-            "line_no": 1, "adhesive_code": "", "customer_product_code": "CUST-001",
-            "customer_spec": "规格一", "customer_spec_match": "匹配规格一",
-        }])
+        with patch(
+            "fangzheng_web_app.order_interface_service.validate_material_creation_names",
+            return_value=[{"status": "matched"}],
+        ):
+            result = build_material_creation(self.case_id, "employee-a", "employee-a", [{
+                "line_no": 1, "adhesive_code": "", "customer_product_code": "CUST-001",
+                "customer_spec": "规格一", "customer_spec_match": "匹配规格一",
+            }])
         self.assertEqual(result["items"][0]["status"], "creating")
+
+    def test_material_name_validation_uses_product_type_specific_converter(self) -> None:
+        with patch(
+            "fangzheng_web_app.order_interface_service.product_name_service.mappings",
+            return_value=[{"field_key": "thickness"}],
+        ), patch(
+            "fangzheng_web_app.order_interface_service.extract_new_product_name",
+            return_value={"values": {"thickness": "1.0"}},
+        ) as extract_mock, patch(
+            "fangzheng_web_app.order_interface_service.product_name_service.build",
+            side_effect=[
+                {"code": "123456789012AB345678901CD"},
+                {"code": "12345678AB9012C345678901DE"},
+                {"code": "12345678AB9012C345678901DE"},
+            ],
+        ):
+            results = validate_material_creation_names([
+                {
+                    "line_no": 1, "product_type": "PP", "customer_spec": "PP 客户规格",
+                    "product_name": " 123456789012XX345678901YY ",
+                },
+                {
+                    "line_no": 2, "product_type": "基板", "customer_spec": "基板客户规格",
+                    "product_name": "12345678XX9012Y345678901ZZ",
+                },
+                {
+                    "line_no": 3, "product_type": "基板", "customer_spec": "基板客户规格二",
+                    "product_name": "12345678AB0012C345678901DE",
+                },
+            ])
+
+        self.assertEqual(results[0]["status"], "matched")
+        self.assertEqual(results[1]["status"], "matched")
+        self.assertEqual(results[2]["status"], "mismatch")
+        self.assertEqual(results[2]["converted_product_name"], "12345678AB9012C345678901DE")
+        self.assertEqual([item.args[0] for item in extract_mock.call_args_list], ["pp", "board", "board"])
+
+    def test_material_creation_requires_name_validation_confirmation_before_save(self) -> None:
+        lines = [{
+            "line_no": 1, "product_type": "PP", "customer_spec": "客户规格",
+            "customer_product_code": "CUST-NEW", "product_name": "当前新品名",
+        }]
+        validation = [{
+            "line_no": "1", "customer_spec": "客户规格", "current_product_name": "当前新品名",
+            "converted_product_name": "转换新品名", "status": "mismatch",
+            "message": "转换新品名与当前新品名不一致。",
+        }]
+        with patch(
+            "fangzheng_web_app.order_interface_service.validate_material_creation_names",
+            return_value=validation,
+        ), patch(
+            "fangzheng_web_app.order_interface_service._save_material_creation_lines",
+            return_value=(1, {1}),
+        ) as save_mock, patch(
+            "fangzheng_web_app.order_interface_service.build_material_query_mock",
+            return_value={"items": []},
+        ) as query_mock:
+            with self.assertRaises(MaterialNameValidationRequired) as error:
+                build_material_creation(self.case_id, "employee-a", "employee-a", lines)
+            self.assertEqual(error.exception.results, validation)
+            save_mock.assert_not_called()
+            query_mock.assert_not_called()
+
+            result = build_material_creation(
+                self.case_id, "employee-a", "employee-a", lines, confirm_name_validation=True,
+            )
+
+        self.assertEqual(result["mode"], "mock")
+        self.assertTrue(save_mock.call_args.kwargs["name_validation_confirmed"])
+        self.assertEqual(save_mock.call_args.kwargs["name_validation"], validation)
+        query_mock.assert_called_once()
+
+    def test_confirmed_material_name_validation_is_recorded(self) -> None:
+        get_or_create_template(self.case_id, "employee-a")
+        save_template(self.case_id, "employee-a", {
+            "header": {"bill_to_customer_code": "C001"},
+            "lines": [{"values": {
+                "line_no": "1", "customer_product_code": "CUST-AUDIT-001",
+                "customer_spec": "客户规格", "quantity": "1",
+            }}],
+        })
+        validation = [{
+            "line_no": "1", "customer_spec": "客户规格", "current_product_name": "当前新品名",
+            "converted_product_name": "转换新品名", "status": "mismatch",
+            "message": "转换新品名与当前新品名不一致。",
+        }]
+        with patch(
+            "fangzheng_web_app.order_interface_service.validate_material_creation_names",
+            return_value=validation,
+        ):
+            build_material_creation(self.case_id, "employee-a", "employee-a", [{
+                "line_no": 1, "customer_product_code": "CUST-AUDIT-001",
+                "customer_spec": "客户规格", "product_type": "PP", "product_name": "当前新品名",
+            }], confirm_name_validation=True)
+
+        with db.db_cursor() as conn:
+            event = conn.execute(
+                """SELECT detail_json FROM order_entry_detail_events
+                   WHERE case_id=? AND event_type='material_create_prepare'
+                   ORDER BY id DESC LIMIT 1""",
+                (self.case_id,),
+            ).fetchone()
+        detail = json.loads(event["detail_json"])
+        self.assertTrue(detail["name_validation_confirmed"])
+        self.assertEqual(detail["name_validation"], validation)
 
     def test_material_creation_form_can_be_saved_without_calling_interface(self) -> None:
         get_or_create_template(self.case_id, "employee-a")
@@ -993,8 +1104,9 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         query_item = _real_material_request_item({
             "material_status": "新增", "product_type": "PP", "customer_product_code": "CUST-001",
             "customer_spec": "原客户规格", "customer_spec_match": "客户规格匹配",
-            "adhesive_code": "ADH-01", "product_name": "现有品名",
+            "adhesive_code": "ADH-01", "product_name": "现有品名", "origin": "上海",
         })
+        self.assertEqual(query_item["origin"], "1")
         self.assertNotIn("customerSpecOld", query_item)
         self.assertNotIn("oldProductName", query_item)
         self.assertNotIn("adhesiveCode", query_item)
@@ -1004,14 +1116,22 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         self.assertNotIn("thicknessDescription", query_item)
         self.assertNotIn("specialRequirements", query_item)
 
+        self.assertEqual(
+            _real_material_request_item({
+                "product_type": "PP", "customer_product_code": "CUST-EMPTY",
+            })["origin"],
+            "",
+        )
+
         new_item = _real_material_request_item({
             "material_status": "新增", "product_type": "基板", "customer_product_code": "CUST-002",
             "customer_spec": "原客户规格", "customer_spec_match": "客户规格匹配",
-            "adhesive_code": "ADH-02", "product_name": "新品名",
+            "adhesive_code": "ADH-02", "product_name": "新品名", "origin": "江西",
             "layout_structure": "7628x2+1080x1", "thickness_description": "1.6mm",
             "special_requirements": "无卤",
         }, create=True)
         self.assertEqual(new_item["categoryCode"], "718")
+        self.assertEqual(new_item["origin"], "2")
         self.assertNotIn("category", new_item)
         self.assertNotIn("customerSpecOld", new_item)
         self.assertNotIn("adhesiveCode", new_item)
@@ -1093,15 +1213,19 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         with patch(
             "fangzheng_web_app.order_interface_service._post_json_endpoint",
             return_value=(200, {"code": 200, "msg": "已受理", "external_task_id": "TASK-ORDER-001"}, 12),
-        ) as request_mock:
+        ) as request_mock, patch(
+            "fangzheng_web_app.order_interface_service.validate_material_creation_names",
+            return_value=[{"status": "matched"}],
+        ):
             result = build_material_creation(self.case_id, "employee-a", "employee-a", [{
                 "line_no": 1, "customer_product_code": "CUST-NEW-01",
                 "customer_spec": "原客户规格", "product_type": "基板", "product_name": "新品名",
                 "layout_structure": "7628x2+1080x1", "thickness_description": "1.6mm",
-                "special_requirements": "无卤",
+                "special_requirements": "无卤", "origin": "江苏",
             }])
         item = request_mock.call_args.args[1]["materialInfoList"][0]
         self.assertEqual(item["newFlag"], "Y")
+        self.assertEqual(item["origin"], "3")
         self.assertNotIn("category", item)
         self.assertEqual(item["categoryCode"], "718")
         self.assertNotIn("adhesiveCode", item)
@@ -1128,7 +1252,11 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         self.assertEqual(state["external_task_id"], "TASK-ORDER-001")
         self.assertEqual(json.loads(line["values_json"])["material_status"], "新增")
         self.assertEqual(json.loads(line["values_json"])["product_type"], "基板")
-        with self.assertRaisesRegex(ValueError, "已有产品编号"):
+        self.assertEqual(json.loads(line["values_json"])["origin"], "江苏")
+        with self.assertRaisesRegex(ValueError, "已有产品编号"), patch(
+            "fangzheng_web_app.order_interface_service.validate_material_creation_names",
+            return_value=[{"status": "matched"}],
+        ):
             build_material_creation(self.case_id, "employee-a", "employee-a", [{
                 "line_no": 1, "customer_product_code": "CUST-NEW-01",
                 "customer_spec": "原客户规格", "product_type": "PP",

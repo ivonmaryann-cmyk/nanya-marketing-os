@@ -143,7 +143,12 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertIn("['layout_structure','textarea']", template)
         self.assertIn("['thickness_description','textarea']", template)
         self.assertIn("['special_requirements','textarea']", template)
+        self.assertIn("['origin','select']", template)
+        self.assertIn("['上海','上海'],['江西','江西'],['江苏','江苏']", template)
         self.assertIn("['customer_spec_match','textarea']", template)
+        self.assertIn('id="materialNameValidationDialog"', template)
+        self.assertIn("confirmation_required", template)
+        self.assertIn("confirm_name_validation", template)
 
     def test_multiple_material_candidates_use_compact_colored_count_badge(self) -> None:
         template = (

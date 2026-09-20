@@ -225,6 +225,7 @@ from .order_entry_service import (
 )
 from .order_interface_service import (
     MOCK_SCENARIOS as ORDER_INTERFACE_MOCK_SCENARIOS,
+    MaterialNameValidationRequired,
     PriceMismatchConfirmationRequired,
     build_domestic_order_entry,
     build_material_creation,
@@ -2258,7 +2259,15 @@ def order_automation_material_create(case_id: int):
                 raise ValueError("新建料号明细不属于当前 PO")
         result = build_material_creation(
             case_id, employee_id, employee_id, payload.get("lines") or [], group_key,
+            confirm_name_validation=payload.get("confirm_name_validation") is True,
         )
+    except MaterialNameValidationRequired as exc:
+        return jsonify({
+            "ok": False,
+            "message": str(exc),
+            "confirmation_required": True,
+            "name_validation": exc.results,
+        }), 409
     except ValueError as exc:
         return jsonify({"ok": False, "message": str(exc)}), 400
     return jsonify({

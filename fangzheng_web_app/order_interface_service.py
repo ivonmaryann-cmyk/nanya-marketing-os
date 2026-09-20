@@ -23,6 +23,8 @@ from .order_price_validation_service import (
 )
 from .paths import PACKAGE_DIR
 from .purchase_field_rules import normalize_date
+from .product_name_extract import extract as extract_new_product_name
+from . import product_name_service
 from zoneinfo import ZoneInfo
 
 
@@ -52,6 +54,7 @@ INTERFACE_DEFAULTS = {
             "operatorCode": "当前登录账号（员工工号，必填）",
             "materialInfoList[].categoryCode": "模板明细.产品类型（PP=698，基板=718，必填）",
             "materialInfoList[].customerMaterialNo": "模板明细.客户产品编号（必填）",
+            "materialInfoList[].origin": "模板明细.产地（上海=1，江西=2，江苏=3；未填写为空）",
             "materialInfoList[].customerSpec": "新建料号弹窗.客户规格匹配（仅点击新建料号时传）",
             "materialInfoList[].customerSpecOld": "原始客户规格（选填，默认不传）",
             "materialInfoList[].oriCustomerSpec": "新建料号弹窗.客户规格（仅点击新建料号时传）",
@@ -1126,6 +1129,7 @@ def _material_request_item(line_no: int, values: dict[str, Any]) -> dict[str, An
         "material_status": str(values.get("material_status") or "查询"),
         "product_type": str(values.get("product_type") or ""),
         "product_name": str(values.get("product_name") or ""),
+        "origin": str(values.get("origin") or ""),
         "adhesive_code": str(values.get("adhesive_code") or ""),
         "customer_product_code": str(values.get("customer_product_code") or ""),
         "customer_spec": str(values.get("customer_spec") or ""),
@@ -1250,9 +1254,74 @@ def build_material_query(
     )
 
 
+class MaterialNameValidationRequired(ValueError):
+    def __init__(self, results: list[dict[str, str]]):
+        super().__init__("新品名校验存在差异，请确认后再提交新建料号。")
+        self.results = results
+
+
+MATERIAL_NAME_VALIDATION_IGNORED_POSITIONS = {
+    "pp": {13, 14, 24, 25},
+    "board": {9, 10, 15, 25, 26},
+}
+
+
+def _material_name_validation_key(product: str, value: str) -> str:
+    ignored = MATERIAL_NAME_VALIDATION_IGNORED_POSITIONS.get(product, set())
+    return "".join(character for position, character in enumerate(value.strip(), start=1) if position not in ignored)
+
+
+def validate_material_creation_names(lines: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Validate dialog names with the maintained deterministic new-name rules."""
+    try:
+        mappings = product_name_service.mappings(enabled_only=True)
+        mapping_error = ""
+    except Exception as exc:
+        # A missing or unavailable conversion rule still needs an explicit user decision.
+        mappings = []
+        mapping_error = f"新品名转换规则不可用：{exc}"
+    results: list[dict[str, str]] = []
+    for raw in lines:
+        line_no = str(raw.get("line_no") or "").strip()
+        customer_spec = str(raw.get("customer_spec") or "").strip()
+        current_name = str(raw.get("product_name") or "").strip()
+        category_code = _material_category_code(str(raw.get("product_type") or ""))
+        product = "pp" if category_code == "698" else ("board" if category_code == "718" else "")
+        result = {
+            "line_no": line_no,
+            "customer_spec": customer_spec,
+            "current_product_name": current_name,
+            "converted_product_name": "",
+            "status": "failed",
+            "message": "",
+        }
+        if not product:
+            result["message"] = "产品类型无法判断，无法转换新品名。"
+        elif not customer_spec:
+            result["message"] = "缺少客户规格，无法转换新品名。"
+        elif mapping_error:
+            result["message"] = mapping_error
+        else:
+            try:
+                recognized = extract_new_product_name(product, customer_spec, "", mappings)
+                converted = str(product_name_service.build(product, recognized["values"], mappings)["code"] or "").strip()
+                result["converted_product_name"] = converted
+                if _material_name_validation_key(product, converted) == _material_name_validation_key(product, current_name):
+                    result["status"] = "matched"
+                    result["message"] = "新品名校验一致。"
+                else:
+                    result["status"] = "mismatch"
+                    result["message"] = "转换新品名与当前新品名不一致。"
+            except Exception as exc:
+                result["message"] = str(exc)
+        results.append(result)
+    return results
+
+
 def _save_material_creation_lines(
     case_id: int, employee_id: str, triggered_by: str, lines: list[dict[str, Any]],
-    group_key: str = "",
+    group_key: str = "", name_validation: list[dict[str, str]] | None = None,
+    name_validation_confirmed: bool = False,
 ) -> tuple[int, set[int]]:
     template_id = _case_template_id(case_id, employee_id)
     if not template_id:
@@ -1312,6 +1381,7 @@ def _save_material_creation_lines(
                 "customer_product_code": str(raw.get("customer_product_code", values.get("customer_product_code")) or "").strip(),
                 "customer_spec": customer_spec,
                 "product_type": product_type,
+                "origin": str(raw.get("origin", values.get("origin")) or "").strip(),
                 # 胶系编码仍由其他流程维护；客户规格匹配在新建料号弹窗中可修改。
                 "adhesive_code": str(values.get("adhesive_code") or "").strip(),
                 "customer_spec_match": str(raw.get(
@@ -1344,14 +1414,19 @@ def _save_material_creation_lines(
         record_order_detail_event(
             conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
             event_type="material_create_prepare", title="确认新建料号数据",
-            detail={"changes": changes, "line_nos": sorted(submitted)}, operated_by=triggered_by,
+            detail={
+                "changes": changes,
+                "line_nos": sorted(submitted),
+                "name_validation": name_validation or [],
+                "name_validation_confirmed": name_validation_confirmed,
+            }, operated_by=triggered_by,
         )
     return template_id, set(submitted)
 
 
 def build_material_creation(
     case_id: int, employee_id: str, triggered_by: str, lines: list[dict[str, Any]],
-    group_key: str = "",
+    group_key: str = "", confirm_name_validation: bool = False,
 ) -> dict[str, Any]:
     """Persist the creation dialog and submit only blank material rows."""
     if is_domestic_order_entry_completed(case_id, employee_id):
@@ -1359,8 +1434,14 @@ def build_material_creation(
     config = get_interface_config("material_batch_query")
     if not config or not config.get("enabled"):
         raise ValueError("料号查询接口未启用")
+    name_validation = validate_material_creation_names(lines)
+    requires_confirmation = any(item["status"] != "matched" for item in name_validation)
+    if requires_confirmation and not confirm_name_validation:
+        raise MaterialNameValidationRequired(name_validation)
     _template_id, line_nos = _save_material_creation_lines(
         case_id, employee_id, triggered_by, lines, group_key,
+        name_validation=name_validation,
+        name_validation_confirmed=requires_confirmation,
     )
     if str(config.get("mode") or "mock") == "real":
         return build_material_query_real(
@@ -1398,10 +1479,19 @@ def _material_category_code(product_type: str) -> str:
     return value
 
 
+MATERIAL_ORIGIN_CODES = {"上海": "1", "江西": "2", "江苏": "3"}
+
+
+def _material_origin_code(value: Any) -> str:
+    normalized = str(value or "").strip()
+    return MATERIAL_ORIGIN_CODES.get(normalized, normalized if normalized in {"1", "2", "3"} else "")
+
+
 def _real_material_request_item(item: dict[str, Any], *, create: bool = False) -> dict[str, str]:
     result = {
         "categoryCode": _material_category_code(str(item.get("product_type") or "")),
         "customerMaterialNo": str(item.get("customer_product_code") or "").strip(),
+        "origin": _material_origin_code(item.get("origin")),
     }
     if create:
         result.update({
