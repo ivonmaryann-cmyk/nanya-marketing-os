@@ -99,3 +99,20 @@ class FangzhengPriceCalculatorTests(unittest.TestCase):
 
         self.assertIsNone(error)
         self.assertEqual(9.76, price)
+
+    def test_pp_roll_accepts_chinese_resin_content_without_width(self) -> None:
+        self.price_rules.loc[len(self.price_rules)] = [
+            "PP", "NY2170", "2116", ">57", "48", "200", 2.011, 5278.22, None, None,
+        ]
+        spec = "NY2170 2116 200M/卷 黄色 含量58%"
+
+        price, note, error = calculator.calculate_price(
+            spec,
+            self.price_rules,
+            self.account_rules,
+        )
+
+        self.assertIsNone(error)
+        self.assertEqual(26.39, price)
+        self.assertIn("宽度=48", note)
+        self.assertEqual(5278.22, calculator.calculate_pp_roll_price(spec, self.price_rules))

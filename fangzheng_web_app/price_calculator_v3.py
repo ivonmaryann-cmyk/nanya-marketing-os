@@ -292,10 +292,15 @@ def parse_size(text):
     return None
 
 def parse_rc_percent(text):
-    """提取 PP 的 RC% 数值"""
-    match = re.search(r'RC\s*(\d+)\s*%', text, re.IGNORECASE)
+    """提取 PP 的 RC/含量百分比。"""
+    match = re.search(
+        r'(?:RC|(?:树脂|胶)?含量)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*%',
+        text,
+        re.IGNORECASE,
+    )
     if match:
-        return int(match.group(1))
+        value = float(match.group(1))
+        return int(value) if value.is_integer() else value
     return None
 
 def size_to_code(w, h):
@@ -626,33 +631,33 @@ def extract_pp_roll_width(desc):
     return None
 
 
+def _extract_pp_glue_and_laminate(desc):
+    """提取 PP 胶系与玻璃布型号，兼容 RC 与中文含量写法。"""
+    match = re.match(
+        r'(?:PP\s+)?([\w\-\(\)\.]+)\s+(1078|1080|1035|2116|2313|3313|106|1067)\b',
+        desc,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None, None
+    return match.group(1).strip(), match.group(2)
+
+
 def _parse_pp_price_key(desc):
     """从 PP 规格中提取报价表匹配键。非 PP 返回空。"""
     desc = normalize_str(desc)
     is_pp_prefix = bool(re.match(r'^PP\s+', desc, re.IGNORECASE))
     is_roll = is_pp_roll_desc(desc)
+    raw_glue, laminate_type = _extract_pp_glue_and_laminate(desc)
     is_pp_implicit = (
         not is_pp_prefix
-        and bool(re.search(r'RC\s*\d+\s*%', desc, re.IGNORECASE))
+        and raw_glue is not None
+        and parse_rc_percent(desc) is not None
         and not bool(re.search(r'\d+\.?\d*\s*mm', desc, re.IGNORECASE))
         and not is_roll
     )
     if not (is_pp_prefix or is_pp_implicit or is_roll):
         return None, None, None
-
-    match = re.match(r'PP\s+([\w\-\(\)\.]+)', desc)
-    if match:
-        raw_glue = match.group(1).strip()
-        lam_match = re.search(r'PP\s+[\w\-\(\)\.]+\s+(\d+)\s+RC', desc, re.IGNORECASE)
-        if not lam_match and is_roll:
-            lam_match = re.search(r'\b(1078|1080|1035|2116|2313|3313|106|1067)\b', desc)
-        laminate_type = lam_match.group(1) if lam_match else None
-    else:
-        match2 = re.match(r'([\w\-\(\)\.]+)\s+(\d+)\s+RC', desc, re.IGNORECASE)
-        if not match2:
-            return None, None, None
-        raw_glue = match2.group(1).strip()
-        laminate_type = match2.group(2)
 
     rc_percent = parse_rc_percent(desc)
     if not raw_glue or not laminate_type or rc_percent is None:
@@ -974,38 +979,20 @@ def _calc_roll(desc, df_price):
     卷料价格计算（如 200M/Roll、300M/Roll）
     逻辑：与 PP 相同，叠构从 M/Roll 前的数字提取
     """
-    # 提取胶系，兼容 PP 开头和隐式 PP（如 NY2150P 1080 RC71%）
-    match = re.match(r'PP\s+([\w\-\(\)\.]+)', desc)
-    if match:
-        raw_glue = match.group(1).strip()
-    else:
-        match2 = re.match(r'([\w\-\(\)\.]+)\s+(\d+)\s+RC', desc, re.IGNORECASE)
-        if not match2:
-            return None, '', f'卷料无法提取胶系：{desc[:60]}'
-        raw_glue = match2.group(1).strip()
-    
-    # 提取叠构类型（如 1080、1078）
-    lam_match = re.search(r'PP\s+[\w\-\(\)\.]+\s+(\d+)\s+RC', desc, re.IGNORECASE)
-    if not lam_match and not match:
-        lam_match = re.match(r'[\w\-\(\)\.]+\s+(\d+)\s+RC', desc, re.IGNORECASE)
-    if not lam_match:
-        # 尝试从叠构字段提取
-        lam_match2 = re.search(r'\b(1078|1080|1035|2116|3313|106|1067)\b', desc)
-        if not lam_match2:
-            return None, '', f'卷料无法提取叠构类型：{desc[:60]}'
-        laminate_type = lam_match2.group(1)
-    else:
-        laminate_type = lam_match.group(1)
+    # 提取胶系和玻璃布型号，兼容 RC68% 与“含量68%”两种格式。
+    raw_glue, laminate_type = _extract_pp_glue_and_laminate(desc)
+    if not raw_glue:
+        return None, '', f'卷料无法提取胶系：{desc[:60]}'
     
     # 提取 RC%
     rc_percent = parse_rc_percent(desc)
     if rc_percent is None:
         return None, '', f'卷料无法提取 RC%：{desc[:60]}'
     
-    # 提取卷料宽度（如 49.5"*200M/Roll 或 49.5" ... 300M/卷 中的 49.5）
+    # 未写幅宽的标准整卷，沿用现有方正整卷固定 48 英寸宽度计算。
     w = extract_pp_roll_width(desc)
     if w is None:
-        return None, '', f'卷料无法提取宽度（格式如 49.5"*200M/Roll）：{desc[:60]}'
+        w = ROLL_FIXED_WIDTH
     
     log(f"  卷料解析：原始胶系={raw_glue}, 叠构={laminate_type}, RC%={rc_percent}, 宽度={w}")
     
