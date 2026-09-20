@@ -14,6 +14,7 @@
       <div class="or-field"><label for="replyTo">收件人</label><input id="replyTo" name="to" type="email" required value="{{ draft.to }}" placeholder="客户邮箱"></div>
       <div class="or-field"><label for="replyCc">抄送</label><input id="replyCc" name="cc" type="text" value="{{ draft.cc }}" placeholder="多个邮箱请用逗号分隔"></div>
       <div class="or-field"><label for="replySubject">主题</label><input id="replySubject" name="subject" required value="{{ draft.subject }}"></div>
+      <div class="or-actions"><button class="or-button secondary" type="submit" name="action" value="save">保存草稿</button>{% if smtp_ready %}<button class="or-button" type="submit" name="action" value="send" onclick="return window.confirm('确认发送此订单回复邮件吗？')">发送邮件</button>{% else %}<a class="or-button secondary" href="{{ url_for('mail_transcode.accounts_page') }}">开通 SMTP 发信</a>{% endif %}</div>
       <div class="or-field body"><label for="replyEditor">正文</label><div>
       <p class="or-lead">可直接在邮件正文的客户订单表格中补充交期；需要单独编辑副本时，点击原订单表格后再点“带到回复顶部”。</p>
       <input type="hidden" name="body_html" id="replyHtml">
@@ -29,7 +30,6 @@
       </div>
       <iframe id="replyEditor" title="可编辑邮件正文" sandbox="allow-same-origin" style="width:100%;height:650px;border:1px solid #cad9eb;border-radius:8px;background:white" srcdoc="{{ draft.body_html|e }}"></iframe>
       </div></div>
-      <div class="or-actions"><button class="or-button secondary" type="submit" name="action" value="save">保存草稿</button>{% if smtp_ready %}<button class="or-button" type="submit" name="action" value="send" onclick="return window.confirm('确认发送此订单回复邮件吗？')">发送邮件</button>{% else %}<a class="or-button secondary" href="{{ url_for('mail_transcode.accounts_page') }}">开通 SMTP 发信</a>{% endif %}</div>
       <p class="or-smtp-note">{% if smtp_ready %}将通过本邮件所属业务邮箱发送，仅发送编辑后的正文，同时记录发送时间、收发件人和发送结果。{% else %}请在“我的 → 邮箱配置”中填写 SMTP 服务器、用户名和客户端授权码；勾选启用并保存后，系统会自动测试连接并启用真实发信。未启用前，本页只能保存草稿。{% endif %}</p>
     </form>
 

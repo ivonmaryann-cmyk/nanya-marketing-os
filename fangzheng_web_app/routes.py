@@ -2229,8 +2229,10 @@ def order_automation_material_query(case_id: int):
             group_key=group_key,
         )
         mode_label = "真实接口" if result.get("mode") == "real" else "Mock"
+        skipped_count = len(result.get("skipped_line_nos") or [])
+        suffix = f"；{skipped_count} 条已有产品编号和品名，已跳过" if skipped_count else ""
         flash(
-            f"批量料号查询（{mode_label}）已完成：{len(result['items'])} 条明细已处理。",
+            f"批量料号查询（{mode_label}）已完成：{len(result['items'])} 条明细已处理{suffix}。",
             "success" if result["status"] == "success" else "error",
         )
     except ValueError as exc:
@@ -2377,7 +2379,10 @@ def order_automation_domestic_entry(case_id: int):
             allow_price_mismatch=request.form.get("confirm_price_mismatch") == "1",
         )
         mode_label = "真实接口" if result.get("mode") == "real" else "Mock"
-        flash(f"提交录单（{mode_label}）已完成：订单号 {result['entry_no']}。", "success")
+        if result.get("recovered_from_timeout"):
+            flash(f"提交录单（{mode_label}）接口超时，已查单确认生成成功：订单号 {result['entry_no']}。", "success")
+        else:
+            flash(f"提交录单（{mode_label}）已完成：订单号 {result['entry_no']}。", "success")
     except PriceMismatchConfirmationRequired:
         query = request.args.to_dict()
         query["price_confirmation"] = "1"

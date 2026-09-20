@@ -299,6 +299,33 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertEqual([group["order_number"] for group in groups], ["PO-26F7-044522", "PO-26F7-044521"])
         self.assertEqual([len(group["lines"]) for group in groups], [12, 18])
 
+    def test_blank_po_lines_form_a_separate_group_when_other_rows_have_po(self) -> None:
+        lines = [
+            _line_entry({"customer_order_number": "PO-A", "customer_product_code": "A"}, label="测试", reference="测试", line_no=1),
+            _line_entry({"customer_order_number": "", "customer_product_code": "B"}, label="测试", reference="测试", line_no=2),
+            _line_entry({"customer_order_number": "PO-A", "customer_product_code": "C"}, label="测试", reference="测试", line_no=3),
+        ]
+        groups = _initial_order_groups({"customer_order_number": "PO-A"}, lines)
+
+        self.assertEqual([group["order_number"] for group in groups], ["PO-A", ""])
+        self.assertEqual([len(group["lines"]) for group in groups], [2, 1])
+        self.assertTrue(groups[1]["group_key"])
+
+    def test_blank_po_group_uses_a_stable_display_identifier(self) -> None:
+        _case, template = get_or_create_template(self.case_id, "employee-a")
+        group_key = template["groups"][0]["group_key"]
+        save_template(self.case_id, "employee-a", {"groups": [{
+            "group_key": group_key,
+            "order_number": "",
+            "header": {"customer_order_number": ""},
+            "lines": [{"values": {"line_no": "1", "customer_product_code": "CUST-001", "quantity": "1"}}],
+        }]})
+
+        _case, refreshed = get_or_create_template(self.case_id, "employee-a")
+        group = refreshed["groups"][0]
+        self.assertEqual(group["order_number"], "")
+        self.assertEqual(group["display_order_number"], f"暂无PO号-{group_key[:8]}")
+
     def test_group_headers_and_current_po_export_are_independent(self) -> None:
         _case, template = get_or_create_template(self.case_id, "employee-a")
         saved = save_template(self.case_id, "employee-a", {"groups": [

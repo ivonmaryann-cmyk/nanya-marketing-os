@@ -105,6 +105,8 @@ INTERFACE_DEFAULTS = {
             "sctoDataList[].taxType": "模板表头.税种（选填）",
             "sctoDataList[].materialName": "模板明细.品名（选填）",
             "sctoDataList[].spec": "模板明细.客户规格（选填）",
+            "sctoDataList[].customerSpec": "模板明细.客户规格（选填）",
+            "sctoDataList[].oriCustomerSpec": "模板明细.客户规格（选填）",
         },
         "response_mapping": {
             "code": "接口交互记录.业务状态码",
@@ -525,6 +527,10 @@ def _upgrade_domestic_request_mapping(conn: Any, row: Any, operated_by: str, now
     if "sctoDataList[].factoryPartCode" not in mapping:
         mapping["sctoDataList[].factoryPartCode"] = defaults["sctoDataList[].factoryPartCode"]
         changed = True
+    for key in ("sctoDataList[].customerSpec", "sctoDataList[].oriCustomerSpec"):
+        if key not in mapping:
+            mapping[key] = defaults[key]
+            changed = True
     if not changed:
         return
     next_version = int(before.get("config_version") or 0) + 1
@@ -1140,6 +1146,14 @@ def _material_request_item(line_no: int, values: dict[str, Any]) -> dict[str, An
     }
 
 
+def _material_query_is_already_filled(values: dict[str, Any]) -> bool:
+    """Skip only lines with a resolved material code and product name."""
+    placeholders = {"创建料号中", "创建品名中"}
+    product_code = str(values.get("product_code") or "").strip()
+    product_name = str(values.get("product_name") or "").strip()
+    return bool(product_code and product_name and product_code not in placeholders and product_name not in placeholders)
+
+
 def _insert_call_log(conn: Any, *, case_id: int, template_id: int, employee_id: str,
                      config: dict[str, Any], status: str, request_payload: dict[str, Any],
                      response_payload: dict[str, Any], triggered_by: str, error_message: str = "",
@@ -1715,7 +1729,7 @@ def select_order_change_candidate(
 
 def _query_order_info(
     case_id: int, template_id: int, employee_id: str, triggered_by: str, order_numbers: list[Any],
-    *, persist_matches: bool,
+    *, persist_matches: bool, event_context: str = "reply",
 ) -> dict[str, Any]:
     """Query existing orders and optionally persist modification-line matches.
 
@@ -1785,10 +1799,19 @@ def _query_order_info(
                 conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
                 call_id=call_id, response_payload=response_payload,
             ) if persist_matches else []
+            is_recovery = event_context == "domestic_recovery"
             record_order_detail_event(
                 conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
-                event_type=("order_info_query_mock" if persist_matches else "order_reply_info_query_mock"),
-                title=("查询订单信息（Mock）完成" if persist_matches else "回复邮件查询订单信息（Mock）完成"),
+                event_type=(
+                    "order_info_query_mock" if persist_matches else
+                    "domestic_order_entry_recovery_query_mock" if is_recovery else
+                    "order_reply_info_query_mock"
+                ),
+                title=(
+                    "查询订单信息（Mock）完成" if persist_matches else
+                    "提交录单超时后查询订单信息（Mock）完成" if is_recovery else
+                    "回复邮件查询订单信息（Mock）完成"
+                ),
                 detail={"call_id": call_id, "order_count": len(order_list), "order_numbers": numbers,
                         "matched_count": sum(item["status"] == "matched" for item in matches)},
                 operated_by=triggered_by,
@@ -1815,12 +1838,19 @@ def _query_order_info(
             conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
             call_id=call_id, response_payload=response_payload,
         ) if status == "success" and persist_matches else []
+        is_recovery = event_context == "domestic_recovery"
         record_order_detail_event(
             conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
-            event_type=("order_info_query_real" if persist_matches else "order_reply_info_query_real"),
+            event_type=(
+                "order_info_query_real" if persist_matches else
+                "domestic_order_entry_recovery_query_real" if is_recovery else
+                "order_reply_info_query_real"
+            ),
             title=(
                 f"查询订单信息（真实接口）{'完成' if status == 'success' else '失败'}"
                 if persist_matches else
+                f"提交录单超时后查询订单信息（真实接口）{'完成' if status == 'success' else '失败'}"
+                if is_recovery else
                 f"回复邮件查询订单信息（真实接口）{'完成' if status == 'success' else '失败'}"
             ),
             detail={"call_id": call_id, "order_numbers": numbers, "error_message": error_message},
@@ -2254,12 +2284,21 @@ def build_material_query_real(
     if not customer_code:
         raise ValueError("请先填写并保存账款客户编号")
     rows = [row for row in rows if line_nos is None or int(row["line_no"]) in line_nos]
+    skipped_line_nos: list[int] = []
+    if not create_mode:
+        pending_rows = []
+        for row in rows:
+            if _material_query_is_already_filled(_json(row["values_json"], {})):
+                skipped_line_nos.append(int(row["line_no"]))
+            else:
+                pending_rows.append(row)
+        rows = pending_rows
     request_items = [_material_request_item(int(row["line_no"]), _json(row["values_json"], {})) for row in rows]
     values_by_line = {int(row["line_no"]): _json(row["values_json"], {}) for row in rows}
     for item in request_items:
         item["remark"] = str(values_by_line[item["line_no"]].get("remark") or "")
     if not request_items:
-        raise ValueError("当前没有可查询的订单明细")
+        return {"items": [], "status": "success", "mode": "real", "skipped_line_nos": skipped_line_nos}
     request_payload = {
         "customerCode": customer_code,
         "acsn": "NY01",
@@ -2340,7 +2379,10 @@ def build_material_query_real(
             title=f"{operation_label}（真实接口）完成",
             detail={"call_id": call_id, "changes": all_changes, "items": response_items}, operated_by=triggered_by,
         )
-    return {"call_id": call_id, "items": response_items, "status": call_status, "mode": "real"}
+    return {
+        "call_id": call_id, "items": response_items, "status": call_status, "mode": "real",
+        "skipped_line_nos": skipped_line_nos,
+    }
 
 
 def build_material_query_mock(case_id: int, employee_id: str, triggered_by: str, scenario: str = "success",
@@ -2363,7 +2405,18 @@ def build_material_query_mock(case_id: int, employee_id: str, triggered_by: str,
         if str(group.get("status") or "") == "submitted":
             raise ValueError("当前 PO 已提交，不能再次请求料号查询接口")
         selected = [row for row in rows if line_nos is None or int(row["line_no"]) in line_nos]
+        skipped_line_nos: list[int] = []
+        if not force_create:
+            pending_rows = []
+            for row in selected:
+                if _material_query_is_already_filled(_json(row["values_json"], {})):
+                    skipped_line_nos.append(int(row["line_no"]))
+                else:
+                    pending_rows.append(row)
+            selected = pending_rows
         request_items = [_material_request_item(int(row["line_no"]), _json(row["values_json"], {})) for row in selected]
+        if not request_items:
+            return {"items": [], "status": "success", "mode": "mock", "skipped_line_nos": skipped_line_nos}
         if scenario in {"business_error", "timeout"}:
             message = "Mock 业务错误：订单明细校验未通过。" if scenario == "business_error" else "Mock 超时：请求未返回。"
             call_id = _insert_call_log(conn, case_id=case_id, template_id=template_id, employee_id=employee_id, config=config,
@@ -2424,7 +2477,10 @@ def build_material_query_mock(case_id: int, employee_id: str, triggered_by: str,
         record_order_detail_event(conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
                                   event_type="material_query_mock", title="批量料号查询（Mock）完成",
                                   detail={"call_id": call_id, "changes": all_changes, "items": response_items}, operated_by=triggered_by)
-    return {"call_id": call_id, "items": response_items, "status": "success"}
+    return {
+        "call_id": call_id, "items": response_items, "status": "success", "mode": "mock",
+        "skipped_line_nos": skipped_line_nos,
+    }
 
 
 def process_material_created_callback(correlation_id: str, *, product_code: str, product_name: str, source: str = "external") -> dict[str, Any]:
@@ -2893,6 +2949,8 @@ def _domestic_order_request_payload(
             "taxType": str(header.get("tax_type") or "").strip(),
             "materialName": str(values.get("product_name") or "").strip(),
             "spec": str(values.get("customer_spec") or "").strip(),
+            "customerSpec": str(values.get("customer_spec") or "").strip(),
+            "oriCustomerSpec": str(values.get("customer_spec") or "").strip(),
         })
     if line_issues:
         raise ValueError("暂不能提交录单：" + "；".join(line_issues))
@@ -2943,6 +3001,115 @@ def _domestic_response_result(response_body: dict[str, Any], http_status: int) -
     return ok, "、".join(entry_numbers), message
 
 
+def _is_uncertain_domestic_entry_error(error: Exception) -> bool:
+    """Return whether the remote request might have been accepted before its response was lost."""
+    text = str(error).casefold()
+    return any(marker in text for marker in (
+        "timed out", "timeout", "connection", "连接", "network", "reset by peer",
+        "remote end closed", "远程主机强迫关闭",
+    ))
+
+
+def _matching_submitted_order(
+    response_payload: dict[str, Any], customer_order_number: str, rows: list[Any],
+) -> tuple[dict[str, Any] | None, str]:
+    expected: list[tuple[str, Decimal]] = []
+    for row in rows:
+        values = _json(row["values_json"], {})
+        sequence = _match_text(values.get("customer_order_seq") or row["line_no"])
+        quantity = _match_decimal(values.get("quantity"))
+        if not sequence or quantity is None:
+            return None, "当前模板的项次或数量无效，无法自动核对"
+        expected.append((sequence, quantity))
+
+    order_number = _match_text(customer_order_number)
+    data = response_payload.get("data") if isinstance(response_payload.get("data"), dict) else {}
+    matches: list[dict[str, Any]] = []
+    for order in data.get("orderList") or []:
+        if not isinstance(order, dict):
+            continue
+        details = [item for item in order.get("sctbList") or [] if isinstance(item, dict)]
+        belongs_to_po = _match_text(order.get("scta38")) == order_number or any(
+            _match_text(item.get("sctb15")) == order_number for item in details
+        )
+        if not belongs_to_po:
+            continue
+        actual: list[tuple[str, Decimal]] = []
+        for detail in details:
+            item_no = _match_text(detail.get("sctb35"))
+            quantity = _match_decimal(detail.get("sctb05"))
+            if not item_no or quantity is None:
+                actual = []
+                break
+            actual.append((item_no, quantity))
+        if sorted(actual) == sorted(expected) and str(order.get("scta01") or "").strip() and str(order.get("scta39") or "").strip():
+            matches.append(order)
+
+    if len(matches) == 1:
+        return matches[0], ""
+    if len(matches) > 1:
+        return None, "查到多笔项次和数量均一致的订单，无法自动确认"
+    return None, "查单结果与当前模板的项次或数量不一致"
+
+
+def _recover_domestic_entry_after_uncertain_failure(
+    case_id: int, template_id: int, employee_id: str, triggered_by: str,
+    group: dict[str, Any], rows: list[Any], failed_call_id: int,
+) -> tuple[dict[str, Any] | None, str]:
+    order_number = str((group.get("header") or {}).get("customer_order_number") or "").strip()
+    try:
+        query = _query_order_info(
+            case_id, template_id, employee_id, triggered_by, [order_number],
+            persist_matches=False, event_context="domestic_recovery",
+        )
+    except ValueError as exc:
+        reason = f"自动查单失败：{exc}"
+    else:
+        matched, reason = _matching_submitted_order(query["response"], order_number, rows)
+        if matched:
+            nyeos_order_number = str(matched.get("scta01") or "").strip()
+            erp_order_number = str(matched.get("scta39") or "").strip()
+            now = utcnow()
+            with db_cursor() as conn:
+                conn.execute(
+                    """UPDATE order_entry_template_groups
+                       SET status='submitted',nyeos_order_number=?,erp_order_number=?,submitted_at=?,updated_at=?
+                       WHERE id=?""",
+                    (nyeos_order_number, erp_order_number, now, now, int(group["id"])),
+                )
+                record_order_detail_event(
+                    conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
+                    event_type="domestic_order_entry_recovered",
+                    title="提交录单超时后已查单确认成功",
+                    detail={
+                        "failed_call_id": failed_call_id, "query_call_id": query["call_id"],
+                        "group_key": group.get("group_key"), "entry_no": nyeos_order_number,
+                        "erp_order_number": erp_order_number,
+                    },
+                    operated_by=triggered_by,
+                )
+            _complete_case_after_group_submissions(case_id, employee_id)
+            return {
+                "call_id": failed_call_id,
+                "entry_no": nyeos_order_number,
+                "status": "success",
+                "mode": "real",
+                "message": "提交接口超时，已查单确认订单生成成功。",
+                "group_key": group.get("group_key"),
+                "recovered_from_timeout": True,
+            }, ""
+
+    with db_cursor() as conn:
+        record_order_detail_event(
+            conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
+            event_type="domestic_order_entry_recovery_unconfirmed",
+            title="提交录单超时后未能查单确认",
+            detail={"failed_call_id": failed_call_id, "group_key": group.get("group_key"), "reason": reason},
+            operated_by=triggered_by,
+        )
+    return None, reason
+
+
 def build_domestic_order_entry_real(
     case_id: int, employee_id: str, triggered_by: str, *, group_key: str = "",
     config: dict[str, Any] | None = None,
@@ -2975,6 +3142,13 @@ def build_domestic_order_entry_real(
                 event_type="domestic_order_entry_real", title="提交录单（真实接口）失败",
                 detail={"call_id": call_id, "error_message": str(exc)}, operated_by=triggered_by,
             )
+        if _is_uncertain_domestic_entry_error(exc):
+            recovered, reason = _recover_domestic_entry_after_uncertain_failure(
+                case_id, template_id, employee_id, triggered_by, group, list(rows), call_id,
+            )
+            if recovered:
+                return recovered
+            raise ValueError(f"{exc}；自动查单未能确认订单生成：{reason}") from exc
         raise
     ok, entry_no, message = _domestic_response_result(response_body, http_status)
     now = utcnow()

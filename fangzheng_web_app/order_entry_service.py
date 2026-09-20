@@ -1091,8 +1091,12 @@ def _initial_order_groups(
     buckets: dict[str, list[dict[str, Any]]] = {}
     for entry, detected_number in zip(lines, detected):
         order_number = detected_number
-        if not order_number and len(known_numbers) <= 1:
-            order_number = known_numbers[0] if known_numbers else header_order_number
+        # A row-level PO is authoritative.  Empty rows form their own group
+        # whenever the source also contains any explicit PO, so they are not
+        # silently submitted under that PO.  A header PO still covers rows
+        # when the source did not provide PO values per line at all.
+        if not order_number and not known_numbers:
+            order_number = header_order_number
         values = entry.get("values") or {}
         values["customer_order_number"] = order_number
         buckets.setdefault(order_number, []).append(entry)
@@ -1187,6 +1191,10 @@ def _serialize_template(conn, template_id: int) -> dict[str, Any]:
             "id": int(group["id"]),
             "group_key": str(group["group_key"]),
             "order_number": str(group["order_number"] or ""),
+            "display_order_number": (
+                str(group["order_number"] or "")
+                or f"暂无PO号-{str(group['group_key'])[:8]}"
+            ),
             "header": group_header,
             "sort_order": int(group["sort_order"] or 0),
             "status": str(group["status"] or "pending"),

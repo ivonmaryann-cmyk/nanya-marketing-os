@@ -33,6 +33,7 @@ from fangzheng_web_app.order_interface_service import (
     _decode_interface_response,
     _domestic_order_request_payload,
     _extract_layout_structure,
+    _matching_submitted_order,
     _order_info_display_result,
     _real_material_request_item,
     select_material_candidate,
@@ -126,6 +127,14 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         )
         self.assertEqual(
             domestic["request_mapping"]["sctoDataList[].spec"],
+            "模板明细.客户规格（选填）",
+        )
+        self.assertEqual(
+            domestic["request_mapping"]["sctoDataList[].customerSpec"],
+            "模板明细.客户规格（选填）",
+        )
+        self.assertEqual(
+            domestic["request_mapping"]["sctoDataList[].oriCustomerSpec"],
             "模板明细.客户规格（选填）",
         )
         self.assertEqual(domestic["response_mapping"]["data.data[].scta39"], "接口交互记录.ERP订单号")
@@ -581,6 +590,8 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         self.assertEqual(payload["lineNumber"], "10")
         self.assertEqual(payload["lineId"], "10")
         self.assertEqual(payload["spec"], "原始客户规格")
+        self.assertEqual(payload["customerSpec"], "原始客户规格")
+        self.assertEqual(payload["oriCustomerSpec"], "原始客户规格")
         self.assertEqual(payload["demandDate"], "2026-09-01")
         self.assertEqual(payload["taxPrice"], "11.3")
         with db.db_cursor() as conn:
@@ -674,6 +685,125 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         self.assertEqual((call["is_mock"], call["status"]), (0, "failed"))
         self.assertIn("料号不存在", call["error_message"])
         self.assertNotEqual(case["status"], "archived")
+
+    def test_real_domestic_entry_timeout_recovers_when_query_has_exact_line_matches(self) -> None:
+        _case, template = get_or_create_template(self.case_id, "employee-a")
+        saved = save_template(self.case_id, "employee-a", {"groups": [{
+            "group_key": template["groups"][0]["group_key"],
+            "order_number": "PO-TIMEOUT",
+            "header": {
+                "order_type": "220", "bill_to_customer_code": "103814",
+                "customer_order_number": "PO-TIMEOUT", "ledger": "KL01",
+            },
+            "lines": [
+                {"values": {
+                    "line_no": "1", "customer_order_seq": "10", "product_code": "6900000008",
+                    "customer_product_code": "CUST-001", "quantity": "100", "unit_price": "11.3",
+                    "delivery_date": "2026-09-01",
+                }},
+                {"values": {
+                    "line_no": "2", "customer_order_seq": "20", "product_code": "6900000009",
+                    "customer_product_code": "CUST-002", "quantity": "200", "unit_price": "12.3",
+                    "delivery_date": "2026-09-01",
+                }},
+            ],
+        }]})
+        for interface_key in ("domestic_order_entry", "order_info_query"):
+            config = get_interface_config(interface_key)
+            save_interface_config(interface_key, {
+                "display_name": config["display_name"], "description": config["description"],
+                "mode": "real", "method": "POST", "endpoint_url": config["endpoint_url"],
+                "request_mapping": json.dumps(config["request_mapping"], ensure_ascii=False),
+                "response_mapping": json.dumps(config["response_mapping"], ensure_ascii=False),
+                "mock_scenarios": json.dumps(config["mock_scenarios"], ensure_ascii=False),
+            }, "employee-a")
+        query_response = {
+            "code": 200, "msg": "查询成功", "data": {"orderCount": 1, "notFoundList": [], "orderList": [{
+                "scta01": "SA2609010001", "scta38": "PO-TIMEOUT", "scta39": "220-260901001",
+                "sctbList": [
+                    {"sctb15": "PO-TIMEOUT", "sctb35": "10", "sctb05": "100"},
+                    {"sctb15": "PO-TIMEOUT", "sctb35": "20", "sctb05": "200.0"},
+                ],
+            }]},
+        }
+        with patch(
+            "fangzheng_web_app.order_interface_service._post_json_endpoint",
+            side_effect=[ValueError("真实生成订单请求失败：The read operation timed out"), (200, query_response, 18)],
+        ):
+            result = build_domestic_order_entry(
+                self.case_id, "employee-a", "employee-a", group_key=saved["groups"][0]["group_key"],
+            )
+        self.assertTrue(result["recovered_from_timeout"])
+        self.assertEqual(result["entry_no"], "SA2609010001")
+        with db.db_cursor() as conn:
+            group = conn.execute(
+                "SELECT status,nyeos_order_number,erp_order_number FROM order_entry_template_groups"
+            ).fetchone()
+            events = conn.execute(
+                "SELECT event_type FROM order_entry_detail_events WHERE case_id=? ORDER BY id", (self.case_id,)
+            ).fetchall()
+        self.assertEqual(
+            (group["status"], group["nyeos_order_number"], group["erp_order_number"]),
+            ("submitted", "SA2609010001", "220-260901001"),
+        )
+        self.assertIn("domestic_order_entry_recovered", [row["event_type"] for row in events])
+
+    def test_real_domestic_entry_timeout_does_not_recover_for_mismatched_quantity(self) -> None:
+        get_or_create_template(self.case_id, "employee-a")
+        save_template(self.case_id, "employee-a", {
+            "header": {"order_type": "220", "bill_to_customer_code": "103814", "customer_order_number": "PO-NO-MATCH"},
+            "lines": [{"values": {
+                "line_no": "1", "customer_order_seq": "10", "product_code": "6900000008",
+                "customer_product_code": "CUST-001", "quantity": "100", "unit_price": "11.3", "delivery_date": "2026-09-01",
+            }}],
+        })
+        for interface_key in ("domestic_order_entry", "order_info_query"):
+            config = get_interface_config(interface_key)
+            save_interface_config(interface_key, {
+                "display_name": config["display_name"], "description": config["description"],
+                "mode": "real", "method": "POST", "endpoint_url": config["endpoint_url"],
+                "request_mapping": json.dumps(config["request_mapping"], ensure_ascii=False),
+                "response_mapping": json.dumps(config["response_mapping"], ensure_ascii=False),
+                "mock_scenarios": json.dumps(config["mock_scenarios"], ensure_ascii=False),
+            }, "employee-a")
+        query_response = {"code": 200, "data": {"orderList": [{
+            "scta01": "SA2609010002", "scta38": "PO-NO-MATCH", "scta39": "220-260901002",
+            "sctbList": [{"sctb15": "PO-NO-MATCH", "sctb35": "10", "sctb05": "99"}],
+        }]}}
+        with patch(
+            "fangzheng_web_app.order_interface_service._post_json_endpoint",
+            side_effect=[ValueError("真实生成订单请求失败：The read operation timed out"), (200, query_response, 18)],
+        ):
+            with self.assertRaisesRegex(ValueError, "项次或数量不一致"):
+                build_domestic_order_entry(self.case_id, "employee-a", "employee-a")
+        with db.db_cursor() as conn:
+            group = conn.execute("SELECT status FROM order_entry_template_groups").fetchone()
+        self.assertEqual(group["status"], "pending")
+
+    def test_timeout_recovery_matcher_rejects_multiple_orders_and_missing_lines(self) -> None:
+        rows = [
+            {"line_no": 1, "values_json": json.dumps({"customer_order_seq": "10", "quantity": "100"})},
+            {"line_no": 2, "values_json": json.dumps({"customer_order_seq": "20", "quantity": "200"})},
+        ]
+        matching_order = {
+            "scta01": "SA-1", "scta38": "PO-CHECK", "scta39": "ERP-1",
+            "sctbList": [
+                {"sctb15": "PO-CHECK", "sctb35": "10", "sctb05": "100"},
+                {"sctb15": "PO-CHECK", "sctb35": "20", "sctb05": "200"},
+            ],
+        }
+        multiple, reason = _matching_submitted_order(
+            {"data": {"orderList": [matching_order, {**matching_order, "scta01": "SA-2", "scta39": "ERP-2"}]}},
+            "PO-CHECK", rows,
+        )
+        self.assertIsNone(multiple)
+        self.assertIn("多笔", reason)
+        missing, reason = _matching_submitted_order(
+            {"data": {"orderList": [{**matching_order, "sctbList": matching_order["sctbList"][:1]}]}},
+            "PO-CHECK", rows,
+        )
+        self.assertIsNone(missing)
+        self.assertIn("项次或数量不一致", reason)
 
     def test_material_mock_backfills_then_callback_completes_creation(self) -> None:
         get_or_create_template(self.case_id, "employee-a")
@@ -769,6 +899,27 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         result = build_material_query_mock(self.case_id, "employee-a", "employee-a", line_nos={2})
 
         self.assertEqual([item["line_no"] for item in result["items"]], [2])
+        self.assertEqual([item["line_no"] for item in get_material_resolution_states(self.case_id, "employee-a")["items"]], [2])
+
+    def test_material_query_skips_lines_that_already_have_code_and_name(self) -> None:
+        get_or_create_template(self.case_id, "employee-a")
+        save_template(self.case_id, "employee-a", {
+            "header": {"bill_to_customer_code": "C001"},
+            "lines": [
+                {"values": {
+                    "line_no": "1", "product_code": "6900000001", "product_name": "已回填品名",
+                    "customer_product_code": "CUST-001", "customer_spec": "规格一", "quantity": "1",
+                }},
+                {"values": {
+                    "line_no": "2", "customer_product_code": "CUST-002", "customer_spec": "规格二", "quantity": "1",
+                }},
+            ],
+        })
+
+        result = build_material_query_mock(self.case_id, "employee-a", "employee-a")
+
+        self.assertEqual([item["line_no"] for item in result["items"]], [2])
+        self.assertEqual(result["skipped_line_nos"], [1])
         self.assertEqual([item["line_no"] for item in get_material_resolution_states(self.case_id, "employee-a")["items"]], [2])
 
     def test_material_query_is_scoped_and_logged_to_the_selected_po_group(self) -> None:
