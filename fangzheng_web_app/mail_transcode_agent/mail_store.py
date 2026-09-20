@@ -378,7 +378,7 @@ def upsert_message(
                     values[4],
                     values[5],
                     values[6],
-                    1 if preserve_existing_received_at else 0,
+                    bool(preserve_existing_received_at),
                     values[7],
                     values[8],
                     values[9],
