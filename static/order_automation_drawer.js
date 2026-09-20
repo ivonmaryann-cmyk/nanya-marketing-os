@@ -3,6 +3,7 @@
   if (!drawer) return;
   const content = drawer.querySelector('[data-drawer-content]');
   let loading = false;
+  let currentDrawerUrl = '';
 
   const close = () => {
     drawer.hidden = true;
@@ -17,6 +18,7 @@
   const open = async (url) => {
     if (loading) return;
     loading = true;
+    currentDrawerUrl = url;
     drawer.hidden = false;
     document.body.classList.add('order-mail-drawer-open');
     content.innerHTML = '<section class="omd-panel"><p class="omd-loading">正在加载邮件详情…</p></section>';
@@ -68,7 +70,7 @@
       });
       const result = await response.json();
       if (!response.ok || !result.ok) throw new Error(result.message || '分流保存失败，请稍后重试。');
-      window.location.reload();
+      await open(currentDrawerUrl);
     } catch (requestError) {
       error.textContent = requestError.message || '分流保存失败，请稍后重试。';
       error.hidden = false;
