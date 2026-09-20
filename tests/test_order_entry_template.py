@@ -150,6 +150,17 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertIn("confirmation_required", template)
         self.assertIn("confirm_name_validation", template)
 
+    def test_entry_interface_actions_keep_original_toolbar_layout(self) -> None:
+        template = (
+            Path(__file__).resolve().parents[1]
+            / "templates"
+            / "order_automation_entry_template.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(".oe-head>.oe-actions,#entryInterfaceActions{display:none}", template)
+        self.assertIn("group.className='oe-meta-actions'", template)
+        self.assertIn("save.disabled=false;submit.disabled=false}}};", template)
+
     def test_multiple_material_candidates_use_compact_colored_count_badge(self) -> None:
         template = (
             Path(__file__).resolve().parents[1]
