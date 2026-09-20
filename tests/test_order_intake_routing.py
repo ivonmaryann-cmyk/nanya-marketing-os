@@ -75,6 +75,26 @@ class OrderIntakeRoutingTests(unittest.TestCase):
         self.assertEqual(updated["routing_source"], "manual")
         self.assertEqual(list_cases("employee-a", "2026-08-17", "all", account_id), [])
 
+    def test_case_list_orders_all_statuses_by_received_time(self) -> None:
+        account_id = mail_store.create_or_update_account(
+            "orders@example.com", owner_employee_id="employee-a", auth_code="auth-code"
+        )
+        older_id, _ = mail_store.upsert_message(
+            account_id, folder="INBOX", uid="received-older", message_id="<received-older@example.com>",
+            subject="普通通知", sender="buyer@example.com", sent_at="2026-08-18 08:00:00",
+            received_at="2026-08-18 08:00:00", body_html="", body_text="", eml_path="", is_order=1,
+        )
+        newer_id, _ = mail_store.upsert_message(
+            account_id, folder="INBOX", uid="received-newer", message_id="<received-newer@example.com>",
+            subject="采购订单", sender="buyer@example.com", sent_at="2026-08-18 10:00:00",
+            received_at="2026-08-18 10:00:00", body_html="", body_text="", eml_path="", is_order=1,
+        )
+        bootstrap_cases("employee-a", account_id)
+
+        cases = list_cases("employee-a", "2026-08-18", "all", account_id)
+
+        self.assertEqual([newer_id, older_id], [item["mail_id"] for item in cases])
+
     def test_universal_rule_routes_by_body_keyword(self) -> None:
         account_id = mail_store.create_or_update_account(
             "orders@example.com", owner_employee_id="employee-a", auth_code="auth-code"

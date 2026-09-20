@@ -1181,8 +1181,7 @@ def list_cases(
             JOIN mail_accounts a ON a.id = m.account_id
             LEFT JOIN order_mail_routing_rules rr ON rr.id = c.routing_rule_id
             WHERE {' AND '.join(clauses)}
-            ORDER BY CASE c.routing_state WHEN 'needs_business_routing' THEN 0 WHEN 'unrouted' THEN 4 ELSE 1 END,
-                     COALESCE(NULLIF(m.received_at, ''), NULLIF(m.sent_at, ''), m.created_at) DESC, c.id DESC
+            ORDER BY COALESCE(NULLIF(m.received_at, ''), NULLIF(m.sent_at, ''), m.created_at) DESC, c.id DESC
             """,
             values,
         ).fetchall()
