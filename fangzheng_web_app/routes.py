@@ -982,8 +982,8 @@ def change_password():
         confirm_password = request.form.get("confirm_password", "")
         if not verify_user_password(employee_id, old_password):
             flash("当前密码错误。", "error")
-        elif len(new_password) < 6:
-            flash("新密码至少 6 位。", "error")
+        elif len(new_password) < 5:
+            flash("新密码至少 5 位。", "error")
         elif new_password == employee_id:
             flash("新密码不能继续使用工号。", "error")
         elif new_password != confirm_password:
@@ -6422,8 +6422,8 @@ def admin_password():
             confirm_password = request.form.get("confirm_password", "")
             if not employee_id or not verify_user_password(employee_id, old_password):
                 flash("当前密码错误。", "error")
-            elif len(new_password) < 6:
-                flash("新密码至少 6 位。", "error")
+            elif len(new_password) < 5:
+                flash("新密码至少 5 位。", "error")
             elif new_password == employee_id:
                 flash("新密码不能继续使用工号。", "error")
             elif new_password != confirm_password:
@@ -6438,8 +6438,8 @@ def admin_password():
             confirm_password = request.form.get("confirm_password", "")
             if not verify_admin_password(current_password):
                 flash("当前管理员密码错误。", "error")
-            elif len(new_password) < 6:
-                flash("新管理员密码至少 6 位。", "error")
+            elif len(new_password) < 5:
+                flash("新管理员密码至少 5 位。", "error")
             elif new_password != confirm_password:
                 flash("两次输入的新密码不一致。", "error")
             else:
