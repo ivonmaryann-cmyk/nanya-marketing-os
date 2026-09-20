@@ -1333,7 +1333,13 @@ def update_case(case_id: int, employee_id: str, payload: dict[str, Any]) -> dict
     return get_case(case_id, employee_id) or {}
 
 
-def update_routing(case_id: int, employee_id: str, action_type: str) -> dict[str, Any]:
+def update_routing(
+    case_id: int,
+    employee_id: str,
+    action_type: str,
+    *,
+    handling_note: str | None = None,
+) -> dict[str, Any]:
     current = get_case(case_id, employee_id)
     if not current:
         raise ValueError("邮件不存在或无权操作")
@@ -1341,14 +1347,19 @@ def update_routing(case_id: int, employee_id: str, action_type: str) -> dict[str
         raise ValueError("分流类型无效")
     now = utcnow()
     with db_cursor() as conn:
+        fields = [
+            "action_type = ?", "routing_source = 'manual'", "routing_state = 'business_routed'",
+            "routing_reason = '业务人员手工调整'", "routing_rule_id = NULL", "routed_by = ?",
+            "routed_at = ?", "updated_at = ?",
+        ]
+        values: list[Any] = [action_type, employee_id, now, now]
+        if handling_note is not None:
+            fields.append("handling_note = ?")
+            values.append(str(handling_note).strip())
+        values.extend([case_id, employee_id])
         conn.execute(
-            """
-            UPDATE order_intake_cases
-            SET action_type = ?, routing_source = 'manual', routing_state = 'business_routed', routing_reason = '业务人员手工调整', routing_rule_id = NULL,
-                routed_by = ?, routed_at = ?, updated_at = ?
-            WHERE id = ? AND employee_id = ?
-            """,
-            (action_type, employee_id, now, now, case_id, employee_id),
+            f"UPDATE order_intake_cases SET {', '.join(fields)} WHERE id = ? AND employee_id = ?",
+            values,
         )
         conn.execute(
             """
@@ -1359,8 +1370,8 @@ def update_routing(case_id: int, employee_id: str, action_type: str) -> dict[str
             (
                 case_id,
                 employee_id,
-                json.dumps({"action_type": current["action_type"]}, ensure_ascii=False),
-                json.dumps({"action_type": action_type}, ensure_ascii=False),
+                json.dumps({"action_type": current["action_type"], "handling_note": current.get("handling_note") or ""}, ensure_ascii=False),
+                json.dumps({"action_type": action_type, "handling_note": handling_note if handling_note is not None else current.get("handling_note") or ""}, ensure_ascii=False),
                 now,
             ),
         )

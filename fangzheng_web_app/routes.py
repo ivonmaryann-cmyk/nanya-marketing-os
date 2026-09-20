@@ -227,6 +227,7 @@ from .order_interface_service import (
     PriceMismatchConfirmationRequired,
     build_domestic_order_entry,
     build_material_creation,
+    save_material_creation,
     build_material_query,
     get_order_change_matches,
     _expected_arrival_date,
@@ -1027,7 +1028,7 @@ def order_automation():
         selected_read_state = "all"
     requested_date = request.args.get("date")
     if requested_date is None:
-        selected_date = order_intake_business_today().isoformat()
+        selected_date = ""
         selected_date_value = order_intake_business_today()
     elif not requested_date.strip():
         selected_date = ""
@@ -1167,7 +1168,9 @@ def order_automation_sync():
         flash(f"邮件同步失败：{exc}", "error")
     return redirect(url_for(
         "main.order_automation",
-        date=request.form.get("return_date", "").strip() or None,
+        # A historical sync should immediately reveal the fetched range instead
+        # of returning to a previously selected single-day view.
+        date=None,
         category=request.form.get("return_category") or "all",
         per_page=request.form.get("return_per_page", 20, type=int) or 20,
         page=request.form.get("return_page", 1, type=int) or 1,
@@ -1342,14 +1345,76 @@ def order_automation_case_routing(case_id: int):
         return redirect_resp
     employee_id = current_employee() or ""
     try:
-        update_order_intake_routing(case_id, employee_id, request.form.get("action_type", ""))
+        payload = request.get_json(silent=True) if request.is_json else request.form
+        updated_case = update_order_intake_routing(
+            case_id,
+            employee_id,
+            str((payload or {}).get("action_type", "")),
+            handling_note=(payload or {}).get("handling_note"),
+        )
+        if request.is_json:
+            return jsonify({
+                "ok": True,
+                "case": {
+                    "id": updated_case["id"],
+                    "action_type": updated_case["action_type"],
+                    "handling_note": updated_case.get("handling_note") or "",
+                },
+            })
         flash("邮件分流已调整。", "success")
     except ValueError as exc:
+        if request.is_json:
+            return jsonify({"ok": False, "message": str(exc)}), 400
         flash(str(exc), "error")
     return_to = request.form.get("return_to", "")
     if not return_to.startswith("/order-automation"):
         return_to = url_for("main.order_automation")
     return redirect(return_to)
+
+
+def _mark_order_automation_case_seen(case: dict[str, Any], employee_id: str) -> None:
+    if bool(case.get("is_seen")):
+        return
+    from .mail_transcode_agent.mail_fetch_service import mark_message_seen_remotely
+
+    try:
+        if mark_message_seen_remotely(int(case["mail_id"]), owner_employee_id=employee_id):
+            case["is_seen"] = True
+    except Exception:
+        current_app.logger.warning(
+            "Unable to mirror IMAP read state for order-intake case %s", case["id"],
+            exc_info=True,
+        )
+
+
+@bp.get("/order-automation/cases/<int:case_id>/drawer")
+def order_automation_case_drawer(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    case = get_order_intake_case(case_id, employee_id)
+    if not case:
+        abort(404)
+    _mark_order_automation_case_seen(case, employee_id)
+    return_context = _order_automation_return_context(case)
+    return render_template(
+        "order_automation_case_drawer.html",
+        case=case,
+        entry_progress=(
+            order_entry_template_progress(case_id, employee_id)
+            if case["action_type"] == "new_order" else None
+        ),
+        change_progress=(
+            order_change_template_progress(case_id, employee_id)
+            if case["action_type"] == "order_change" else None
+        ),
+        return_context=return_context,
+        action_labels=ORDER_ACTION_LABELS,
+        status_labels=ORDER_INTAKE_STATUS_LABELS,
+        match_status_labels=ORDER_MATCH_STATUS_LABELS,
+        scope_labels=ORDER_SCOPE_LABELS,
+    )
 
 
 def _order_automation_return_context(case: dict[str, Any]) -> dict[str, Any]:
@@ -1551,17 +1616,7 @@ def order_automation_case(case_id: int):
         abort(404)
     # Opening a mail is the explicit user action that marks it read.  Keep the
     # detail page available if the mail server is temporarily unreachable.
-    if not bool(case.get("is_seen")):
-        from .mail_transcode_agent.mail_fetch_service import mark_message_seen_remotely
-
-        try:
-            if mark_message_seen_remotely(int(case["mail_id"]), owner_employee_id=employee_id):
-                case["is_seen"] = True
-        except Exception:
-            current_app.logger.warning(
-                "Unable to mirror IMAP read state for order-intake case %s", case_id,
-                exc_info=True,
-            )
+    _mark_order_automation_case_seen(case, employee_id)
     return_context = _order_automation_return_context(case)
     entry_progress = order_entry_template_progress(case_id, employee_id) if case["action_type"] == "new_order" else None
     change_progress = order_change_template_progress(case_id, employee_id) if case["action_type"] == "order_change" else None
@@ -2208,6 +2263,30 @@ def order_automation_material_create(case_id: int):
     return jsonify({
         "ok": True,
         "message": f"新建料号已提交：{len(result.get('items') or [])} 条明细。",
+        "result": result,
+    })
+
+
+@bp.post("/order-automation/cases/<int:case_id>/material-create/save")
+def order_automation_material_create_save(case_id: int):
+    """Persist the new-material dialog without calling the partner interface."""
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    if not get_order_intake_case(case_id, employee_id):
+        abort(404)
+    payload = request.get_json(silent=True) or {}
+    group_key = str(payload.get("group_key") or "").strip()
+    try:
+        result = save_material_creation(
+            case_id, employee_id, employee_id, payload.get("lines") or [], group_key,
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
+    return jsonify({
+        "ok": True,
+        "message": f"已保存 {len(result['line_nos'])} 条新建料号数据，尚未提交接口。",
         "result": result,
     })
 

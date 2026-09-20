@@ -15,6 +15,7 @@ from fangzheng_web_app.order_interface_service import (
     build_domestic_order_entry,
     build_domestic_order_entry_mock,
     build_material_creation,
+    save_material_creation,
     build_material_query,
     build_material_query_mock,
     get_interface_config,
@@ -821,6 +822,41 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
             "customer_spec": "规格一", "customer_spec_match": "匹配规格一",
         }])
         self.assertEqual(result["items"][0]["status"], "creating")
+
+    def test_material_creation_form_can_be_saved_without_calling_interface(self) -> None:
+        get_or_create_template(self.case_id, "employee-a")
+        save_template(self.case_id, "employee-a", {
+            "header": {"bill_to_customer_code": "C001"},
+            "lines": [{"values": {
+                "line_no": "1", "customer_product_code": "CUST-SAVE-001",
+                "customer_spec": "保存规格", "quantity": "1",
+            }}],
+        })
+
+        saved = save_material_creation(self.case_id, "employee-a", "employee-a", [{
+            "line_no": 1, "product_name": "待新建品名",
+            "customer_product_code": "CUST-SAVE-001", "customer_spec": "保存规格",
+            "customer_spec_match": "保存匹配规格", "product_type": "基板",
+            "layout_structure": "1080x2", "thickness_description": "1.6mm",
+            "special_requirements": "无卤",
+        }])
+
+        self.assertEqual(saved["line_nos"], [1])
+        with db.db_cursor() as conn:
+            line = conn.execute(
+                """SELECT l.values_json FROM order_entry_template_lines l
+                   JOIN order_entry_templates t ON t.id=l.template_id
+                   WHERE t.case_id=? AND l.line_no=1""",
+                (self.case_id,),
+            ).fetchone()
+            call_count = conn.execute(
+                "SELECT COUNT(*) AS count FROM order_interface_call_logs WHERE case_id=?",
+                (self.case_id,),
+            ).fetchone()["count"]
+        values = json.loads(line["values_json"])
+        self.assertEqual(values["product_name"], "待新建品名")
+        self.assertEqual(values["material_status"], "新增")
+        self.assertEqual(call_count, 0)
 
     def test_reextract_clears_stale_material_candidates_but_keeps_query_history(self) -> None:
         get_or_create_template(self.case_id, "employee-a")

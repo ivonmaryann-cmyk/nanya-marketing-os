@@ -70,9 +70,12 @@ class OrderIntakeRoutingTests(unittest.TestCase):
         cases = list_cases("employee-a", "2026-08-18", "quotation", account_id)
         self.assertEqual([item["mail_id"] for item in cases], [mail_id])
 
-        updated = update_routing(cases[0]["id"], "employee-a", "new_order")
+        updated = update_routing(
+            cases[0]["id"], "employee-a", "new_order", handling_note="客户确认需要录单"
+        )
         self.assertEqual(updated["action_type"], "new_order")
         self.assertEqual(updated["routing_source"], "manual")
+        self.assertEqual(updated["handling_note"], "客户确认需要录单")
         self.assertEqual(list_cases("employee-a", "2026-08-17", "all", account_id), [])
 
     def test_case_list_orders_all_statuses_by_received_time(self) -> None:

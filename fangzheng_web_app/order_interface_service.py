@@ -1375,6 +1375,19 @@ def build_material_creation(
     return result
 
 
+def save_material_creation(
+    case_id: int, employee_id: str, triggered_by: str, lines: list[dict[str, Any]],
+    group_key: str = "",
+) -> dict[str, Any]:
+    """Save new-material form values without sending a creation request."""
+    if is_domestic_order_entry_completed(case_id, employee_id):
+        raise ValueError("内销录单已完成，不能再保存新建料号数据")
+    template_id, line_nos = _save_material_creation_lines(
+        case_id, employee_id, triggered_by, lines, group_key,
+    )
+    return {"template_id": template_id, "line_nos": sorted(line_nos)}
+
+
 def _material_category_code(product_type: str) -> str:
     value = str(product_type or "").strip()
     normalized = value.upper()

@@ -445,6 +445,34 @@ class OrderMailPagePresentationTests(unittest.TestCase):
                 action_labels={"unclassified": "暂不分流", "new_order": "录单", "order_change": "修改订单", "quotation": "报价"},
                 match_status_labels={"matched": "已匹配负责客户"},
             )
+            drawer_html = render_template(
+                "order_automation_case_drawer.html",
+                case={
+                    **list_case,
+                    "sender": "采购部 <buyer@example.com>",
+                    "status": "pending_triage",
+                    "routing_reason": "明确分流依据匹配",
+                    "customer_match_detail": "唯一匹配",
+                    "body_text": "请确认订单并回复交期。",
+                    "display_html": "<p>请确认订单并回复交期。</p>",
+                    "handling_note": "",
+                    "attachments": [{"id": 1, "filename": "PO-3001.pdf", "content_type": "application/pdf", "parse_status": "parsed", "is_inline": 0, "previewable": True}],
+                },
+                action_labels={"unclassified": "暂不分流", "new_order": "录单", "order_change": "修改订单", "quotation": "报价"},
+                status_labels={"pending_triage": "待处理"},
+                match_status_labels={"matched": "已匹配负责客户"},
+                scope_labels={"subject": "邮件主题"},
+                entry_progress={
+                    "created": False,
+                    "completed": False,
+                    "replied": False,
+                    "stage": "pending_extraction",
+                    "label": "待录单",
+                    "next_action": "提取订单到录单模板",
+                },
+                change_progress=None,
+                return_context={"query": {"return_category": "all"}},
+            )
 
         self.assertIn("同步新邮件", list_html)
         self.assertIn("补抓近 30 天邮件", list_html)
@@ -462,6 +490,11 @@ class OrderMailPagePresentationTests(unittest.TestCase):
         self.assertIn("SA2608270003", detail_html)
         self.assertIn("查看纯文本邮件正文", detail_html)
         self.assertIn('id="routingToggle"', detail_html)
+        self.assertIn('data-routing-url="/test"', drawer_html)
+        self.assertIn("保存分流", drawer_html)
+        self.assertIn("提取订单到录单模板", drawer_html)
+        self.assertIn('class="omd-operation-form"', drawer_html)
+        self.assertIn("查看纯文本邮件正文", drawer_html)
         self.assertIn('aria-expanded="false"', detail_html)
         self.assertIn('id="sourceMailHtml"', detail_html)
 

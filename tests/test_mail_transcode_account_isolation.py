@@ -178,6 +178,34 @@ class MailTranscodeAccountIsolationTests(unittest.TestCase):
         self.assertEqual(result["duplicate_count"], 0)
         self.assertIn("新增 0 封", result["message"])
 
+    def test_fetch_honors_seven_day_lookback(self) -> None:
+        account_id = mail_store.create_or_update_account(
+            "owner@example.com",
+            owner_employee_id="employee-a",
+            auth_code="owner-auth-code",
+        )
+        client = _FakeImapClient()
+
+        with patch.object(mail_fetch_service, "_connect", return_value=client):
+            result = mail_fetch_service.fetch_latest_order_mails(
+                account_id,
+                owner_employee_id="employee-a",
+                created_by="employee-a",
+                lookback_days=7,
+            )
+
+        self.assertEqual(
+            client.search_args,
+            (
+                None,
+                "SINCE",
+                (date.today() - timedelta(days=6)).strftime("%d-%b-%Y"),
+                "BEFORE",
+                (date.today() + timedelta(days=1)).strftime("%d-%b-%Y"),
+            ),
+        )
+        self.assertIn("近 7 天同步完成", result["message"])
+
     def test_connection_test_only_opens_inbox_read_only(self) -> None:
         account_id = mail_store.create_or_update_account(
             "owner@example.com",
