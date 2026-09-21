@@ -1607,6 +1607,15 @@ def reextract_template(
                 normalize_customer_order_number(group.get("order_number")): group
                 for group in submitted_groups if normalize_customer_order_number(group.get("order_number"))
             }
+            # Re-extraction replaces pending rows, but a PO tab is still the
+            # same workspace when its PO is unchanged.  Reuse its key for
+            # both ordinary and blank-PO groups so the displayed temporary
+            # PO identifier and the currently selected tab remain stable.
+            pending_by_order = {
+                normalize_customer_order_number(group.get("order_number")): group
+                for group in previous.get("groups") or []
+                if not group.get("submitted")
+            }
             fresh_groups: list[dict[str, Any]] = []
             ordered_submitted_ids: set[int] = set()
             next_sort_order = 0
@@ -1616,6 +1625,9 @@ def reextract_template(
                     submitted_group["next_sort_order"] = next_sort_order
                     ordered_submitted_ids.add(int(submitted_group["id"]))
                 else:
+                    previous_group = pending_by_order.get(group.get("order_number"))
+                    if previous_group:
+                        group["group_key"] = str(previous_group["group_key"])
                     group["next_sort_order"] = next_sort_order
                     fresh_groups.append(group)
                 next_sort_order += 1

@@ -392,6 +392,43 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertEqual(groups["PO-B"]["lines"][0]["values"]["customer_product_code"], "NEW-B")
         self.assertTrue(groups["PO-A"]["submitted"])
 
+    def test_refresh_keeps_blank_po_tab_identifier_while_replacing_its_rows(self) -> None:
+        _case, template = get_or_create_template(self.case_id, "employee-a")
+        saved = save_template(self.case_id, "employee-a", {"groups": [
+            {
+                "group_key": template["groups"][0]["group_key"],
+                "order_number": "PO-A",
+                "header": {"customer_order_number": "PO-A"},
+                "lines": [{"values": {"line_no": "1", "customer_product_code": "OLD-A", "quantity": "1"}}],
+            },
+            {
+                "group_key": "blank-po-group",
+                "order_number": "",
+                "header": {"customer_order_number": ""},
+                "lines": [{"values": {"line_no": "2", "customer_product_code": "OLD-BLANK", "quantity": "1"}}],
+            },
+        ]})
+        old_keys = {group["order_number"]: group["group_key"] for group in saved["groups"]}
+        refreshed_lines = [
+            _line_entry({"customer_order_number": "PO-A", "customer_product_code": "NEW-A", "quantity": "1"}, label="测试", reference="刷新", line_no=1),
+            _line_entry({"customer_order_number": "", "customer_product_code": "NEW-BLANK", "quantity": "2"}, label="测试", reference="刷新", line_no=2),
+        ]
+        snapshot = {"tax_mode": "unknown", "target_field": "", "target_label": "", "by_line": {}, "mismatches": []}
+        with patch(
+            "fangzheng_web_app.order_entry_service._initial_template_data",
+            return_value=({"customer_order_number": "PO-A"}, refreshed_lines),
+        ), patch(
+            "fangzheng_web_app.order_entry_service.review_case_template_prices", return_value=snapshot,
+        ):
+            result = reextract_template(self.case_id, "employee-a")
+
+        groups = {group["order_number"]: group for group in result["template"]["groups"]}
+        self.assertEqual(set(groups), {"PO-A", ""})
+        self.assertEqual(groups["PO-A"]["group_key"], old_keys["PO-A"])
+        self.assertEqual(groups[""]["group_key"], old_keys[""])
+        self.assertEqual(groups[""]["display_order_number"], "暂无PO号-blank-po")
+        self.assertEqual(groups[""]["lines"][0]["values"]["customer_product_code"], "NEW-BLANK")
+
     def test_price_review_is_calculated_only_on_initial_generation_and_refresh(self) -> None:
         snapshot = {"tax_mode": "unknown", "target_field": "", "target_label": "", "by_line": {}, "mismatches": []}
         with patch(

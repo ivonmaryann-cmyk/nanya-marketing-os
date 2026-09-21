@@ -2466,7 +2466,11 @@ def order_automation_entry_template_refresh(case_id: int):
         return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))
     try:
         result = reextract_order_entry_template(case_id, employee_id)
-        flash(f"已重新抓取邮件订单内容，共生成 {result['line_count']} 条明细；原明细已保留在历史版本中。", "success")
+        group_count = len(result.get("template", {}).get("groups") or [])
+        flash(
+            f"已重新抓取邮件订单内容，共生成 {result['line_count']} 条明细并刷新 {group_count} 个 PO 标签；原明细已保留在历史版本中。",
+            "success",
+        )
     except ValueError as exc:
         flash(str(exc), "error")
     return redirect(url_for("main.order_automation_entry_template", case_id=case_id, **request.args.to_dict()))
