@@ -207,6 +207,8 @@ class OrderMailPagePresentationTests(unittest.TestCase):
         self.assertIn("预计到货日", new_order_html)
         self.assertIn("const tableState=window.nouyaReplyTables?.collect()", new_order_html)
         self.assertIn("tableState.hasPossibleOrderTable", new_order_html)
+        self.assertIn("prepareDeliveryTable", new_order_html)
+        self.assertIn("fillDelivery({automatic:true})", new_order_html)
         self.assertIn("Content-Type':'application/json", new_order_html)
         self.assertNotIn("window.fetch=", new_order_html)
         self.assertIn('id="orderQueryOpen"', change_html)
@@ -224,6 +226,19 @@ class OrderMailPagePresentationTests(unittest.TestCase):
         self.assertIn("const previousDay=value", markup)
         self.assertIn("lastDay(item.delivery_reply)", markup)
         self.assertIn("delivery_reply:previousDay(item.delivery_reply)", markup)
+
+    def test_reply_editor_automatically_prepares_the_first_order_table(self) -> None:
+        editor = (
+            Path(__file__).resolve().parents[1]
+            / "static"
+            / "order_reply_editor.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("function prepareDeliveryTable()", editor)
+        self.assertIn(".filter(table=>!reply.contains(table)).map(tableInfo)", editor)
+        self.assertIn("const source=infos.find(info=>info.valid)", editor)
+        self.assertIn("copyOrderTable(source.table,reply,{automatic:true})", editor)
+        self.assertIn("markAutomaticDeliveryFilled", editor)
 
     def test_reply_query_route_uses_saved_template_order_numbers(self) -> None:
         app = Flask(__name__)

@@ -98,12 +98,13 @@
     // Keep the iframe caret while clicking a toolbar button.
     if(e.target.closest('button')) e.preventDefault();
   });
-  function copyOrderTable(table, reply) {
+  function copyOrderTable(table, reply, {automatic=false}={}) {
     const copy=table.cloneNode(true);
     // Original ids must remain unique; never modify the source table.
     copy.removeAttribute('id');
     copy.querySelectorAll('[id]').forEach(node=>node.removeAttribute('id'));
     copy.id='nouya-reply-order-table';
+    if(automatic) copy.dataset.nouyaAutoReplyTable='true';
     reply.append(copy);
     reply.scrollIntoView({block:'start'});
   }
@@ -219,6 +220,27 @@
   function replyCell(info) {
     return deliveryCell(info,info.fields.delivery_reply);
   }
+  function prepareDeliveryTable() {
+    initialize();
+    const current=doc(),reply=current?.getElementById('nouya-current-reply');
+    if(!current||!reply) return {ready:false,hasPossibleOrderTable:false};
+    const replyInfo=[...reply.querySelectorAll('table')].map(tableInfo).find(info=>info.valid);
+    if(replyInfo) return {
+      ready:true,
+      alreadyFilled:replyInfo.table.dataset.nouyaAutoDeliveryFilled==='true',
+    };
+    const infos=[...current.querySelectorAll('table')]
+      .filter(table=>!reply.contains(table)).map(tableInfo);
+    const source=infos.find(info=>info.valid);
+    if(!source) return {ready:false,hasPossibleOrderTable:infos.some(info=>info.score>=3)};
+    snapshot();copyOrderTable(source.table,reply,{automatic:true});snapshot();
+    return {ready:true,alreadyFilled:false};
+  }
+  function markAutomaticDeliveryFilled() {
+    const current=doc(),reply=current?.getElementById('nouya-current-reply');
+    const table=[...reply?.querySelectorAll('table')||[]].map(tableInfo).find(info=>info.valid)?.table;
+    if(table) table.dataset.nouyaAutoDeliveryFilled='true';
+  }
   function createReplyTable(rows) {
     const current=doc(), reply=current?.getElementById('nouya-current-reply');
     if(!reply) return;
@@ -250,7 +272,12 @@
       else if(match.reason) cell.title=match.reason;
     });
   }
-  globalThis.nouyaReplyTables={collect:replyTables,apply:applyReplyMatches};
+  globalThis.nouyaReplyTables={
+    collect:replyTables,
+    apply:applyReplyMatches,
+    prepareDeliveryTable,
+    markAutomaticDeliveryFilled,
+  };
   function initialize() {
     const current = doc();
     if (!current || !current.body || current === boundDocument) return;
@@ -283,9 +310,11 @@
     current.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){e.preventDefault();run(e.shiftKey?'redo':'undo');}});
     snapshot();
   }
-  frame.addEventListener('load', initialize);
+  const notifyReady=()=>globalThis.dispatchEvent(new CustomEvent('nouya-reply-editor-ready'));
+  frame.addEventListener('load', ()=>{initialize();notifyReady();});
   // srcdoc may finish before this external script loads, especially from cache.
   initialize();
+  if(doc()?.readyState==='complete') queueMicrotask(notifyReady);
   // Read from the parent context as well: sandboxed WebKit documents may not
   // dispatch their script callbacks, even though the parent can read selection.
   setInterval(rememberSelection, 150);

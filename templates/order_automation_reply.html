@@ -42,7 +42,7 @@
 .reply-tools button{padding:6px 10px;border:1px solid #cad9eb;border-radius:5px;background:white;color:#29446f;cursor:pointer}
 .reply-full{position:fixed;inset:8px;z-index:1000;overflow:auto}.reply-full #replyEditor{height:70vh!important}
 </style>
-<script src="{{ url_for('static', filename='order_reply_editor.js', v='20260917-reply-delivery-fill') }}"></script>
+<script src="{{ url_for('static', filename='order_reply_editor.js', v='20260921-auto-delivery-fill') }}"></script>
 <script>
 const editor=document.getElementById('replyEditor');
 editor.closest('form').addEventListener('submit',function(event){
@@ -68,8 +68,11 @@ editor.closest('form').addEventListener('submit',function(event){
   if(!fill)return;
   let loading=false;
   const originalText=fill.textContent;
-  fill.addEventListener('click',async()=>{
+  const fillDelivery=async({automatic=false}={})=>{
     if(loading)return;
+    const prepared=automatic?window.nouyaReplyTables?.prepareDeliveryTable():null;
+    if(automatic&&prepared?.alreadyFilled)return;
+    if(automatic&&prepared?.hasPossibleOrderTable&&!prepared?.ready)return;
     loading=true;fill.disabled=true;fill.textContent='回填中…';
     try{
       const tableState=window.nouyaReplyTables?.collect()||{rows:[]};
@@ -95,11 +98,25 @@ editor.closest('form').addEventListener('submit',function(event){
         data.row_matches=(data.row_matches||[]).map(item=>lastDay(item.delivery_reply)?{...item,delivery_reply:previousDay(item.delivery_reply)}:item);
       }
       window.nouyaReplyTables?.apply(data);
+      if(automatic)window.nouyaReplyTables?.markAutomaticDeliveryFilled();
       fill.textContent=`已回填 ${data.match_counts?.matched||0} 项`;
       window.setTimeout(()=>{if(!loading)fill.textContent=originalText;},1800);
-    }catch(error){window.alert(error.message||'交期回填失败，请稍后重试。');}
+    }catch(error){
+      if(automatic){console.warn('自动交期回填失败',error);fill.title=error.message||'自动交期回填失败，请点击按钮重试。';}
+      else window.alert(error.message||'交期回填失败，请稍后重试。');
+    }
     finally{loading=false;fill.disabled=false;if(fill.textContent==='回填中…')fill.textContent=originalText;}
-  });
+  };
+  fill.addEventListener('click',()=>fillDelivery());
+  let automaticStarted=false;
+  const automaticFill=()=>{
+    if(automaticStarted)return;
+    automaticStarted=true;
+    fillDelivery({automatic:true});
+  };
+  window.addEventListener('nouya-reply-editor-ready',automaticFill,{once:true});
+  editor.addEventListener('load',automaticFill,{once:true});
+  if(editor.contentDocument?.getElementById('nouya-current-reply'))window.setTimeout(automaticFill,0);
 })();
 </script>
 {% endblock %}
