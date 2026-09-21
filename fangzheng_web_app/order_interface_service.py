@@ -105,8 +105,6 @@ INTERFACE_DEFAULTS = {
             "sctoDataList[].taxType": "模板表头.税种（选填）",
             "sctoDataList[].materialName": "模板明细.品名（选填）",
             "sctoDataList[].spec": "模板明细.客户规格（选填）",
-            "sctoDataList[].customerSpec": "模板明细.客户规格（选填）",
-            "sctoDataList[].oriCustomerSpec": "模板明细.客户规格（选填）",
         },
         "response_mapping": {
             "code": "接口交互记录.业务状态码",
@@ -527,9 +525,11 @@ def _upgrade_domestic_request_mapping(conn: Any, row: Any, operated_by: str, now
     if "sctoDataList[].factoryPartCode" not in mapping:
         mapping["sctoDataList[].factoryPartCode"] = defaults["sctoDataList[].factoryPartCode"]
         changed = True
+    # Remove only the two mapping rows introduced by the reverted customer-
+    # specification payload expansion; user-customized mappings remain intact.
     for key in ("sctoDataList[].customerSpec", "sctoDataList[].oriCustomerSpec"):
-        if key not in mapping:
-            mapping[key] = defaults[key]
+        if mapping.get(key) == "模板明细.客户规格（选填）":
+            mapping.pop(key)
             changed = True
     if not changed:
         return
@@ -2949,8 +2949,6 @@ def _domestic_order_request_payload(
             "taxType": str(header.get("tax_type") or "").strip(),
             "materialName": str(values.get("product_name") or "").strip(),
             "spec": str(values.get("customer_spec") or "").strip(),
-            "customerSpec": str(values.get("customer_spec") or "").strip(),
-            "oriCustomerSpec": str(values.get("customer_spec") or "").strip(),
         })
     if line_issues:
         raise ValueError("暂不能提交录单：" + "；".join(line_issues))

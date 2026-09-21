@@ -129,14 +129,6 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
             domestic["request_mapping"]["sctoDataList[].spec"],
             "模板明细.客户规格（选填）",
         )
-        self.assertEqual(
-            domestic["request_mapping"]["sctoDataList[].customerSpec"],
-            "模板明细.客户规格（选填）",
-        )
-        self.assertEqual(
-            domestic["request_mapping"]["sctoDataList[].oriCustomerSpec"],
-            "模板明细.客户规格（选填）",
-        )
         self.assertEqual(domestic["response_mapping"]["data.data[].scta39"], "接口交互记录.ERP订单号")
         self.assertEqual(
             domestic["response_mapping"]["data.erpOrderMap"],
@@ -162,6 +154,26 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         }, "23582")
         self.assertEqual(saved["config_version"], 3)
         self.assertEqual(saved["endpoint_url"], material["endpoint_url"])
+
+    def test_domestic_mapping_upgrade_removes_reverted_customer_spec_fields(self) -> None:
+        config = get_interface_config("domestic_order_entry")
+        mapping = dict(config["request_mapping"])
+        mapping.update({
+            "sctoDataList[].customerSpec": "模板明细.客户规格（选填）",
+            "sctoDataList[].oriCustomerSpec": "模板明细.客户规格（选填）",
+        })
+        save_interface_config("domestic_order_entry", {
+            "display_name": config["display_name"], "description": config["description"],
+            "mode": config["mode"], "method": config["method"], "endpoint_url": config["endpoint_url"],
+            "request_mapping": json.dumps(mapping, ensure_ascii=False),
+            "response_mapping": json.dumps(config["response_mapping"], ensure_ascii=False),
+            "mock_scenarios": json.dumps(config["mock_scenarios"], ensure_ascii=False),
+        }, "employee-a")
+
+        refreshed = get_interface_config("domestic_order_entry")
+
+        self.assertNotIn("sctoDataList[].customerSpec", refreshed["request_mapping"])
+        self.assertNotIn("sctoDataList[].oriCustomerSpec", refreshed["request_mapping"])
 
     def test_reply_order_query_is_readonly_and_returns_display_fields(self) -> None:
         _case, template = get_or_create_template(self.case_id, "employee-a")
@@ -590,8 +602,8 @@ class OrderInterfaceMaintenanceTests(unittest.TestCase):
         self.assertEqual(payload["lineNumber"], "10")
         self.assertEqual(payload["lineId"], "10")
         self.assertEqual(payload["spec"], "原始客户规格")
-        self.assertEqual(payload["customerSpec"], "原始客户规格")
-        self.assertEqual(payload["oriCustomerSpec"], "原始客户规格")
+        self.assertNotIn("customerSpec", payload)
+        self.assertNotIn("oriCustomerSpec", payload)
         self.assertEqual(payload["demandDate"], "2026-09-01")
         self.assertEqual(payload["taxPrice"], "11.3")
         with db.db_cursor() as conn:
