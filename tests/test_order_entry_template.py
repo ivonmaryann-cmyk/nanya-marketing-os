@@ -1042,6 +1042,42 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertEqual(rows[0]["values"]["product_type"], "PP")
         self.assertEqual(rows[0]["sources"]["customer_product_code"]["label"], "附件：PO-001.pdf")
 
+    def test_pdf_attachment_keeps_explicit_blank_po_for_its_own_group(self) -> None:
+        document = {
+            "mapped_detail_rows": [
+                {
+                    "original": {"PO号": "PO-GM260008046", "物料描述": "PP 1080 300M/卷"},
+                    "standard": {"物料编码": "CUST-A", "物料名称": "半固化片"},
+                },
+                {
+                    "original": {"PO号": "", "物料描述": "PP 2116 300M/卷"},
+                    "standard": {"物料编码": "CUST-B", "物料名称": "半固化片"},
+                },
+            ],
+            "factory_import": {
+                "main_values": ["", "", "", "", "", "", "", "PO-GM260008046"],
+                "rows": [
+                    {
+                        FACTORY_DETAIL_HEADERS[0]: "1", FACTORY_DETAIL_HEADERS[3]: "CUST-A",
+                        FACTORY_DETAIL_HEADERS[4]: "2026-09-25", FACTORY_DETAIL_HEADERS[5]: "600",
+                    },
+                    {
+                        FACTORY_DETAIL_HEADERS[0]: "2", FACTORY_DETAIL_HEADERS[3]: "CUST-B",
+                        FACTORY_DETAIL_HEADERS[4]: "2026-09-25", FACTORY_DETAIL_HEADERS[5]: "300",
+                    },
+                ],
+            },
+        }
+        with patch("fangzheng_web_app.order_entry_service.recognize_purchase_order_document", return_value=document), patch(
+            "fangzheng_web_app.order_entry_service.project_factory_document"
+        ):
+            rows = _rows_from_pdf_or_image(Path("/tmp/PO-GM260008046.pdf"), "PO-GM260008046.pdf")
+
+        groups = _initial_order_groups({"customer_order_number": "PO-GM260008046"}, rows)
+        self.assertEqual([row["values"]["customer_order_number"] for row in rows], ["PO-GM260008046", ""])
+        self.assertEqual([group["order_number"] for group in groups], ["PO-GM260008046", ""])
+        self.assertEqual([len(group["lines"]) for group in groups], [1, 1])
+
     def test_batch_reextract_keeps_header_and_backs_up_before_replacing_lines(self) -> None:
         get_or_create_template(self.case_id, "employee-a")
         save_template(self.case_id, "employee-a", {

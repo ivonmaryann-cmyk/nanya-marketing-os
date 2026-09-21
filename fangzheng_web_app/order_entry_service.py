@@ -439,19 +439,31 @@ def _line_entry(
     return {"values": line, "sources": _source(label, reference, line)}
 
 
-def _value_by_alias(mapping: dict[str, Any], *aliases: str) -> Any:
-    """Return an explicit source value even when a document uses bilingual headings."""
+def _aliased_value(mapping: dict[str, Any], *aliases: str) -> tuple[bool, Any]:
+    """Return whether a source heading exists, along with its value."""
     if not mapping:
-        return ""
+        return False, ""
     wanted = {_compact_key(alias) for alias in aliases}
     for key, value in mapping.items():
         if _compact_key(key) in wanted:
-            return value
+            return True, value
     for key, value in mapping.items():
         compact = _compact_key(key)
         if any(alias and alias in compact for alias in wanted):
-            return value
-    return ""
+            return True, value
+    return False, ""
+
+
+def _value_by_alias(mapping: dict[str, Any], *aliases: str) -> Any:
+    """Return an explicit source value even when a document uses bilingual headings."""
+    _found, value = _aliased_value(mapping, *aliases)
+    return value
+
+
+def _has_alias(mapping: dict[str, Any], *aliases: str) -> bool:
+    """Distinguish an explicitly blank source column from a missing column."""
+    found, _value = _aliased_value(mapping, *aliases)
+    return found
 
 
 def _tax_inclusive_unit_price(mapping: dict[str, Any]) -> Any:
@@ -644,6 +656,8 @@ def _line_from_pipeline_row(
     raw_unit_price = _tax_inclusive_unit_price(original)
     raw_quantity_unit = _value_by_alias(original, "单位", "计量单位", "Unit", "UOM")
     raw_material_name = _value_by_alias(original, "物料品名", "物料名称", "Material Name") or standard.get("物料名称") or ""
+    po_aliases = ("PO号", "PO单号", "客户订单号", "采购订单号", "订单号", "PO No", "PO Number")
+    source_order_number = _value_by_alias(original, *po_aliases)
     values = {
         "line_no": standard.get("序号") or _value_by_alias(original, "序号", "No") or line_no,
         # 采购订单中的“物料编码 / Material Code”是客户提供的明确料号，
@@ -669,8 +683,7 @@ def _line_from_pipeline_row(
         "price_before_tax": raw_before_tax_price or standard.get("不含税单价") or "",
         "unit_price": raw_unit_price or "",
         "customer_order_number": normalize_customer_order_number(
-            _value_by_alias(original, "PO号", "PO单号", "客户订单号", "采购订单号", "订单号", "PO No", "PO Number")
-            or order_number
+            source_order_number if _has_alias(original, *po_aliases) else order_number
         ),
         "remark": standard.get("备注") or _value_by_alias(original, "备注", "说明", "订单备注") or "",
     }
@@ -735,10 +748,10 @@ def _rows_from_shared_purchase_document(
         values["line_no"] = str(index)
         original = source_row.get("original") or {}
         standard = source_row.get("standard") or {}
+        po_aliases = ("PO号", "PO单号", "客户订单号", "采购订单号", "订单号", "PO No", "PO Number")
+        source_order_number = _value_by_alias(original, *po_aliases)
         values["customer_order_number"] = normalize_customer_order_number(
-            _value_by_alias(
-                original, "PO号", "PO单号", "客户订单号", "采购订单号", "订单号", "PO No", "PO Number",
-            ) or values.get("customer_order_number")
+            source_order_number if _has_alias(original, *po_aliases) else values.get("customer_order_number")
         )
         values = _apply_customer_extraction_mappings(
             values,
