@@ -217,6 +217,18 @@ class PdfExcelDomesticExportTests(unittest.TestCase):
 
         self.assertEqual(rows[0]["产品类型（PP、基板）"], "基板")
 
+    def test_board_size_with_mixed_copper_sides_is_classified_as_base_material(self) -> None:
+        document = _document()
+        document["mapped_detail_rows"] = [{
+            "original": {"物料描述": 'NY2170 0.080mm H/1 43"*49"(1080*1)(有卤素)'},
+            "standard": {"物料编码": "CUST-BASE-H1", "数量": "1", "单位": "张"},
+        }]
+        document["factory_import"]["rows"] = [document["factory_import"]["rows"][0]]
+
+        _header, rows = build_domestic_rows(document)
+
+        self.assertEqual(rows[0]["产品类型（PP、基板）"], "基板")
+
     def test_resin_content_spec_is_classified_as_pp_without_pp_keyword(self) -> None:
         document = _document()
         document["mapped_detail_rows"] = [{

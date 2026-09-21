@@ -178,7 +178,7 @@ def infer_product_type_from_spec(value: Any) -> str:
         context,
         flags=re.IGNORECASE,
     ))
-    copper_sides = bool(re.search(r"(?<!\d)(?:H/H|[12]/[12])(?!\d)", context, re.IGNORECASE))
+    copper_sides = bool(re.search(r"(?<![A-Za-z0-9])(?:H|\d+)\s*/\s*(?:H|\d+)(?![A-Za-z0-9])", context, re.IGNORECASE))
     # A board-size pair together with foil information is a reliable base-material
     # signature even when customers omit words such as FR-4 or 覆铜板.
     if board_size and (copper_foil or copper_sides):
