@@ -1078,6 +1078,35 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertEqual([group["order_number"] for group in groups], ["PO-GM260008046", ""])
         self.assertEqual([len(group["lines"]) for group in groups], [1, 1])
 
+    def test_shared_document_keeps_blank_english_po_cell_for_its_own_group(self) -> None:
+        document = {
+            "mapped_detail_rows": [
+                {"original": {"PO": "PO-GM260008046"}, "standard": {}},
+                {"original": {"PO": ""}, "standard": {}},
+            ],
+            "factory_import": {
+                "main_values": ["", "", "", "", "", "", "", "PO-GM260008046"],
+                "rows": [
+                    {FACTORY_DETAIL_HEADERS[0]: "1", FACTORY_DETAIL_HEADERS[5]: "600"},
+                    {FACTORY_DETAIL_HEADERS[0]: "2", FACTORY_DETAIL_HEADERS[5]: "300"},
+                ],
+            },
+        }
+        with patch("fangzheng_web_app.order_entry_service.project_factory_document"):
+            from fangzheng_web_app.order_entry_service import _rows_from_shared_purchase_document
+            rows = _rows_from_shared_purchase_document(document, label="邮件正文表格", reference_prefix="表格明细")
+
+        groups = _initial_order_groups({"customer_order_number": "PO-GM260008046"}, rows)
+        self.assertEqual([row["values"]["customer_order_number"] for row in rows], ["PO-GM260008046", ""])
+        self.assertEqual([group["order_number"] for group in groups], ["PO-GM260008046", ""])
+
+    def test_entry_template_exposes_delete_selected_rows_control(self) -> None:
+        template = (Path(__file__).resolve().parents[1] / "templates" / "order_automation_entry_template.html").read_text(encoding="utf-8")
+        self.assertIn('id="deleteSelectedLines"', template)
+        self.assertIn("删除所选", template)
+        self.assertIn('<input class="oe-line-select"', template)
+        self.assertIn('<span data-row-number></span>', template)
+
     def test_batch_reextract_keeps_header_and_backs_up_before_replacing_lines(self) -> None:
         get_or_create_template(self.case_id, "employee-a")
         save_template(self.case_id, "employee-a", {

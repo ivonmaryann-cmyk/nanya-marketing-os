@@ -54,6 +54,9 @@ LINE_FIELDS = (
     "customer_order_seq", "one_to_many", "remark",
 )
 PERSISTED_LINE_FIELDS = (*LINE_FIELDS, "old_product_name", "customer_order_number")
+SOURCE_PO_ALIASES = (
+    "PO", "PO号", "PO单号", "客户订单号", "采购订单号", "订单号", "PO No", "PO Number",
+)
 HEADER_LABELS = {
     "order_type": "单别", "type_1": "类型1", "type_2": "类型2",
     "bill_to_customer_code": "账款客户编号", "ship_to_customer_code": "送货客户编号",
@@ -97,7 +100,7 @@ MANUAL_ONLY_LINE_FIELDS = {"product_code", "product_name", "origin", "one_to_man
 # of forcing business users to normalise their customers' Excel files first.
 _ATTACHMENT_HEADERS = {
     "line_no": {"序号", "项次", "项目", "行号", "item", "no"},
-    "customer_order_number": {"PO号", "PO单号", "客户订单号", "采购订单号", "订单号", "po no", "po number"},
+    "customer_order_number": {"PO", "PO号", "PO单号", "客户订单号", "采购订单号", "订单号", "po no", "po number"},
     "product_code": {"产品编号", "物料编号", "物料编码", "料号", "品号", "厂内料号"},
     "product_name": {"品名", "物料名称", "名称", "产品名称"},
     "customer_product_code": {"客户产品编号", "客户料号", "客户物料编号", "客户产品码", "part no", "p/n"},
@@ -656,8 +659,7 @@ def _line_from_pipeline_row(
     raw_unit_price = _tax_inclusive_unit_price(original)
     raw_quantity_unit = _value_by_alias(original, "单位", "计量单位", "Unit", "UOM")
     raw_material_name = _value_by_alias(original, "物料品名", "物料名称", "Material Name") or standard.get("物料名称") or ""
-    po_aliases = ("PO号", "PO单号", "客户订单号", "采购订单号", "订单号", "PO No", "PO Number")
-    source_order_number = _value_by_alias(original, *po_aliases)
+    source_order_number = _value_by_alias(original, *SOURCE_PO_ALIASES)
     values = {
         "line_no": standard.get("序号") or _value_by_alias(original, "序号", "No") or line_no,
         # 采购订单中的“物料编码 / Material Code”是客户提供的明确料号，
@@ -683,7 +685,7 @@ def _line_from_pipeline_row(
         "price_before_tax": raw_before_tax_price or standard.get("不含税单价") or "",
         "unit_price": raw_unit_price or "",
         "customer_order_number": normalize_customer_order_number(
-            source_order_number if _has_alias(original, *po_aliases) else order_number
+            source_order_number if _has_alias(original, *SOURCE_PO_ALIASES) else order_number
         ),
         "remark": standard.get("备注") or _value_by_alias(original, "备注", "说明", "订单备注") or "",
     }
@@ -748,10 +750,9 @@ def _rows_from_shared_purchase_document(
         values["line_no"] = str(index)
         original = source_row.get("original") or {}
         standard = source_row.get("standard") or {}
-        po_aliases = ("PO号", "PO单号", "客户订单号", "采购订单号", "订单号", "PO No", "PO Number")
-        source_order_number = _value_by_alias(original, *po_aliases)
+        source_order_number = _value_by_alias(original, *SOURCE_PO_ALIASES)
         values["customer_order_number"] = normalize_customer_order_number(
-            source_order_number if _has_alias(original, *po_aliases) else values.get("customer_order_number")
+            source_order_number if _has_alias(original, *SOURCE_PO_ALIASES) else values.get("customer_order_number")
         )
         values = _apply_customer_extraction_mappings(
             values,
