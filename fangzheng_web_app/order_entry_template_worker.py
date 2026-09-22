@@ -13,7 +13,7 @@ def main() -> None:
     parser.add_argument("--task-id", required=True, type=int)
     parser.add_argument("--case-id", required=True, type=int)
     parser.add_argument("--employee-id", required=True)
-    parser.add_argument("--action-type", choices=("new_order", "order_change"), default="new_order")
+    parser.add_argument("--action-type", choices=("new_order", "order_change", "quotation"), default="new_order")
     args = parser.parse_args()
     # A worker is started as an independent interpreter, so it must load the
     # local PostgreSQL configuration just as the Flask application does.

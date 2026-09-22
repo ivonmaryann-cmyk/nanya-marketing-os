@@ -54,6 +54,12 @@ ROLL_MM_DIVISOR = 0.0254
 FINAL_PRICE_DECIMALS = 2
 PP_ROLL_PRICE_COLUMNS = ('36"*48"', '40"*48"', '42"*48"')
 PP_ROLL_LENGTH_PATTERN = r'\d+(?:\.\d+)?\s*(?:M|\u7c73)\s*/\s*(?:ROLL|\u5377)'
+# PP 卷料中的玻璃布型号。必须使用白名单，避免把卷长等普通数字误识别为叠构。
+PP_GLASS_TYPES = (
+    "0106", "1027", "1035", "1037", "1067", "1078", "1080", "1086",
+    "1506", "2113", "2116", "2313", "3313", "7628", "106",
+)
+PP_GLASS_PATTERN = "|".join(PP_GLASS_TYPES)
 # 允许近似取价的最大板厚差异。例：0.140mm 只允许 0.130~0.150mm。
 MAX_THICKNESS_DELTA = 0.01
 # mil 转 mm 系数
@@ -121,12 +127,12 @@ def ensure_dirs():
     for d in [INPUT_DIR, OUTPUT_DIR]:
         os.makedirs(d, exist_ok=True)
 
-def round_price(value):
-    quant = Decimal("1").scaleb(-FINAL_PRICE_DECIMALS)
+def round_price(value, decimals=FINAL_PRICE_DECIMALS):
+    quant = Decimal("1").scaleb(-decimals)
     return float(Decimal(str(value)).quantize(quant, rounding=ROUND_HALF_UP))
 
-def format_price(value):
-    return f"{round_price(value):.{FINAL_PRICE_DECIMALS}f}"
+def format_price(value, decimals=FINAL_PRICE_DECIMALS):
+    return f"{round_price(value, decimals):.{decimals}f}"
 
 def pp_piece_divisor(h):
     """小片 PP 按纬向尺寸判断开数：纬向<=16.5 开3，否则开2。"""
@@ -634,7 +640,7 @@ def extract_pp_roll_width(desc):
 def _extract_pp_glue_and_laminate(desc):
     """提取 PP 胶系与玻璃布型号，兼容 RC 与中文含量写法。"""
     match = re.match(
-        r'(?:PP\s+)?([\w\-\(\)\.]+)\s+(1078|1080|1035|2116|2313|3313|106|1067)\b',
+        rf'(?:PP\s+)?([\w\-\(\)\.]+)\s+({PP_GLASS_PATTERN})\b',
         desc,
         re.IGNORECASE,
     )
@@ -789,7 +795,7 @@ def get_price_col_from_big(big_w, big_h):
 # ============================================================
 # 核心计算逻辑
 # ============================================================
-def calculate_price(desc, df_price, df_account):
+def calculate_price(desc, df_price, df_account, *, result_decimals=FINAL_PRICE_DECIMALS):
     """根据物料描述计算价格，返回：(价格, 计算说明, 错误信息)"""
     desc = normalize_str(desc)
     
@@ -800,7 +806,7 @@ def calculate_price(desc, df_price, df_account):
     is_roll = is_pp_roll_desc(desc)
     
     if is_roll:
-        return _calc_roll(desc, df_price)
+        return _calc_roll(desc, df_price, result_decimals=result_decimals)
     
     # 判断是否为非 PP 开头的 PP 行：型号以P结尾且包含 RC%，且无mm厚度信息
     # 如：NY2170P 1080 RC68% 21.6"x24.6" 有卤 CAF
@@ -974,7 +980,7 @@ def _calc_ccl(desc, df_price, df_account):
         
         return final_price, note, None
 
-def _calc_roll(desc, df_price):
+def _calc_roll(desc, df_price, *, result_decimals=FINAL_PRICE_DECIMALS):
     """
     卷料价格计算（如 200M/Roll、300M/Roll）
     逻辑：与 PP 相同，叠构从 M/Roll 前的数字提取
@@ -1004,8 +1010,8 @@ def _calc_roll(desc, df_price):
     
     note = (f"[卷料/PP] 原始胶系={raw_glue} | 叠构={laminate_type} | RC%={rc_percent} | "
             f"宽度={w} | RMB/SF={rmb_sf} | "
-            f"公式={ROLL_FIXED_WIDTH}/{ROLL_MM_DIVISOR}/{PP_FIXED_DIV}×{rmb_sf} = {format_price(price)}")
-    return round_price(price), note, None
+            f"公式={ROLL_FIXED_WIDTH}/{ROLL_MM_DIVISOR}/{PP_FIXED_DIV}×{rmb_sf} = {format_price(price, result_decimals)}")
+    return round_price(price, result_decimals), note, None
 
 
 def _calc_pp(desc, df_price):

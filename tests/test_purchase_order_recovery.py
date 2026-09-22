@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from fangzheng_web_app.purchase_order_pipeline import (
+    _native_contract_table_purchase_document,
     _native_detail_rows_missing_from_docling,
     _native_detail_rows_for_merged_docling,
     _native_grid_rows_from_page,
@@ -10,6 +11,7 @@ from fangzheng_web_app.purchase_order_pipeline import (
 )
 from fangzheng_web_app.purchase_field_rules import header_score
 from fangzheng_web_app.purchase_result_normalizer import normalize_order_spec_spacing
+from fangzheng_web_app.template_parser import likely_order_number
 
 
 class PurchaseOrderSpacingTests(unittest.TestCase):
@@ -172,6 +174,39 @@ class NativeDetailRecoveryTests(unittest.TestCase):
         self.assertEqual(rows[-1]["standard"]["物料编码"], "MAT009")
         self.assertEqual(rows[-1]["page_index"], 1)
         self.assertEqual(sum(len(table["rows"]) for table in document["raw_detail_tables"]), 6)
+
+    def test_contract_table_fast_path_keeps_all_pages_and_contract_po(self) -> None:
+        header = ["项目", "物料编码", "物料描述", "数量", "单位", "未税单价", "未税金额", "含税单价", "含税金额", "要求交期", "备注"]
+        first_page = [
+            header,
+            ["1", "MAT-001", "NY6300 0.1mm", "10", "张", "10", "100", "11.3", "113", "2026/10/10", "首项"],
+            ["2", "MAT-002", "PP NY6300P", "20", "片", "20", "400", "22.6", "452", "2026/10/11", "次项"],
+        ]
+        second_page = [
+            header,
+            ["3", "MAT-003", "NY6666", "30", "张", "30", "900", "33.9", "1017", "2026/10/12", "末项"],
+            ["未税总金额", "", "", "", "", "", "1400", "", "1582", "", ""],
+        ]
+        native = {
+            "text_quality": {"has_text": True},
+            "text": "采购合同\n合同编号：PO-GM260008046",
+            "page_count": 2,
+            "pages": [
+                {"page_index": 0, "tables": [{"table_index": 0, "cells": self._cells(first_page)}]},
+                {"page_index": 1, "tables": [{"table_index": 0, "cells": self._cells(second_page)}]},
+            ],
+            "warnings": [],
+        }
+
+        document = _native_contract_table_purchase_document(
+            {"stored_path": "PO-GM260008046.pdf", "original_filename": "PO-GM260008046.pdf"}, native
+        )
+
+        self.assertIsNotNone(document)
+        self.assertEqual(document["header_info"]["订单号"], "PO-GM260008046")
+        self.assertEqual([row["standard"]["序号"] for row in document["mapped_detail_rows"]], ["1", "2", "3"])
+        self.assertEqual(document["mapped_detail_rows"][-1]["standard"]["含税单价"], "33.9")
+        self.assertEqual(likely_order_number("合同编号：PO-GM260008046"), "PO-GM260008046")
 
 
 if __name__ == "__main__":

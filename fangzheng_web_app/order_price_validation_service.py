@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Mapping
 
@@ -29,18 +30,26 @@ class PriceMismatchConfirmationRequired(ValueError):
         super().__init__(f"发现 {len(review['mismatches'])} 项价格与报价单不一致，请确认后继续录单")
 
 
-def _decimal(value: Any) -> Decimal | None:
+def _decimal(value: Any, *, places: Decimal = Decimal("0.01")) -> Decimal | None:
     text = str(value or "").strip().replace(",", "")
     if not text:
         return None
     try:
-        return Decimal(text).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        return Decimal(text).quantize(places, rounding=ROUND_HALF_UP)
     except (InvalidOperation, ValueError):
         return None
 
 
-def _display_price(value: Decimal) -> str:
-    return format(value, ".2f")
+def _display_price(value: Decimal, *, places: Decimal = Decimal("0.01")) -> str:
+    decimals = max(-places.as_tuple().exponent, 0)
+    return format(value, f".{decimals}f")
+
+
+def _quote_places(values: Mapping[str, Any]) -> Decimal:
+    remark = str(values.get("remark") or "")
+    spec = str(values.get("customer_spec") or "")
+    is_roll = "卷" in remark or bool(re.search(r"\d+(?:\.\d+)?\s*m\s*/\s*roll\b", spec, re.IGNORECASE))
+    return Decimal("0.0001") if is_roll else Decimal("0.01")
 
 
 def _empty_review() -> dict[str, Any]:
@@ -88,7 +97,8 @@ def review_template_prices(
         values = line.get("values") if isinstance(line.get("values"), Mapping) else line
         values = values if isinstance(values, Mapping) else {}
         line_no = int(line.get("line_no") or values.get("line_no") or 0)
-        template_price = _decimal(values.get(target_field))
+        places = _quote_places(values)
+        template_price = _decimal(values.get(target_field), places=places)
         item: dict[str, Any] = {
             "line_no": line_no,
             "field": target_field,
@@ -104,11 +114,11 @@ def review_template_prices(
         else:
             try:
                 quote = _calculate_quote(str(association["price_customer_key"]), spec, values.get("quantity"))
-                quote_price = _decimal(quote.get("price"))
+                quote_price = _decimal(quote.get("price"), places=places)
                 if str(quote.get("status") or "") != "成功" or quote_price is None:
                     item["note"] = str(quote.get("error") or quote.get("note") or "报价未命中")
                 else:
-                    item["quote_price"] = _display_price(quote_price)
+                    item["quote_price"] = _display_price(quote_price, places=places)
                     if template_price is None:
                         item["status"] = "suggested"
                         item["note"] = "报价单计算"
@@ -146,21 +156,22 @@ def review_cached_template_prices(
         values = line.get("values") if isinstance(line.get("values"), Mapping) else line
         values = values if isinstance(values, Mapping) else {}
         line_no = int(line.get("line_no") or values.get("line_no") or 0)
+        places = _quote_places(values)
         cached = cached_by_line.get(str(line_no), cached_by_line.get(line_no, {}))
         if not isinstance(cached, Mapping):
             continue
-        quote_price = _decimal(cached.get("quote_price"))
+        quote_price = _decimal(cached.get("quote_price"), places=places)
         item = {
             "line_no": line_no,
             "field": target_field,
             "field_label": target_label,
             "status": "not_checked",
             "template_price": str(values.get(target_field) or "").strip(),
-            "quote_price": _display_price(quote_price) if quote_price is not None else "",
+            "quote_price": _display_price(quote_price, places=places) if quote_price is not None else "",
             "note": str(cached.get("note") or ""),
         }
         if quote_price is not None:
-            template_price = _decimal(values.get(target_field))
+            template_price = _decimal(values.get(target_field), places=places)
             if template_price is None:
                 item["status"] = "suggested"
                 item["note"] = "报价单计算"

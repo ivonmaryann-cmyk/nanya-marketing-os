@@ -116,3 +116,42 @@ class FangzhengPriceCalculatorTests(unittest.TestCase):
         self.assertEqual(26.39, price)
         self.assertIn("宽度=48", note)
         self.assertEqual(5278.22, calculator.calculate_pp_roll_price(spec, self.price_rules))
+
+    def test_pp_roll_supports_four_decimal_single_quote_precision(self) -> None:
+        self.price_rules.loc[len(self.price_rules)] = [
+            "PP", "NY6300P(C)", "2116", "57", "49.5", "200", 6.96, None, None, None,
+        ]
+
+        price, note, error = calculator.calculate_price(
+            'PP NY6300P(C) 2116 RC57% 49.5"*200M/Roll(有卤素)',
+            self.price_rules,
+            self.account_rules,
+            result_decimals=4,
+        )
+
+        self.assertIsNone(error)
+        self.assertEqual(91.3386, price)
+        self.assertTrue(note.endswith("= 91.3386"))
+
+    def test_pp_roll_accepts_standard_glass_types_after_glue_model(self) -> None:
+        cases = [
+            ("NY2150P 7628 RC50% 49.5\" 有卤 CAF 150M/卷", "NY2150P", "7628", "50", "150"),
+            ("NY3150HCP 7628 RC48% 49.5\" 无卤 CAF 150M/卷", "NY3150HCP", "7628", "48", "150"),
+            ("NY2170P 7628 RC51% 49.5\" 有卤 CAF 150M/卷", "NY2170P", "7628", "51", "150"),
+            ("NY-A2P 7628 RC50% 49.5\" 有卤 CAF 150M/卷 (汽车板)", "NY-A2P", "7628", "50", "150"),
+            ('PP NY6300P(C) 1027 RC72% 49.5\"*300M/Roll (有卤素)', "NY6300P(C)", "1027", "72", "300"),
+            ('PP NY6300SP 1037 RC73% 49.5\"*300M/Roll (无卤素)', "NY6300SP", "1037", "73", "300"),
+        ]
+        for spec, model, glass, rc, length in cases:
+            with self.subTest(spec=spec):
+                self.price_rules.loc[len(self.price_rules)] = [
+                    "PP", model, glass, rc, "49.5", length, 2.0, 100.0, None, None,
+                ]
+                self.assertEqual((model, glass), calculator._extract_pp_glue_and_laminate(spec))
+                price, _note, error = calculator.calculate_price(
+                    spec,
+                    self.price_rules,
+                    self.account_rules,
+                )
+                self.assertIsNone(error)
+                self.assertGreater(price, 0)

@@ -8,7 +8,7 @@ import sys
 import tempfile
 import uuid
 from copy import copy
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import date, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -53,7 +53,10 @@ LINE_FIELDS = (
     "quantity", "price_before_tax", "unit_price", "origin",
     "customer_order_seq", "one_to_many", "remark",
 )
-PERSISTED_LINE_FIELDS = (*LINE_FIELDS, "old_product_name", "customer_order_number")
+PERSISTED_LINE_FIELDS = (
+    *LINE_FIELDS, "amount_before_tax", "amount_with_tax",
+    "old_product_name", "customer_order_number",
+)
 SOURCE_PO_ALIASES = (
     "PO", "PO号", "PO单号", "客户订单号", "采购订单号", "订单号", "PO No", "PO Number",
 )
@@ -111,7 +114,9 @@ _ATTACHMENT_HEADERS = {
     "quantity": {"数量", "采购量", "订购数量", "订单数量", "qty", "quantity"},
     "_quantity_unit": {"单位", "计量单位", "数量单位", "uom"},
     "price_before_tax": {"税前单价", "未税单价", "不含税单价"},
+    "amount_before_tax": {"税前金额", "未税金额", "不含税金额"},
     "unit_price": {"单价", "含税单价", "unit price", "price"},
+    "amount_with_tax": {"含税金额", "价税合计"},
     "origin": {"产地", "原产地"},
     "customer_order_seq": {"客户订单序号", "订单序号", "客户项次"},
     "one_to_many": {"一对多"},
@@ -158,7 +163,11 @@ def _case_for_template(
     if not case:
         raise ValueError("订单邮件不存在或无权操作")
     if case.get("action_type") != action_type:
-        label = "录单" if action_type == "new_order" else "修改订单"
+        label = {
+            "new_order": "录单",
+            "order_change": "修改订单",
+            "quotation": "核价",
+        }.get(action_type, action_type)
         raise ValueError(f"只有已分流为“{label}”的邮件才能打开此模板")
     return case
 
@@ -435,7 +444,7 @@ def _line_entry(
         )
     if line["delivery_date"]:
         line["delivery_date"] = normalize_date(line["delivery_date"]) or line["delivery_date"]
-    for field in {"quantity", "price_before_tax", "unit_price"}:
+    for field in {"quantity", "price_before_tax", "amount_before_tax", "unit_price", "amount_with_tax"}:
         if line[field]:
             line[field] = normalize_number(line[field]) or line[field]
     line = _apply_auto_extraction_policy(line, quantity_unit=quantity_unit, product_context=product_context)
@@ -743,17 +752,29 @@ def _rows_from_shared_purchase_document(
     domestic_data = build_domestic_template_data(document)
     result: list[dict[str, Any]] = []
     source_rows = document.get("mapped_detail_rows") or []
+    factory_rows = (document.get("factory_import") or {}).get("rows") or []
     for index, (line, source_row) in enumerate(
         zip(domestic_data["lines"], source_rows), start=1
     ):
         values = {field: clean_text(line.get(field)) for field in PERSISTED_LINE_FIELDS}
         values["line_no"] = str(index)
+        factory_row = factory_rows[index - 1] if index <= len(factory_rows) else {}
+        projected_to_metres = clean_text(factory_row.get("_quantity_unit")) == "米"
         original = source_row.get("original") or {}
         standard = source_row.get("standard") or {}
         source_order_number = _value_by_alias(original, *SOURCE_PO_ALIASES)
         values["customer_order_number"] = normalize_customer_order_number(
             source_order_number if _has_alias(original, *SOURCE_PO_ALIASES) else values.get("customer_order_number")
         )
+        for field in ("price_before_tax", "amount_before_tax", "unit_price", "amount_with_tax"):
+            source_value = _value_by_alias(original, *_ATTACHMENT_HEADERS[field])
+            # For roll material, the factory projection has already converted
+            # the two unit prices from per-roll to per-metre.  Keep those
+            # prices, while retaining the source total amounts unchanged.
+            if source_value not in (None, "") and not (
+                projected_to_metres and field in {"price_before_tax", "unit_price"}
+            ):
+                values[field] = clean_text(source_value)
         values = _apply_customer_extraction_mappings(
             values,
             original,
@@ -763,6 +784,8 @@ def _rows_from_shared_purchase_document(
         values = _apply_auto_extraction_policy(
             values,
             quantity_unit=(
+                clean_text(factory_row.get("_quantity_unit"))
+            ) or (
                 _value_by_alias(original, "单位", "计量单位", "Unit", "UOM")
                 or standard.get("单位")
                 or ""
@@ -1067,7 +1090,9 @@ def _initial_lines(case: dict[str, Any]) -> list[dict[str, Any]]:
     return _initial_template_data(case)[1]
 
 
-def _initial_order_change_template_data(case: dict[str, Any]) -> tuple[dict[str, str], list[dict[str, Any]]]:
+def _initial_order_change_template_data(
+    case: dict[str, Any], *, include_pricing: bool = False,
+) -> tuple[dict[str, str], list[dict[str, Any]]]:
     """Extract only the fields needed by the order-change workspace.
 
     The source-document parser is shared, but pricing, material resolution and
@@ -1087,6 +1112,9 @@ def _initial_order_change_template_data(case: dict[str, Any]) -> tuple[dict[str,
             "delivery_date": clean_text(source_values.get("delivery_date")),
             "quantity": clean_text(source_values.get("quantity")),
         })
+        if include_pricing:
+            for field in QUOTE_SOURCE_PRICE_FIELDS:
+                values[field] = clean_text(source_values.get(field))
         values["material_status"] = "查询"
         lines.append({"values": values, "sources": dict(entry.get("sources") or {})})
     return header, lines or [{"values": _blank_line(1), "sources": {}}]
@@ -1277,7 +1305,7 @@ def get_or_create_template(
         initial_header, initial_lines = (
             _initial_template_data(case)
             if action_type == "new_order"
-            else _initial_order_change_template_data(case)
+            else _initial_order_change_template_data(case, include_pricing=action_type == "quotation")
         )
         initial_groups = _initial_order_groups(initial_header, initial_lines)
         used_line_nos: set[int] = set()
@@ -1340,8 +1368,16 @@ def get_or_create_template(
             case_id=case_id,
             template_id=template_id,
             employee_id=employee_id,
-            event_type="template_extracted" if action_type == "new_order" else "order_change_template_extracted",
-            title="已提取内销录单模板" if action_type == "new_order" else "已提取修改订单模板",
+            event_type=(
+                "template_extracted" if action_type == "new_order"
+                else "order_change_template_extracted" if action_type == "order_change"
+                else "quote_template_extracted"
+            ),
+            title=(
+                "已提取内销录单模板" if action_type == "new_order"
+                else "已提取修改订单模板" if action_type == "order_change"
+                else "已提取核价模板"
+            ),
             detail={"line_count": len(initial_lines), "group_count": len(initial_groups), "source": "邮件正文和附件"},
             operated_by=employee_id,
         )
@@ -1378,7 +1414,11 @@ def _queue_template_extraction(case_id: int, employee_id: str, *, action_type: s
     while the case page can accurately show the durable task state.
     """
     _case_for_template(case_id, employee_id, action_type=action_type)
-    template_label = "内销模板" if action_type == "new_order" else "修改订单模板"
+    template_label = {
+        "new_order": "内销模板",
+        "order_change": "修改订单模板",
+        "quotation": "核价模板",
+    }[action_type]
     with db_cursor() as conn:
         template = conn.execute(
             "SELECT id FROM order_entry_templates WHERE case_id=? AND employee_id=?",
@@ -1450,6 +1490,10 @@ def queue_order_change_template_extraction(case_id: int, employee_id: str) -> di
     return _queue_template_extraction(case_id, employee_id, action_type="order_change")
 
 
+def queue_quote_template_extraction(case_id: int, employee_id: str) -> dict[str, Any]:
+    return _queue_template_extraction(case_id, employee_id, action_type="quotation")
+
+
 def _complete_template_extraction_task(
     task_id: int, *, status: str, message: str, template_id: int | None,
 ) -> None:
@@ -1479,7 +1523,11 @@ def run_template_extraction_task(
         _complete_template_extraction_task(
             task_id,
             status="completed",
-            message="订单信息已提取，请核对并保存订单。" if action_type == "new_order" else "订单修改信息已提取，请核对并保存。",
+            message=(
+                "订单信息已提取，请核对并保存订单。" if action_type == "new_order"
+                else "订单修改信息已提取，请核对并保存。" if action_type == "order_change"
+                else "核价信息已提取，请核对并保存。"
+            ),
             template_id=int(template["id"]),
         )
     except Exception as exc:
@@ -1531,14 +1579,20 @@ def reextract_template(
             (case_id, employee_id),
         ).fetchone()
         if not row:
-            raise ValueError("请先打开修改订单模板" if action_type == "order_change" else "请先打开录单模板")
+            raise ValueError(
+                "请先打开录单模板" if action_type == "new_order"
+                else "请先打开修改订单模板" if action_type == "order_change"
+                else "请先打开核价模板"
+            )
         template_id = int(row["id"])
         previous = _serialize_template(conn, template_id)
 
     # Recognition can involve OCR and file conversion, so do it outside of the
     # database transaction.  It only reads the original mail and attachments.
-    if action_type == "order_change":
-        regenerated_header, regenerated_lines = _initial_order_change_template_data(case)
+    if action_type in {"order_change", "quotation"}:
+        regenerated_header, regenerated_lines = _initial_order_change_template_data(
+            case, include_pricing=action_type == "quotation",
+        )
         price_review_snapshot = None
     else:
         regenerated_header, regenerated_lines = _initial_template_data(case)
@@ -1599,7 +1653,7 @@ def reextract_template(
             "UPDATE order_entry_templates SET header_json=?,current_version=?,updated_at=? WHERE id=?",
             (json.dumps(next_header, ensure_ascii=False), current_version, now, template_id),
         )
-        if action_type == "order_change":
+        if action_type in {"order_change", "quotation"}:
             conn.execute("DELETE FROM order_entry_template_lines WHERE template_id=?", (template_id,))
             for entry in regenerated_lines:
                 values = entry["values"]
@@ -1732,8 +1786,16 @@ def reextract_template(
             case_id=case_id,
             template_id=template_id,
             employee_id=employee_id,
-            event_type=("order_change_template_reextracted" if action_type == "order_change" else "template_reextracted"),
-            title=("已重新提取修改订单明细" if action_type == "order_change" else "已重新提取订单明细"),
+            event_type=(
+                "order_change_template_reextracted" if action_type == "order_change"
+                else "quote_template_reextracted" if action_type == "quotation"
+                else "template_reextracted"
+            ),
+            title=(
+                "已重新提取修改订单明细" if action_type == "order_change"
+                else "已重新提取核价明细" if action_type == "quotation"
+                else "已重新提取订单明细"
+            ),
             detail={
                 "previous_line_count": len(previous_lines),
                 "line_count": len(regenerated_lines),
@@ -1764,6 +1826,10 @@ def reextract_template(
 
 def reextract_order_change_template(case_id: int, employee_id: str) -> dict[str, Any]:
     return reextract_template(case_id, employee_id, action_type="order_change")
+
+
+def reextract_quote_template(case_id: int, employee_id: str) -> dict[str, Any]:
+    return reextract_template(case_id, employee_id, action_type="quotation")
 
 
 def reextract_all_templates(employee_id: str) -> dict[str, Any]:
@@ -1812,11 +1878,23 @@ ORDER_CHANGE_LINE_FIELDS = (
     "customer_order_number", "line_no", "customer_product_code", "customer_spec",
     "delivery_date", "quantity",
 )
+QUOTE_SOURCE_PRICE_FIELDS = ("price_before_tax", "amount_before_tax", "unit_price", "amount_with_tax")
+QUOTE_RESULT_FIELDS = ("quote_price", "quote_note")
 
 
 def order_change_template_progress(case_id: int, employee_id: str) -> dict[str, Any]:
     """Return the lightweight extraction/save state for an order-change mail."""
-    case = _case_for_template(case_id, employee_id, action_type="order_change")
+    return _simple_template_progress(case_id, employee_id, action_type="order_change")
+
+
+def quote_template_progress(case_id: int, employee_id: str) -> dict[str, Any]:
+    return _simple_template_progress(case_id, employee_id, action_type="quotation")
+
+
+def _simple_template_progress(case_id: int, employee_id: str, *, action_type: str) -> dict[str, Any]:
+    case = _case_for_template(case_id, employee_id, action_type=action_type)
+    is_quote = action_type == "quotation"
+    noun = "核价" if is_quote else "修改订单"
     with db_cursor() as conn:
         row = conn.execute(
             "SELECT current_version FROM order_entry_templates WHERE case_id=? AND employee_id=?",
@@ -1824,7 +1902,7 @@ def order_change_template_progress(case_id: int, employee_id: str) -> dict[str, 
         ).fetchone()
     version = int(row["current_version"] or 0) if row else 0
     if row:
-        if case.get("status") == "pending_reply":
+        if not is_quote and case.get("status") == "pending_reply":
             return {
                 "created": True, "saved": True, "version": version,
                 "stage": "pending_reply", "label": "待回复邮件",
@@ -1833,31 +1911,41 @@ def order_change_template_progress(case_id: int, employee_id: str) -> dict[str, 
         return {
             "created": True, "saved": version > 0, "version": version,
             "stage": "saved" if version > 0 else "pending_template_save",
-            "label": "修改模板已保存" if version > 0 else "待核对并保存修改模板",
-            "next_action": "打开修改订单" if version > 0 else "核对并保存修改订单",
+            "label": f"{noun}模板已保存" if version > 0 else f"待核对并保存{noun}模板",
+            "next_action": f"打开{noun}模板" if version > 0 else f"核对并保存{noun}模板",
             "step": 3,
         }
     task = _template_task_row(case_id, employee_id)
     if task and task.get("status") in {"queued", "running"}:
         return {
             "created": False, "saved": False, "version": 0, "stage": "extracting",
-            "label": "正在提取修改订单", "next_action": "正在后台提取订单信息…", "step": 2,
+            "label": f"正在提取{noun}", "next_action": "正在后台提取订单信息…", "step": 2,
             "task_id": task["id"], "task_message": task.get("message") or "正在准备订单信息。",
         }
     if task and task.get("status") == "error":
         return {
             "created": False, "saved": False, "version": 0, "stage": "extraction_error",
-            "label": "提取失败", "next_action": "重新提取修改订单", "step": 2,
+            "label": "提取失败", "next_action": f"重新提取{noun}", "step": 2,
             "task_id": task["id"], "task_message": task.get("message") or "请重新提取订单信息。",
         }
     return {
         "created": False, "saved": False, "version": 0, "stage": "pending_extraction",
-        "label": "待提取修改订单", "next_action": "提取订单到修改模板", "step": 2,
+        "label": f"待提取{noun}", "next_action": f"提取订单到{noun}模板", "step": 2,
     }
 
 
 def get_order_change_template(case_id: int, employee_id: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    case = _case_for_template(case_id, employee_id, action_type="order_change")
+    return _get_simple_template(case_id, employee_id, action_type="order_change")
+
+
+def get_quote_template(case_id: int, employee_id: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    return _get_simple_template(case_id, employee_id, action_type="quotation")
+
+
+def _get_simple_template(
+    case_id: int, employee_id: str, *, action_type: str,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    case = _case_for_template(case_id, employee_id, action_type=action_type)
     with db_cursor() as conn:
         row = conn.execute(
             "SELECT id FROM order_entry_templates WHERE case_id=? AND employee_id=?", (case_id, employee_id)
@@ -1867,7 +1955,19 @@ def get_order_change_template(case_id: int, employee_id: str) -> tuple[dict[str,
 
 def save_order_change_template(case_id: int, employee_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Save the six user-facing fields without entering the domestic order flow."""
-    case = _case_for_template(case_id, employee_id, action_type="order_change")
+    return _save_simple_template(case_id, employee_id, payload, action_type="order_change")
+
+
+def save_quote_template(case_id: int, employee_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Save a quote workspace and invalidate prices after quote inputs change."""
+    return _save_simple_template(case_id, employee_id, payload, action_type="quotation")
+
+
+def _save_simple_template(
+    case_id: int, employee_id: str, payload: dict[str, Any], *, action_type: str,
+    preserve_quote_results: bool = True,
+) -> dict[str, Any]:
+    case = _case_for_template(case_id, employee_id, action_type=action_type)
     if case.get("status") == "pending_reply":
         raise ValueError("修改订单已提交 APS，不能再修改模板。")
     raw_lines = payload.get("lines") or []
@@ -1882,6 +1982,12 @@ def save_order_change_template(case_id: int, employee_id: str, payload: dict[str
         values["material_status"] = "查询"
         for field in ORDER_CHANGE_LINE_FIELDS:
             values[field] = clean_text(raw_values.get(field))
+        if action_type == "quotation":
+            for field in QUOTE_SOURCE_PRICE_FIELDS:
+                values[field] = clean_text(raw_values.get(field))
+            if not preserve_quote_results:
+                for field in QUOTE_RESULT_FIELDS:
+                    values[field] = clean_text(raw_values.get(field))
         line_no = values["line_no"]
         values["line_no"] = line_no if re.fullmatch(r"[1-9]\d*", line_no or "") else str(index)
         if not any(values.get(field) for field in ORDER_CHANGE_LINE_FIELDS if field != "line_no"):
@@ -1903,6 +2009,23 @@ def save_order_change_template(case_id: int, employee_id: str, payload: dict[str
             raise ValueError("请先提取修改订单模板")
         template_id = int(row["id"])
         previous = _serialize_template(conn, template_id)
+        if action_type == "quotation" and preserve_quote_results:
+            previous_by_line = {
+                str(item.get("values", {}).get("line_no") or item.get("line_no") or ""): item.get("values") or {}
+                for item in previous.get("lines") or []
+            }
+            for entry in lines:
+                values = entry["values"]
+                previous_values = previous_by_line.get(values["line_no"], {})
+                if (
+                    values.get("customer_spec") == previous_values.get("customer_spec")
+                    and values.get("quantity") == previous_values.get("quantity")
+                ):
+                    for field in QUOTE_RESULT_FIELDS:
+                        values[field] = clean_text(previous_values.get(field))
+                else:
+                    for field in QUOTE_RESULT_FIELDS:
+                        values[field] = ""
         invalidate_changed_order_matches(conn, template_id, lines)
         header = {**DEFAULT_HEADER_VALUES, **_json(row["header_json"], {})}
         first_order_number = next((item["values"]["customer_order_number"] for item in lines if item["values"].get("customer_order_number")), "")
@@ -1926,10 +2049,199 @@ def save_order_change_template(case_id: int, employee_id: str, payload: dict[str
             )
         record_order_detail_event(
             conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
-            event_type="order_change_template_saved", title="修改订单模板已保存",
+            event_type="order_change_template_saved" if action_type == "order_change" else "quote_template_saved",
+            title="修改订单模板已保存" if action_type == "order_change" else "核价模板已保存",
             detail={"line_count": len(lines)}, operated_by=employee_id,
         )
         return _serialize_template(conn, template_id)
+
+
+def calculate_quote_template_prices(case_id: int, employee_id: str) -> dict[str, Any]:
+    """Calculate and persist customer-rule prices for the current quote template."""
+    case, template = get_quote_template(case_id, employee_id)
+    if not template:
+        raise ValueError("请先生成核价模板")
+    review = review_case_template_prices(case, template)
+    updated_lines = []
+    counts = {"success": 0, "failed": 0}
+    for line in template.get("lines") or []:
+        values = dict(line.get("values") or {})
+        item = review.get("by_line", {}).get(int(line.get("line_no") or 0), {})
+        quote_price = clean_text(item.get("quote_price"))
+        values["quote_price"] = quote_price
+        values["quote_note"] = clean_text(item.get("note"))
+        counts["success" if quote_price else "failed"] += 1
+        updated_lines.append({"values": values, "sources": line.get("sources") or {}})
+    saved = _save_simple_template(
+        case_id, employee_id, {"lines": updated_lines}, action_type="quotation", preserve_quote_results=False,
+    )
+    with db_cursor() as conn:
+        record_order_detail_event(
+            conn, case_id=case_id, template_id=int(saved["id"]), employee_id=employee_id,
+            event_type="quote_template_prices_calculated", title="已计算报价单价格",
+            detail={"success_count": counts["success"], "failed_count": counts["failed"], "association": review.get("association") or {}},
+            operated_by=employee_id,
+        )
+    return {"template": saved, "review": review, **counts}
+
+
+def quote_template_reconciliation(
+    template: dict[str, Any], matches: dict[int, dict[str, Any]], price_review: dict[str, Any],
+) -> dict[str, Any]:
+    """Compare the customer quote lines with their selected ERP order lines."""
+    tax_mode = str(price_review.get("tax_mode") or "")
+    quote_field = "unit_price" if tax_mode == "tax_inclusive" else "price_before_tax"
+    erp_quote_field = "sctb06" if tax_mode == "tax_inclusive" else "sctb07"
+
+    def raw_decimal(value: Any) -> Decimal | None:
+        try:
+            return Decimal(str(value or "").replace(",", "").strip())
+        except (InvalidOperation, ValueError):
+            return None
+
+    def decimal(value: Any) -> Decimal | None:
+        parsed = raw_decimal(value)
+        return parsed.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if parsed is not None else None
+
+    def display(value: Decimal | None) -> str:
+        return format(value, ".2f") if value is not None else ""
+
+    def display_price(value: Decimal | None) -> str:
+        return format(value, "f") if value is not None else ""
+
+    def quote_precision(values: dict[str, Any], quote_price: Decimal | None) -> Decimal:
+        spec = str(values.get("customer_spec") or "")
+        raw = str(values.get("quote_price") or "")
+        is_roll = "卷" in spec or bool(re.search(r"\b\d+(?:\.\d+)?\s*m\s*/\s*roll\b", spec, re.I))
+        return Decimal("0.0001") if is_roll or len(raw.partition(".")[2]) >= 4 else Decimal("0.01")
+
+    def quote_values(values: dict[str, Any], quote_price: Decimal | None) -> tuple[dict[str, Decimal | None], str]:
+        if tax_mode not in {"tax_inclusive", "tax_exclusive"}:
+            return {"price_before_tax": None, "unit_price": None, "amount_before_tax": None, "amount_with_tax": None}, "待关联客户，无法计算报价"
+        if quote_price is None:
+            return {"price_before_tax": None, "unit_price": None, "amount_before_tax": None, "amount_with_tax": None}, clean_text(values.get("quote_note")) or "未查到报价单价格"
+        precision = quote_precision(values, quote_price)
+        factor = Decimal("1.13")
+        untaxed = quote_price / factor if tax_mode == "tax_inclusive" else quote_price
+        taxed = quote_price if tax_mode == "tax_inclusive" else quote_price * factor
+        untaxed = untaxed.quantize(precision, rounding=ROUND_HALF_UP)
+        taxed = taxed.quantize(precision, rounding=ROUND_HALF_UP)
+        quantity = raw_decimal(values.get("quantity"))
+        return {
+            "price_before_tax": untaxed,
+            "unit_price": taxed,
+            "amount_before_tax": (untaxed * quantity).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if quantity is not None else None,
+            "amount_with_tax": (taxed * quantity).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if quantity is not None else None,
+        }, ""
+
+    rows = []
+    for line in template.get("lines") or []:
+        values = line.get("values") or {}
+        line_no = int(line.get("line_no") or values.get("line_no") or 0)
+        match = matches.get(line_no) or {}
+        selected = match.get("selected_candidate") or {}
+        differences = []
+        comparison_rows = []
+        if match.get("status") != "matched" or not selected:
+            differences.append({"field": "厂内订单匹配", "customer": "", "factory": "", "note": "未确认厂内订单明细"})
+        quantity_customer, quantity_factory = decimal(values.get("quantity")), decimal(selected.get("sctb05"))
+        quantity_result = "一致"
+        quantity_note = ""
+        if quantity_customer is None or quantity_factory is None:
+            quantity_result, quantity_note = "缺少数据", "缺少可核对数值"
+        elif quantity_customer != quantity_factory:
+            quantity_result, quantity_note = "不一致", "数量不一致"
+        if quantity_result != "一致":
+            differences.append({"field": "数量", "customer": display(quantity_customer), "factory": display(quantity_factory), "note": quantity_note})
+
+        quote_price = raw_decimal(values.get("quote_price"))
+        quote_data, quote_note = quote_values(values, quote_price)
+        quote_field = "unit_price" if tax_mode == "tax_inclusive" else "price_before_tax"
+        erp_quote_field = "sctb06" if tax_mode == "tax_inclusive" else "sctb07"
+        customer_quote = raw_decimal(values.get(quote_field))
+        factory_quote = raw_decimal(selected.get(erp_quote_field))
+        quote_mismatch = False
+        if tax_mode not in {"tax_inclusive", "tax_exclusive"}:
+            differences.append({"field": "报价单价格", "customer": "", "factory": "", "note": quote_note})
+        elif quote_price is not None and (customer_quote != quote_price or factory_quote != quote_price):
+            quote_mismatch = True
+            price_kind = "含税" if tax_mode == "tax_inclusive" else "未税"
+            targets = []
+            if customer_quote != quote_price:
+                targets.append(f"客户{price_kind}单价")
+            if factory_quote != quote_price:
+                targets.append(f"厂内{price_kind}单价")
+            differences.append({
+                "field": "报价单价格", "customer": display_price(customer_quote),
+                "quote": display_price(quote_price), "factory": display_price(factory_quote),
+                "note": f"与{'、'.join(targets)}不一致",
+            })
+
+        comparisons = (
+            ("未税单价", "price_before_tax", "sctb07", True),
+            ("未税金额", "amount_before_tax", "sctb07", False),
+            ("含税单价", "unit_price", "sctb06", True),
+            ("含税金额", "amount_with_tax", "sctb06", False),
+        )
+        for label, customer_field, factory_field, is_price in comparisons:
+            # Unit prices are contractual values: compare the supplied
+            # precision, rather than rounding both sides to cents first.
+            parser = raw_decimal if is_price else decimal
+            formatter = display_price if parser is raw_decimal else display
+            customer_decimal = parser(values.get(customer_field))
+            factory_price = raw_decimal(selected.get(factory_field))
+            factory_decimal = factory_price if is_price else (
+                (raw_decimal(values.get("quantity")) * factory_price).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                if raw_decimal(values.get("quantity")) is not None and factory_price is not None else None
+            )
+            result, note = "一致", ""
+            if customer_decimal is None or factory_decimal is None:
+                result, note = "缺少数据", "缺少可核对数值" if is_price else "缺少可核对金额"
+            elif customer_decimal != factory_decimal:
+                result, note = "不一致", "数值不一致" if is_price else "金额不一致"
+            if result != "一致":
+                differences.append({"field": label, "customer": formatter(customer_decimal), "factory": formatter(factory_decimal), "note": note})
+            quote_value = quote_data[customer_field]
+            quote_display = formatter(quote_value)
+            is_quote_target = customer_field == quote_field
+            if quote_note and is_quote_target:
+                quote_display = f"—（{quote_note}）"
+            elif is_quote_target and quote_mismatch:
+                result = "不一致"
+            difference = note
+            if customer_decimal is not None and factory_decimal is not None:
+                difference = f"客户 − 厂内 = {formatter(customer_decimal - factory_decimal)}"
+            comparison_rows.append({
+                "label": label,
+                "customer": formatter(customer_decimal),
+                "factory": formatter(factory_decimal),
+                "quote": quote_display or "—",
+                "result": result,
+                "difference": difference,
+            })
+        rows.append({
+            "line_no": line_no, "match_status": match.get("status") or "unqueried",
+            "status": "matched" if not differences else "mismatch",
+            "label": "核对一致" if not differences else f"{len(differences)} 项待处理",
+            "quote_price": display_price(quote_price),
+            "quote_label": f"报价单{'含税' if tax_mode == 'tax_inclusive' else '未税'}单价" if quote_price is not None else "",
+            "differences": differences,
+            "comparison_rows": comparison_rows,
+            "quantity_review": {
+                "customer": display(quantity_customer), "factory": display(quantity_factory),
+                "result": quantity_result, "difference": quantity_note or "客户与厂内一致",
+            },
+            "erp": {
+                "erp_order_number": clean_text(selected.get("scta39")),
+                "account_set": clean_text(selected.get("account_set")),
+                "line_no": clean_text(selected.get("sctb35")),
+                "nyeos_order_number": clean_text(selected.get("scta01")),
+                "customer_order_number": clean_text(selected.get("sctb15") or selected.get("scta38")),
+                "customer_product_code": clean_text(selected.get("sctb14")),
+                "customer_spec": clean_text(selected.get("sctb36") or selected.get("sctb03")),
+            },
+        })
+    return {"rows": rows, "matched": sum(item["status"] == "matched" for item in rows), "issues": sum(item["status"] != "matched" for item in rows)}
 
 
 def _entry_progress(case_id: int, employee_id: str) -> dict[str, Any]:

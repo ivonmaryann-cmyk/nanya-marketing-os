@@ -1050,6 +1050,134 @@ def _native_table_purchase_document(file_item: dict[str, str], native: dict[str,
     }
 
 
+_CONTRACT_TABLE_HEADERS = [
+    "序号", "物料编码", "物料描述", "数量", "单位", "未税单价", "未税金额",
+    "含税单价", "含税金额", "要求交期", "备注",
+]
+
+
+def _contract_po_from_native_text(text: Any) -> str:
+    """Get an explicit PO token even when the PDF's Chinese font is unreadable."""
+    matches = re.findall(r"(?i)\b(PO-[A-Z0-9]+(?:-[A-Z0-9]+)*)\b", str(text or ""))
+    return matches[0].upper() if matches else ""
+
+
+def _native_contract_table_purchase_document(
+    file_item: dict[str, str], native: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Read fixed-layout Chinese purchase contracts with repeated page headers.
+
+    Some PDFs embed Chinese fonts that cannot be decoded by pdfplumber, while
+    their 11-column grid and Latin/numeric detail cells remain exact.  The
+    stable geometry is sufficient to recover the contract's item, code,
+    quantity, both prices/amounts, delivery date and remark without relying on
+    a lossy Markdown merge.
+    """
+    quality = native.get("text_quality") or {}
+    if not quality.get("has_text"):
+        return None
+
+    raw_detail_tables: list[dict[str, Any]] = []
+    mapped_rows: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = []
+    for page in native.get("pages") or []:
+        for table in page.get("tables") or []:
+            source_rows = _matrix_from_native_cells(
+                table.get("cells") or [], drop_trailing_sparse=False,
+            )
+            if not source_rows or max((len(row) for row in source_rows), default=0) != len(_CONTRACT_TABLE_HEADERS):
+                continue
+            detail_rows = [
+                list(row[: len(_CONTRACT_TABLE_HEADERS)])
+                for row in source_rows
+                if row and re.fullmatch(r"\d+", normalize_number(row[0]))
+            ]
+            if not detail_rows:
+                continue
+            table_rows = [list(_CONTRACT_TABLE_HEADERS), *detail_rows]
+            candidates: list[dict[str, Any]] = []
+            for detail_row in detail_rows:
+                original = dict(zip(_CONTRACT_TABLE_HEADERS, detail_row))
+                standard = {
+                    "序号": normalize_number(detail_row[0]),
+                    "物料编码": re.sub(r"\s+", "", clean_text(detail_row[1])),
+                    "物料名称": clean_text(detail_row[2]),
+                    "说明": clean_text(detail_row[2]),
+                    "数量": normalize_number(detail_row[3]),
+                    "单位": clean_text(detail_row[4]),
+                    "含税单价": normalize_number(detail_row[7]),
+                    "金额": normalize_number(detail_row[8]),
+                    "交货日期": normalize_date(detail_row[9]),
+                    "备注": clean_text(detail_row[10]),
+                }
+                candidates.append(
+                    {
+                        "page_index": page.get("page_index", 0),
+                        "original": original,
+                        "standard": standard,
+                        "method": "pdf_native_contract_table",
+                    }
+                )
+            if not _native_table_rows_reliable(candidates, minimum_rows=1):
+                return None
+            raw_detail_tables.append(
+                {
+                    "page_index": page.get("page_index", 0),
+                    "table_index": len(raw_detail_tables),
+                    "bbox": [],
+                    "rows": table_rows,
+                    "method": "pdf_native_contract_table",
+                    "confidence": 1.0,
+                }
+            )
+            mapped_rows.extend(candidates)
+
+    if not _native_table_rows_reliable(mapped_rows):
+        return None
+
+    source_file = file_item.get("original_filename") or Path(file_item["stored_path"]).name
+    lines = [line.strip() for line in clean_text(native.get("text")).splitlines() if line.strip()]
+    header_info = extract_key_values(lines)
+    contract_po = _contract_po_from_native_text(native.get("text"))
+    if contract_po:
+        header_info["订单号"] = contract_po
+        header_info.setdefault("合同编号", contract_po)
+    template = identify_template(source_file, "\n".join(lines))
+    warnings = list(native.get("warnings") or [])
+    warnings.append("采购合同使用原生固定列跨页表格解析，已跳过不可靠的 Markdown 合并。")
+    return {
+        "pipeline_version": "purchase_order_v1",
+        "source_file": source_file,
+        "file_type": "pdf",
+        "parser_mode": "pdf_native_contract_table",
+        "contract_po": contract_po,
+        "template_id": template.template_id if template else "",
+        "template_label": template.label if template else "",
+        "page_count": int(native.get("page_count") or 1),
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "header_info": header_info,
+        "pages": [],
+        "regions": [
+            {
+                "page_index": table.get("page_index"),
+                "tables": [{
+                    "table_index": table.get("table_index"),
+                    "table_type": "detail_table",
+                    "bbox": [],
+                    "row_count": max(0, len(table.get("rows") or []) - 1),
+                    "method": table.get("method"),
+                }],
+            }
+            for table in raw_detail_tables
+        ],
+        "raw_detail_tables": raw_detail_tables,
+        "mapped_detail_rows": mapped_rows,
+        "sections": {"备注": [], "条款": [], "付款信息": [], "收货信息": [], "签核区": []},
+        "issues": issues,
+        "warnings": warnings,
+    }
+
+
 def _native_pdf_summary(path: Path) -> dict[str, Any]:
     try:
         return parse_pdf_native(path)
@@ -1465,6 +1593,18 @@ def run_purchase_order_pipeline(file_item: dict[str, str], work_dir: Path | None
                     normalized = normalize_purchase_document(native_table_document, source_text=native_text)
                 return finish(normalized)
             append_fallback_reason("pdf_native_table_fast_not_reliable")
+            with performance_stage("pdf_native_contract_table_fast_path"):
+                native_contract_document = _native_contract_table_purchase_document(file_item, native)
+            if native_contract_document:
+                set_fast_path("pdf_native_contract_table")
+                with performance_stage("normalize"):
+                    normalized = normalize_purchase_document(native_contract_document, source_text=native_text)
+                contract_po = clean_text(native_contract_document.get("contract_po"))
+                if contract_po:
+                    normalized.setdefault("header_info", {})["订单号"] = contract_po
+                    normalized["header_info"].setdefault("合同编号", contract_po)
+                return finish(normalized)
+            append_fallback_reason("pdf_native_contract_table_fast_not_reliable")
             with performance_stage("pdf_native_fast_path"):
                 native_text_document = _native_text_purchase_document(file_item, native)
             if native_text_document:

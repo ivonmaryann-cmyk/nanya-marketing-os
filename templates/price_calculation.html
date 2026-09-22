@@ -439,11 +439,12 @@
       const data = await response.json();
       if (response.ok && data.price !== null && data.price !== undefined && data.price !== "") {
         const numeric = Number(data.price);
-        let priceDigits = selectedCustomer === "shengyi" && data.material_type === "PP" ? 6 : 2;
-        if (selectedCustomer === "mingyang" && data.material_type === "PP") {
+        const hasDisplayPrecision = Number.isInteger(data.display_precision);
+        let priceDigits = hasDisplayPrecision ? data.display_precision : (selectedCustomer === "shengyi" && data.material_type === "PP" ? 6 : 2);
+        if (!hasDisplayPrecision && selectedCustomer === "mingyang" && data.material_type === "PP") {
           const hasRollPrice = data.total !== null && data.total !== undefined && data.total !== "" && Number.isFinite(Number(data.total));
           priceDigits = hasRollPrice ? 1 : 2;
-        } else if (selectedCustomer === "mingyang" && data.material_type === "CCL") {
+        } else if (!hasDisplayPrecision && selectedCustomer === "mingyang" && data.material_type === "CCL") {
           priceDigits = /^(?:(41|82)(?:\.0+)?\*49|49(?:\.0+)?\*(41|82))/.test(data.size_column || "") ? 0 : 2;
         }
         const title = Number.isFinite(numeric) ? numeric.toFixed(priceDigits) : String(data.price);

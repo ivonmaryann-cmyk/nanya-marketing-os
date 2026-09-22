@@ -92,6 +92,7 @@ def identify_template(source_filename: str, text: str = "") -> TemplateMatch | N
 def likely_order_number(text: str) -> str:
     patterns = [
         r"(?:订单号|采购单号|采购订单号|订单编号)\s*(?:\([^)）]*\)|（[^)）]*）)?\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9_-]{4,})",
+        r"(?:合同编号|合同号|Contract\s*No\.?)\s*[:：]\s*(PO[-_][A-Za-z0-9][A-Za-z0-9_-]{4,})",
         r"(?:P\.?\s*O\.?\s*NO|PONO)\s*(?:\([^)）]*\)|（[^)）]*）)?\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9_-]{4,})",
         r"\b(GA\d{3,}-\d{6,})\b",
         r"\b(P\d{6,})\b",

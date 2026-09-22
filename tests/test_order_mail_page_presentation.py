@@ -445,7 +445,7 @@ class OrderMailPagePresentationTests(unittest.TestCase):
                 },
                 counts={"total": 1, "needs_business_routing": 0, "new_order": 1, "order_change": 0, "quotation": 0, "unrouted": 0},
                 work_summary={"active_total": 1, "needs_routing": 0, "completed_today": 0, "pending": 1, "in_progress": 0, "awaiting_confirmation": 0, "on_hold": 0, "by_type": {"new_order": 1, "order_change": 0, "quotation": 0}},
-                action_labels={"unclassified": "暂不分流", "new_order": "录单", "order_change": "修改订单", "quotation": "报价"},
+                action_labels={"unclassified": "暂不分流", "new_order": "录单", "order_change": "修改订单", "quotation": "核价"},
                 scope_labels={"subject": "邮件主题"},
                 total_cases=1,
                 page=1,
@@ -471,7 +471,7 @@ class OrderMailPagePresentationTests(unittest.TestCase):
                 nyeos_order_number="SA2608270003",
                 return_context={"url": "/test", "values": {"category": "all"}, "query": {}},
                 status_labels={"pending_triage": "待处理"},
-                action_labels={"unclassified": "暂不分流", "new_order": "录单", "order_change": "修改订单", "quotation": "报价"},
+                action_labels={"unclassified": "暂不分流", "new_order": "录单", "order_change": "修改订单", "quotation": "核价"},
                 match_status_labels={"matched": "已匹配负责客户"},
             )
             drawer_html = render_template(
@@ -487,7 +487,7 @@ class OrderMailPagePresentationTests(unittest.TestCase):
                     "handling_note": "",
                     "attachments": [{"id": 1, "filename": "PO-3001.pdf", "content_type": "application/pdf", "parse_status": "parsed", "is_inline": 0, "previewable": True}],
                 },
-                action_labels={"unclassified": "暂不分流", "new_order": "录单", "order_change": "修改订单", "quotation": "报价"},
+                action_labels={"unclassified": "暂不分流", "new_order": "录单", "order_change": "修改订单", "quotation": "核价"},
                 status_labels={"pending_triage": "待处理"},
                 match_status_labels={"matched": "已匹配负责客户"},
                 scope_labels={"subject": "邮件主题"},
@@ -504,6 +504,9 @@ class OrderMailPagePresentationTests(unittest.TestCase):
             )
 
         self.assertIn("同步新邮件", list_html)
+        self.assertIn("核价 0", list_html)
+        self.assertIn("核价", detail_html)
+        self.assertIn("核价", drawer_html)
         self.assertIn("补抓近 30 天邮件", list_html)
         self.assertIn('aria-label="邮件状态"', list_html)
         self.assertIn('<option value="pending_interface_submit" selected>订单信息确认</option>', list_html)

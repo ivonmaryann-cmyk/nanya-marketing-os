@@ -27,6 +27,10 @@ from .paths import JOBS_DIR
 
 ALLOWED_INPUT_EXTENSIONS = (".xlsx", ".xlsm", ".xls")
 NON_DATA_DESCRIPTIONS = {"物料描述", "规格", "客户规格", "材料描述", "物料规格"}
+NORMAL_PRICE_HEADERS = {"NORMAL", "NORMALPRICE", "新价格", "新价", "NEWPRICE", "SQF"}
+REBATE_PRICE_HEADERS = {
+    "REBATE", "REBATEPRICE", "特殊价格", "特殊价格支持", "特价", "SPECIALPRICE",
+}
 
 
 @dataclass
@@ -46,6 +50,14 @@ class HushiMatchResult:
     normal_price: Any = None
     rebate_price: Any = None
     used_price_column: str = ""
+
+
+@dataclass
+class HushiQuoteIndex:
+    workbook: Any
+    sheet_names: tuple[str, ...]
+    rows_by_product: dict[str, list[tuple[str, tuple, int]]]
+    price_header_cache: dict[str, list[tuple[int, Optional[int], Optional[int]]]]
 
 
 def queue_hushi_job(employee_id: str, uploaded_file, source_filename: str) -> int:
@@ -78,7 +90,12 @@ def calculate_hushi_quote(spec: str) -> dict:
     if not rule_version:
         return {"status": "失败", "price": None, "error": "当前没有沪士报价规则，请先上传规则包"}
 
-    result = calculate_hushi_spec(spec, get_hushi_rule_dir(rule_version), rule_cache={})
+    result = calculate_hushi_spec(
+        spec,
+        get_hushi_rule_dir(rule_version),
+        rule_cache={},
+        quote_cache={},
+    )
     note_parts = [result.reason]
     if result.rule_file:
         note_parts.append(f"报价文件：{result.rule_file}")
@@ -164,9 +181,16 @@ def calculate_hushi_workbook(input_path: Path, rule_dir: Path, *, job_id: int | 
         append_job_log(job_id, f"使用第一个工作表：{ws.title}")
         append_job_log(job_id, "已启用沪士报价文件缓存")
     rule_cache: dict[str, Optional[Path]] = {}
+    quote_cache: dict[tuple[str, str], HushiQuoteIndex] = {}
     desc_col = detect_description_column(ws)
-    output_col = last_non_empty_column(ws) + 1
-    ws.cell(row=1, column=output_col, value="沪士计算价格")
+    normal_output_col = last_non_empty_column(ws) + 1
+    rebate_output_col = normal_output_col + 1
+    normal_rebate_output_col = normal_output_col + 2
+    final_output_col = normal_output_col + 3
+    ws.cell(row=1, column=normal_output_col, value="Normal")
+    ws.cell(row=1, column=rebate_output_col, value="Rebate")
+    ws.cell(row=1, column=normal_rebate_output_col, value="Normal+Rebate")
+    ws.cell(row=1, column=final_output_col, value="Rebate最终价格")
 
     note_sheet_name = "沪士计算说明"
     if note_sheet_name in wb.sheetnames:
@@ -176,8 +200,10 @@ def calculate_hushi_workbook(input_path: Path, rule_dir: Path, *, job_id: int | 
         "行号",
         "规格",
         "状态",
-        "最终价格",
-        "单价",
+        "Normal",
+        "Rebate",
+        "Normal+Rebate",
+        "Rebate最终价格",
         "价格列",
         "面积",
         "宽inch取档",
@@ -212,13 +238,24 @@ def calculate_hushi_workbook(input_path: Path, rule_dir: Path, *, job_id: int | 
             skip_count += 1
             continue
 
-        result = calculate_hushi_spec(str(spec), rule_dir, rule_cache=rule_cache)
+        result = calculate_hushi_spec(
+            str(spec),
+            rule_dir,
+            rule_cache=rule_cache,
+            quote_cache=quote_cache,
+        )
+        ws.cell(row=row_idx, column=normal_output_col, value=result.normal_price)
+        ws.cell(row=row_idx, column=rebate_output_col, value=result.rebate_price)
+        normal_rebate_price = (
+            result.normal_price if result.normal_price is not None else result.rebate_price
+        )
+        ws.cell(row=row_idx, column=normal_rebate_output_col, value=normal_rebate_price)
         if result.final_price is not None:
-            ws.cell(row=row_idx, column=output_col, value=result.final_price)
+            ws.cell(row=row_idx, column=final_output_col, value=result.final_price)
             success_count += 1
             log_msg = f"第 {row_idx} 行成功：{result.final_price}"
         else:
-            ws.cell(row=row_idx, column=output_col, value=result.reason)
+            ws.cell(row=row_idx, column=final_output_col, value=result.reason)
             fail_count += 1
             log_msg = f"第 {row_idx} 行失败：{result.reason}"
 
@@ -227,8 +264,10 @@ def calculate_hushi_workbook(input_path: Path, rule_dir: Path, *, job_id: int | 
                 row_idx,
                 normalize_text(spec),
                 result.status,
+                result.normal_price,
+                result.rebate_price,
+                normal_rebate_price,
                 result.final_price,
-                result.price,
                 result.used_price_column,
                 result.area_step,
                 result.width_inch_floor,
@@ -306,11 +345,9 @@ def extract_pp_fields(spec: str) -> tuple[Optional[str], Optional[float]]:
     text = normalize_text(spec).upper()
     glass = None
     rc = None
-    match = re.search(r"\b(0?106|1035|1037|1078|1080|1086|1506|2116|3313|7628)\b", text)
+    match = re.search(r"\b(\d{3,4})\s+RC\s*=?\s*\d", text)
     if match:
-        glass = match.group(1)
-        if glass == "0106":
-            glass = "106"
+        glass = str(int(match.group(1)))
     match = re.search(r"RC\s*=?\s*(\d+(?:\.\d+)?)\s*%", text)
     if match:
         rc = float(match.group(1))
@@ -329,34 +366,39 @@ def extract_ccl_fields(spec: str) -> dict[str, object]:
     if match:
         thickness = int(match.group(1)) / 10.0
     else:
-        match = re.search(r"\b(\d+(?:\.\d+)?)\s*MIL\b", text)
+        match = re.search(r"\b(\d{3,4})\b", text)
         if match:
-            thickness = float(match.group(1))
+            thickness = int(match.group(1)) / 10.0
+        else:
+            match = re.search(r"\b(\d+(?:\.\d+)?)\s*MIL\b", text)
+            if match:
+                thickness = float(match.group(1))
 
     match = re.search(r"\b(H|1|2|3)/(H|1|2|3)\b", text)
     if match:
         copper = f"{match.group(1)}/{match.group(2)}"
 
-    match = re.search(r"\b(1067|0106|106|1035|1037|1078|1080|1086|1506|2116|3313|7628)\s*X\s*(\d+)\b", text)
-    if match:
-        glass = match.group(1)
-        if glass == "0106":
-            glass = "106"
-        structure = f"{glass}X{match.group(2)}"
+    structure = normalize_ccl_structure(text)
 
     foil_tokens = []
     if "H-VLP" in text or "HVLP" in text:
+        foil_tokens.append("HVLP")
+    if "H-VIP" in text or "HVIP" in text:
         foil_tokens.append("HVLP")
     if "PVLP" in text:
         foil_tokens.append("PVLP")
     if "FVLP" in text:
         foil_tokens.append("FVLP")
+    if "HTE" in text:
+        foil_tokens.append("HTE")
     if "RTF3" in text:
         foil_tokens.append("RTF3")
     if "RTF2" in text:
         foil_tokens.append("RTF2")
     if "RTF" in text and "RTF3" not in text and "RTF2" not in text:
         foil_tokens.append("RTF")
+    if "STD" in text:
+        foil_tokens.append("STD")
     if foil_tokens:
         foil = "/".join(dict.fromkeys(foil_tokens))
 
@@ -500,6 +542,36 @@ def iter_data_rows(ws):
                 break
 
 
+def get_hushi_quote_index(
+    rule_file: Path,
+    material_type: str,
+    quote_cache: dict[tuple[str, str], HushiQuoteIndex] | None = None,
+) -> HushiQuoteIndex:
+    cache_key = (str(rule_file.resolve()), material_type)
+    if quote_cache is not None and cache_key in quote_cache:
+        return quote_cache[cache_key]
+
+    workbook = load_excel_workbook(rule_file)
+    if material_type == "PP":
+        sheet_names = tuple(name for name in workbook.sheetnames if "PP" in name.upper())
+    else:
+        sheet_names = tuple(
+            name for name in workbook.sheetnames
+            if any(key in name.upper() for key in ["CCL", "基板"])
+        )
+
+    rows_by_product: dict[str, list[tuple[str, tuple, int]]] = {}
+    for sheet_name in sheet_names:
+        for row, product_idx in iter_data_rows(workbook[sheet_name]):
+            product_key = quote_product_key(row[product_idx].value)
+            rows_by_product.setdefault(product_key, []).append((sheet_name, row, product_idx))
+
+    index = HushiQuoteIndex(workbook, sheet_names, rows_by_product, {})
+    if quote_cache is not None:
+        quote_cache[cache_key] = index
+    return index
+
+
 def pick_price(row, normal_idx: int, rebate_idx: int) -> tuple[Optional[float], str, Any, Any, str]:
     rebate_cell = row[rebate_idx] if rebate_idx < len(row) else None
     normal_cell = row[normal_idx] if normal_idx < len(row) else None
@@ -519,6 +591,56 @@ def pick_price(row, normal_idx: int, rebate_idx: int) -> tuple[Optional[float], 
     return None, "", normal, rebate, strike_note or "Normal/Rebate 均为空"
 
 
+def price_header_kind(value: Any) -> str:
+    key = normalize_key(value).replace("\n", "").replace("：", "")
+    if key in NORMAL_PRICE_HEADERS:
+        return "normal"
+    if key in REBATE_PRICE_HEADERS:
+        return "rebate"
+    return ""
+
+
+def price_header_rows(ws) -> list[tuple[int, Optional[int], Optional[int]]]:
+    headers = []
+    for row in ws.iter_rows(min_row=1):
+        normal_idx = None
+        rebate_idx = None
+        for cell in row:
+            kind = price_header_kind(cell.value)
+            if kind == "normal" and normal_idx is None:
+                normal_idx = cell.column - 1
+            elif kind == "rebate" and rebate_idx is None:
+                rebate_idx = cell.column - 1
+        if normal_idx is not None or rebate_idx is not None:
+            headers.append((row[0].row, normal_idx, rebate_idx))
+    return headers
+
+
+def resolve_price_column_indexes(
+    ws,
+    data_row: int,
+    normal_idx: int,
+    rebate_idx: int,
+    *,
+    header_cache: dict[str, list[tuple[int, Optional[int], Optional[int]]]] | None = None,
+) -> tuple[int, int]:
+    """从最近的报价表头解析价格列，未识别时保留旧版相对列位置。"""
+    if header_cache is None:
+        headers = price_header_rows(ws)
+    else:
+        headers = header_cache.get(ws.title)
+        if headers is None:
+            headers = price_header_rows(ws)
+            header_cache[ws.title] = headers
+    for header_row, resolved_normal, resolved_rebate in reversed(headers):
+        if header_row < data_row:
+            return (
+                normal_idx if resolved_normal is None else resolved_normal,
+                rebate_idx if resolved_rebate is None else resolved_rebate,
+            )
+    return normal_idx, rebate_idx
+
+
 def text_match(expected: Optional[str], actual: Any) -> bool:
     if expected is None:
         return False
@@ -532,34 +654,52 @@ def number_match(expected: Optional[float], actual: Any) -> bool:
     return actual_num is not None and abs(actual_num - expected) < 1e-6
 
 
-def match_pp(spec: str, product: str, rule_file: Path, size_info: tuple[float, float, float]) -> HushiMatchResult:
+def percentage_match(expected: Optional[float], actual: Any) -> bool:
+    actual_num = numeric_value(actual)
+    if actual_num is not None and 0 < actual_num <= 1:
+        actual_num *= 100
+    return actual_num is not None and abs(actual_num - expected) < 1e-6
+
+
+def match_pp(
+    spec: str,
+    product: str,
+    rule_file: Path,
+    size_info: tuple[float, float, float],
+    *,
+    quote_cache: dict[tuple[str, str], HushiQuoteIndex] | None = None,
+) -> HushiMatchResult:
     glass, rc = extract_pp_fields(spec)
     if not glass or rc is None:
         return HushiMatchResult(None, None, "failed", f"无法提取 PP 玻纤或 RC：glass={glass}, rc={rc}", product=product, material_type="PP")
 
-    wb = load_excel_workbook(rule_file)
-    pp_sheets = [name for name in wb.sheetnames if "PP" in name.upper()]
+    quote_index = get_hushi_quote_index(rule_file, "PP", quote_cache)
+    pp_sheets = quote_index.sheet_names
     if not pp_sheets:
         return HushiMatchResult(None, None, "failed", "报价单中找不到 PP 报价页", rule_file=rule_file.name, product=product, material_type="PP")
 
     pkey = quote_product_key(product)
-    for sheet_name in pp_sheets:
-        ws = wb[sheet_name]
-        for row, product_idx in iter_data_rows(ws):
-            product_cell = row[product_idx]
-            if quote_product_key(product_cell.value) != pkey:
-                continue
-            glass_cell = row[product_idx + 1] if product_idx + 1 < len(row) else None
-            rc_cell = row[product_idx + 2] if product_idx + 2 < len(row) else None
-            if not text_match(glass, glass_cell.value if glass_cell else None):
-                continue
-            if not number_match(rc, rc_cell.value if rc_cell else None):
-                continue
-            price, col, normal, rebate, note = pick_price(row, product_idx + 3, product_idx + 4)
-            w_floor, h_floor, area_step = size_info
-            if price is None:
-                return HushiMatchResult(None, None, "failed", note, rule_file.name, sheet_name, product_cell.row, product, "PP", area_step, w_floor, h_floor, normal, rebate, col)
-            return HushiMatchResult(price, round(price * area_step, 2), "completed", "命中 PP 报价", rule_file.name, sheet_name, product_cell.row, product, "PP", area_step, w_floor, h_floor, normal, rebate, col)
+    for sheet_name, row, product_idx in quote_index.rows_by_product.get(pkey, []):
+        ws = quote_index.workbook[sheet_name]
+        product_cell = row[product_idx]
+        glass_cell = row[product_idx + 1] if product_idx + 1 < len(row) else None
+        rc_cell = row[product_idx + 2] if product_idx + 2 < len(row) else None
+        if not text_match(glass, glass_cell.value if glass_cell else None):
+            continue
+        if not percentage_match(rc, rc_cell.value if rc_cell else None):
+            continue
+        normal_idx, rebate_idx = resolve_price_column_indexes(
+            ws,
+            product_cell.row,
+            product_idx + 3,
+            product_idx + 4,
+            header_cache=quote_index.price_header_cache,
+        )
+        price, col, normal, rebate, note = pick_price(row, normal_idx, rebate_idx)
+        w_floor, h_floor, area_step = size_info
+        if price is None:
+            return HushiMatchResult(None, None, "failed", note, rule_file.name, sheet_name, product_cell.row, product, "PP", area_step, w_floor, h_floor, normal, rebate, col)
+        return HushiMatchResult(price, round(price * area_step, 2), "completed", "命中 PP 报价", rule_file.name, sheet_name, product_cell.row, product, "PP", area_step, w_floor, h_floor, normal, rebate, col)
 
     return HushiMatchResult(None, None, "failed", f"PP 报价未命中：产品={product}, 玻纤={glass}, RC={rc}", rule_file.name, ",".join(pp_sheets), product=product, material_type="PP")
 
@@ -570,6 +710,8 @@ def normalize_copper_side(value: Any) -> str:
 
 def normalize_foil_token(value: Any) -> str:
     text = normalize_key(value).replace("H-VLP", "HVLP")
+    if text == "HVIP":
+        return "HVLP"
     return "HVLP" if text == "HVLP" else text
 
 
@@ -602,9 +744,26 @@ def foil_match(expected: Optional[str], actual: Any) -> bool:
     act = normalize_foil_token(actual)
     if exp == act:
         return True
+    if {exp, act} == {"STD", "SDT"}:
+        return True
     if "/" in exp and act in exp.split("/"):
         return True
     return False
+
+
+def normalize_ccl_structure(value: Any) -> Optional[tuple[tuple[str, int], ...]]:
+    """将 7628*2+2116*1、2x7628 等叠构写法规范成同一结构。"""
+    tokens = []
+    for left, right in re.findall(r"\b(\d{1,4})\s*X\s*(\d{1,4})\b", normalize_text(value).upper()):
+        if len(left) >= 3 and int(right) <= 99:
+            tokens.append((str(int(left)), int(right)))
+        elif int(left) <= 99 and len(right) >= 3:
+            tokens.append((str(int(right)), int(left)))
+    return tuple(sorted(tokens)) if tokens else None
+
+
+def structure_match(expected: object, actual: Any) -> bool:
+    return bool(expected) and expected == normalize_ccl_structure(actual)
 
 
 def ccl_copper_foil_match(
@@ -627,46 +786,63 @@ def ccl_copper_foil_match(
     return expected_map == actual_map
 
 
-def match_ccl(spec: str, product: str, rule_file: Path, size_info: tuple[float, float, float]) -> HushiMatchResult:
+def match_ccl(
+    spec: str,
+    product: str,
+    rule_file: Path,
+    size_info: tuple[float, float, float],
+    *,
+    quote_cache: dict[tuple[str, str], HushiQuoteIndex] | None = None,
+) -> HushiMatchResult:
     fields = extract_ccl_fields(spec)
     missing = [k for k, v in fields.items() if v is None]
     if missing:
         return HushiMatchResult(None, None, "failed", "无法提取 CCL 字段：" + ",".join(missing), rule_file.name, product=product, material_type="CCL")
 
-    wb = load_excel_workbook(rule_file)
-    ccl_sheets = [name for name in wb.sheetnames if any(key in name.upper() for key in ["CCL", "基板"])]
+    quote_index = get_hushi_quote_index(rule_file, "CCL", quote_cache)
+    ccl_sheets = quote_index.sheet_names
     if not ccl_sheets:
         return HushiMatchResult(None, None, "failed", "报价单中找不到 CCL/基板报价页", rule_file=rule_file.name, product=product, material_type="CCL")
 
     pkey = quote_product_key(product)
-    for sheet_name in ccl_sheets:
-        ws = wb[sheet_name]
-        for row, product_idx in iter_data_rows(ws):
-            product_cell = row[product_idx]
-            if quote_product_key(product_cell.value) != pkey:
-                continue
-            if not number_match(fields["thickness"], row[product_idx + 1].value if product_idx + 1 < len(row) else None):
-                continue
-            if not text_match(fields["structure"], row[product_idx + 3].value if product_idx + 3 < len(row) else None):
-                continue
-            if not ccl_copper_foil_match(
-                fields["copper"],
-                fields["foil"],
-                fields.get("foil_pairs"),
-                row[product_idx + 2].value if product_idx + 2 < len(row) else None,
-                row[product_idx + 4].value if product_idx + 4 < len(row) else None,
-            ):
-                continue
-            price, col, normal, rebate, note = pick_price(row, product_idx + 5, product_idx + 6)
-            w_floor, h_floor, area_step = size_info
-            if price is None:
-                return HushiMatchResult(None, None, "failed", note, rule_file.name, sheet_name, product_cell.row, product, "CCL", area_step, w_floor, h_floor, normal, rebate, col)
-            return HushiMatchResult(price, round(price * area_step, 2), "completed", "命中 CCL 报价", rule_file.name, sheet_name, product_cell.row, product, "CCL", area_step, w_floor, h_floor, normal, rebate, col)
+    for sheet_name, row, product_idx in quote_index.rows_by_product.get(pkey, []):
+        ws = quote_index.workbook[sheet_name]
+        product_cell = row[product_idx]
+        if not number_match(fields["thickness"], row[product_idx + 1].value if product_idx + 1 < len(row) else None):
+            continue
+        if not structure_match(fields["structure"], row[product_idx + 3].value if product_idx + 3 < len(row) else None):
+            continue
+        if not ccl_copper_foil_match(
+            fields["copper"],
+            fields["foil"],
+            fields.get("foil_pairs"),
+            row[product_idx + 2].value if product_idx + 2 < len(row) else None,
+            row[product_idx + 4].value if product_idx + 4 < len(row) else None,
+        ):
+            continue
+        normal_idx, rebate_idx = resolve_price_column_indexes(
+            ws,
+            product_cell.row,
+            product_idx + 5,
+            product_idx + 6,
+            header_cache=quote_index.price_header_cache,
+        )
+        price, col, normal, rebate, note = pick_price(row, normal_idx, rebate_idx)
+        w_floor, h_floor, area_step = size_info
+        if price is None:
+            return HushiMatchResult(None, None, "failed", note, rule_file.name, sheet_name, product_cell.row, product, "CCL", area_step, w_floor, h_floor, normal, rebate, col)
+        return HushiMatchResult(price, round(price * area_step, 2), "completed", "命中 CCL 报价", rule_file.name, sheet_name, product_cell.row, product, "CCL", area_step, w_floor, h_floor, normal, rebate, col)
 
     return HushiMatchResult(None, None, "failed", f"CCL 报价未命中：{fields}", rule_file.name, ",".join(ccl_sheets), product=product, material_type="CCL")
 
 
-def calculate_hushi_spec(spec: str, rule_dir: Path, *, rule_cache: dict[str, Optional[Path]] | None = None) -> HushiMatchResult:
+def calculate_hushi_spec(
+    spec: str,
+    rule_dir: Path,
+    *,
+    rule_cache: dict[str, Optional[Path]] | None = None,
+    quote_cache: dict[tuple[str, str], HushiQuoteIndex] | None = None,
+) -> HushiMatchResult:
     spec = normalize_text(spec)
     product = extract_product(spec)
     if not product:
@@ -679,8 +855,8 @@ def calculate_hushi_spec(spec: str, rule_dir: Path, *, rule_cache: dict[str, Opt
         return HushiMatchResult(None, None, "failed", "无法识别尺寸", rule_file=rule_file.name, product=product)
     size_info = area_step_from_size(*size)
     if re.search(r"\bPP\b", spec.upper()):
-        return match_pp(spec, product, rule_file, size_info)
-    return match_ccl(spec, product, rule_file, size_info)
+        return match_pp(spec, product, rule_file, size_info, quote_cache=quote_cache)
+    return match_ccl(spec, product, rule_file, size_info, quote_cache=quote_cache)
 
 
 def last_non_empty_column(ws) -> int:

@@ -43,23 +43,71 @@
 </section>
 
 <section class="card">
-  <h2>最近规则版本</h2>
+  <div class="rule-history-head">
+    <div>
+      <h2>最近规则版本</h2>
+      <p>仅可启用本机同时具备价格对账表和基板对照表的完整版本。</p>
+    </div>
+    {% if rule_history %}
+    <label class="rule-history-password">
+      <span>版本操作管理员密码</span>
+      <input type="password" id="rule-history-admin-password" autocomplete="current-password" required>
+    </label>
+    {% endif %}
+  </div>
   <table class="table">
     <thead>
-      <tr><th>版本</th><th>更新时间</th><th>更新人</th><th>备注</th></tr>
+      <tr><th>版本</th><th>状态</th><th>更新时间</th><th>更新人</th><th>备注</th><th>操作</th></tr>
     </thead>
     <tbody>
       {% for item in rule_history %}
       <tr>
         <td>{{ item.version }}</td>
+        <td>
+          {% if item.version == active_rule_version %}
+          <span class="status completed">当前生效</span>
+          {% elif item.is_available %}
+          <span class="status">可启用</span>
+          {% else %}
+          <span class="status failed">本机文件缺失</span>
+          {% endif %}
+        </td>
         <td>{{ item.updated_at }}</td>
         <td>{{ item.updated_by }}</td>
         <td>{{ item.remark }}</td>
+        <td>
+          {% if item.version == active_rule_version %}
+          <button type="button" class="secondary-button" disabled>已启用</button>
+          {% elif item.is_available %}
+          <form method="post" class="rule-version-form">
+            <input type="hidden" name="action" value="activate">
+            <input type="hidden" name="version" value="{{ item.version }}">
+            <input type="hidden" name="admin_password" value="">
+            <button type="submit" class="secondary-button">启用</button>
+          </form>
+          {% else %}
+          <button type="button" class="secondary-button" disabled title="请恢复该版本的两份规则文件后再启用">无法启用</button>
+          {% endif %}
+        </td>
       </tr>
       {% else %}
-      <tr><td colspan="4">暂无规则版本记录。</td></tr>
+      <tr><td colspan="6">暂无规则版本记录。</td></tr>
       {% endfor %}
     </tbody>
   </table>
 </section>
+<script>
+  const historyAdminPassword = document.getElementById("rule-history-admin-password");
+  document.querySelectorAll(".rule-version-form").forEach(form => {
+    form.addEventListener("submit", event => {
+      if (!historyAdminPassword || !historyAdminPassword.value) {
+        event.preventDefault();
+        historyAdminPassword?.focus();
+        historyAdminPassword?.reportValidity();
+        return;
+      }
+      form.querySelector('input[name="admin_password"]').value = historyAdminPassword.value;
+    });
+  });
+</script>
 {% endblock %}

@@ -77,6 +77,21 @@ class OrderPriceValidationTests(unittest.TestCase):
         self.assertEqual(item["note"], "报价单计算")
         self.assertFalse(review["mismatches"])
 
+    def test_roll_quote_is_written_with_four_decimal_places(self) -> None:
+        with patch.dict(PRICE_QUOTE_TAX_MODE_BY_CUSTOMER_KEY, {"fangzheng": PRICE_TAX_MODE_EXCLUSIVE}, clear=True), patch(
+            "fangzheng_web_app.order_price_validation_service.calculate_fangzheng_quote",
+            return_value={"status": "成功", "price": "91.3386", "note": "命中报价"},
+        ):
+            review = review_template_prices(self._customer(), [{
+                "line_no": 35,
+                "values": {
+                    "customer_spec": 'PP NY6300P(C) 2116 RC57% 49.5"*200M/Roll(有卤素)',
+                    "remark": "1卷", "price_before_tax": "91.3384",
+                },
+            }])
+
+        self.assertEqual(review["by_line"][35]["quote_price"], "91.3386")
+
     def test_chaoying_suggests_its_tax_exclusive_price_before_tax(self) -> None:
         customer = {"customer_short_name": "超颖", "group_name": "定颖集团"}
         with patch(

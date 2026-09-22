@@ -78,6 +78,19 @@ class OrderEntryTemplateTaskTests(unittest.TestCase):
         self.assertEqual(progress["stage"], "extraction_error")
         self.assertIn("PDF 无法读取", progress["task_message"])
 
+    def test_worker_accepts_quotation_action_type(self) -> None:
+        from fangzheng_web_app import order_entry_template_worker
+
+        with patch("fangzheng_web_app.order_entry_template_worker.load_local_env"), patch(
+            "fangzheng_web_app.order_entry_template_worker.run_template_extraction_task"
+        ) as run_task, patch("sys.argv", [
+            "order_entry_template_worker", "--task-id", "8", "--case-id", "9",
+            "--employee-id", "employee-a", "--action-type", "quotation",
+        ]):
+            order_entry_template_worker.main()
+
+        run_task.assert_called_once_with(8, 9, "employee-a", action_type="quotation")
+
     def test_successful_entry_is_the_terminal_progress_for_all_views(self) -> None:
         get_or_create_template(self.case_id, "employee-a")
         saved = save_template(self.case_id, "employee-a", {

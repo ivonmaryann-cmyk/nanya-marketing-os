@@ -22,7 +22,7 @@ ACTION_LABELS = {
     "unclassified": "暂不分流",
     "new_order": "录单",
     "order_change": "修改订单",
-    "quotation": "报价",
+    "quotation": "核价",
 }
 ROUTABLE_ACTION_TYPES = {"new_order", "order_change", "quotation"}
 STATUS_LABELS = {

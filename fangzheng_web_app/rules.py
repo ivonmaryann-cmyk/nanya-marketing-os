@@ -72,6 +72,26 @@ def get_active_rule_version() -> str:
     return ensure_default_rule_version()
 
 
+def activate_rule_version(version: str) -> str:
+    """Make an existing, complete local rule pack the active Fangzheng version."""
+    normalized_version = str(version or "").strip()
+    if (
+        not normalized_version
+        or normalized_version in {".", ".."}
+        or Path(normalized_version).name != normalized_version
+    ):
+        raise ValueError("规则版本格式无效")
+    if not rule_version_exists(normalized_version):
+        raise ValueError(
+            "该规则版本在本机不完整，需同时存在价格对账表和基板对照表后才能启用"
+        )
+
+    price_path, account_path = get_rule_file_paths(normalized_version)
+    validate_rule_files(price_path, account_path)
+    set_setting("active_rule_version", normalized_version)
+    return normalized_version
+
+
 def get_rule_file_paths(version: str | None = None) -> tuple[Path, Path]:
     rule_version = version or get_active_rule_version()
     version_dir = RULES_VERSIONS_DIR / rule_version

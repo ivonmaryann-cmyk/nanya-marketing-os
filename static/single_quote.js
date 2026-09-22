@@ -27,7 +27,8 @@
   function quoteValue(data) {
     if (data.price !== null && data.price !== undefined && data.price !== "") {
       const numeric = Number(data.price);
-      return Number.isFinite(numeric) ? numeric.toFixed(2) : String(data.price);
+      const precision = Number.isInteger(data.display_precision) ? data.display_precision : 2;
+      return Number.isFinite(numeric) ? numeric.toFixed(precision) : String(data.price);
     }
     return data.result || data.code || "";
   }

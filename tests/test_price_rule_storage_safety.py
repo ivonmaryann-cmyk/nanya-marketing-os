@@ -45,6 +45,41 @@ class DedicatedPriceRuleStorageSafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "本机缺失"):
                 rules.load_rule_dataframes()
 
+    def test_fangzheng_complete_historical_version_can_be_activated(self) -> None:
+        settings = {"active_rule_version": "rules_current"}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            version_dir = root / "rules_previous"
+            version_dir.mkdir()
+            price_path = version_dir / rules.PRICE_FILENAME
+            account_path = version_dir / rules.ACCOUNT_FILENAME
+            with patch.object(rules, "RULES_VERSIONS_DIR", root), patch.object(
+                rules, "validate_rule_files", return_value=(MagicMock(), MagicMock())
+            ) as validate, patch.object(
+                rules, "get_setting", side_effect=lambda name, default="": settings.get(name, default)
+            ), patch.object(
+                rules, "set_setting", side_effect=lambda name, value: settings.__setitem__(name, value)
+            ):
+                price_path.write_bytes(b"price")
+                account_path.write_bytes(b"account")
+                self.assertEqual("rules_previous", rules.activate_rule_version("rules_previous"))
+                self.assertEqual("rules_previous", settings["active_rule_version"])
+                validate.assert_called_once_with(price_path, account_path)
+
+    def test_fangzheng_incomplete_historical_version_cannot_be_activated(self) -> None:
+        settings = {"active_rule_version": "rules_current"}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            version_dir = root / "rules_incomplete"
+            version_dir.mkdir()
+            (version_dir / rules.PRICE_FILENAME).write_bytes(b"price")
+            with patch.object(rules, "RULES_VERSIONS_DIR", root), patch.object(
+                rules, "set_setting", side_effect=lambda name, value: settings.__setitem__(name, value)
+            ):
+                with self.assertRaisesRegex(ValueError, "本机不完整"):
+                    rules.activate_rule_version("rules_incomplete")
+            self.assertEqual("rules_current", settings["active_rule_version"])
+
     def test_bomin_missing_uploaded_file_does_not_reset_active_version(self) -> None:
         self._assert_missing_storage_is_preserved(
             bomin_rules,

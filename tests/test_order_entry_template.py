@@ -1100,6 +1100,37 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertEqual([row["values"]["customer_order_number"] for row in rows], ["PO-GM260008046", ""])
         self.assertEqual([group["order_number"] for group in groups], ["PO-GM260008046", ""])
 
+    def test_shared_document_does_not_convert_already_projected_roll_metres_twice(self) -> None:
+        document = {
+            "header_info": {"订单号": "PO-GM260008046"},
+            "mapped_detail_rows": [{
+                "original": {
+                    "项目": "36", "物料编码": "LAN31AZP73003",
+                    "物料描述": 'PP NY6300P(C) 1078 RC73% 49.5"*300M/Roll',
+                    "数量": "4", "单位": "卷", "未税单价": "25078.69",
+                    "未税金额": "100314.76", "含税单价": "28338.9197", "含税金额": "113355.68",
+                },
+                "standard": {
+                    "序号": "36", "物料编码": "LAN31AZP73003",
+                    "物料名称": 'PP NY6300P(C) 1078 RC73% 49.5"*300M/Roll',
+                    "说明": 'PP NY6300P(C) 1078 RC73% 49.5"*300M/Roll',
+                    "数量": "4", "单位": "卷", "未税单价": "25078.69",
+                    "未税金额": "100314.76", "含税单价": "28338.9197", "含税金额": "113355.68",
+                    "交货日期": "2026-10-10",
+                },
+            }],
+        }
+        from fangzheng_web_app.order_entry_service import _rows_from_shared_purchase_document
+
+        rows = _rows_from_shared_purchase_document(document, label="附件", reference_prefix="附件")
+
+        self.assertEqual(rows[0]["values"]["quantity"], "1200")
+        self.assertEqual(rows[0]["values"]["price_before_tax"], "83.59563333333333333333333333")
+        self.assertEqual(rows[0]["values"]["unit_price"], "94.46306566666666666666666667")
+        self.assertEqual(rows[0]["values"]["amount_before_tax"], "100314.76")
+        self.assertEqual(rows[0]["values"]["amount_with_tax"], "113355.68")
+        self.assertIn("4卷", rows[0]["values"]["remark"])
+
     def test_entry_template_exposes_delete_selected_rows_control(self) -> None:
         template = (Path(__file__).resolve().parents[1] / "templates" / "order_automation_entry_template.html").read_text(encoding="utf-8")
         self.assertIn('id="deleteSelectedLines"', template)

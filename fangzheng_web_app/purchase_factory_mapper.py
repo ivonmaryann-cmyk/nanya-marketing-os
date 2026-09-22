@@ -404,10 +404,12 @@ def _order_number(document: dict[str, Any]) -> tuple[str, str]:
     order_number = _clean_order_identifier(header_info.get("订单号"))
     if order_number:
         return order_number, "订单号"
-    if clean_text(document.get("template_id")) in ORDER_CONTRACT_FALLBACK_TEMPLATES:
-        contract = _clean_order_identifier(header_info.get("合同编号"))
-        if contract:
-            return contract, "客户模板合同编号"
+    contract = _clean_order_identifier(header_info.get("合同编号"))
+    if contract and (
+        clean_text(document.get("template_id")) in ORDER_CONTRACT_FALLBACK_TEMPLATES
+        or contract.upper().startswith("PO-")
+    ):
+        return contract, "合同编号中的客户PO"
     source_stem = Path(clean_text(document.get("source_file"))).stem
     source_stem = re.sub(r"^\d{3}_", "", source_stem)
     filename_order = _clean_order_identifier(source_stem)
@@ -784,6 +786,9 @@ def project_factory_document(
             FACTORY_DETAIL_HEADERS[9]: "",
             FACTORY_DETAIL_HEADERS[10]: order_number,
             FACTORY_DETAIL_HEADERS[11]: _factory_remark(original_roll_quantity),
+            # Internal metadata used by the mail-template adapter.  It is not
+            # an exported factory-template column.
+            "_quantity_unit": clean_text(projected.get("单位")),
         }
         missing_required = [
             header

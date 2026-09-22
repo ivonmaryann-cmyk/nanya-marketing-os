@@ -213,12 +213,19 @@ from .order_entry_service import (
     get_or_create_template as get_order_entry_template,
     get_saved_template as get_saved_order_entry_template,
     get_order_change_template,
+    get_quote_template,
     order_change_template_progress,
+    quote_template_progress,
     queue_template_extraction as queue_order_entry_template_extraction,
     queue_order_change_template_extraction,
+    queue_quote_template_extraction,
     reextract_order_change_template,
+    reextract_quote_template,
     reextract_template as reextract_order_entry_template,
     save_order_change_template,
+    save_quote_template,
+    calculate_quote_template_prices,
+    quote_template_reconciliation,
     save_template as save_order_entry_template,
     template_progress as order_entry_template_progress,
     validation_issues as order_entry_validation_issues,
@@ -251,6 +258,7 @@ from .order_interface_service import (
     save_interface_config,
     test_interface_config,
 )
+from .order_price_validation_service import review_case_template_prices
 from .customer_archive_service import (
     CONTACT_TYPE_LABELS,
     CUSTOMER_FIELDS,
@@ -326,7 +334,13 @@ from .price_calculation_rules import (
     save_new_price_rule_version,
 )
 from .price_calculation_service import calculate_price_quote, queue_price_calculation_job, run_jingwang_regression
-from .rules import get_active_rule_version, get_rule_file_paths, save_new_rule_version
+from .rules import (
+    activate_rule_version,
+    get_active_rule_version,
+    get_rule_file_paths,
+    rule_version_exists,
+    save_new_rule_version,
+)
 from .shennan_rules import (
     get_active_shennan_rule_version,
     get_shennan_rule_file_path,
@@ -1622,6 +1636,7 @@ def order_automation_case(case_id: int):
     return_context = _order_automation_return_context(case)
     entry_progress = order_entry_template_progress(case_id, employee_id) if case["action_type"] == "new_order" else None
     change_progress = order_change_template_progress(case_id, employee_id) if case["action_type"] == "order_change" else None
+    quote_progress = quote_template_progress(case_id, employee_id) if case["action_type"] == "quotation" else None
     # A change-order extraction is asynchronous.  When this request originated
     # from its start button, keep the user on this page only while the worker is
     # running, then take them straight to the template that needs their review.
@@ -1633,12 +1648,22 @@ def order_automation_case(case_id: int):
         template_query = request.args.to_dict()
         template_query.pop("auto_open_change", None)
         return redirect(url_for("main.order_automation_order_change_template", case_id=case_id, **template_query))
+    if (
+        request.args.get("auto_open_quote") == "1"
+        and quote_progress
+        and quote_progress["created"]
+    ):
+        template_query = request.args.to_dict()
+        template_query.pop("auto_open_quote", None)
+        return redirect(url_for("main.order_automation_quote_template", case_id=case_id, **template_query))
     return render_template(
         "order_automation_case.html",
         case=case,
         entry_progress=entry_progress,
         change_progress=change_progress,
+        quote_progress=quote_progress,
         auto_open_change=request.args.get("auto_open_change") == "1",
+        auto_open_quote=request.args.get("auto_open_quote") == "1",
         nyeos_order_number=list_nyeos_order_numbers([case_id], employee_id).get(case_id, ""),
         return_context=return_context,
         status_labels=ORDER_INTAKE_STATUS_LABELS,
@@ -2024,6 +2049,192 @@ def order_automation_order_change_template(case_id: int):
         order_details=get_order_detail_records(case_id, employee_id),
         return_context=_order_automation_return_context(case),
     )
+
+
+@bp.post("/order-automation/cases/<int:case_id>/quote-template/start")
+def order_automation_quote_template_start(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    try:
+        result = queue_quote_template_extraction(case_id, employee_id)
+        flash(result["message"], "success" if result["status"] != "error" else "error")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    query = request.args.to_dict()
+    query["auto_open_quote"] = "1"
+    return redirect(url_for("main.order_automation_case", case_id=case_id, **query))
+
+
+@bp.route("/order-automation/cases/<int:case_id>/quote-template", methods=["GET", "POST"])
+def order_automation_quote_template(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    case = get_order_intake_case(case_id, employee_id)
+    if not case or case.get("action_type") != "quotation":
+        abort(404)
+    if request.method == "POST":
+        try:
+            payload = json.loads(request.form.get("template_payload") or "{}")
+            save_quote_template(case_id, employee_id, payload)
+            flash("核价模板已保存。", "success")
+        except (ValueError, json.JSONDecodeError) as exc:
+            flash(str(exc) if isinstance(exc, ValueError) else "模板数据格式错误。", "error")
+        return redirect(url_for("main.order_automation_quote_template", case_id=case_id, **request.args.to_dict()))
+    progress = quote_template_progress(case_id, employee_id)
+    if not progress["created"]:
+        if progress["stage"] == "pending_extraction":
+            try:
+                result = queue_quote_template_extraction(case_id, employee_id)
+                flash(result["message"], "success")
+            except ValueError as exc:
+                flash(str(exc), "error")
+        return redirect(url_for("main.order_automation_case", case_id=case_id, **request.args.to_dict()))
+    _case, template = get_quote_template(case_id, employee_id)
+    if not template:
+        abort(404)
+    order_matches = get_order_change_matches(case_id, int(template["id"]), employee_id)
+    price_review = review_case_template_prices(case, template)
+    return render_template(
+        "order_automation_order_change_template.html",
+        case=case,
+        template=template,
+        line_fields=(
+            "customer_order_number", "line_no", "customer_product_code", "customer_spec", "delivery_date", "quantity",
+            "price_before_tax", "amount_before_tax", "unit_price", "amount_with_tax", "quote_price",
+        ),
+        line_labels={
+            "customer_order_number": "客户订单号", "line_no": "项次", "customer_product_code": "客户料号",
+            "customer_spec": "客户规格", "delivery_date": "客户需求日期", "quantity": "数量",
+            "price_before_tax": "未税单价", "amount_before_tax": "未税金额",
+            "unit_price": "含税单价", "amount_with_tax": "含税金额", "quote_price": "报价单价格",
+        },
+        progress=progress,
+        order_matches=order_matches,
+        quote_reconciliation=quote_template_reconciliation(template, order_matches, price_review),
+        order_candidate_fields=(
+            ("scta39", "ERP订单号"), ("account_set", "账套"), ("sctb35", "项次"),
+            ("scta01", "NYEOS订单号"), ("sctb43", "厂别"), ("sctb02", "料号"),
+            ("sctb03", "品名规格"), ("peag08", "品号"), ("peag09", "旧品号"),
+            ("szaa01", "单位"), ("sctb05", "数量"), ("sctb23", "未出数量"),
+            ("sctb06", "含税单价"), ("sctb07", "未税单价"), ("sctb14", "客户料号"),
+            ("sctb15", "客户订单号"), ("sctb16", "客户需求日"), ("sctb17", "预计出货日"),
+            ("sctb30", "结案码"), ("sctb36", "客户规格"),
+        ),
+        order_details=get_order_detail_records(case_id, employee_id),
+        return_context=_order_automation_return_context(case),
+        is_quote_template=True,
+        can_calculate_quote_prices=bool(case.get("customer_id")),
+    )
+
+
+@bp.post("/order-automation/cases/<int:case_id>/quote-template/refresh")
+def order_automation_quote_template_refresh(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    case = get_order_intake_case(case_id, employee_id)
+    if not case or case.get("action_type") != "quotation":
+        abort(404)
+    try:
+        result = reextract_quote_template(case_id, employee_id)
+        flash(f"已重新提取邮件核价内容，共生成 {result['line_count']} 条明细；原明细已保留在历史版本中。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return redirect(url_for("main.order_automation_quote_template", case_id=case_id, **request.args.to_dict()))
+
+
+@bp.post("/order-automation/cases/<int:case_id>/quote-template/query-order")
+def order_automation_quote_template_query(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    case = get_order_intake_case(case_id, employee_id)
+    if not case or case.get("action_type") != "quotation":
+        abort(404)
+    try:
+        template = save_quote_template(case_id, employee_id, json.loads(request.form.get("template_payload") or "{}"))
+        result = query_order_info(case_id, int(template["id"]), employee_id, employee_id, [
+            line.get("values", {}).get("customer_order_number", "") for line in template.get("lines", [])
+        ])
+        counts = {status: 0 for status in ("matched", "multiple", "unmatched")}
+        for item in result.get("matches") or []:
+            counts[item["status"]] = counts.get(item["status"], 0) + 1
+        flash(f"查询订单信息已完成：已匹配 {counts['matched']} 项，多个匹配 {counts['multiple']} 项，未匹配 {counts['unmatched']} 项。", "success")
+    except (ValueError, json.JSONDecodeError) as exc:
+        flash(str(exc) if isinstance(exc, ValueError) else "模板数据格式错误。", "error")
+    return redirect(url_for("main.order_automation_quote_template", case_id=case_id, **request.args.to_dict()))
+
+
+@bp.post("/order-automation/cases/<int:case_id>/quote-template/reconcile")
+def order_automation_quote_template_reconcile(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    case = get_order_intake_case(case_id, employee_id)
+    if not case or case.get("action_type") != "quotation":
+        abort(404)
+    try:
+        template = save_quote_template(case_id, employee_id, json.loads(request.form.get("template_payload") or "{}"))
+        result = query_order_info(case_id, int(template["id"]), employee_id, employee_id, [
+            line.get("values", {}).get("customer_order_number", "") for line in template.get("lines", [])
+        ])
+        if case.get("customer_id"):
+            calculate_quote_template_prices(case_id, employee_id)
+        matches = get_order_change_matches(case_id, int(template["id"]), employee_id)
+        _case, refreshed = get_quote_template(case_id, employee_id)
+        review = quote_template_reconciliation(refreshed, matches, review_case_template_prices(case, refreshed))
+        flash(f"核对完成：一致 {review['matched']} 项，待处理 {review['issues']} 项。", "success")
+    except (ValueError, json.JSONDecodeError) as exc:
+        flash(str(exc) if isinstance(exc, ValueError) else "模板数据格式错误。", "error")
+    return redirect(url_for("main.order_automation_quote_template", case_id=case_id, **request.args.to_dict()))
+
+
+@bp.post("/order-automation/cases/<int:case_id>/quote-template/select-match")
+def order_automation_quote_template_select_match(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    case = get_order_intake_case(case_id, employee_id)
+    if not case or case.get("action_type") != "quotation":
+        abort(404)
+    try:
+        _case, template = get_quote_template(case_id, employee_id)
+        if not template:
+            raise ValueError("请先生成核价模板")
+        line_no = int(request.form.get("line_no") or 0)
+        select_order_change_candidate(case_id, int(template["id"]), employee_id, line_no, str(request.form.get("candidate_key") or "").strip(), employee_id)
+        flash(f"第 {line_no} 项已关联 ERP 订单明细。", "success")
+    except (TypeError, ValueError) as exc:
+        flash(str(exc), "error")
+    return redirect(url_for("main.order_automation_quote_template", case_id=case_id, **request.args.to_dict()))
+
+
+@bp.post("/order-automation/cases/<int:case_id>/quote-template/calculate-prices")
+def order_automation_quote_template_calculate_prices(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    case = get_order_intake_case(case_id, employee_id)
+    if not case or case.get("action_type") != "quotation":
+        abort(404)
+    try:
+        save_quote_template(case_id, employee_id, json.loads(request.form.get("template_payload") or "{}"))
+        if not case.get("customer_id"):
+            raise ValueError("请先关联客户后再计算报价单价格。")
+        result = calculate_quote_template_prices(case_id, employee_id)
+        flash(f"价格计算完成：成功 {result['success']} 项，未命中或无法计算 {result['failed']} 项。", "success")
+    except (ValueError, json.JSONDecodeError) as exc:
+        flash(str(exc) if isinstance(exc, ValueError) else "模板数据格式错误。", "error")
+    return redirect(url_for("main.order_automation_quote_template", case_id=case_id, **request.args.to_dict()))
 
 
 @bp.post("/order-automation/cases/<int:case_id>/order-change-template/refresh")
@@ -5994,28 +6205,40 @@ def admin_rules():
     if redirect_resp:
         return redirect_resp
     if request.method == "POST":
+        action = (request.form.get("action") or "upload").strip().lower()
         admin_password = request.form.get("admin_password", "")
-        price_file = request.files.get("price_file")
-        account_file = request.files.get("account_file")
-        remark = request.form.get("remark", "").strip()
         if not verify_admin_password(admin_password):
             flash("管理员密码错误。", "error")
-        elif not any(file_obj and file_obj.filename for file_obj in [price_file, account_file]):
-            flash("请至少上传一份需要更新的规则文件。", "error")
-        else:
+        elif action == "activate":
             try:
-                version = save_new_rule_version(
-                    price_file, account_file, updated_by=current_employee(), remark=remark
-                )
-                flash(f"方正规则已更新，当前生效版本：{version}", "success")
-                return redirect(url_for("main.admin_rules"))
+                version = activate_rule_version(request.form.get("version", ""))
+                flash(f"方正规则版本已启用：{version}", "success")
             except Exception as exc:
-                flash(f"方正规则更新失败：{exc}", "error")
+                flash(f"方正规则版本启用失败：{exc}", "error")
+            return redirect(url_for("main.admin_rules"))
+        else:
+            price_file = request.files.get("price_file")
+            account_file = request.files.get("account_file")
+            remark = request.form.get("remark", "").strip()
+            if not any(file_obj and file_obj.filename for file_obj in [price_file, account_file]):
+                flash("请至少上传一份需要更新的规则文件。", "error")
+            else:
+                try:
+                    version = save_new_rule_version(
+                        price_file, account_file, updated_by=current_employee(), remark=remark
+                    )
+                    flash(f"方正规则已更新，当前生效版本：{version}", "success")
+                    return redirect(url_for("main.admin_rules"))
+                except Exception as exc:
+                    flash(f"方正规则更新失败：{exc}", "error")
     price_path, account_path = get_rule_file_paths()
+    rule_history = get_rule_history()
+    for item in rule_history:
+        item["is_available"] = rule_version_exists(item.get("version"))
     return render_template(
         "admin_rules.html",
         active_rule_version=get_active_rule_version(),
-        rule_history=get_rule_history(),
+        rule_history=rule_history,
         price_path=price_path.name,
         account_path=account_path.name,
     )
