@@ -533,6 +533,21 @@ class OrderChangeTemplateTests(unittest.TestCase):
         self.assertEqual(multiple["status"], "multiple")
         self.assertEqual(len(multiple["candidates"]), 2)
 
+    def test_order_match_falls_back_to_po_spec_and_quantity_when_customer_part_is_wrong(self) -> None:
+        candidates = [{
+            "scta39": "ERP-SPEC-1", "sctb14": "正确客户料号", "sctb15": "PO-SPEC-1",
+            "sctb36": "NY6180L 0.152mm H/H 41*49", "sctb05": "80", "sctb35": "1",
+        }]
+
+        matched = _match_order_change_line({
+            "customer_order_number": "PO-SPEC-1", "customer_product_code": "1错误料号",
+            "customer_spec": "NY6180L 0.152mm H/H 41*49", "line_no": "1", "quantity": "80",
+        }, candidates)
+
+        self.assertEqual(matched["status"], "matched")
+        self.assertEqual(matched["match_level"], "order_spec_quantity")
+        self.assertEqual(matched["selected"]["scta39"], "ERP-SPEC-1")
+
     def test_multiple_match_selection_is_persisted(self) -> None:
         with patch("fangzheng_web_app.order_entry_service.subprocess.Popen"):
             queued = queue_order_change_template_extraction(self.case_id, "employee-a")

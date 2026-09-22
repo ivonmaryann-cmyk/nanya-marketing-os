@@ -191,6 +191,25 @@ def _line_sequence(values: dict[str, Any], fallback: int) -> str:
     return str(fallback)
 
 
+def _remove_prefixed_line_no_from_customer_product(value: Any, line_no: Any) -> str:
+    """Repair a PDF column merge without altering ordinary customer material codes.
+
+    Some fixed-layout purchase contracts lose the vertical rule between 项次 and
+    物料编码 during PDF/Markdown extraction, producing values such as
+    ``1AAN31AW01520022``.  The original material codes in this layout begin
+    with letters, so remove the duplicated line number only in that narrow
+    shape.
+    """
+    code = clean_text(value)
+    item = clean_text(line_no)
+    if not re.fullmatch(r"[1-9]\d*", item or "") or not code.startswith(item):
+        return code
+    remainder = code[len(item):]
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9._/-]{5,}", remainder or ""):
+        return remainder
+    return code
+
+
 def _is_pp_spec(value: str) -> bool:
     """Use the same PP classification for quantity conversion and the template."""
     return infer_product_type_from_spec(value) == "PP"
@@ -780,6 +799,9 @@ def _rows_from_shared_purchase_document(
             original,
             customer_mappings or [],
             source_kind=source_kind,
+        )
+        values["customer_product_code"] = _remove_prefixed_line_no_from_customer_product(
+            values.get("customer_product_code"), values["line_no"]
         )
         values = _apply_auto_extraction_policy(
             values,

@@ -1567,6 +1567,11 @@ def _match_text(value: Any) -> str:
     return str(value or "").strip().casefold()
 
 
+def _match_spec(value: Any) -> str:
+    """Compare customer specifications without PDF line-wrap whitespace."""
+    return re.sub(r"\s+", "", _match_text(value))
+
+
 def _match_decimal(value: Any) -> Decimal | None:
     try:
         return Decimal(str(value).strip())
@@ -1578,6 +1583,7 @@ def _order_change_match_input(values: dict[str, Any]) -> dict[str, str]:
     return {
         "customer_order_number": str(values.get("customer_order_number") or "").strip(),
         "customer_product_code": str(values.get("customer_product_code") or "").strip(),
+        "customer_spec": str(values.get("customer_spec") or "").strip(),
         "line_no": str(values.get("line_no") or "").strip(),
         "quantity": str(values.get("quantity") or "").strip(),
     }
@@ -1610,9 +1616,13 @@ def _match_order_change_line(values: dict[str, Any], candidates: list[dict[str, 
     match_input = _order_change_match_input(values)
     order_no = _match_text(match_input["customer_order_number"])
     customer_part = _match_text(match_input["customer_product_code"])
+    customer_spec = _match_spec(match_input["customer_spec"])
+    candidate_order_no = lambda item: _match_text(
+        item.get("customer_order_number") or item.get("sctb15") or item.get("scta38")
+    )
     base = [
         item for item in candidates
-        if _match_text(item.get("customer_order_number")) == order_no
+        if candidate_order_no(item) == order_no
         and _match_text(item.get("sctb14")) == customer_part
     ] if order_no and customer_part else []
     levels = (
@@ -1624,6 +1634,23 @@ def _match_order_change_line(values: dict[str, Any], candidates: list[dict[str, 
         if len(matches) == 1:
             return {"status": "matched", "match_level": level, "candidates": matches, "selected": matches[0]}
     final = levels[-1][1]
+    if not final and order_no and customer_spec and _match_decimal(match_input["quantity"]) is not None:
+        spec_quantity = [
+            item for item in candidates
+            if candidate_order_no(item) == order_no
+            and _match_spec(item.get("sctb36")) == customer_spec
+            and _match_decimal(item.get("sctb05")) == _match_decimal(match_input["quantity"])
+        ]
+        if len(spec_quantity) == 1:
+            return {
+                "status": "matched", "match_level": "order_spec_quantity",
+                "candidates": spec_quantity, "selected": spec_quantity[0],
+            }
+        if spec_quantity:
+            return {
+                "status": "multiple", "match_level": "order_spec_quantity",
+                "candidates": spec_quantity, "selected": {},
+            }
     return {
         "status": "multiple" if len(final) > 1 else "unmatched",
         "match_level": "order_part" if final else "",

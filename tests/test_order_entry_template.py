@@ -18,6 +18,7 @@ from fangzheng_web_app.order_entry_service import (
     _line_entry,
     _line_from_pipeline_row,
     _merge_initial_rows,
+    _remove_prefixed_line_no_from_customer_product,
     _initial_order_groups,
     _initial_template_data,
     _split_body_order_rows,
@@ -71,6 +72,19 @@ class OrderEntryTemplateTests(unittest.TestCase):
         self.assertIn("specialFilterMatches", editor)
         self.assertIn("需要新建料号", entry)
         self.assertIn("需要多选候选料号", entry)
+
+    def test_pdf_column_merge_does_not_prefix_customer_product_with_item_number(self) -> None:
+        self.assertEqual(
+            _remove_prefixed_line_no_from_customer_product("1AAN31AW01520022", "1"),
+            "AAN31AW01520022",
+        )
+        self.assertEqual(
+            _remove_prefixed_line_no_from_customer_product("10LAN31AW16600D", "10"),
+            "LAN31AW16600D",
+        )
+        self.assertEqual(
+            _remove_prefixed_line_no_from_customer_product("1A23", "1"), "1A23",
+        )
 
     def test_initial_template_dates_are_backdated_by_customer_transit_days(self) -> None:
         lines = [{
