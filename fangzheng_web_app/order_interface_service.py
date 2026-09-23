@@ -34,6 +34,8 @@ ORDER_ACCOUNT_SET_BY_ACSN = {
     "NY03": "KL55",
 }
 
+ORDER_INFO_QUERY_BATCH_SIZE = 50
+
 
 def _order_account_set(acsn: Any) -> str:
     return ORDER_ACCOUNT_SET_BY_ACSN.get(str(acsn or "").strip().upper(), "")
@@ -1827,15 +1829,18 @@ def _query_order_info(
                 call_id=call_id, response_payload=response_payload,
             ) if persist_matches else []
             is_recovery = event_context == "domestic_recovery"
+            is_batch = event_context == "batch"
             record_order_detail_event(
                 conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
                 event_type=(
                     "order_info_query_mock" if persist_matches else
+                    "order_info_query_batch_mock" if is_batch else
                     "domestic_order_entry_recovery_query_mock" if is_recovery else
                     "order_reply_info_query_mock"
                 ),
                 title=(
                     "查询订单信息（Mock）完成" if persist_matches else
+                    "查询订单信息（Mock，分批）完成" if is_batch else
                     "提交录单超时后查询订单信息（Mock）完成" if is_recovery else
                     "回复邮件查询订单信息（Mock）完成"
                 ),
@@ -1866,16 +1871,20 @@ def _query_order_info(
             call_id=call_id, response_payload=response_payload,
         ) if status == "success" and persist_matches else []
         is_recovery = event_context == "domestic_recovery"
+        is_batch = event_context == "batch"
         record_order_detail_event(
             conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
             event_type=(
                 "order_info_query_real" if persist_matches else
+                "order_info_query_batch_real" if is_batch else
                 "domestic_order_entry_recovery_query_real" if is_recovery else
                 "order_reply_info_query_real"
             ),
             title=(
                 f"查询订单信息（真实接口）{'完成' if status == 'success' else '失败'}"
                 if persist_matches else
+                f"查询订单信息（真实接口，分批）{'完成' if status == 'success' else '失败'}"
+                if is_batch else
                 f"提交录单超时后查询订单信息（真实接口）{'完成' if status == 'success' else '失败'}"
                 if is_recovery else
                 f"回复邮件查询订单信息（真实接口）{'完成' if status == 'success' else '失败'}"
@@ -1893,10 +1902,60 @@ def query_order_info(
     case_id: int, template_id: int, employee_id: str, triggered_by: str, order_numbers: list[Any],
 ) -> dict[str, Any]:
     """Query orders for the modification workflow and persist line matches."""
-    return _query_order_info(
-        case_id, template_id, employee_id, triggered_by, order_numbers,
-        persist_matches=True,
-    )
+    numbers = list(dict.fromkeys(str(value or "").strip() for value in order_numbers if str(value or "").strip()))
+    if len(numbers) <= ORDER_INFO_QUERY_BATCH_SIZE:
+        return _query_order_info(
+            case_id, template_id, employee_id, triggered_by, numbers,
+            persist_matches=True,
+        )
+
+    batch_results = []
+    failures = []
+    for start in range(0, len(numbers), ORDER_INFO_QUERY_BATCH_SIZE):
+        batch = numbers[start:start + ORDER_INFO_QUERY_BATCH_SIZE]
+        try:
+            batch_results.append(_query_order_info(
+                case_id, template_id, employee_id, triggered_by, batch,
+                persist_matches=False, event_context="batch",
+            ))
+        except ValueError as exc:
+            failures.append({"batch": start // ORDER_INFO_QUERY_BATCH_SIZE + 1, "orders": batch, "message": str(exc)})
+    if failures:
+        failed_batches = "；".join(
+            f"第 {item['batch']} 批（{len(item['orders'])} 个PO）：{item['message']}" for item in failures
+        )
+        raise ValueError(f"订单查询部分失败，未更新匹配结果：{failed_batches}")
+
+    order_list: list[dict[str, Any]] = []
+    not_found: list[Any] = []
+    for item in batch_results:
+        data = item.get("response", {}).get("data") if isinstance(item.get("response"), dict) else {}
+        data = data if isinstance(data, dict) else {}
+        order_list.extend(item for item in data.get("orderList") or [] if isinstance(item, dict))
+        not_found.extend(data.get("notFoundList") or [])
+    response_payload = {
+        "code": 200,
+        "msg": "分批查询成功",
+        "data": {"orderList": order_list, "orderCount": len(order_list), "notFoundList": not_found},
+    }
+    call_ids = [int(item["call_id"]) for item in batch_results]
+    with db_cursor() as conn:
+        matches = _store_order_change_matches(
+            conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
+            call_id=call_ids[-1], response_payload=response_payload,
+        )
+        record_order_detail_event(
+            conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
+            event_type="order_info_query_batched",
+            title="查询订单信息（分批）完成",
+            detail={"batch_count": len(batch_results), "order_count": len(numbers), "call_ids": call_ids,
+                    "matched_count": sum(item["status"] == "matched" for item in matches)},
+            operated_by=triggered_by,
+        )
+    return {
+        "call_id": call_ids[-1], "call_ids": call_ids, "status": "success",
+        "mode": batch_results[0].get("mode", "real"), "response": response_payload, "matches": matches,
+    }
 
 
 def _expected_arrival_date(customer_demand_date: Any, transit_days: Any) -> str:

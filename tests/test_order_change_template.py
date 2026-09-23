@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
+
+from openpyxl import load_workbook
 
 from fangzheng_web_app import db
 from fangzheng_web_app.mail_transcode_agent import mail_store
 from fangzheng_web_app.order_entry_service import (
     QUOTE_SOURCE_PRICE_FIELDS,
     _initial_order_change_template_data,
+    _initial_quote_groups,
+    build_quote_template_export,
     get_order_change_template,
     get_quote_template,
     order_change_template_progress,
@@ -150,8 +155,13 @@ class OrderChangeTemplateMarkupTests(unittest.TestCase):
         self.assertIn("panel?panel.cloneNode(true)", markup)
         self.assertNotIn("detail.cloneNode(true)", markup)
         self.assertIn("一键核对", markup)
+        self.assertIn("导出核价表", markup)
+        self.assertIn("order_automation_quote_template_export", markup)
         self.assertIn("order_automation_quote_template_query", markup)
         self.assertIn("order_automation_quote_template_select_match", markup)
+        self.assertIn("oc-source-tabs", markup)
+        self.assertIn("quote_groups", markup)
+        self.assertIn("active_quote_group", markup)
         self.assertIn("{% if not is_quote_template %}<div class=\"oc-modal-mask\"", markup)
 
     def test_quote_template_uses_a_right_drawer_for_matched_erp_details(self) -> None:
@@ -169,6 +179,18 @@ class OrderChangeTemplateMarkupTests(unittest.TestCase):
         self.assertIn("客户订单号", markup)
         self.assertIn("客户与厂内差异", markup)
         self.assertIn("oc-review-tag", markup)
+
+    def test_quote_template_posts_only_the_active_group_as_json(self) -> None:
+        markup = (
+            Path(__file__).resolve().parents[1]
+            / "templates"
+            / "order_automation_order_change_template.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("'Content-Type':'application/json'", markup)
+        self.assertIn("group_key:groupKey,lines:readLines()", markup)
+        self.assertNotIn("quoteGroups={{", markup)
+        self.assertIn("data-quote-json-action=\"query\"", markup)
 
 
 class OrderChangeTemplateTests(unittest.TestCase):
@@ -271,6 +293,143 @@ class OrderChangeTemplateTests(unittest.TestCase):
             {field: saved["lines"][0]["values"][field] for field in QUOTE_SOURCE_PRICE_FIELDS},
             {"price_before_tax": "10.00", "amount_before_tax": "200.00", "unit_price": "11.30", "amount_with_tax": "226.00"},
         )
+
+    def test_quote_template_partial_save_keeps_other_attachment_groups(self) -> None:
+        with db.db_cursor() as conn:
+            conn.execute("UPDATE order_intake_cases SET action_type='quotation' WHERE id=?", (self.case_id,))
+        with patch("fangzheng_web_app.order_entry_service.subprocess.Popen"):
+            queued = queue_quote_template_extraction(self.case_id, "employee-a")
+        with patch("fangzheng_web_app.order_entry_service._initial_template_data", return_value=(
+            {"customer_order_number": "PO-QUOTE-1"},
+            [{"values": {"line_no": "1", "customer_order_number": "PO-QUOTE-1", "customer_spec": "初始"}, "sources": {}}],
+        )):
+            run_template_extraction_task(queued["task_id"], self.case_id, "employee-a", action_type="quotation")
+
+        saved = save_quote_template(self.case_id, "employee-a", {"groups": [
+            {"group_key": "attachment-one", "header": {"_quote_source_label": "F3.xlsx"}, "lines": [
+                {"values": {"line_no": "1", "customer_order_number": "PO-1", "customer_spec": "规格一", "quantity": "10"}, "sources": {"source": "one"}},
+            ]},
+            {"group_key": "attachment-two", "header": {"_quote_source_label": "F5.xlsx"}, "lines": [
+                {"values": {"line_no": "2", "customer_order_number": "PO-2", "customer_spec": "规格二", "quantity": "20"}, "sources": {"source": "two"}},
+            ]},
+        ]})
+        partial = save_quote_template(self.case_id, "employee-a", {
+            "group_key": "attachment-one",
+            "lines": [{"values": {"line_no": "1", "customer_order_number": "PO-1", "customer_spec": "修改后规格", "quantity": "10"}}],
+        })
+        groups = {group["group_key"]: group for group in partial["groups"]}
+        self.assertEqual(groups["attachment-one"]["lines"][0]["values"]["customer_spec"], "修改后规格")
+        self.assertEqual(groups["attachment-two"]["lines"][0]["values"]["customer_spec"], "规格二")
+        self.assertEqual(groups["attachment-two"]["lines"][0]["sources"], {"source": "two"})
+
+    def test_order_query_batches_more_than_fifty_purchase_orders(self) -> None:
+        calls: list[list[str]] = []
+
+        def query_batch(*_args, **kwargs):
+            numbers = list(_args[4])
+            calls.append(numbers)
+            return {
+                "call_id": len(calls), "mode": "mock", "status": "success",
+                "response": {"data": {"orderList": [], "notFoundList": []}},
+            }
+
+        orders = [f"PO-BATCH-{index:03d}" for index in range(101)]
+        with patch("fangzheng_web_app.order_interface_service._query_order_info", side_effect=query_batch), patch(
+            "fangzheng_web_app.order_interface_service._store_order_change_matches", return_value=[]
+        ), patch("fangzheng_web_app.order_interface_service.record_order_detail_event"):
+            result = query_order_info(self.case_id, 1, "employee-a", "employee-a", orders)
+
+        self.assertEqual([len(batch) for batch in calls], [50, 50, 1])
+        self.assertEqual(result["call_ids"], [1, 2, 3])
+        self.assertEqual(result["matches"], [])
+
+    def test_quote_template_groups_multiple_attachments_into_independent_tabs(self) -> None:
+        header = {"customer_order_number": "PO-QUOTE-1"}
+        lines = [
+            {"values": {"line_no": "1", "customer_order_number": "PO-QUOTE-1", "customer_spec": "规格一"}, "sources": {
+                "customer_spec": {"label": "附件：F3&F7改价明细.xlsx", "reference": "Sheet1 第 2 行"},
+            }},
+            {"values": {"line_no": "2", "customer_order_number": "PO-QUOTE-2", "customer_spec": "规格二"}, "sources": {
+                "customer_spec": {"label": "附件：F5A 改价明细.pdf", "reference": "识别明细第 1 行"},
+            }},
+        ]
+
+        groups = _initial_quote_groups(header, lines)
+
+        self.assertEqual([group["header"]["_quote_source_label"] for group in groups], ["F3&F7改价明细.xlsx", "F5A 改价明细.pdf"])
+        self.assertEqual([len(group["lines"]) for group in groups], [1, 1])
+
+    def test_quote_template_keeps_an_empty_tab_for_an_unparsed_attachment(self) -> None:
+        groups = _initial_quote_groups(
+            {"customer_order_number": "PO-QUOTE-1"},
+            [{"values": {"line_no": "1", "customer_spec": "规格一"}, "sources": {
+                "customer_spec": {"label": "附件：已识别.xls", "reference": "Sheet1 第 2 行"},
+            }}],
+            source_labels=["未识别.xlsx", "已识别.xls"],
+        )
+
+        self.assertEqual([group["header"]["_quote_source_label"] for group in groups], ["未识别.xlsx", "已识别.xls"])
+        self.assertEqual([len(group["lines"]) for group in groups], [0, 1])
+
+    def test_quote_template_save_preserves_attachment_groups(self) -> None:
+        with db.db_cursor() as conn:
+            conn.execute("UPDATE order_intake_cases SET action_type='quotation' WHERE id=?", (self.case_id,))
+        with patch("fangzheng_web_app.order_entry_service.subprocess.Popen"):
+            queued = queue_quote_template_extraction(self.case_id, "employee-a")
+        with patch("fangzheng_web_app.order_entry_service._initial_template_data", return_value=(
+            {"customer_order_number": "PO-QUOTE-1"},
+            [{"values": {"line_no": "1", "customer_order_number": "PO-QUOTE-1", "customer_spec": "初始"}, "sources": {}}],
+        )):
+            run_template_extraction_task(queued["task_id"], self.case_id, "employee-a", action_type="quotation")
+
+        saved = save_quote_template(self.case_id, "employee-a", {"groups": [
+            {"group_key": "attachment-one", "header": {"_quote_source_label": "F3&F7改价明细.xlsx"}, "lines": [
+                {"values": {"line_no": "1", "customer_order_number": "PO-QUOTE-1", "customer_spec": "规格一", "quantity": "10"}},
+            ]},
+            {"group_key": "attachment-two", "header": {"_quote_source_label": "F5A 改价明细.pdf"}, "lines": [
+                {"values": {"line_no": "2", "customer_order_number": "PO-QUOTE-2", "customer_spec": "规格二", "quantity": "20"}},
+            ]},
+        ]})
+
+        self.assertEqual([group["display_order_number"] for group in saved["groups"]], ["F3&F7改价明细.xlsx", "F5A 改价明细.pdf"])
+        self.assertEqual([[line["values"]["customer_spec"] for line in group["lines"]] for group in saved["groups"]], [["规格一"], ["规格二"]])
+
+    def test_quote_template_export_uses_selected_erp_request_date(self) -> None:
+        template = {
+            "header": {"customer_order_number": "PO-EXPORT-001"},
+            "lines": [
+                {"line_no": 1, "values": {
+                    "line_no": "1", "customer_product_code": "CUST-1", "customer_spec": "NY2150 1.0mm",
+                    "delivery_date": "2026-10-01", "price_before_tax": "10.0000", "unit_price": "11.3000",
+                    "quote_price": "12.5000",
+                }},
+                {"line_no": 2, "values": {
+                    "line_no": "2", "customer_product_code": "CUST-2", "customer_spec": "NY2160 0.8mm",
+                    "delivery_date": "2026-10-02", "price_before_tax": "20", "unit_price": "22.60",
+                    "quote_price": "",
+                }},
+            ],
+        }
+        matches = {1: {"selected_candidate": {
+            "scta39": "ERP-001", "account_set": "KL01", "sctb35": "9", "sctb16": "2026-11-08 00:00:00",
+            "sctb07": "10.0000", "sctb06": "11.3000",
+        }}}
+
+        output, filename = build_quote_template_export(self.case_id, template, matches)
+        workbook = load_workbook(BytesIO(output.getvalue()), data_only=True)
+        sheet = workbook["核价表"]
+
+        self.assertEqual(
+            [cell.value for cell in sheet[1]],
+            ["ERP订单号", "账套", "项次", "客户料号", "客户规格", "客户需求日期", "客户税前单价", "客户税后单价", "厂内税前单价", "厂内税后单价", "报价单价格"],
+        )
+        self.assertEqual([sheet.cell(2, column).value for column in range(1, 6)], ["ERP-001", "KL01", "9", "CUST-1", "NY2150 1.0mm"])
+        self.assertEqual(sheet.cell(2, 6).value.date().isoformat(), "2026-11-08")
+        self.assertEqual([sheet.cell(2, column).value for column in range(7, 12)], [10, 11.3, 10, 11.3, 12.5])
+        self.assertEqual([sheet.cell(3, column).value for column in range(1, 4)], [None, None, None])
+        self.assertEqual(sheet.cell(3, 6).value, None)
+        self.assertIn("PO-EXPORT-001", filename)
+        workbook.close()
 
     def test_quote_reconciliation_reports_price_and_amount_differences(self) -> None:
         template = {"lines": [{"line_no": 1, "values": {

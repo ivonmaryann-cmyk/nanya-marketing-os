@@ -14,7 +14,9 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 
 from .database import automation_cursor as db_cursor
 from .customer_archive_service import get_customer, get_enabled_extraction_maps
@@ -103,19 +105,19 @@ MANUAL_ONLY_LINE_FIELDS = {"product_code", "product_name", "origin", "one_to_man
 # of forcing business users to normalise their customers' Excel files first.
 _ATTACHMENT_HEADERS = {
     "line_no": {"序号", "项次", "项目", "行号", "item", "no"},
-    "customer_order_number": {"PO", "PO号", "PO单号", "客户订单号", "采购订单号", "订单号", "po no", "po number"},
+    "customer_order_number": {"PO", "PO号", "PO单号", "客户订单号", "采购订单号", "采购订单", "订单号", "po no", "po number"},
     "product_code": {"产品编号", "物料编号", "物料编码", "料号", "品号", "厂内料号"},
     "product_name": {"品名", "物料名称", "名称", "产品名称"},
-    "customer_product_code": {"客户产品编号", "客户料号", "客户物料编号", "客户产品码", "part no", "p/n"},
+    "customer_product_code": {"客户产品编号", "客户料号", "客户物料编号", "客户产品码", "客户型号", "part no", "p/n"},
     "customer_spec": {"客户规格", "规格", "型号", "名称规格", "物料规格", "物料描述"},
     "customer_spec_match": {"客户规格匹配", "规格匹配"},
     "product_type": {"产品类型", "产品类型（pp、基板）", "品类"},
     "delivery_date": {"出货日期", "交货日期", "交期", "需求日", "需求交期", "要求交期", "计划交期", "供应商交期", "到货日期", "delivery date"},
     "quantity": {"数量", "采购量", "订购数量", "订单数量", "qty", "quantity"},
     "_quantity_unit": {"单位", "计量单位", "数量单位", "uom"},
-    "price_before_tax": {"税前单价", "未税单价", "不含税单价"},
+    "price_before_tax": {"税前单价", "未税单价", "不含税单价", "采购前单价", "调整后单价"},
     "amount_before_tax": {"税前金额", "未税金额", "不含税金额"},
-    "unit_price": {"单价", "含税单价", "unit price", "price"},
+    "unit_price": {"单价", "含税单价", "采购前含税单价", "调整后含税单价", "unit price", "price"},
     "amount_with_tax": {"含税金额", "价税合计"},
     "origin": {"产地", "原产地"},
     "customer_order_seq": {"客户订单序号", "订单序号", "客户项次"},
@@ -645,15 +647,22 @@ def _rows_from_excel(path: Path, filename: str, customer_mappings: list[dict[str
                     column: _ATTACHMENT_HEADER_INDEX.get(_compact_key(value))
                     for column, value in enumerate(row) if _ATTACHMENT_HEADER_INDEX.get(_compact_key(value))
                 }
-                # A single heading such as "规格" is too ambiguous; require a
-                # usable set of columns before treating it as an order table.
-                if len(set(candidate.values())) >= 2 and ("quantity" in candidate.values() or "customer_product_code" in candidate.values()):
+                # Price-adjustment sheets often carry only material/spec and
+                # prices (without order quantity).  Those are still valid
+                # quote inputs, provided material/spec identify the row.
+                if len(set(candidate.values())) >= 2 and (
+                    "quantity" in candidate.values()
+                    or "customer_product_code" in candidate.values()
+                    or ("product_code" in candidate.values() and "customer_spec" in candidate.values())
+                ):
                     header_index, mapping = index, candidate
                     break
             if header_index < 0:
                 continue
             for index, row in enumerate(rows[header_index + 1 :], start=header_index + 2):
                 values = {field: row[column] if column < len(row) else "" for column, field in mapping.items()}
+                if not clean_text(values.get("customer_product_code")):
+                    values["customer_product_code"] = values.get("product_code") or ""
                 if not any(clean_text(value) for value in values.values()):
                     continue
                 text = " ".join(clean_text(value) for value in values.values())
@@ -674,6 +683,37 @@ def _rows_from_excel(path: Path, filename: str, customer_mappings: list[dict[str
         return result
     finally:
         book.close()
+
+
+def _rows_from_html_excel_attachment(
+    path: Path, filename: str, customer_mappings: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Read an HTML table that was uploaded with an Excel file extension."""
+    try:
+        payload = path.read_bytes()
+    except OSError:
+        return []
+    html = ""
+    for encoding in ("utf-8-sig", "gb18030", "utf-16"):
+        try:
+            candidate = payload.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        if "<table" in candidate.lower():
+            html = candidate
+            break
+    if not html:
+        return []
+    document = build_mail_html_purchase_document(html, html, source_name=filename)
+    if not document:
+        return []
+    return _rows_from_shared_purchase_document(
+        document,
+        label=f"附件：{filename}",
+        reference_prefix="HTML表格明细",
+        customer_mappings=customer_mappings,
+        source_kind="attachment_table",
+    )
 
 
 def _line_from_pipeline_row(
@@ -914,7 +954,10 @@ def _attachment_rows(case: dict[str, Any]) -> list[dict[str, Any]]:
                 continue
             filename = str(attachment.get("filename") or path.name)
             if group_name == "excel":
-                rows.extend(_rows_from_excel(path, filename, customer_mappings=customer_mappings))
+                extracted = _rows_from_excel(path, filename, customer_mappings=customer_mappings)
+                rows.extend(extracted or _rows_from_html_excel_attachment(
+                    path, filename, customer_mappings=customer_mappings,
+                ))
             elif group_name == "pdf_or_image":
                 rows.extend(_rows_from_pdf_or_image(path, filename, customer_mappings=customer_mappings))
             else:
@@ -1182,6 +1225,62 @@ def _initial_order_groups(
     return groups
 
 
+def _quote_source_label(entry: dict[str, Any]) -> str:
+    """Return the attachment label used to keep quote workspaces separate."""
+    for source in (entry.get("sources") or {}).values():
+        label = clean_text((source or {}).get("label")) if isinstance(source, dict) else ""
+        if label.startswith("附件："):
+            return label.removeprefix("附件：").strip()
+    return "邮件正文"
+
+
+def _quote_attachment_labels(case: dict[str, Any]) -> list[str]:
+    """Return every business attachment, including sources with no rows yet."""
+    supported = {".xlsx", ".xlsm", ".xls", ".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".doc", ".docx"}
+    return [
+        filename
+        for attachment in case.get("attachments") or []
+        if not attachment.get("is_inline")
+        for filename in [clean_text(attachment.get("filename"))]
+        if filename and Path(filename).suffix.lower() in supported
+    ]
+
+
+def _initial_quote_groups(
+    header: dict[str, Any], lines: list[dict[str, Any]], *, source_labels: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Group quotation rows by their source attachment, in mail order."""
+    buckets: dict[str, list[dict[str, Any]]] = {
+        label: [] for label in dict.fromkeys(source_labels or [])
+    }
+    for entry in lines:
+        buckets.setdefault(_quote_source_label(entry), []).append(entry)
+    if not buckets:
+        buckets["邮件正文"] = [{"values": _blank_line(1), "sources": {}}]
+
+    groups = []
+    for sort_order, (source_label, group_lines) in enumerate(buckets.items()):
+        group_header = {**DEFAULT_HEADER_VALUES, **header, "_quote_source_label": source_label}
+        order_number = next(
+            (
+                normalize_customer_order_number((entry.get("values") or {}).get("customer_order_number"))
+                for entry in group_lines
+                if normalize_customer_order_number((entry.get("values") or {}).get("customer_order_number"))
+            ),
+            normalize_customer_order_number(header.get("customer_order_number")),
+        )
+        group_header["customer_order_number"] = order_number
+        groups.append({
+            "group_key": uuid.uuid4().hex,
+            "order_number": order_number,
+            "header": group_header,
+            "sort_order": sort_order,
+            "status": "pending",
+            "lines": group_lines,
+        })
+    return groups
+
+
 def _ensure_template_groups(conn: Any, template: Any) -> list[Any]:
     """Lazily upgrade a legacy single-header template to one order group."""
     template_id = int(template["id"])
@@ -1255,7 +1354,7 @@ def _serialize_template(conn, template_id: int) -> dict[str, Any]:
             "id": int(group["id"]),
             "group_key": str(group["group_key"]),
             "order_number": str(group["order_number"] or ""),
-            "display_order_number": (
+            "display_order_number": clean_text(group_header.get("_quote_source_label")) or (
                 str(group["order_number"] or "")
                 or f"暂无PO号-{str(group['group_key'])[:8]}"
             ),
@@ -1329,7 +1428,10 @@ def get_or_create_template(
             if action_type == "new_order"
             else _initial_order_change_template_data(case, include_pricing=action_type == "quotation")
         )
-        initial_groups = _initial_order_groups(initial_header, initial_lines)
+        initial_groups = (
+            _initial_quote_groups(initial_header, initial_lines, source_labels=_quote_attachment_labels(case))
+            if action_type == "quotation" else _initial_order_groups(initial_header, initial_lines)
+        )
         used_line_nos: set[int] = set()
         next_line_no = 1
         for group in initial_groups:
@@ -1675,7 +1777,7 @@ def reextract_template(
             "UPDATE order_entry_templates SET header_json=?,current_version=?,updated_at=? WHERE id=?",
             (json.dumps(next_header, ensure_ascii=False), current_version, now, template_id),
         )
-        if action_type in {"order_change", "quotation"}:
+        if action_type == "order_change":
             conn.execute("DELETE FROM order_entry_template_lines WHERE template_id=?", (template_id,))
             for entry in regenerated_lines:
                 values = entry["values"]
@@ -1690,6 +1792,57 @@ def reextract_template(
                         now,
                     ),
                 )
+            invalidate_changed_order_matches(conn, template_id, regenerated_lines)
+        elif action_type == "quotation":
+            # Quote workspaces are attachment tabs, not PO tabs.  Recreate
+            # their groups from the current source files so each attachment
+            # remains independently editable after a fresh extraction.
+            previous_by_source = {
+                clean_text((group.get("header") or {}).get("_quote_source_label")): group
+                for group in previous.get("groups") or []
+            }
+            conn.execute("DELETE FROM order_entry_template_lines WHERE template_id=?", (template_id,))
+            conn.execute("DELETE FROM order_entry_template_groups WHERE template_id=?", (template_id,))
+            used_line_nos: set[int] = set()
+            next_line_no = 1
+            for sort_order, group in enumerate(
+                _initial_quote_groups(next_header, regenerated_lines, source_labels=_quote_attachment_labels(case))
+            ):
+                source_label = clean_text((group.get("header") or {}).get("_quote_source_label"))
+                if previous_by_source.get(source_label):
+                    group["group_key"] = str(previous_by_source[source_label]["group_key"])
+                for entry in group.get("lines") or []:
+                    values = entry["values"]
+                    requested = clean_text(values.get("line_no"))
+                    line_no = int(requested) if re.fullmatch(r"[1-9]\d*", requested or "") else next_line_no
+                    if line_no in used_line_nos:
+                        line_no = next_line_no
+                    used_line_nos.add(line_no)
+                    next_line_no = max(next_line_no, line_no + 1)
+                    values["line_no"] = str(line_no)
+                cursor = conn.execute(
+                    """INSERT INTO order_entry_template_groups
+                       (template_id,group_key,order_number,header_json,sort_order,status,
+                        nyeos_order_number,erp_order_number,submitted_at,created_at,updated_at)
+                       VALUES (?,?,?,?,?,'pending','','',NULL,?,?)""",
+                    (
+                        template_id, group["group_key"], group.get("order_number") or "",
+                        json.dumps(group["header"], ensure_ascii=False), sort_order, now, now,
+                    ),
+                )
+                group_id = int(cursor.lastrowid)
+                for entry in group.get("lines") or []:
+                    values = entry["values"]
+                    conn.execute(
+                        """INSERT INTO order_entry_template_lines
+                           (template_id,group_id,line_no,values_json,sources_json,created_at,updated_at)
+                           VALUES (?,?,?,?,?,?,?)""",
+                        (
+                            template_id, group_id, int(values["line_no"]),
+                            json.dumps(values, ensure_ascii=False),
+                            json.dumps(entry["sources"], ensure_ascii=False), now, now,
+                        ),
+                    )
             invalidate_changed_order_matches(conn, template_id, regenerated_lines)
         else:
             submitted_groups = [group for group in previous.get("groups") or [] if group.get("submitted")]
@@ -1902,6 +2055,19 @@ ORDER_CHANGE_LINE_FIELDS = (
 )
 QUOTE_SOURCE_PRICE_FIELDS = ("price_before_tax", "amount_before_tax", "unit_price", "amount_with_tax")
 QUOTE_RESULT_FIELDS = ("quote_price", "quote_note")
+QUOTE_EXPORT_FIELDS = (
+    ("ERP订单号", "erp_order_number"),
+    ("账套", "account_set"),
+    ("项次", "erp_line_no"),
+    ("客户料号", "customer_product_code"),
+    ("客户规格", "customer_spec"),
+    ("客户需求日期", "customer_request_date"),
+    ("客户税前单价", "price_before_tax"),
+    ("客户税后单价", "unit_price"),
+    ("厂内税前单价", "factory_price_before_tax"),
+    ("厂内税后单价", "factory_unit_price"),
+    ("报价单价格", "quote_price"),
+)
 
 
 def order_change_template_progress(case_id: int, employee_id: str) -> dict[str, Any]:
@@ -1982,7 +2148,171 @@ def save_order_change_template(case_id: int, employee_id: str, payload: dict[str
 
 def save_quote_template(case_id: int, employee_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Save a quote workspace and invalidate prices after quote inputs change."""
-    return _save_simple_template(case_id, employee_id, payload, action_type="quotation")
+    return _save_quote_template(case_id, employee_id, payload)
+
+
+def _save_quote_template(
+    case_id: int,
+    employee_id: str,
+    payload: dict[str, Any],
+    *,
+    preserve_quote_results: bool = True,
+) -> dict[str, Any]:
+    """Persist quotation tabs while keeping each attachment's rows together."""
+    case = _case_for_template(case_id, employee_id, action_type="quotation")
+    raw_groups = payload.get("groups")
+    with db_cursor() as conn:
+        row = conn.execute(
+            "SELECT id,current_version,header_json FROM order_entry_templates WHERE case_id=? AND employee_id=?",
+            (case_id, employee_id),
+        ).fetchone()
+        if not row:
+            raise ValueError("请先提取核价模板")
+        template_id = int(row["id"])
+        previous = _serialize_template(conn, template_id)
+
+        active_group_key = clean_text(payload.get("group_key"))
+        if active_group_key and not isinstance(raw_groups, list):
+            active_group = next(
+                (group for group in previous.get("groups") or [] if group.get("group_key") == active_group_key),
+                None,
+            )
+            if not active_group:
+                raise ValueError("当前核价附件标签页不存在，请刷新后重试")
+            submitted_lines = payload.get("lines")
+            if not isinstance(submitted_lines, list):
+                raise ValueError("当前核价附件明细格式无效")
+            raw_groups = [
+                {
+                    "group_key": group.get("group_key"),
+                    "header": group.get("header") or {},
+                    "lines": submitted_lines if group.get("group_key") == active_group_key else group.get("lines") or [],
+                }
+                for group in previous.get("groups") or []
+            ]
+        if not isinstance(raw_groups, list):
+            raw_groups = [
+                {
+                    "group_key": group["group_key"],
+                    "header": group.get("header") or {},
+                    "lines": [],
+                }
+                for group in previous.get("groups") or []
+            ] or [{"group_key": "", "header": {}, "lines": []}]
+            by_line = {
+                str((line.get("values") or {}).get("line_no") or line.get("line_no") or ""): group_index
+                for group_index, group in enumerate(previous.get("groups") or [])
+                for line in group.get("lines") or []
+            }
+            for raw_line in payload.get("lines") or []:
+                values = (raw_line or {}).get("values") or raw_line or {}
+                group_index = by_line.get(clean_text(values.get("line_no")), 0)
+                raw_groups[min(group_index, len(raw_groups) - 1)]["lines"].append(raw_line)
+        if not raw_groups:
+            raise ValueError("至少保留一个附件标签页")
+
+        previous_by_line = {
+            str((line.get("values") or {}).get("line_no") or line.get("line_no") or ""): line
+            for line in previous.get("lines") or []
+        }
+        prepared_groups: list[dict[str, Any]] = []
+        used_line_nos: set[str] = set()
+        next_line_no = 1
+        for group_index, raw_group in enumerate(raw_groups, start=1):
+            if not isinstance(raw_group, dict) or not isinstance(raw_group.get("lines") or [], list):
+                raise ValueError(f"第 {group_index} 个附件标签页格式无效")
+            group_header = {
+                **DEFAULT_HEADER_VALUES,
+                **(raw_group.get("header") if isinstance(raw_group.get("header"), dict) else {}),
+            }
+            source_label = clean_text(group_header.get("_quote_source_label")) or f"附件 {group_index}"
+            group_header["_quote_source_label"] = source_label
+            group_lines: list[dict[str, Any]] = []
+            for raw in raw_group.get("lines") or []:
+                raw_values = (raw or {}).get("values") or raw or {}
+                previous_line = previous_by_line.get(clean_text(raw_values.get("line_no"))) or {}
+                values = _blank_line(next_line_no)
+                values["material_status"] = "查询"
+                for field in ORDER_CHANGE_LINE_FIELDS + QUOTE_SOURCE_PRICE_FIELDS:
+                    values[field] = clean_text(raw_values.get(field))
+                line_no = values["line_no"]
+                values["line_no"] = line_no if re.fullmatch(r"[1-9]\d*", line_no or "") else str(next_line_no)
+                if not any(values.get(field) for field in ORDER_CHANGE_LINE_FIELDS if field != "line_no"):
+                    continue
+                if values["line_no"] in used_line_nos:
+                    raise ValueError(f"项次 {values['line_no']} 重复")
+                used_line_nos.add(values["line_no"])
+                next_line_no = max(next_line_no + 1, int(values["line_no"]) + 1)
+                previous_values = previous_line.get("values") or {}
+                if not preserve_quote_results:
+                    for field in QUOTE_RESULT_FIELDS:
+                        values[field] = clean_text(raw_values.get(field))
+                elif (
+                    values.get("customer_spec") == previous_values.get("customer_spec")
+                    and values.get("quantity") == previous_values.get("quantity")
+                ):
+                    for field in QUOTE_RESULT_FIELDS:
+                        values[field] = clean_text(previous_values.get(field))
+                else:
+                    for field in QUOTE_RESULT_FIELDS:
+                        values[field] = ""
+                source = (raw or {}).get("sources") or previous_line.get("sources") or {}
+                group_lines.append({"values": values, "sources": source if isinstance(source, dict) else {}})
+            order_number = next(
+                (clean_text(item["values"].get("customer_order_number")) for item in group_lines if item["values"].get("customer_order_number")),
+                clean_text(group_header.get("customer_order_number")),
+            )
+            group_header["customer_order_number"] = order_number
+            prepared_groups.append({
+                "group_key": clean_text(raw_group.get("group_key")) or uuid.uuid4().hex,
+                "header": group_header,
+                "order_number": order_number,
+                "lines": group_lines,
+            })
+
+        all_lines = [line for group in prepared_groups for line in group["lines"]]
+        now = utcnow()
+        invalidate_changed_order_matches(conn, template_id, all_lines)
+        _replace_backup(
+            conn, template_id=template_id, header=previous["header"], lines=previous["lines"],
+            employee_id=employee_id, saved_at=now,
+        )
+        conn.execute("DELETE FROM order_entry_template_lines WHERE template_id=?", (template_id,))
+        conn.execute("DELETE FROM order_entry_template_groups WHERE template_id=?", (template_id,))
+        for sort_order, group in enumerate(prepared_groups):
+            cursor = conn.execute(
+                """INSERT INTO order_entry_template_groups
+                   (template_id,group_key,order_number,header_json,sort_order,status,nyeos_order_number,
+                    erp_order_number,submitted_at,created_at,updated_at)
+                   VALUES (?,?,?,?,?,'pending','','',NULL,?,?)""",
+                (
+                    template_id, group["group_key"], group["order_number"],
+                    json.dumps(group["header"], ensure_ascii=False), sort_order, now, now,
+                ),
+            )
+            group_id = int(cursor.lastrowid)
+            for line in group["lines"]:
+                values = line["values"]
+                conn.execute(
+                    """INSERT INTO order_entry_template_lines
+                       (template_id,group_id,line_no,values_json,sources_json,created_at,updated_at)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    (
+                        template_id, group_id, int(values["line_no"]), json.dumps(values, ensure_ascii=False),
+                        json.dumps(line["sources"], ensure_ascii=False), now, now,
+                    ),
+                )
+        header = prepared_groups[0]["header"] if prepared_groups else {**DEFAULT_HEADER_VALUES, **_json(row["header_json"], {})}
+        conn.execute(
+            "UPDATE order_entry_templates SET header_json=?,current_version=?,updated_at=? WHERE id=?",
+            (json.dumps(header, ensure_ascii=False), int(row["current_version"] or 0) + 1, now, template_id),
+        )
+        record_order_detail_event(
+            conn, case_id=case_id, template_id=template_id, employee_id=employee_id,
+            event_type="quote_template_saved", title="核价模板已保存",
+            detail={"line_count": len(all_lines), "group_count": len(prepared_groups)}, operated_by=employee_id,
+        )
+        return _serialize_template(conn, template_id)
 
 
 def _save_simple_template(
@@ -2094,8 +2424,26 @@ def calculate_quote_template_prices(case_id: int, employee_id: str) -> dict[str,
         values["quote_note"] = clean_text(item.get("note"))
         counts["success" if quote_price else "failed"] += 1
         updated_lines.append({"values": values, "sources": line.get("sources") or {}})
-    saved = _save_simple_template(
-        case_id, employee_id, {"lines": updated_lines}, action_type="quotation", preserve_quote_results=False,
+    updated_by_line = {
+        clean_text((line.get("values") or {}).get("line_no")): line
+        for line in updated_lines
+    }
+    saved_groups = []
+    for group in template.get("groups") or []:
+        saved_groups.append({
+            "group_key": group.get("group_key"),
+            "header": group.get("header") or {},
+            "lines": [
+                updated_by_line.get(clean_text(line.get("line_no")))
+                or {"values": line.get("values") or {}, "sources": line.get("sources") or {}}
+                for line in group.get("lines") or []
+            ],
+        })
+    saved = _save_quote_template(
+        case_id,
+        employee_id,
+        {"groups": saved_groups} if saved_groups else {"lines": updated_lines},
+        preserve_quote_results=False,
     )
     with db_cursor() as conn:
         record_order_detail_event(
@@ -2105,6 +2453,79 @@ def calculate_quote_template_prices(case_id: int, employee_id: str) -> dict[str,
             operated_by=employee_id,
         )
     return {"template": saved, "review": review, **counts}
+
+
+def build_quote_template_export(
+    case_id: int, template: dict[str, Any], matches: dict[int, dict[str, Any]],
+) -> tuple[BytesIO, str]:
+    """Build the quote-review spreadsheet from saved customer and selected ERP data."""
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "核价表"
+    headers = [label for label, _field in QUOTE_EXPORT_FIELDS]
+    sheet.append(headers)
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    for cell in sheet[1]:
+        cell.font = Font(color="FFFFFF", bold=True)
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    def numeric(value: Any) -> Any:
+        text = clean_text(value)
+        if not text:
+            return ""
+        try:
+            return Decimal(text.replace(",", ""))
+        except InvalidOperation:
+            return text
+
+    for line in template.get("lines") or []:
+        values = line.get("values") or {}
+        line_no = int(line.get("line_no") or values.get("line_no") or 0)
+        selected = (matches.get(line_no) or {}).get("selected_candidate") or {}
+        request_date_text = normalize_date(selected.get("sctb16")) or clean_text(selected.get("sctb16"))
+        try:
+            request_date: Any = date.fromisoformat(request_date_text) if request_date_text else ""
+        except ValueError:
+            request_date = request_date_text
+        row = {
+            "erp_order_number": clean_text(selected.get("scta39")),
+            "account_set": clean_text(selected.get("account_set")),
+            "erp_line_no": clean_text(selected.get("sctb35")),
+            "customer_product_code": clean_text(values.get("customer_product_code")),
+            "customer_spec": clean_text(values.get("customer_spec")),
+            # Customer demand date is intentionally taken from the selected
+            # ERP line instead of the editable mail-template date.
+            "customer_request_date": request_date,
+            "price_before_tax": numeric(values.get("price_before_tax")),
+            "unit_price": numeric(values.get("unit_price")),
+            "factory_price_before_tax": numeric(selected.get("sctb07")),
+            "factory_unit_price": numeric(selected.get("sctb06")),
+            "quote_price": numeric(values.get("quote_price")),
+        }
+        sheet.append([row[field] for _label, field in QUOTE_EXPORT_FIELDS])
+
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = sheet.dimensions
+    for index, (label, field) in enumerate(QUOTE_EXPORT_FIELDS, start=1):
+        sheet.column_dimensions[get_column_letter(index)].width = (
+            38 if field == "customer_spec" else max(14, len(label) + 4)
+        )
+    for row in sheet.iter_rows(min_row=2, min_col=7, max_col=11):
+        for cell in row:
+            if isinstance(cell.value, Decimal):
+                cell.number_format = "0.0000"
+    for cell in sheet.iter_cols(min_col=6, max_col=6, min_row=2):
+        for date_cell in cell:
+            if isinstance(date_cell.value, date):
+                date_cell.number_format = "yyyy-mm-dd"
+    data = BytesIO()
+    book.save(data)
+    book.close()
+    data.seek(0)
+    order_number = normalize_customer_order_number(template.get("header", {}).get("customer_order_number"))
+    suffix = re.sub(r"[^0-9A-Za-z_-]+", "_", order_number).strip("_")
+    return data, f"核价表_邮件{case_id}{f'_{suffix}' if suffix else ''}.xlsx"
 
 
 def quote_template_reconciliation(

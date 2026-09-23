@@ -225,6 +225,7 @@ from .order_entry_service import (
     save_order_change_template,
     save_quote_template,
     calculate_quote_template_prices,
+    build_quote_template_export,
     quote_template_reconciliation,
     save_template as save_order_entry_template,
     template_progress as order_entry_template_progress,
@@ -1493,6 +1494,28 @@ def _order_automation_return_context(case: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _quote_template_request_payload() -> dict[str, Any]:
+    """Accept compact JSON payloads while retaining legacy form submissions."""
+    if request.is_json:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            raise ValueError("模板数据格式错误。")
+        return payload
+    payload = json.loads(request.form.get("template_payload") or "{}")
+    if not isinstance(payload, dict):
+        raise ValueError("模板数据格式错误。")
+    return payload
+
+
+def _quote_template_redirect(case_id: int, message: str, category: str = "success"):
+    """Return JSON for the compact editor and preserve redirects for old forms."""
+    target = url_for("main.order_automation_quote_template", case_id=case_id, **request.args.to_dict())
+    flash(message, category)
+    if request.is_json:
+        return jsonify({"ok": category != "error", "redirect_url": target, "message": message}), 200 if category != "error" else 400
+    return redirect(target)
+
+
 def _order_reply_default_body(
     case: dict[str, Any], header: dict[str, Any], lines: list[dict[str, Any]],
 ) -> str:
@@ -2078,12 +2101,12 @@ def order_automation_quote_template(case_id: int):
         abort(404)
     if request.method == "POST":
         try:
-            payload = json.loads(request.form.get("template_payload") or "{}")
-            save_quote_template(case_id, employee_id, payload)
-            flash("核价模板已保存。", "success")
+            save_quote_template(case_id, employee_id, _quote_template_request_payload())
+            return _quote_template_redirect(case_id, "核价模板已保存。")
         except (ValueError, json.JSONDecodeError) as exc:
-            flash(str(exc) if isinstance(exc, ValueError) else "模板数据格式错误。", "error")
-        return redirect(url_for("main.order_automation_quote_template", case_id=case_id, **request.args.to_dict()))
+            return _quote_template_redirect(
+                case_id, str(exc) if isinstance(exc, ValueError) else "模板数据格式错误。", "error",
+            )
     progress = quote_template_progress(case_id, employee_id)
     if not progress["created"]:
         if progress["stage"] == "pending_extraction":
@@ -2096,6 +2119,23 @@ def order_automation_quote_template(case_id: int):
     _case, template = get_quote_template(case_id, employee_id)
     if not template:
         abort(404)
+    quote_groups = template.get("groups") or []
+    quote_order_count = len({
+        str((line.get("values") or {}).get("customer_order_number") or "").strip()
+        for line in template.get("lines") or []
+        if str((line.get("values") or {}).get("customer_order_number") or "").strip()
+    })
+    active_group_key = request.args.get("group_key", "")
+    active_quote_group = next(
+        (group for group in quote_groups if group.get("group_key") == active_group_key),
+        quote_groups[0] if quote_groups else None,
+    )
+    if active_quote_group:
+        template = {
+            **template,
+            "header": active_quote_group.get("header") or template.get("header") or {},
+            "lines": active_quote_group.get("lines") or [],
+        }
     order_matches = get_order_change_matches(case_id, int(template["id"]), employee_id)
     price_review = review_case_template_prices(case, template)
     return render_template(
@@ -2127,6 +2167,9 @@ def order_automation_quote_template(case_id: int):
         order_details=get_order_detail_records(case_id, employee_id),
         return_context=_order_automation_return_context(case),
         is_quote_template=True,
+        quote_groups=quote_groups,
+        quote_order_count=quote_order_count,
+        active_quote_group=active_quote_group,
         can_calculate_quote_prices=bool(case.get("customer_id")),
     )
 
@@ -2158,17 +2201,20 @@ def order_automation_quote_template_query(case_id: int):
     if not case or case.get("action_type") != "quotation":
         abort(404)
     try:
-        template = save_quote_template(case_id, employee_id, json.loads(request.form.get("template_payload") or "{}"))
+        template = save_quote_template(case_id, employee_id, _quote_template_request_payload())
         result = query_order_info(case_id, int(template["id"]), employee_id, employee_id, [
             line.get("values", {}).get("customer_order_number", "") for line in template.get("lines", [])
         ])
         counts = {status: 0 for status in ("matched", "multiple", "unmatched")}
         for item in result.get("matches") or []:
             counts[item["status"]] = counts.get(item["status"], 0) + 1
-        flash(f"查询订单信息已完成：已匹配 {counts['matched']} 项，多个匹配 {counts['multiple']} 项，未匹配 {counts['unmatched']} 项。", "success")
+        return _quote_template_redirect(
+            case_id, f"查询订单信息已完成：已匹配 {counts['matched']} 项，多个匹配 {counts['multiple']} 项，未匹配 {counts['unmatched']} 项。",
+        )
     except (ValueError, json.JSONDecodeError) as exc:
-        flash(str(exc) if isinstance(exc, ValueError) else "模板数据格式错误。", "error")
-    return redirect(url_for("main.order_automation_quote_template", case_id=case_id, **request.args.to_dict()))
+        return _quote_template_redirect(
+            case_id, str(exc) if isinstance(exc, ValueError) else "模板数据格式错误。", "error",
+        )
 
 
 @bp.post("/order-automation/cases/<int:case_id>/quote-template/reconcile")
@@ -2181,7 +2227,7 @@ def order_automation_quote_template_reconcile(case_id: int):
     if not case or case.get("action_type") != "quotation":
         abort(404)
     try:
-        template = save_quote_template(case_id, employee_id, json.loads(request.form.get("template_payload") or "{}"))
+        template = save_quote_template(case_id, employee_id, _quote_template_request_payload())
         result = query_order_info(case_id, int(template["id"]), employee_id, employee_id, [
             line.get("values", {}).get("customer_order_number", "") for line in template.get("lines", [])
         ])
@@ -2190,10 +2236,11 @@ def order_automation_quote_template_reconcile(case_id: int):
         matches = get_order_change_matches(case_id, int(template["id"]), employee_id)
         _case, refreshed = get_quote_template(case_id, employee_id)
         review = quote_template_reconciliation(refreshed, matches, review_case_template_prices(case, refreshed))
-        flash(f"核对完成：一致 {review['matched']} 项，待处理 {review['issues']} 项。", "success")
+        return _quote_template_redirect(case_id, f"核对完成：一致 {review['matched']} 项，待处理 {review['issues']} 项。")
     except (ValueError, json.JSONDecodeError) as exc:
-        flash(str(exc) if isinstance(exc, ValueError) else "模板数据格式错误。", "error")
-    return redirect(url_for("main.order_automation_quote_template", case_id=case_id, **request.args.to_dict()))
+        return _quote_template_redirect(
+            case_id, str(exc) if isinstance(exc, ValueError) else "模板数据格式错误。", "error",
+        )
 
 
 @bp.post("/order-automation/cases/<int:case_id>/quote-template/select-match")
@@ -2227,14 +2274,43 @@ def order_automation_quote_template_calculate_prices(case_id: int):
     if not case or case.get("action_type") != "quotation":
         abort(404)
     try:
-        save_quote_template(case_id, employee_id, json.loads(request.form.get("template_payload") or "{}"))
+        save_quote_template(case_id, employee_id, _quote_template_request_payload())
         if not case.get("customer_id"):
             raise ValueError("请先关联客户后再计算报价单价格。")
         result = calculate_quote_template_prices(case_id, employee_id)
-        flash(f"价格计算完成：成功 {result['success']} 项，未命中或无法计算 {result['failed']} 项。", "success")
+        return _quote_template_redirect(
+            case_id, f"价格计算完成：成功 {result['success']} 项，未命中或无法计算 {result['failed']} 项。",
+        )
     except (ValueError, json.JSONDecodeError) as exc:
-        flash(str(exc) if isinstance(exc, ValueError) else "模板数据格式错误。", "error")
-    return redirect(url_for("main.order_automation_quote_template", case_id=case_id, **request.args.to_dict()))
+        return _quote_template_redirect(
+            case_id, str(exc) if isinstance(exc, ValueError) else "模板数据格式错误。", "error",
+        )
+
+
+@bp.get("/order-automation/cases/<int:case_id>/quote-template/export")
+def order_automation_quote_template_export(case_id: int):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    employee_id = current_employee() or ""
+    case = get_order_intake_case(case_id, employee_id)
+    if not case or case.get("action_type") != "quotation":
+        abort(404)
+    try:
+        _case, template = get_quote_template(case_id, employee_id)
+        if not template:
+            raise ValueError("请先生成核价模板")
+        matches = get_order_change_matches(case_id, int(template["id"]), employee_id)
+        output, filename = build_quote_template_export(case_id, template, matches)
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("main.order_automation_quote_template", case_id=case_id, **request.args.to_dict()))
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 @bp.post("/order-automation/cases/<int:case_id>/order-change-template/refresh")
