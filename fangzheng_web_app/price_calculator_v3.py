@@ -197,6 +197,12 @@ FOIL_ALIAS = {
     'HS2-M2-VSP': 'HVLP2',
 }
 
+
+def normalize_foil_type(value):
+    """将订单中的特殊铜箔型号转换为报价表使用的标准代码。"""
+    raw = str(value).strip().upper()
+    return FOIL_ALIAS.get(raw, raw)
+
 # 部分历史方正报价将 HVLP1 简写为 HVLP。仅在精确铜箔类型没有报价时回退，
 # 避免覆盖后续按 HVLP1 单独维护的价格。
 FOIL_QUERY_FALLBACK = {
@@ -222,8 +228,8 @@ def parse_foil_type(text, cu_thick=None):
         text, re.IGNORECASE
     )
     if dual_match:
-        foil_front = dual_match.group(1).upper()
-        foil_back = dual_match.group(2).upper()
+        foil_front = normalize_foil_type(dual_match.group(1))
+        foil_back = normalize_foil_type(dual_match.group(2))
         # 先返回整体代码（如 RTF2/RTF），由查询函数决定是否需要拆分
         combined = f"{foil_front}/{foil_back}"
         log(f"  检测到双代码铜箔：{combined}")
@@ -235,8 +241,7 @@ def parse_foil_type(text, cu_thick=None):
         text, re.IGNORECASE
     )
     if match:
-        raw = match.group(1).upper()
-        return FOIL_ALIAS.get(raw, raw)
+        return normalize_foil_type(match.group(1))
     
     # 无括号单代码（支持裸RTF、HVLP等不带数字的型号）
     match2 = re.search(
@@ -244,8 +249,7 @@ def parse_foil_type(text, cu_thick=None):
         text, re.IGNORECASE
     )
     if match2:
-        raw = match2.group(1).upper()
-        return FOIL_ALIAS.get(raw, raw)
+        return normalize_foil_type(match2.group(1))
     
     return None
 

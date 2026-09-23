@@ -80,6 +80,34 @@ class FangzhengPriceCalculatorTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual(240.0, price)
 
+    def test_ccl_normalizes_special_dual_foil_codes(self) -> None:
+        self.assertEqual(
+            "HVLP2/RTF",
+            calculator.parse_foil_type("(HS2-M2-VSP/RTF)", "H/2"),
+        )
+        self.assertEqual(
+            "HTE/HVLP2",
+            calculator.parse_foil_type("(HTE/HS2-M2-VSP)", "H/2"),
+        )
+
+    def test_ccl_matches_normalized_special_dual_foil_codes(self) -> None:
+        for foil, spec in (
+            ("HVLP2/RTF", 'NY-P1 0.064mm H/2 41"*49"(1080*1)(HS2-M2-VSP/RTF)(有卤素)'),
+            ("HTE/HVLP2", 'NY-P1 0.064mm H/2 41"*49"(1080*1)(HTE/HS2-M2-VSP)(有卤素)'),
+        ):
+            with self.subTest(foil=foil):
+                self.price_rules.loc[len(self.price_rules)] = [
+                    "CCL", "NY-P1", "0.064", "2/2", foil, "1080x1", 10.0, 120.0, 132.0, 143.0,
+                ]
+                price, _note, error = calculator.calculate_price(
+                    spec,
+                    self.price_rules,
+                    self.account_rules,
+                )
+
+                self.assertIsNone(error)
+                self.assertEqual(132.0, price)
+
     def test_pp_accepts_unquoted_piece_size(self) -> None:
         price, _note, error = calculator.calculate_price(
             "NY6300P(C) 106 RC77% 30.1*24.5",
