@@ -49,10 +49,8 @@ PP_FIXED_DIV = 144
 PP_SMALL_PIECE_TAIL_THRESHOLD = 16.5
 PP_SMALL_PIECE_DIVISOR_LE_THRESHOLD = 3
 PP_SMALL_PIECE_DIVISOR_GT_THRESHOLD = 2
-ROLL_FIXED_WIDTH = 48
-ROLL_MM_DIVISOR = 0.0254
+PP_ROLL_SF_TO_M_FACTOR = 13.12
 FINAL_PRICE_DECIMALS = 2
-PP_ROLL_PRICE_COLUMNS = ('36"*48"', '40"*48"', '42"*48"')
 PP_ROLL_LENGTH_PATTERN = r'\d+(?:\.\d+)?\s*(?:M|\u7c73)\s*/\s*(?:ROLL|\u5377)'
 # PP 卷料中的玻璃布型号。必须使用白名单，避免把卷长等普通数字误识别为叠构。
 PP_GLASS_TYPES = (
@@ -599,42 +597,19 @@ def query_pp_price(df_price, glue, laminate_type, rc_percent):
     return None, None, f"PP未找到匹配：胶系={glue_tried}, 叠构={laminate_type}, RC%={rc_percent}"
 
 
-def pp_roll_price_from_row(row):
-    """读取 PP 报价行中的整卷价格。"""
-    for col in PP_ROLL_PRICE_COLUMNS:
-        value = row.get(col)
-        if not pd.isna(value):
-            return float(value)
-    return None
-
-
-def query_pp_roll_price(df_price, glue, laminate_type, rc_percent):
-    """查询 PP 报价单整卷价格。"""
-    _, row_idx, err = query_pp_price(df_price, glue, laminate_type, rc_percent)
-    if err:
-        return None
-    row = df_price.loc[row_idx]
-    return pp_roll_price_from_row(row)
-
-
 def is_pp_roll_desc(desc):
     """Return True for PP roll specs such as 49.5"*300M/Roll or 49.5" ... 300M/卷."""
     return bool(re.search(PP_ROLL_LENGTH_PATTERN, normalize_str(desc), re.IGNORECASE))
 
 
-def extract_pp_roll_width(desc):
-    """Extract roll width in inch from supported PP roll specs."""
-    desc = normalize_str(desc)
-    joined_pattern = rf'(\d+\.?\d*)"?\s*[*脳xX×]\s*{PP_ROLL_LENGTH_PATTERN}'
-    match = re.search(joined_pattern, desc, re.IGNORECASE)
-    if match:
-        return float(match.group(1))
-
-    separated_pattern = rf'(\d+\.?\d*)\s*(?:"|IN|INCH|英寸)\s*.{{0,80}}?{PP_ROLL_LENGTH_PATTERN}'
-    match = re.search(separated_pattern, desc, re.IGNORECASE)
-    if match:
-        return float(match.group(1))
-    return None
+def extract_pp_roll_length(desc):
+    """Extract the roll length in metres from a PP roll specification."""
+    match = re.search(
+        r'(\d+(?:\.\d+)?)\s*(?:M|\u7c73)\s*/\s*(?:ROLL|\u5377)',
+        normalize_str(desc),
+        re.IGNORECASE,
+    )
+    return float(match.group(1)) if match else None
 
 
 def _extract_pp_glue_and_laminate(desc):
@@ -672,11 +647,15 @@ def _parse_pp_price_key(desc):
 
 
 def calculate_pp_roll_price(desc, df_price):
-    """返回 PP 报价单中的整卷价格；非 PP 或未命中时返回 None。"""
+    """按 RMB/SF、规格卷长和固定换算系数计算 PP 整卷价格。"""
     raw_glue, laminate_type, rc_percent = _parse_pp_price_key(desc)
-    if raw_glue is None:
+    roll_length = extract_pp_roll_length(desc)
+    if raw_glue is None or roll_length is None:
         return None
-    return query_pp_roll_price(df_price, raw_glue, laminate_type, rc_percent)
+    rmb_sf, _row_idx, err = query_pp_price(df_price, raw_glue, laminate_type, rc_percent)
+    if err:
+        return None
+    return round_price(rmb_sf * roll_length * PP_ROLL_SF_TO_M_FACTOR)
 
 
 def output_price_for_desc(desc, price, pp_roll_price):
@@ -795,7 +774,7 @@ def get_price_col_from_big(big_w, big_h):
 # ============================================================
 # 核心计算逻辑
 # ============================================================
-def calculate_price(desc, df_price, df_account, *, result_decimals=FINAL_PRICE_DECIMALS):
+def calculate_price(desc, df_price, df_account):
     """根据物料描述计算价格，返回：(价格, 计算说明, 错误信息)"""
     desc = normalize_str(desc)
     
@@ -806,7 +785,7 @@ def calculate_price(desc, df_price, df_account, *, result_decimals=FINAL_PRICE_D
     is_roll = is_pp_roll_desc(desc)
     
     if is_roll:
-        return _calc_roll(desc, df_price, result_decimals=result_decimals)
+        return _calc_roll(desc, df_price)
     
     # 判断是否为非 PP 开头的 PP 行：型号以P结尾且包含 RC%，且无mm厚度信息
     # 如：NY2170P 1080 RC68% 21.6"x24.6" 有卤 CAF
@@ -980,7 +959,7 @@ def _calc_ccl(desc, df_price, df_account):
         
         return final_price, note, None
 
-def _calc_roll(desc, df_price, *, result_decimals=FINAL_PRICE_DECIMALS):
+def _calc_roll(desc, df_price):
     """
     卷料价格计算（如 200M/Roll、300M/Roll）
     逻辑：与 PP 相同，叠构从 M/Roll 前的数字提取
@@ -995,23 +974,22 @@ def _calc_roll(desc, df_price, *, result_decimals=FINAL_PRICE_DECIMALS):
     if rc_percent is None:
         return None, '', f'卷料无法提取 RC%：{desc[:60]}'
     
-    # 未写幅宽的标准整卷，沿用现有方正整卷固定 48 英寸宽度计算。
-    w = extract_pp_roll_width(desc)
-    if w is None:
-        w = ROLL_FIXED_WIDTH
+    roll_length = extract_pp_roll_length(desc)
+    if roll_length is None:
+        return None, '', f'卷料无法提取卷长：{desc[:60]}'
     
-    log(f"  卷料解析：原始胶系={raw_glue}, 叠构={laminate_type}, RC%={rc_percent}, 宽度={w}")
+    log(f"  卷料解析：原始胶系={raw_glue}, 叠构={laminate_type}, RC%={rc_percent}, 卷长={roll_length}M")
     
     rmb_sf, row_idx, err = query_pp_price(df_price, raw_glue, laminate_type, rc_percent)
     if err:
         return None, '', err
     
-    price = ROLL_FIXED_WIDTH / ROLL_MM_DIVISOR / PP_FIXED_DIV * rmb_sf
+    price = rmb_sf * roll_length * PP_ROLL_SF_TO_M_FACTOR
     
     note = (f"[卷料/PP] 原始胶系={raw_glue} | 叠构={laminate_type} | RC%={rc_percent} | "
-            f"宽度={w} | RMB/SF={rmb_sf} | "
-            f"公式={ROLL_FIXED_WIDTH}/{ROLL_MM_DIVISOR}/{PP_FIXED_DIV}×{rmb_sf} = {format_price(price, result_decimals)}")
-    return round_price(price, result_decimals), note, None
+            f"卷长={roll_length:g}M | RMB/SF={rmb_sf} | "
+            f"公式={rmb_sf}×{roll_length:g}×{PP_ROLL_SF_TO_M_FACTOR} = {format_price(price)}")
+    return round_price(price), note, None
 
 
 def _calc_pp(desc, df_price):

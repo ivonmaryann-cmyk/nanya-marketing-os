@@ -113,11 +113,11 @@ class FangzhengPriceCalculatorTests(unittest.TestCase):
         )
 
         self.assertIsNone(error)
-        self.assertEqual(26.39, price)
-        self.assertIn("宽度=48", note)
-        self.assertEqual(5278.22, calculator.calculate_pp_roll_price(spec, self.price_rules))
+        self.assertEqual(5276.86, price)
+        self.assertIn("公式=2.011×200×13.12 = 5276.86", note)
+        self.assertEqual(5276.86, calculator.calculate_pp_roll_price(spec, self.price_rules))
 
-    def test_pp_roll_supports_four_decimal_single_quote_precision(self) -> None:
+    def test_pp_roll_uses_sf_roll_length_and_13_12_with_two_decimals(self) -> None:
         self.price_rules.loc[len(self.price_rules)] = [
             "PP", "NY6300P(C)", "2116", "57", "49.5", "200", 6.96, None, None, None,
         ]
@@ -126,12 +126,11 @@ class FangzhengPriceCalculatorTests(unittest.TestCase):
             'PP NY6300P(C) 2116 RC57% 49.5"*200M/Roll(有卤素)',
             self.price_rules,
             self.account_rules,
-            result_decimals=4,
         )
 
         self.assertIsNone(error)
-        self.assertEqual(91.3386, price)
-        self.assertTrue(note.endswith("= 91.3386"))
+        self.assertEqual(18263.04, price)
+        self.assertTrue(note.endswith("= 18263.04"))
 
     def test_pp_roll_accepts_standard_glass_types_after_glue_model(self) -> None:
         cases = [

@@ -45,14 +45,7 @@ def calculate_fangzheng_quote(spec: str) -> dict:
 
     rule_version = get_active_rule_version()
     calculator, (price_df, account_df) = _load_fangzheng_quote_engine(rule_version)
-    is_pp_roll = calculator.is_pp_roll_desc(spec)
-    display_precision = 4 if is_pp_roll else 2
-    price, note, err = calculator.calculate_price(
-        spec,
-        price_df,
-        account_df,
-        result_decimals=display_precision,
-    )
+    price, note, err = calculator.calculate_price(spec, price_df, account_df)
     if err:
         return {
             "status": "失败",
@@ -64,8 +57,8 @@ def calculate_fangzheng_quote(spec: str) -> dict:
         }
     return {
         "status": "成功",
-        "price": calculator.round_price(price, display_precision) if price is not None else None,
-        "display_precision": display_precision,
+        "price": calculator.round_price(price) if price is not None else None,
+        "display_precision": 2,
         "note": note or "计算成功",
         "material_type": "方正价格",
         "rule_version": rule_version,
