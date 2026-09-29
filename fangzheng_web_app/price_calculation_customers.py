@@ -156,6 +156,20 @@ PRICE_CALCULATION_CUSTOMERS = [
         "rule_label": "超颖报价表",
         "test_label": "超颖测试数据",
     },
+    {
+        "key": "yibo",
+        "label": "珠海一博",
+        "enabled": True,
+        "rule_label": "珠海一博报价表",
+        "test_label": "珠海一博测试数据",
+    },
+    {
+        "key": "quanchengxin",
+        "label": "全成信",
+        "enabled": True,
+        "rule_label": "全成信报价表",
+        "test_label": "全成信测试数据",
+    },
     {"key": "shenghong", "label": "胜宏", "enabled": False, "rule_label": "胜宏报价表", "test_label": "胜宏测试数据"},
     {"key": "bomin", "label": "博敏", "enabled": False, "rule_label": "博敏报价表", "test_label": "博敏测试数据"},
 ]

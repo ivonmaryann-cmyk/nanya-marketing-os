@@ -35,7 +35,9 @@ def create_app() -> Flask:
     # Shared-database clients must not recover another host's jobs or reseed rules.
     if os.getenv("APP_STARTUP_MAINTENANCE_ENABLED", "true").strip().lower() in {"1", "true", "yes"}:
         from . import product_name_service
+        from . import shennan_settlement_service
         product_name_service.init_schema()
+        shennan_settlement_service.init_schema()
         product_name_service.seed()
         ensure_rule_center_tables()
         ensure_pp_transcode_tables()
