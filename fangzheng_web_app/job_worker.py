@@ -65,6 +65,10 @@ def main(argv: list[str] | None = None) -> int:
             from .inventory_bid_service import run_inventory_bid_job
 
             run_inventory_bid_job(job_id, employee_id)
+        elif feature == "shennan_settlement":
+            from .shennan_settlement_service import run_shennan_settlement_job
+
+            run_shennan_settlement_job(job_id, employee_id)
         elif feature == "order_reprice":
             from .order_reprice_service import run_order_reprice_job
 

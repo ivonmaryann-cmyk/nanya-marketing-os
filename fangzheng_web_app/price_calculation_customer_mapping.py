@@ -41,6 +41,13 @@ PRICE_CALCULATION_ASSOCIATIONS = (
     {"key": "kexiang", "label": "科翔", "group_names": ("科翔集团",), "short_names": ("科翔",)},
     {"key": "junya", "label": "骏亚", "group_names": ("骏亚集团",), "short_names": ("骏亚",)},
     {"key": "chaoying", "label": "超颖", "group_names": ("定颖集团",), "short_names": ("超颖",)},
+    {"key": "yibo", "label": "珠海一博", "group_names": (), "short_names": ("珠海一博", "一博")},
+    {
+        "key": "quanchengxin",
+        "label": "全成信",
+        "group_names": ("深圳全成信", "深圳全成信电子有限公司", "湖北全成信精密电路有限公司"),
+        "short_names": ("全成信", "湖全成信"),
+    },
 )
 
 PRICE_QUOTE_TAX_MODE_BY_CUSTOMER_KEY = {
@@ -71,6 +78,8 @@ PRICE_QUOTE_TAX_MODE_BY_CUSTOMER_KEY = {
     "guanghe": PRICE_TAX_MODE_EXCLUSIVE,
     "hushi": PRICE_TAX_MODE_EXCLUSIVE,
     "chaoying": PRICE_TAX_MODE_EXCLUSIVE,
+    "yibo": PRICE_TAX_MODE_INCLUSIVE,
+    "quanchengxin": PRICE_TAX_MODE_INCLUSIVE,
 }
 
 

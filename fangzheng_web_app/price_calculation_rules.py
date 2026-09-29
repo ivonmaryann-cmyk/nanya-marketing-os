@@ -227,6 +227,8 @@ def ensure_default_price_rule_version(customer_key: str, quote_variant: str | No
         "kexiang": (packaged_dir / "kexiang" / PRICE_RULE_FILENAME, packaged_dir / "kexiang" / "test_data.xls"),
         "junya": (packaged_dir / "junya" / PRICE_RULE_FILENAME, packaged_dir / "junya" / TEST_DATA_FILENAME),
         "chaoying": (packaged_dir / "chaoying" / PRICE_RULE_FILENAME, packaged_dir / "chaoying" / TEST_DATA_FILENAME),
+        "yibo": (packaged_dir / "yibo" / "price_rules.xls", packaged_dir / "yibo" / "test_data.xls"),
+        "quanchengxin": (packaged_dir / "quanchengxin" / PRICE_RULE_FILENAME, packaged_dir / "quanchengxin" / TEST_DATA_FILENAME),
     }
     seed_files = seed_map.get(customer_key)
     if not seed_files:
@@ -459,15 +461,15 @@ def validate_price_rule_files(customer_key: str, rule_path: str | Path, test_dat
         load_workbook_compat(rule_path, data_only=True)
         _validate_plin_rule_file(rule_path)
         return
-    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing", "kexiang", "junya", "chaoying"}:
+    if customer_key in {"hanyu", "wutong", "eaton", "taixing", "aoshikang", "mingyang", "guanghe", "shengyi", "guigu", "techuang", "zhongfu", "huaxingyu", "dongxun", "suhang", "yingchuangli", "zhongjing", "kexiang", "junya", "chaoying", "yibo", "quanchengxin"}:
         load_workbook_compat(rule_path, data_only=True)
-        if customer_key in {"mingyang", "kexiang", "junya", "chaoying"}:
+        if customer_key in {"mingyang", "kexiang", "junya", "chaoying", "yibo", "quanchengxin"}:
             from .price_calculation_extended import load_extended_rules
 
             try:
                 load_extended_rules(customer_key, rule_path)
             except ValueError as exc:
-                customer_label = {"mingyang": "明阳", "kexiang": "科翔", "junya": "骏亚", "chaoying": "超颖"}[customer_key]
+                customer_label = {"mingyang": "明阳", "kexiang": "科翔", "junya": "骏亚", "chaoying": "超颖", "yibo": "珠海一博", "quanchengxin": "全成信"}[customer_key]
                 raise ValueError(f"{customer_label}报价单未识别到有效规则，请确认工作表名称和表头：{exc}") from exc
         return
     if customer_key == "lejian":
@@ -535,6 +537,8 @@ def _copy_existing_test_data(customer_key: str, target: Path, quote_variant: str
         "zhongjing": packaged_dir / "zhongjing" / TEST_DATA_FILENAME,
         "kexiang": packaged_dir / "kexiang" / "test_data.xls",
         "junya": packaged_dir / "junya" / TEST_DATA_FILENAME,
+        "yibo": packaged_dir / "yibo" / "test_data.xls",
+        "quanchengxin": packaged_dir / "quanchengxin" / TEST_DATA_FILENAME,
     }
     if customer_key in default_test_map:
         default_test = default_test_map[customer_key]

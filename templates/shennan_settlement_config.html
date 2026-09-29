@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}深南结算配置 | {{ platform_name }}{% endblock %}
+{% block content %}
+<div class="page-backbar"><a class="back-link" href="{{ url_for('main.shennan_settlement') }}">返回深南结算</a><span>深南结算 / 客户仓库配置</span></div>
+<section class="feature-hero"><div class="feature-hero-copy"><div class="panel-tag">SETTLEMENT CONFIG</div><h1>客户可用仓库</h1><p>不同客户库存严格隔离；禁用的配置不会参与新结算批次。</p></div></section>
+<section class="split-layout"><div class="work-column"><article class="card task-card task-card-primary"><h2>新增或更新配置</h2><form method="post" action="{{ url_for('main.save_shennan_settlement_config_view') }}" class="form-grid"><label><span>客户编号</span><input name="customer_code" required></label><label><span>客户名称</span><input name="customer_name" required></label><label><span>仓库编码</span><input name="warehouse_code" required></label><label><span>状态</span><select name="enabled"><option value="1">启用</option><option value="0">禁用</option></select></label><button type="submit">保存配置</button></form></article><article class="card task-card"><table class="table"><thead><tr><th>客户编号</th><th>客户名称</th><th>仓库</th><th>状态</th><th>更新时间</th></tr></thead><tbody>{% for row in rows %}<tr><td>{{ row.customer_code }}</td><td>{{ row.customer_name }}</td><td>{{ row.warehouse_code }}</td><td>{{ '启用' if row.enabled else '禁用' }}</td><td>{{ row.updated_at }}</td></tr>{% endfor %}</tbody></table></article></div></section>
+{% endblock %}

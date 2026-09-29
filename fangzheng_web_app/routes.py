@@ -175,6 +175,18 @@ from .inventory_bid_service import (
     queue_inventory_bid_job,
     queue_inventory_bid_max_job,
 )
+from .shennan_settlement_service import (
+    FEATURE as SHENNAN_SETTLEMENT_FEATURE,
+    cancel_confirmation as cancel_shennan_settlement_confirmation,
+    configured_warehouse_codes as shennan_settlement_warehouse_codes,
+    confirm_batch as confirm_shennan_settlement_batch,
+    get_batch as get_shennan_settlement_batch,
+    list_batches as list_shennan_settlement_batches,
+    list_config as list_shennan_settlement_config,
+    queue_batch as queue_shennan_settlement_batch,
+    queue_recalculate as queue_shennan_settlement_recalculate,
+    save_config as save_shennan_settlement_config,
+)
 from .job_control import cancel_job_process, reconcile_interrupted_jobs
 from .order_reprice_service import MODE_LABELS as ORDER_REPRICE_MODE_LABELS
 from .order_reprice_service import queue_order_reprice_job
@@ -554,6 +566,13 @@ FUNCTION_CARDS = [
         "stage": "test",
     },
     {
+        "key": "shennan_settlement",
+        "title": "深南结算",
+        "desc": "上传深南客户消耗、341未结订单及六仓库存，按订单与批次自动分摊并生成结算清单。",
+        "route": "main.shennan_settlement",
+        "stage": "test",
+    },
+    {
         "key": "order_reprice",
         "title": "订单改价",
         "desc": "上传胜宏客户明细、厂内明细和报价单，自动完成订单匹配、价格核对与改价结果校验。",
@@ -605,6 +624,7 @@ FEATURE_LABELS = {
     "in_transit": "深南在途核对",
     "inventory_detail": "库存明细",
     "inventory_bid": "库存竞标",
+    "shennan_settlement": "深南结算",
     "order_reprice": "订单改价",
     "work_planning": "工作规划",
 }
@@ -4455,6 +4475,38 @@ def inventory_bid():
     )
 
 
+@bp.get("/features/shennan-settlement")
+def shennan_settlement():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    reconcile_interrupted_jobs()
+    employee_id = current_employee() or ""
+    jobs = list_jobs(employee_id, limit=20, feature=SHENNAN_SETTLEMENT_FEATURE)
+    batch_id = request.args.get("batch_id", "")
+    selected_batch = get_shennan_settlement_batch(batch_id, employee_id) if batch_id else None
+    active_job = _active_job_for(SHENNAN_SETTLEMENT_FEATURE, jobs)
+    if selected_batch and selected_batch.get("job_id"):
+        active_job = next((job for job in jobs if job["id"] == selected_batch["job_id"]), active_job)
+    return render_template(
+        "shennan_settlement.html",
+        warehouses=shennan_settlement_warehouse_codes(),
+        batches=list_shennan_settlement_batches(employee_id),
+        active_job=_decorate_job(active_job) if active_job else None,
+        is_admin=is_admin_user(employee_id),
+    )
+
+
+@bp.get("/features/shennan-settlement/config")
+def shennan_settlement_config():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    if not is_admin_user(current_employee() or ""):
+        abort(403)
+    return render_template("shennan_settlement_config.html", rows=list_shennan_settlement_config())
+
+
 @bp.get("/features/order-reprice")
 def order_reprice():
     redirect_resp = require_login()
@@ -5283,6 +5335,80 @@ def create_inventory_bid_job_view():
     return redirect(url_for("main.inventory_bid", job_id=job_id))
 
 
+@bp.post("/shennan-settlement/batches")
+def create_shennan_settlement_batch_view():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    try:
+        batch_id, job_id = queue_shennan_settlement_batch(
+            current_employee() or "", request.files.get("consumption_file"), request.files.get("order_file"),
+            request.files.getlist("inventory_files"),
+        )
+        flash("深南结算草稿任务已创建，系统正在处理。", "success")
+        return redirect(url_for("main.shennan_settlement", batch_id=batch_id, job_id=job_id))
+    except Exception as exc:
+        flash(f"深南结算任务创建失败：{exc}", "error")
+        return redirect(url_for("main.shennan_settlement"))
+
+
+@bp.post("/shennan-settlement/batches/<batch_id>/recalculate")
+def recalculate_shennan_settlement_batch_view(batch_id: str):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    try:
+        queue_shennan_settlement_recalculate(batch_id, current_employee() or "")
+        flash("已按原始上传文件重新计算草稿。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return redirect(url_for("main.shennan_settlement", batch_id=batch_id))
+
+
+@bp.post("/shennan-settlement/batches/<batch_id>/confirm")
+def confirm_shennan_settlement_batch_view(batch_id: str):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    try:
+        confirm_shennan_settlement_batch(batch_id, current_employee() or "")
+        flash("结算批次已正式确认，订单与库存占用已记录。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return redirect(url_for("main.shennan_settlement", batch_id=batch_id))
+
+
+@bp.post("/shennan-settlement/batches/<batch_id>/cancel-confirmation")
+def cancel_shennan_settlement_confirmation_view(batch_id: str):
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    try:
+        cancel_shennan_settlement_confirmation(batch_id, current_employee() or "")
+        flash("已撤销确认并释放本批次占用。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return redirect(url_for("main.shennan_settlement", batch_id=batch_id))
+
+
+@bp.post("/shennan-settlement/config")
+def save_shennan_settlement_config_view():
+    redirect_resp = require_login()
+    if redirect_resp:
+        return redirect_resp
+    if not is_admin_user(current_employee() or ""):
+        abort(403)
+    try:
+        save_shennan_settlement_config(
+            request.form.get("customer_code", ""), request.form.get("customer_name", ""),
+            request.form.get("warehouse_code", ""), request.form.get("enabled") == "1", current_employee() or "",
+        )
+        flash("客户仓库配置已保存。", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return redirect(url_for("main.shennan_settlement_config"))
+
+
 @bp.post("/inventory-bid/max-jobs")
 def create_inventory_bid_max_job_view():
     redirect_resp = require_login()
@@ -5819,6 +5945,7 @@ def _job_feature_return_url(job, job_id: int) -> str:
         "in_transit": "main.in_transit",
         "inventory_detail": "main.inventory_detail",
         "inventory_bid": "main.inventory_bid",
+        "shennan_settlement": "main.shennan_settlement",
         "order_reprice": "main.order_reprice",
         "pdf_excel": "main.pdf_excel",
         "transcode_special_import": "main.admin_transcode_special_rules",
