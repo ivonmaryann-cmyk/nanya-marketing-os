@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,7 @@ SUHANG_PP_RULE_FILENAME = "suhang_pp_price_rules.xlsx"
 SUHANG_CCL_RULE_FILENAME = "suhang_ccl_price_rules.xlsx"
 ALLOWED_RULE_EXTENSIONS = {".xlsx", ".xls", ".xlsm"}
 JINGWANG_QUOTE_VARIANTS = {"new": "新报价单", "old": "旧报价单"}
+LOGGER = logging.getLogger(__name__)
 
 
 def normalize_price_quote_variant(customer_key: str, quote_variant: str | None = None) -> str:
@@ -153,7 +155,10 @@ def get_active_price_rule_version(customer_key: str, quote_variant: str | None =
 def ensure_default_price_rule_versions() -> None:
     for customer in PRICE_CALCULATION_CUSTOMERS:
         if customer.get("enabled"):
-            ensure_default_price_rule_version(customer["key"])
+            try:
+                ensure_default_price_rule_version(customer["key"])
+            except ValueError:
+                LOGGER.exception("跳过无法初始化的内置报价规则：%s", customer["key"])
 
 
 def ensure_default_price_rule_version(customer_key: str, quote_variant: str | None = None) -> str:

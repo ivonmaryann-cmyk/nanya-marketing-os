@@ -10,6 +10,23 @@ from fangzheng_web_app.price_calculation_service import load_price_rules
 
 
 class PriceCalculationRuleVersionTests(unittest.TestCase):
+    def test_invalid_default_rule_does_not_prevent_other_rules_from_initializing(self) -> None:
+        initialized: list[str] = []
+
+        def initialize(customer_key: str) -> str:
+            initialized.append(customer_key)
+            if customer_key == "plin":
+                raise ValueError("损坏的报价规则")
+            return customer_key
+
+        customers = [{"key": "jingwang", "enabled": True}, {"key": "plin", "enabled": True}]
+        with patch.object(rule_service, "PRICE_CALCULATION_CUSTOMERS", customers), patch.object(
+            rule_service, "ensure_default_price_rule_version", side_effect=initialize
+        ), self.assertLogs(rule_service.LOGGER, level="ERROR"):
+            rule_service.ensure_default_price_rule_versions()
+
+        self.assertEqual(["jingwang", "plin"], initialized)
+
     def test_missing_active_rule_file_is_not_replaced_by_bootstrap(self) -> None:
         settings = {"active_price_rule_version:jingwang": "jingwang_new_rules_20260911_093818"}
 
