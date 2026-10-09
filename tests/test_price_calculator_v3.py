@@ -35,6 +35,32 @@ class FangzhengPriceCalculatorTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual(290.4, price)
 
+    def test_pp_doe_quote_does_not_override_standard_quote(self) -> None:
+        rules = pd.DataFrame([
+            ['PP', 'NY6666SEP', '1035', '74', '49.5', '300', 6.3439, 24975.93, None, None],
+            ['PP', 'NY6666SEP', '1035', '74', '49.5', '300', 7, 27559, None, None],
+        ], columns=PRICE_COLUMNS)
+        rules['尺寸'] = ['DOE-TEST', None]
+        rules['备注'] = ['DOE-TEST非标配', None]
+        spec = 'PP NY6666SEP 1035 RC74% 18.7"*24.6"(无卤素)'
+        price, _note, error = calculator.calculate_price(spec, rules, self.account_rules)
+        self.assertIsNone(error)
+        self.assertAlmostEqual(21.82, price, places=2)
+        value, index, error = calculator.query_pp_price(
+            rules, 'NY6666SEP', '1035', 74, desc=spec + ' DOE-TEST',
+        )
+        self.assertIsNone(error)
+        self.assertEqual(0, index)
+        self.assertEqual(6.3439, value)
+        roll, _index, error = calculator.query_pp_price(
+            rules, 'NY6666SEP', '1035', 74, '36"*48"',
+        )
+        self.assertIsNone(error)
+        self.assertEqual(27559, roll)
+        value, _index, error = calculator.query_pp_price(rules.iloc[:1], 'NY6666SEP', '1035', 74)
+        self.assertIsNone(value)
+        self.assertIsNotNone(error)
+
     def test_ccl_falls_back_from_hvlp1_to_hvlp_when_quote_uses_legacy_name(self) -> None:
         self.price_rules.loc[len(self.price_rules)] = [
             "CCL", "NY6300S", "0.203", "H/H", "HVLP", "3313x2", 19.88, 238.56, 265.0, 278.32,

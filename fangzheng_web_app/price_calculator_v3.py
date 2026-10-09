@@ -570,9 +570,16 @@ def _pp_laminate_contains(series, laminate_str):
     return series.astype(str).str.strip().str.contains(pattern, na=False, regex=True)
 
 
-def query_pp_price(df_price, glue, laminate_type, rc_percent, price_column='RMB/SF'):
+def query_pp_price(df_price, glue, laminate_type, rc_percent, price_column='RMB/SF', desc=''):
     """查询 PP 价格（RMB/SF）"""
     pp_rows = df_price[df_price['CCL'].astype(str).str.strip() == 'PP']
+    # DOE trial quotes must not override ordinary production quotes.
+    doe_mask = pd.Series(False, index=pp_rows.index)
+    for column in ('尺寸', '备注'):
+        if column in pp_rows.columns:
+            doe_mask |= pp_rows[column].astype(str).str.contains(r'\bDOE[ -]?TEST\b', case=False, regex=True)
+    requested_doe = bool(re.search(r'\bDOE[ -]?TEST\b', desc, re.IGNORECASE))
+    pp_rows = pp_rows[doe_mask if requested_doe else ~doe_mask]
     
     glue_candidates = [glue]
     glue_candidates.extend(PP_GLUE_ALIASES.get(glue.upper(), ()))
@@ -655,7 +662,7 @@ def calculate_pp_roll_price(desc, df_price):
     raw_glue, laminate_type, rc_percent = _parse_pp_price_key(desc)
     if raw_glue is None:
         return None
-    roll_price, _row_idx, err = query_pp_price(df_price, raw_glue, laminate_type, rc_percent, '36"*48"')
+    roll_price, _row_idx, err = query_pp_price(df_price, raw_glue, laminate_type, rc_percent, '36"*48"', desc=desc)
     if err:
         return None
     return round_price(roll_price)
@@ -983,7 +990,7 @@ def _calc_roll(desc, df_price):
     
     log(f"  卷料解析：原始胶系={raw_glue}, 叠构={laminate_type}, RC%={rc_percent}, 卷长={roll_length}M")
     
-    price, row_idx, err = query_pp_price(df_price, raw_glue, laminate_type, rc_percent, '36"*48"')
+    price, row_idx, err = query_pp_price(df_price, raw_glue, laminate_type, rc_percent, '36"*48"', desc=desc)
     if err:
         return None, '', err
     
@@ -1025,7 +1032,7 @@ def _calc_pp(desc, df_price):
     
     log(f"  PP解析：原始胶系={raw_glue}, 叠构={laminate_type}, RC%={rc_percent}, 尺寸={w}x{h}")
     
-    rmb_sf, row_idx, err = query_pp_price(df_price, raw_glue, laminate_type, rc_percent)
+    rmb_sf, row_idx, err = query_pp_price(df_price, raw_glue, laminate_type, rc_percent, desc=desc)
     if err:
         return None, '', err
     
