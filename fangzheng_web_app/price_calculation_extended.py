@@ -1379,6 +1379,7 @@ def _mingyang_price_columns(headers: list[str]) -> dict[int, str]:
         normalized = _text(header).replace("\n", "").replace(" ", "")
         if not normalized or "旧" in normalized or "调整" in normalized or "备注" in normalized:
             continue
+        normalized = re.sub(r"(?:\d{4}年)?\d{1,2}月", "", normalized)
         key = _price_key_from_label(normalized)
         if key:
             price_cols[idx] = key
@@ -4138,7 +4139,8 @@ def _calculate_mingyang_pp(desc: str, rules: ExtRules) -> ExtCalcResult:
 
 
 def _calculate_mingyang_ccl(desc: str, rules: ExtRules, quantity: Any = None) -> ExtCalcResult:
-    product = _extract_product(desc)
+    product_match = re.search(r"\bNY\s*-?\s*(?:P\d[A-Z0-9]*|[A-Z]?\d{3,4}[A-Z0-9]*)(?:\([A-Z0-9]+\))?", desc, re.I)
+    product = _norm_product(product_match.group(0)) if product_match else _extract_product(desc)
     thickness_mm = _extract_mingyang_thickness_mm(desc)
     thickness_mil = _extract_thickness_mil(desc, product)
     copper = _extract_mingyang_copper(desc)
@@ -4166,7 +4168,7 @@ def _calculate_mingyang_ccl(desc: str, rules: ExtRules, quantity: Any = None) ->
         if (row.copper == copper or row.copper == _reverse_copper(copper))
         and (not foil or not row.foil or row.foil == foil)
     ]
-    for row in sorted(exact_rows, key=lambda item: item.excel_row):
+    for row in sorted(exact_rows, key=lambda item: (abs(item.thickness_mm - thickness_mm) if thickness_mm is not None and item.thickness_mm is not None else 0, item.excel_row)):
         price_result = _mingyang_ccl_row_size_price(row, length_in, width_in)
         if price_result["ok"]:
             condition = rules.ccl_notes.get(row.sheet, {})
