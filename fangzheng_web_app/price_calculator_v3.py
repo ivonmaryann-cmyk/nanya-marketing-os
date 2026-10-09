@@ -570,7 +570,7 @@ def _pp_laminate_contains(series, laminate_str):
     return series.astype(str).str.strip().str.contains(pattern, na=False, regex=True)
 
 
-def query_pp_price(df_price, glue, laminate_type, rc_percent):
+def query_pp_price(df_price, glue, laminate_type, rc_percent, price_column='RMB/SF'):
     """查询 PP 价格（RMB/SF）"""
     pp_rows = df_price[df_price['CCL'].astype(str).str.strip() == 'PP']
     
@@ -593,7 +593,7 @@ def query_pp_price(df_price, glue, laminate_type, rc_percent):
             result = _match_cu_thick(candidates, rc_percent)
             if len(result) > 0:
                 row = result.iloc[0]
-                rmb_sf = row.get('RMB/SF')
+                rmb_sf = row.get(price_column)
                 if not pd.isna(rmb_sf):
                     return float(rmb_sf), result.index[0], None
     
@@ -651,15 +651,14 @@ def _parse_pp_price_key(desc):
 
 
 def calculate_pp_roll_price(desc, df_price):
-    """按 RMB/SF、规格卷长和固定换算系数计算 PP 整卷价格。"""
+    """读取匹配报价行中的整卷价格。"""
     raw_glue, laminate_type, rc_percent = _parse_pp_price_key(desc)
-    roll_length = extract_pp_roll_length(desc)
-    if raw_glue is None or roll_length is None:
+    if raw_glue is None:
         return None
-    rmb_sf, _row_idx, err = query_pp_price(df_price, raw_glue, laminate_type, rc_percent)
+    roll_price, _row_idx, err = query_pp_price(df_price, raw_glue, laminate_type, rc_percent, '36"*48"')
     if err:
         return None
-    return round_price(rmb_sf * roll_length * PP_ROLL_SF_TO_M_FACTOR)
+    return round_price(roll_price)
 
 
 def output_price_for_desc(desc, price, pp_roll_price):
@@ -801,6 +800,8 @@ def calculate_price(desc, df_price, df_account):
     )
     
     if is_pp_prefix or is_pp_implicit:
+        if not parse_size(desc):
+            return _calc_roll(desc, df_price)
         return _calc_pp(desc, df_price)
     else:
         return _calc_ccl(desc, df_price, df_account)
@@ -979,20 +980,15 @@ def _calc_roll(desc, df_price):
         return None, '', f'卷料无法提取 RC%：{desc[:60]}'
     
     roll_length = extract_pp_roll_length(desc)
-    if roll_length is None:
-        return None, '', f'卷料无法提取卷长：{desc[:60]}'
     
     log(f"  卷料解析：原始胶系={raw_glue}, 叠构={laminate_type}, RC%={rc_percent}, 卷长={roll_length}M")
     
-    rmb_sf, row_idx, err = query_pp_price(df_price, raw_glue, laminate_type, rc_percent)
+    price, row_idx, err = query_pp_price(df_price, raw_glue, laminate_type, rc_percent, '36"*48"')
     if err:
         return None, '', err
     
-    price = rmb_sf * roll_length * PP_ROLL_SF_TO_M_FACTOR
-    
     note = (f"[卷料/PP] 原始胶系={raw_glue} | 叠构={laminate_type} | RC%={rc_percent} | "
-            f"卷长={roll_length:g}M | RMB/SF={rmb_sf} | "
-            f"公式={rmb_sf}×{roll_length:g}×{PP_ROLL_SF_TO_M_FACTOR} = {format_price(price)}")
+            f"报价行={row_idx} | 直接读取报价单整卷价格 = {format_price(price)}")
     return round_price(price), note, None
 
 

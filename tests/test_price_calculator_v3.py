@@ -141,11 +141,11 @@ class FangzhengPriceCalculatorTests(unittest.TestCase):
         )
 
         self.assertIsNone(error)
-        self.assertEqual(5276.86, price)
-        self.assertIn("公式=2.011×200×13.12 = 5276.86", note)
-        self.assertEqual(5276.86, calculator.calculate_pp_roll_price(spec, self.price_rules))
+        self.assertEqual(5278.22, price)
+        self.assertIn("直接读取报价单整卷价格 = 5278.22", note)
+        self.assertEqual(5278.22, calculator.calculate_pp_roll_price(spec, self.price_rules))
 
-    def test_pp_roll_uses_sf_roll_length_and_13_12_with_two_decimals(self) -> None:
+    def test_pp_roll_does_not_estimate_when_quote_roll_price_missing(self) -> None:
         self.price_rules.loc[len(self.price_rules)] = [
             "PP", "NY6300P(C)", "2116", "57", "49.5", "200", 6.96, None, None, None,
         ]
@@ -156,9 +156,17 @@ class FangzhengPriceCalculatorTests(unittest.TestCase):
             self.account_rules,
         )
 
+        self.assertIsNotNone(error)
+        self.assertIsNone(price)
+
+    def test_pp_without_piece_dimensions_or_roll_length_uses_quote(self) -> None:
+        self.price_rules.loc[1, "RMB/SF"] = None
+        price, note, error = calculator.calculate_price(
+            "PP NY6300P(C) 106 RC77%", self.price_rules, self.account_rules,
+        )
         self.assertIsNone(error)
-        self.assertEqual(18263.04, price)
-        self.assertTrue(note.endswith("= 18263.04"))
+        self.assertEqual(23858.27, price)
+        self.assertIn("直接读取报价单整卷价格", note)
 
     def test_pp_roll_accepts_standard_glass_types_after_glue_model(self) -> None:
         cases = [
