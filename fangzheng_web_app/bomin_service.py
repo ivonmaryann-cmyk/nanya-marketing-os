@@ -196,7 +196,7 @@ def load_bomin_rules(rule_path: str | Path) -> RuleBook:
             and values["product"].startswith("NY")
             and values["glass"]
             and values["rc"] is not None
-            and values["per_m"] is not None
+            and (values["per_m"] is not None or values["per_roll"] is not None)
         ):
             continue
         pp_rows.append(PriceRow(excel_row, values))
@@ -451,12 +451,15 @@ def _calculate_ccl(parsed: ParsedSpec, rules: RuleBook) -> CalcResult:
 def _calculate_pp(parsed: ParsedSpec, rules: RuleBook) -> CalcResult:
     row = _match_pp_row(parsed, rules)
     match_note = row.values.pop("_match_note", "")
+    if parsed.length_unit == "m" or (parsed.length_value is None and parsed.width_value is None):
+        per_roll = row.values.get("per_roll")
+        if per_roll is None:
+            return CalcResult(parsed.row_idx, parsed.desc, "失败", None, "找到报价行，但对应整卷价格字段为空：Per Roll")
+        final = _round_price(per_roll)
+        return CalcResult(parsed.row_idx, parsed.desc, "成功", final, f"PP 整卷：报价表第 {row.excel_row} 行，取 Per Roll={per_roll}{match_note}")
     per_m = row.values.get("per_m")
     if per_m is None:
         return CalcResult(parsed.row_idx, parsed.desc, "失败", None, "找到报价行，但对应价格字段为空：Per M")
-    if parsed.length_unit == "m":
-        final = _round_price(per_m)
-        return CalcResult(parsed.row_idx, parsed.desc, "成功", final, f"PP 整卷：报价表第 {row.excel_row} 行，取 Per M={per_m}{match_note}")
     if parsed.length_value is None or parsed.width_value is None:
         return CalcResult(parsed.row_idx, parsed.desc, "失败", None, "尺寸无法解析")
     length_m = _length_to_m(parsed.length_value, parsed.length_unit)
